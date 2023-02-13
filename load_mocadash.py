@@ -29,6 +29,8 @@ aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 # Load data
 moca = MocaEngine()
 
+unselected_opacity = 0.06
+
 #Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 
@@ -168,8 +170,10 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
             selectedpoints=selected_index,
             customdata=dff_aid["moca_oid"],
         )
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
         data.append(new_trace)
-
+    
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
@@ -253,7 +257,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
                 x=dff_plot[xvar],#This is the x in the MOCA column
                 y=dff_plot[yvar],#This is the y in the MOCA column
                 z=dff_plot[zvar],#This is the y in the MOCA column
-                opacity=0.03,
+                opacity=unselected_opacity,
                 mode="markers",
                 marker={"color": colormap[association], "size": 3},
                 text=dff_plot["text_list"],
@@ -375,6 +379,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             selectedpoints=selected_index,
             customdata=dff_aid["moca_oid"],
         )
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
