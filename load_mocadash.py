@@ -230,13 +230,21 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
         #     #selectedpoints=selected_index,
         #     customdata=dff[dff["moca_aid"] == association]["moca_oid"],
         # )
+        #import pdb; pdb.set_trace()
+
+        opacities = np.ones(len(dff))*0.1
+        opacities[selected_index] = 1.0
+
         new_trace = go.Scatter3d(
             x=dff[dff["moca_aid"] == association][xvar],#This is the x in the MOCA column
             y=dff[dff["moca_aid"] == association][yvar],#This is the y in the MOCA column
             z=dff[dff["moca_aid"] == association][zvar],#This is the y in the MOCA column
             opacity=0.8,
+            #marker_opacity=opacities,
             mode="markers",
             marker={"color": colormap[association], "size": 3},
+            #marker={"color": colormap[association], "size": 3, "opacity": opacities.tolist()},
+            #marker={"color": dff[dff["moca_aid"] == association][zvar]},
             text=text_list,
             name=association,
             #selectedpoints=selected_index,
