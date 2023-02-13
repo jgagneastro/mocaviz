@@ -27,20 +27,12 @@ initial_aids = ["ABDMG","BPMG","TWA"]
 aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
 # Load data
-#Query the moca database to obtain a Pandas DataFrame for the specific group needed
 moca = MocaEngine()
-#df = moca.query("SELECT * FROM summary_all_members WHERE (moca_aid='"+group+"' AND moca_mtid != 'R')")
-#df = moca.query("SELECT sptn, gmag, rmag, dmod, moca_oid, moca_aid, moca_mtid, x, y, z FROM summary_all_members WHERE ((moca_aid='THA' OR moca_aid='ABDMG' OR moca_aid='BPMG') AND moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R')")
-#df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R')")
-#df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
+
+#Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 
 df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
-
-#df['gr'] = df['gmag']-df['rmag']
-#df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-#df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-
 df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
 df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
 
@@ -91,7 +83,6 @@ def colormap_picker(aid_list):
     else:
         colors = ["#e52638", "#1ed46b", "#bc337d", "#9ee5a4", "#db2bee", "#167b2b", "#f2b0f6", "#bce333", "#710c9e", "#d9c771", "#5e3966", "#65e6f9", "#9e4302", "#389eaa", "#f19189", "#214a65", "#ded1d4", "#1b48bc", "#fd8f2f", "#4c93e9"]
     colormap = {}
-    #for ind, moca_aid in enumerate(df["moca_aid"].unique().tolist()):
     for ind, moca_aid in enumerate(aid_list):
         colormap[moca_aid] = colors[ind%len(colors)]
     return colormap
@@ -144,7 +135,6 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
         ),
     )
 
-    #associations = dff["moca_aid"].unique().tolist()
     colormap = colormap_picker(associations)
 
     data = []
@@ -216,7 +206,6 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
         ),
     )
 
-    #associations = dff["moca_aid"].unique().tolist()
     colormap = colormap_picker(associations)
 
     data = []
@@ -283,9 +272,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     if zvar=='w':
         fig.update_scenes(zaxis={'range':[-70,20]})
 
-    #fig.update_layout(xaxis={'title':ztitle})
     return fig
-    #return {"data": data, "layout": layout}
 
 def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_visible, sequences_visible):
 
@@ -311,12 +298,10 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     )
     hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
 
-    #associations = dff["moca_aid"].unique().tolist()
     colormap = colormap_picker(associations)
 
     data = []
     
-    #import pdb; pdb.set_trace()
     new_trace = go.Scattergl(
             x=df_cmd_field["gr"],
             y=df_cmd_field["m_g"],
@@ -333,12 +318,8 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
         selected_index = None
         if association in selected_data:
             selected_index = selected_data[association]
-        #text_list = map(lambda x1: "moca_oid:" + str(int(x1)),dff[dff["moca_aid"] == association]["moca_oid"])
-        #text_list = list(map(lambda x1, x2: "moca_oid:" + str(int(x1)) + "<br> sptn:" + str(int(x2)),dff[dff["moca_aid"] == association]["moca_oid"],dff[dff["moca_aid"] == association]["moca_oid"]))
 
         text_list = build_hover(dff,association)
-        #designation, moca_aid, moca_mtid, spt
-        #import pdb; pdb.set_trace()
         aid_list = dff[dff["moca_aid"] == association]["moca_aid"].tolist()
 
         text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
@@ -365,12 +346,9 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
 
     return fig
 
-    #return {"data": data, "layout": layout}
-
 # Helper for extracting select index from plots
 def get_selection(data, moca_aid, associations, selection_data, starting_index):
     ind = []
-    #current_curve = data["moca_aid"].unique().tolist().index(moca_aid)
     current_curve = associations.index(moca_aid)
     for point in selection_data["points"]:
         if point["curveNumber"] - starting_index == current_curve:
@@ -404,7 +382,6 @@ app.layout = html.Div(
                                     id="aid-select",
                                     options=[
                                         {"label": i, "value": i}
-                                        #for i in df["moca_aid"].unique().tolist()
                                         for i in df_aids["moca_aid"].unique().tolist()
                                     ],
                                     multi=True,
@@ -413,7 +390,6 @@ app.layout = html.Div(
                             ],
                         ),
                         dcc.Store(id='db-data'),
-                        #html.Div(id="hidden-div", style={"display":"none"}),
                     ],
                 ),
             ],
@@ -534,19 +510,16 @@ app.layout = html.Div(
 
 # Update AID-select
 @app.callback(
-    #output=Output("hidden-div", "children"),
-    #output=Output("aid-select", "value"),
     output=Output("db-data","data"),
     inputs=[
         Input("aid-select", "value"),
     ],
-    #state=[State("aid-select", "children")],
 )
 def update_aid_select(
     aid_select,
-    #aid_select_state,
 ):
-    print("AID-SELECT Updated")
+    
+    # Query the moca database to obtain a Pandas DataFrame for the specific group needed
     aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
     df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
     df['gr'] = df['gmag']-df['rmag']
@@ -554,68 +527,6 @@ def update_aid_select(
     df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
     return df.to_json(date_format='iso', orient='split')
-    #import pdb; pdb.set_trace()
-    #return f'Output: {input_value}'
-    #return aid_select
-    
-    # sequences_visible = field_visible = True
-
-    # dff = df[df["moca_aid"].isin(aid_select)]
-    
-    # #Preserve plotting order
-    # #associations = dff["moca_aid"].unique().tolist()
-    # associations = aid_select
-
-    # # Find which one has been triggered
-    # ctx = dash.callback_context
-
-    # prop_id = ""
-    # prop_type = ""
-    # if ctx.triggered:
-    #     splitted = ctx.triggered[0]["prop_id"].split(".")
-    #     prop_id = splitted[0]
-    #     prop_type = splitted[1]
-
-    # processed_data = {}
-
-    # if prop_id != "cmd-layer-select":
-    #     if (prop_id == "xy-map" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map") and prop_type == "selectedData":
-    #         if prop_id == "xy-map":
-    #             selected_data = xy_selected_data
-    #         if prop_id == "yz-map":
-    #             selected_data = yz_selected_data
-    #         if prop_id == "uv-map":
-    #             selected_data = uv_selected_data
-    #         for association in associations:
-    #             if selected_data is None:
-    #                 processed_data[association] = None
-    #             else:
-    #                 processed_data[association] = get_selection(
-    #                     dff, association, associations, selected_data, 0
-    #                 )
-    #     else:
-
-    #         for association in associations:
-    #             processed_data[association] = None
-
-    #     return generate_gaiadr3_cmd(
-    #         dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible
-    #     )
-
-    # if prop_id == "cmd-layer-select":
-    #     if curr_fig is not None:
-    #         #This is not coded yet
-    #         if "Field Stars" not in layer_select:
-    #             field_visible = "legendonly"
-    #         if "Sequences" not in layer_select:
-    #             sequences_visible = "legendonly"
-    #         #import pdb; pdb.set_trace()
-
-    #         curr_fig["data"][0]["visible"] = field_visible
-
-    #         return curr_fig
-    #     else:
-    #         return curr_fig
 
 # Update XYZ Map
 @app.callback(
@@ -632,14 +543,12 @@ def update_xyz_map(
     yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
+    # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
-
-    #import pdb; pdb.set_trace()
 
     # Find which one has been triggered
     ctx = dash.callback_context
@@ -690,8 +599,7 @@ def update_uvw_map(
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
 
     # Find which one has been triggered
@@ -742,11 +650,11 @@ def update_uv_map(
     uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
+    # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
 
     # Find which one has been triggered
@@ -804,8 +712,7 @@ def update_uw_map(
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
 
     # Find which one has been triggered
@@ -860,11 +767,11 @@ def update_xy_map(
     uv_selected_data, uw_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
+    # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
 
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
 
     # Find which one has been triggered
@@ -919,11 +826,11 @@ def update_yz_map(
     xy_selected_data, uv_selected_data, uw_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
+    # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
-    #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
+    # Preserve plotting order
     associations = aid_select
 
     # Find which one has been triggered
@@ -1037,7 +944,6 @@ def update_gaiadr3_cmd(
                 field_visible = "legendonly"
             if "Sequences" not in layer_select:
                 sequences_visible = "legendonly"
-            #import pdb; pdb.set_trace()
 
             curr_fig["data"][0]["visible"] = field_visible
 
