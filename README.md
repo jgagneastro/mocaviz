@@ -15,6 +15,7 @@ The features that have been implemented as of Feb 13, 2023 are:
 - Cross-filtering across diagrams (except 3D diagrams).
 - Selecting among associations using a Dropdown menu.
 - Dynamic update based on the (private) mocadb server upon selection of new associations only.
+- Fixing the glitch where selecting in a new plot cancels the selection and needs to be selected again (I don't know how to do this yet).
 
 The features I still want to implement are:
 
