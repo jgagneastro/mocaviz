@@ -30,12 +30,16 @@ aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 moca = MocaEngine()
 
 #Load a list of all associations for the Dropdown menu
-#import pdb; pdb.set_trace();
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 
-df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
+print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
+
+df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field LIMIT 100")
 df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
 df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
+df_cmd_field['customdata'] = 'NaN'
+
+print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
 
@@ -140,27 +144,37 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
 
     data = []
 
+    text_list = build_hover(dff)
+    aid_list = dff["moca_aid"].tolist()
+    text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    dff['text_list'] = text_list
+
     for association in associations:
-        selected_index = None
-        if association in selected_data:
-            selected_index = selected_data[association]
+        # selected_index = None
+        # if association in selected_data:
+        #     selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
-        text_list = build_hover(dff_aid)
-        aid_list = dff[dff["moca_aid"] == association]["moca_aid"].tolist()
+        #text_list = build_hover(dff_aid)
+        #aid_list = dff[dff["moca_aid"] == association]["moca_aid"].tolist()
 
-        text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+        
+        if selected_data is None:
+            selected_index = None
+        else:
+            selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
 
         new_trace = go.Scattergl(
-            x=dff[dff["moca_aid"] == association][xvar],#This is the x in the MOCA column
-            y=dff[dff["moca_aid"] == association][yvar],#This is the y in the MOCA column
+            x=dff_aid[xvar],#This is the x in the MOCA column
+            y=dff_aid[yvar],#This is the y in the MOCA column
             opacity=0.8,
             mode="markers",
             marker={"color": colormap[association], "size": 4},
-            text=text_list,
+            text=dff_aid['text_list'],
             name=association,
             selectedpoints=selected_index,
-            customdata=dff[dff["moca_aid"] == association]["moca_oid"],
+            customdata=dff_aid["moca_oid"],
         )
         data.append(new_trace)
 
@@ -211,23 +225,35 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     colormap = colormap_picker(associations)
 
     data = []
-    totsel = 0
-    for association in associations:
-        if selected_data[association] is not None:
-            totsel += len(selected_data[association])
-    print(totsel)
+    if selected_data is None:
+        totsel = 0
+    else:
+        totsel = len(selected_data)
+    # for association in associations:
+    #     if selected_data[association] is not None:
+    #         totsel += len(selected_data[association])
+
+    text_list = build_hover(dff)
+    aid_list = dff["moca_aid"].tolist()
+    text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    dff['text_list'] = text_list
 
     for association in associations:
-        selected_index = None
-        if association in selected_data:
-            selected_index = selected_data[association]
+        # selected_index = None
+        # if association in selected_data:
+        #     selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
-        text_list = build_hover(dff_aid)
-        aid_list = dff_aid["moca_aid"].tolist()
+        if selected_data is None:
+            selected_index = None
+        else:
+            selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
+        #import pdb; pdb.set_trace()
 
-        text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
-        dff_aid['text_list'] = text_list
+        #text_list = build_hover(dff_aid)
+        #aid_list = dff_aid["moca_aid"].tolist()
+        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+        #dff_aid['text_list'] = text_list
 
         # new_trace = px.scatter_3d(dff[dff["moca_aid"] == association],
         #     x=xvar, y=yvar, z=zvar,
@@ -244,15 +270,20 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
             dff_deselect = None
             dff_select = dff_aid
         else:
-            if selected_index is None:
-                dff_deselect = dff_aid
-                dff_select = None
-            else:
-                df_select_index = dff_aid.index.isin(selected_index)
-                dff_deselect = dff_aid[~df_select_index]
-                dff_select = dff_aid[df_select_index]
+            df_select_index = dff_aid.index.isin(dff_aid.iloc[selected_index].index)
+            dff_deselect = dff_aid[~df_select_index]
+            dff_select = dff_aid[df_select_index]
+            #import pdb; pdb.set_trace()
+            # if len(selected_index) is None:
+            #     dff_deselect = dff_aid
+            #     dff_select = None
+            # else:
+            #     #import pdb; pdb.set_trace()
+            #     df_select_index = dff_aid.index.isin(selected_index)
+            #     dff_deselect = dff_aid[~df_select_index]
+            #     dff_select = dff_aid[df_select_index]
 
-        #Plot the DEselected data points
+        #Plot the *DE*selected data points
         if dff_deselect is not None:
             dff_plot = dff_deselect
             new_trace = go.Scatter3d(
@@ -351,32 +382,49 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             marker={"color": "#D3D3D3", "size": 2},
             hoverinfo='skip',
             name='Field stars',
+            customdata=df_cmd_field['customdata'],
             visible=field_visible,
         )
     data.append(new_trace)
+    #import pdb; pdb.set_trace()
+
+    text_list = build_hover(dff)
+    aid_list = dff["moca_aid"].tolist()
+    text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    dff['text_list'] = text_list
 
     for association in associations:
-        selected_index = None
-        if association in selected_data:
-            selected_index = selected_data[association]
+        #selected_index = None
+        #if association in selected_data:
+        #    selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
-        text_list = build_hover(dff_aid)
-        aid_list = dff[dff["moca_aid"] == association]["moca_aid"].tolist()
+        #text_list = build_hover(dff_aid)
+        #aid_list = dff_aid["moca_aid"].tolist()
 
-        text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+        #dff_aid.index[dff_aid['moca_oid'].isin(selid)].tolist()
+        #df.iloc[dff_aid.index[dff_aid['moca_oid'].isin(selid)].tolist()]
+
+        if selected_data is None:
+            selected_index = None
+        else:
+            selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
+            #selected_index = dff_aid.index[dff_aid['moca_oid'].isin(selected_data)].tolist()
+            #import pdb; pdb.set_trace()
 
         new_trace = go.Scattergl(
-            x=dff[dff["moca_aid"] == association]["gr"],#This is the x in the MOCA column
-            y=dff[dff["moca_aid"] == association]["m_g"],#This is the y in the MOCA column
+            x=dff_aid["gr"],#This is the x in the MOCA column
+            y=dff_aid["m_g"],#This is the y in the MOCA column
             opacity=0.8,
             mode="markers",
             hovertemplate=hovertemplate,
             marker={"color": colormap[association], "size": 5},
-            text=text_list,
+            text=dff_aid['text_list'],
             name=association,
+            #selectedpoints=[],
             selectedpoints=selected_index,
-            customdata=dff[dff["moca_aid"] == association]["moca_oid"],
+            customdata=dff_aid["moca_oid"],
         )
         data.append(new_trace)
 
@@ -568,12 +616,17 @@ def update_aid_select(
     df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
     df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
+    print("Downloaded "+str(len(df))+" rows of general data from DB")
+
     return df.to_json(date_format='iso', orient='split')
 
 # Update XYZ Map
 @app.callback(
     output=Output("xyz-map", "figure"),
     inputs=[
+        Input("uv-map", "selectedData"),
+        Input("uw-map", "selectedData"),
+        Input("xy-map", "selectedData"),
         Input("yz-map", "selectedData"),
         Input("gaiadr3-cmd", "selectedData"),
         Input("db-data", "data"),
@@ -582,10 +635,9 @@ def update_aid_select(
     state=[State("aid-select", "value")],
 )
 def update_xyz_map(
-    yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
-    import pdb; pdb.set_trace()
     # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
@@ -603,24 +655,35 @@ def update_xyz_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
+    selected_data = None
 
-    if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map"):
+    if (prop_id == "gaiadr3-cmd" or prop_id == "uv-map" or prop_id == "uw-map" or prop_id == "xy-map" or prop_id == "yz-map"):
+        if prop_id == "uv-map":
+            selected_data = uv_selected_data
+        if prop_id == "uw-map":
+            selected_data = uw_selected_data
+        if prop_id == "xy-map":
+            selected_data = xy_selected_data
         if prop_id == "yz-map":
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+        # for association in associations:
+        #     if selected_data is None:
+        #         processed_data[association] = None
+        #     else:
+        #         processed_data[association] = get_selection(
+        #             dff, association, associations, selected_data, 1
+        #         )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xyz_map(dff, associations, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
@@ -628,6 +691,9 @@ def update_xyz_map(
 @app.callback(
     output=Output("uvw-map", "figure"),
     inputs=[
+        Input("uv-map", "selectedData"),
+        Input("uw-map", "selectedData"),
+        Input("xy-map", "selectedData"),
         Input("yz-map", "selectedData"),
         Input("gaiadr3-cmd", "selectedData"),
         Input("db-data", "data"),
@@ -636,7 +702,7 @@ def update_xyz_map(
     state=[State("aid-select", "value")],
 )
 def update_uvw_map(
-    yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
 ):
     
     df = pd.read_json(jsonified_db_data, orient='split')
@@ -655,24 +721,35 @@ def update_uvw_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
+    selected_data = None
 
-    if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map"):
+    if (prop_id == "gaiadr3-cmd" or prop_id == "uv-map" or prop_id == "uw-map" or prop_id == "xy-map" or prop_id == "yz-map"):
+        if prop_id == "uv-map":
+            selected_data = uv_selected_data
+        if prop_id == "uw-map":
+            selected_data = uw_selected_data
+        if prop_id == "xy-map":
+            selected_data = xy_selected_data
         if prop_id == "yz-map":
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    #     for association in associations:
+    #         if selected_data is None:
+    #             processed_data[association] = None
+    #         else:
+    #             processed_data[association] = get_selection(
+    #                 dff, association, associations, selected_data, 1
+    #             )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xyz_map(dff, associations, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
 
@@ -710,7 +787,8 @@ def update_uv_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
+    selected_data = None
 
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uw-map"):
         if prop_id == "uw-map":
@@ -721,17 +799,21 @@ def update_uv_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    #     for association in associations:
+    #         if selected_data is None:
+    #             processed_data[association] = None
+    #         else:
+    #             processed_data[association] = get_selection(
+    #                 dff, association, associations, selected_data, 1
+    #             )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
 
@@ -768,7 +850,8 @@ def update_uw_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
+    selected_data = None
 
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uv-map"):
         if prop_id == "uv-map":
@@ -779,17 +862,21 @@ def update_uw_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    #     for association in associations:
+    #         if selected_data is None:
+    #             processed_data[association] = None
+    #         else:
+    #             processed_data[association] = get_selection(
+    #                 dff, association, associations, selected_data, 1
+    #             )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
 
@@ -827,7 +914,8 @@ def update_xy_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
+    selected_data = None
 
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map"):
         if prop_id == "uv-map":
@@ -838,17 +926,21 @@ def update_xy_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    #     for association in associations:
+    #         if selected_data is None:
+    #             processed_data[association] = None
+    #         else:
+    #             processed_data[association] = get_selection(
+    #                 dff, association, associations, selected_data, 1
+    #             )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
 
@@ -886,8 +978,9 @@ def update_yz_map(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
-
+    processed_data = None
+    selected_data = None
+    
     if (prop_id == "gaiadr3-cmd" or prop_id == "xy-map" or prop_id == "uv-map" or prop_id == "uw-map"):
         if prop_id == "xy-map":
             selected_data = xy_selected_data
@@ -897,17 +990,21 @@ def update_yz_map(
             selected_data = uw_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
-        for association in associations:
-            if selected_data is None:
-                processed_data[association] = None
-            else:
-                processed_data[association] = get_selection(
-                    dff, association, associations, selected_data, 1
-                )
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    #     for association in associations:
+    #         if selected_data is None:
+    #             processed_data[association] = None
+    #         else:
+    #             processed_data[association] = get_selection(
+    #                 dff, association, associations, selected_data, 1
+    #             )
 
-    else:
-        for association in associations:
-            processed_data[association] = None
+    # else:
+    #     for association in associations:
+    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
@@ -953,7 +1050,7 @@ def update_gaiadr3_cmd(
         prop_id = splitted[0]
         prop_type = splitted[1]
 
-    processed_data = {}
+    processed_data = None
     selected_data = None
 
     if prop_id != "cmd-layer-select":
@@ -966,18 +1063,26 @@ def update_gaiadr3_cmd(
                 selected_data = uv_selected_data
             if prop_id == "uw-map":
                 selected_data = uw_selected_data
-            for association in associations:
-                if selected_data is None:
-                    processed_data[association] = None
-                else:
-                    processed_data[association] = get_selection(
-                        dff, association, associations, selected_data, 1
-                    )
-        else:
+            
+            #Fetch the moca_oid identifiers of the selected data points
+            if selected_data is None:
+                processed_data = None
+            else:
+                processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-            for association in associations:
-                processed_data[association] = None
-
+            # for association in associations:
+            #     if selected_data is None:
+            #         processed_data[association] = None
+            #     else:
+            #         processed_data[association] = get_selection(
+            #             dff, association, associations, selected_data, 1
+            #         )
+        # else:
+        #     for association in associations:
+        #         processed_data[association] = None
+        #import pdb; pdb.set_trace()
+        #TEST
+        
         return generate_gaiadr3_cmd(
             dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible
         )
@@ -1000,5 +1105,4 @@ def update_gaiadr3_cmd(
 #if __name__ == "__main__":
 #    app.run_server(host='0.0.0.0',debug=True)
 if __name__ == "__main__":
-    app.run_server()
-    #app.run_server(debug=True)
+    app.run_server(debug=True)
