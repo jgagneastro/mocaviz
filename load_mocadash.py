@@ -120,7 +120,7 @@ def build_graph_title(title):
 def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data, style):
 
     layout = go.Layout(
-        #clickmode="event+select",
+        clickmode="event+select",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         dragmode="lasso",
         xaxis={'title':xtitle},
@@ -150,16 +150,8 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
     dff['text_list'] = text_list
 
     for association in associations:
-        # selected_index = None
-        # if association in selected_data:
-        #     selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
-        #text_list = build_hover(dff_aid)
-        #aid_list = dff[dff["moca_aid"] == association]["moca_aid"].tolist()
-
-        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
-        
         if selected_data is None:
             selected_index = None
         else:
@@ -239,33 +231,13 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     dff['text_list'] = text_list
 
     for association in associations:
-        # selected_index = None
-        # if association in selected_data:
-        #     selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
         if selected_data is None:
             selected_index = None
         else:
             selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
-        #import pdb; pdb.set_trace()
-
-        #text_list = build_hover(dff_aid)
-        #aid_list = dff_aid["moca_aid"].tolist()
-        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
-        #dff_aid['text_list'] = text_list
-
-        # new_trace = px.scatter_3d(dff[dff["moca_aid"] == association],
-        #     x=xvar, y=yvar, z=zvar,
-        #     #mode="markers",
-        #     color=
-        #     #marker={"color": colormap[association], "size": 3},
-        #     text=text_list,
-        #     name=association,
-        #     #selectedpoints=selected_index,
-        #     customdata=dff[dff["moca_aid"] == association]["moca_oid"],
-        # )
-        #print(selected_data)
+        
         if totsel==0:
             dff_deselect = None
             dff_select = dff_aid
@@ -273,15 +245,6 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
             df_select_index = dff_aid.index.isin(dff_aid.iloc[selected_index].index)
             dff_deselect = dff_aid[~df_select_index]
             dff_select = dff_aid[df_select_index]
-            #import pdb; pdb.set_trace()
-            # if len(selected_index) is None:
-            #     dff_deselect = dff_aid
-            #     dff_select = None
-            # else:
-            #     #import pdb; pdb.set_trace()
-            #     df_select_index = dff_aid.index.isin(selected_index)
-            #     dff_deselect = dff_aid[~df_select_index]
-            #     dff_select = dff_aid[df_select_index]
 
         #Plot the *DE*selected data points
         if dff_deselect is not None:
@@ -373,7 +336,6 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     colormap = colormap_picker(associations)
 
     data = []
-    
     new_trace = go.Scattergl(
             x=df_cmd_field["gr"],
             y=df_cmd_field["m_g"],
@@ -386,7 +348,6 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             visible=field_visible,
         )
     data.append(new_trace)
-    #import pdb; pdb.set_trace()
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -394,24 +355,12 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     dff['text_list'] = text_list
 
     for association in associations:
-        #selected_index = None
-        #if association in selected_data:
-        #    selected_index = selected_data[association]
 
         dff_aid = dff[dff["moca_aid"] == association]
-        #text_list = build_hover(dff_aid)
-        #aid_list = dff_aid["moca_aid"].tolist()
-
-        #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
-        #dff_aid.index[dff_aid['moca_oid'].isin(selid)].tolist()
-        #df.iloc[dff_aid.index[dff_aid['moca_oid'].isin(selid)].tolist()]
-
         if selected_data is None:
             selected_index = None
         else:
             selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
-            #selected_index = dff_aid.index[dff_aid['moca_oid'].isin(selected_data)].tolist()
-            #import pdb; pdb.set_trace()
 
         new_trace = go.Scattergl(
             x=dff_aid["gr"],#This is the x in the MOCA column
@@ -673,17 +622,6 @@ def update_xyz_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-        # for association in associations:
-        #     if selected_data is None:
-        #         processed_data[association] = None
-        #     else:
-        #         processed_data[association] = get_selection(
-        #             dff, association, associations, selected_data, 1
-        #         )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xyz_map(dff, associations, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
@@ -739,17 +677,6 @@ def update_uvw_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-    #     for association in associations:
-    #         if selected_data is None:
-    #             processed_data[association] = None
-    #         else:
-    #             processed_data[association] = get_selection(
-    #                 dff, association, associations, selected_data, 1
-    #             )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xyz_map(dff, associations, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
 
@@ -803,17 +730,6 @@ def update_uv_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-    #     for association in associations:
-    #         if selected_data is None:
-    #             processed_data[association] = None
-    #         else:
-    #             processed_data[association] = get_selection(
-    #                 dff, association, associations, selected_data, 1
-    #             )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
 
@@ -866,17 +782,6 @@ def update_uw_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-    #     for association in associations:
-    #         if selected_data is None:
-    #             processed_data[association] = None
-    #         else:
-    #             processed_data[association] = get_selection(
-    #                 dff, association, associations, selected_data, 1
-    #             )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
 
@@ -930,17 +835,6 @@ def update_xy_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-    #     for association in associations:
-    #         if selected_data is None:
-    #             processed_data[association] = None
-    #         else:
-    #             processed_data[association] = get_selection(
-    #                 dff, association, associations, selected_data, 1
-    #             )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
 
@@ -994,17 +888,6 @@ def update_yz_map(
             processed_data = None
         else:
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-    #     for association in associations:
-    #         if selected_data is None:
-    #             processed_data[association] = None
-    #         else:
-    #             processed_data[association] = get_selection(
-    #                 dff, association, associations, selected_data, 1
-    #             )
-
-    # else:
-    #     for association in associations:
-    #         processed_data[association] = None
 
     return generate_xy_map(dff, associations, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
@@ -1037,7 +920,6 @@ def update_gaiadr3_cmd(
     dff = df[df["moca_aid"].isin(aid_select)]
     
     #Preserve plotting order
-    #associations = dff["moca_aid"].unique().tolist()
     associations = aid_select
 
     # Find which one has been triggered
@@ -1069,19 +951,6 @@ def update_gaiadr3_cmd(
                 processed_data = None
             else:
                 processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-
-            # for association in associations:
-            #     if selected_data is None:
-            #         processed_data[association] = None
-            #     else:
-            #         processed_data[association] = get_selection(
-            #             dff, association, associations, selected_data, 1
-            #         )
-        # else:
-        #     for association in associations:
-        #         processed_data[association] = None
-        #import pdb; pdb.set_trace()
-        #TEST
         
         return generate_gaiadr3_cmd(
             dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible
