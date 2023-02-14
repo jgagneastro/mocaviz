@@ -132,6 +132,26 @@ def selection_helper(selections):
 
     return processed_data, prop_id
 
+def get_style_data_conditional(selected_rows: list = []) -> list:
+    non_selected_band_color = "rgb(229, 236, 246)"
+    selected_band_color = '#98c21f'
+    return [
+        {
+            'if': {'row_index': 'odd'},
+            'backgroundColor': non_selected_band_color
+        },
+        {
+            'if': {'row_index': 'even'},
+            'backgroundColor': "white"
+        },
+        {
+            'if': {'row_index': selected_rows},
+            'backgroundColor': selected_band_color,
+            'fontWeight': 'bold',
+            'color': 'white',
+        },
+    ]
+
 def build_banner():
     return html.Div(
         id="banner",
@@ -494,7 +514,7 @@ app.layout = html.Div(
                                     children=["Select data points from any plot to "
                                     "visualize cross-filtering to other plots. Selection can be done by "
                                     "clicking on individual data points or using the Plotly lasso or box tools to capture "
-                                    "multiple data points. Hovering on top of a data point will display basic information on the star in question.",
+                                    "multiple data points. Hovering on top of a data point will display basic information on the star in question if the Hover option below is enabled.",
                                     html.Br(),html.Br(),
                                     " With the box tool from modebar, multiple "
                                     "regions can be selected by holding the SHIFT key while clicking and "
@@ -671,7 +691,24 @@ app.layout = html.Div(
                     children=[
                         html.Br(),
                         build_graph_title("MOCA summary table"),
-                        dash_table.DataTable(id="df-table",columns=[{"name": i, "id": i} for i in sorted(dfe.columns)]),#df.to_dict('records'), [{"name": i, "id": i} for i in df.columns], 
+                        html.P("Rows are shown in order of selection, association and membership type. Selected rows are highlighted in green."),
+                        dash_table.DataTable(
+                            id="df-table",
+                            columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
+                            #row_selectable="multi",
+                            selected_rows=[],
+                            style_data_conditional=get_style_data_conditional(),
+                            # style_data_conditional=[
+                            #     {
+                            #         'if': {
+                            #             'state': 'selected'  # 'active' | 'selected'
+                            #         },
+                            #        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
+                            #        'border': '1px solid rgb(0, 116, 217)'
+                            #     }
+                            # ]
+                            #df.to_dict('records'), [{"name": i, "id": i} for i in df.columns], 
+                        ),
                     ],
                 ),
             ],
@@ -679,9 +716,42 @@ app.layout = html.Div(
     ]
 )
 
+# # Update table
+# @app.callback(
+#     output=Output("df-table","data"),
+#     inputs=dict(
+#         selections={
+#             "uv-map":Input("uv-map", "selectedData"),
+#             "uw-map":Input("uw-map", "selectedData"),
+#             "xy-map":Input("xy-map", "selectedData"),
+#             "yz-map":Input("yz-map", "selectedData"),
+#             "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+#         },
+#         jsonified_db_data=Input("db-data", "data"),
+#         xymap_view=Input("xymap-view-selector", "value"),
+#     ),
+#     state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data")),
+# )
+# def update_table(
+#     selections, jsonified_db_data, xymap_view, aid_select, self_data
+# ):
+    
+#     print("TABLE callback")
+    
+#     # Read data from session memory
+#     df = pd.read_json(jsonified_db_data, orient='split')
+
+#     processed_data, prop_id = selection_helper(selections)
+
+#     return df.to_dict('records')
+
 # Update table
 @app.callback(
-    output=Output("df-table","data"),
+    output=[
+        Output("df-table","data"),
+        Output("df-table","selected_rows"),
+        Output("df-table","style_data_conditional"),
+    ],
     inputs=dict(
         selections={
             "uv-map":Input("uv-map", "selectedData"),
@@ -693,18 +763,37 @@ app.layout = html.Div(
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
     ),
-    state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data")),
+    state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data"), self_selrows=State("df-table", "selected_rows"), self_style=State("df-table", "style_data_conditional")),
 )
 def update_table(
-    selections, jsonified_db_data, xymap_view, aid_select, self_data
+    selections, jsonified_db_data, xymap_view, aid_select, self_data, self_selrows, self_style
 ):
     
     print("TABLE callback")
+    processed_data, prop_id = selection_helper(selections)
     
+    if prop_id is None:
+        #selected_index = []
+        return self_data, self_selrows, self_style
+
     # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
-    return dff.to_dict('records')
+    df_sorted = df.sort_values(by=['moca_aid', 'moca_mtid', 'spt'])
+
+    if processed_data is None:
+        selected_index = []
+        df_out = df_sorted
+    else:
+        df_selected_indices = df_sorted['moca_oid'].isin(processed_data)
+        selected_index = np.where(df_selected_indices)[0]
+        df_out = pd.concat([df_sorted[df_selected_indices],df_sorted[~df_selected_indices]])
+        #If we sort the table the selected indices are the first ones
+        selected_index = list(range(len(selected_index)))
+
+    table_data_style_conditional = get_style_data_conditional(selected_index)
+    #import pdb; pdb.set_trace()
+
+    return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
 # Update AID-select
 @app.callback(
