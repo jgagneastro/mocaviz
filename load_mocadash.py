@@ -39,15 +39,9 @@ df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
 df_cmd_field = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiadr3_field_scatter'")
-#df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
-#df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field LIMIT 100")
-#df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
-#df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
 df_cmd_field['customdata'] = 'NaN'
-#field_opacity = 0.03
 field_opacity = 0.2
 field_color_fraction = 0.5
-#field_markersize = 2
 field_markersize = 3
 bcg_color = np.array([230,236,245])
 
@@ -440,27 +434,37 @@ app.layout = html.Div(
                             children=[
                                 build_banner(),
                                 html.P(
-                                    #CODE CRASHES WHEN ZERO ASSO
-                                    #EXPLAIN SHIFT CLICK ON ASSO NAMES
-                                    #EXPLAIN 3D GRAPHS CANT YET SELECT
-                                    #EXPLAIN up to 20 colors
-                                    #EXPLAIN database is queried everytime asso are changed
-                                    #EXPLAIN graph ordering is like the ordering list of asso
-                                    #EXPLAIN CLICK TO SELECT 1 POIN
-                                    #EXPLAIN LASSO
-                                    #EXPLAIN BUG WHERE SELECTION IN A NEW PANEL REQUIRES RESELECTING
-                                    #EXPLAIN two fingers up and down swipe to zoom in/out in 3D scatter
-                                    #EXPLAIN two fingers click to drag 3D figure
-                                    #EXPLAIN bug in Safari where imprint of the first plot state can remain, not present in Google Chrome
                                     #XPLAIN individual plots only appear when 1 star is selected
-                                    #EXPLAIN clicking on legend items
                                     id="instructions",
-                                    children="Select data points from any plot to "
-                                    "visualize cross-filtering to other plots. Selection could be done by "
-                                    "clicking on individual data points or using the lasso tool to capture "
-                                    "multiple data points or bars. With the box tool from modebar, multiple "
+                                    children=["Select data points from any plot to "
+                                    "visualize cross-filtering to other plots. Selection can be done by "
+                                    "clicking on individual data points or using the Plotly lasso or box tools to capture "
+                                    "multiple data points. Hovering on top of a data point will display basic information on the star in question.",
+                                    html.Br(),html.Br(),
+                                    " With the box tool from modebar, multiple "
                                     "regions can be selected by holding the SHIFT key while clicking and "
-                                    "dragging.", style={"width": "100%"},
+                                    "dragging."
+                                    ,html.Br(),
+                                    " The Plotly lasso tool can be used to select multiple data points in a custom shape."
+                                    ,html.Br(),
+                                    " Note that the MOCA database is queried every time the list of associations are changed. The color scheme is also slightly updated to maximize color distances, with up to 20 colors."
+                                    ,html.Br(),
+                                    " The plotting order follows the order in which the young associations are listed in the Dropdown panel."
+                                    ,html.Br(),
+                                    "Holding the SHIFT key while clicking on an association name "
+                                    "will open the MOCA report for that association in a new tab. "
+                                    ,html.Br(),
+                                    "Clicking on a Plotly legend item will turn on or off the display of one association only in the specific panel where it was clicked."
+                                    ,html.Br(),
+                                    "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations."
+                                    ,html.Br(),html.Br(),
+                                    "Known issues:",html.Br(),
+                                    " - In Safari, 3D scatter plots often keep an imprint of the original view point.",html.Br(),
+                                    " - Plotly does not yet allow to perform selections in 3D scatter plots.",html.Br(),
+                                    " - Some panels will sometimes fail to refresh a cross-filtering, especially with rapid selections in new panels. When this happens, simply re-select the desired data points.",html.Br(),
+                                    " - This page will crash if no associations are selected."
+                                    ]
+                                    , style={"width": "100%"},
                                 ),
                                 build_graph_title("Select Stellar Associations"),
                                 dcc.Dropdown(
