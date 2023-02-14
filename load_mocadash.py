@@ -698,16 +698,6 @@ app.layout = html.Div(
                             #row_selectable="multi",
                             selected_rows=[],
                             style_data_conditional=get_style_data_conditional(),
-                            # style_data_conditional=[
-                            #     {
-                            #         'if': {
-                            #             'state': 'selected'  # 'active' | 'selected'
-                            #         },
-                            #        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
-                            #        'border': '1px solid rgb(0, 116, 217)'
-                            #     }
-                            # ]
-                            #df.to_dict('records'), [{"name": i, "id": i} for i in df.columns], 
                         ),
                     ],
                 ),
@@ -715,35 +705,6 @@ app.layout = html.Div(
         ),
     ]
 )
-
-# # Update table
-# @app.callback(
-#     output=Output("df-table","data"),
-#     inputs=dict(
-#         selections={
-#             "uv-map":Input("uv-map", "selectedData"),
-#             "uw-map":Input("uw-map", "selectedData"),
-#             "xy-map":Input("xy-map", "selectedData"),
-#             "yz-map":Input("yz-map", "selectedData"),
-#             "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
-#         },
-#         jsonified_db_data=Input("db-data", "data"),
-#         xymap_view=Input("xymap-view-selector", "value"),
-#     ),
-#     state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data")),
-# )
-# def update_table(
-#     selections, jsonified_db_data, xymap_view, aid_select, self_data
-# ):
-    
-#     print("TABLE callback")
-    
-#     # Read data from session memory
-#     df = pd.read_json(jsonified_db_data, orient='split')
-
-#     processed_data, prop_id = selection_helper(selections)
-
-#     return df.to_dict('records')
 
 # Update table
 @app.callback(
