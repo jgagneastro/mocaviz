@@ -1,4 +1,5 @@
 import pathlib, os
+import colorsys
 #import os
 
 import pandas as pd
@@ -379,7 +380,23 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             selectedpoints=selected_index,
             customdata=dff_aid["moca_oid"],
         )
-        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        
+        bcg_color = np.array([230,236,245])
+        hexcolor = colormap[association]
+        rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+        diff = bcg_color-rgbcolor
+        rgbcolor_pale = (rgbcolor+diff*(1.0-unselected_opacity)).astype(int)
+        #hsvcolor = list(colorsys.rgb_to_hsv(rgbcolor[0],rgbcolor[1],rgbcolor[2]))
+        ##hsvcolor[1] = 255-(255-hsvcolor[1])/50.0
+        #hsvcolor[1] = hsvcolor[1]/10.0
+        #hsvcolor[2] = 1-(1-hsvcolor[2])/10.0
+        ##hsvcolor[1] = hsvcolor[1]/10.0
+        ##hsvcolor[1] = 1.0-(1.0-hsvcolor[1])/10.0
+        #rgbcolor = list(colorsys.hsv_to_rgb(hsvcolor[0],hsvcolor[1],hsvcolor[2]))
+        rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+        rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+        new_trace.update(unselected=dict(marker=dict(color=rgbcolorf)))
+        #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
@@ -425,7 +442,8 @@ app.layout = html.Div(
                                 dcc.Dropdown(
                                     id="aid-select",
                                     options=[
-                                        {"label": i, "value": i}
+                                        {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
+                                        #{"label": i, "value": i}
                                         for i in df_aids["moca_aid"].unique().tolist()
                                     ],
                                     multi=True,
