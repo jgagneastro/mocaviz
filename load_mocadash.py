@@ -233,9 +233,6 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
         totsel = 0
     else:
         totsel = len(selected_data)
-    # for association in associations:
-    #     if selected_data[association] is not None:
-    #         totsel += len(selected_data[association])
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -620,18 +617,31 @@ app.layout = html.Div(
 # Update table
 @app.callback(
     output=Output("df-table","data"),
-    inputs=[
-        Input("uv-map", "selectedData"),
-        Input("uw-map", "selectedData"),
-        Input("xy-map", "selectedData"),
-        Input("yz-map", "selectedData"),
-        Input("gaiadr3-cmd", "selectedData"),
-        Input("db-data", "data"),
-    ],
-    state=[State("aid-select", "value"), State("df-table", "data")],
+    inputs=dict(
+        selections={
+            "uv-map":Input("uv-map", "selectedData"),
+            "uw-map":Input("uw-map", "selectedData"),
+            "xy-map":Input("xy-map", "selectedData"),
+            "yz-map":Input("yz-map", "selectedData"),
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+        },
+        jsonified_db_data=Input("db-data", "data"),
+        xymap_view=Input("xymap-view-selector", "value"),
+    ),
+    state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data")),
+    # inputs=[
+    #     Input("uv-map", "selectedData"),
+    #     Input("uw-map", "selectedData"),
+    #     Input("xy-map", "selectedData"),
+    #     Input("yz-map", "selectedData"),
+    #     Input("gaiadr3-cmd", "selectedData"),
+    #     Input("db-data", "data"),
+    # ],
+    # state=[State("aid-select", "value"), State("df-table", "data")],
 )
 def update_table(
-    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, aid_select, self_data
+    #uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, aid_select, self_figure
 ):
     
     print("TABLE callback")
@@ -640,19 +650,6 @@ def update_table(
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     return dff.to_dict('records')
-
-    # columns = list(dff.columns)
-    # import pdb; pdb.set_trace()
-
-    # return {
-    #     'data': [{
-    #         'type': 'parcoords',
-    #         'dimensions': [{
-    #             'label': col,
-    #             'values': dff[col]
-    #         } for i, col in enumerate(columns)]
-    #     }]
-    # }
 
 # Update AID-select
 @app.callback(
@@ -752,16 +749,6 @@ def update_xyz_map(
         xymap_view=Input("xymap-view-selector", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uvw-map", "figure")),
-    # inputs=[
-    #     Input("uv-map", "selectedData"),
-    #     Input("uw-map", "selectedData"),
-    #     Input("xy-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("xymap-view-selector", "value"),
-    # ],
-    # state=[State("aid-select", "value"),State("uvw-map", "figure")],
 )
 def update_uvw_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
@@ -790,17 +777,6 @@ def update_uvw_map(
     print("UVW callback triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
-    # if (prop_id == "gaiadr3-cmd" or prop_id == "uv-map" or prop_id == "uw-map" or prop_id == "xy-map" or prop_id == "yz-map"):
-    #     if prop_id == "uv-map":
-    #         selected_data = uv_selected_data
-    #     if prop_id == "uw-map":
-    #         selected_data = uw_selected_data
-    #     if prop_id == "xy-map":
-    #         selected_data = xy_selected_data
-    #     if prop_id == "yz-map":
-    #         selected_data = yz_selected_data
-    #     if prop_id == "gaiadr3-cmd":
-    #         selected_data = cmd_selected_data
         #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
             print(len(selected_data['points']))
@@ -829,17 +805,6 @@ def update_uvw_map(
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uv-map", "figure")),
 )
-    # output=Output("uv-map", "figure"),
-    # inputs=[
-    #     Input("uw-map", "selectedData"),
-    #     Input("xy-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("xymap-view-selector", "value"),
-    # ],
-    # state=[State("aid-select", "value"),State("uv-map", "figure")],
-#)
 def update_uv_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
     #uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
@@ -866,20 +831,8 @@ def update_uv_map(
     selected_data = None
 
     print("UV callback triggered by "+prop_id)
-    #if prop_id=='uv-map':
-    #    import pdb; pdb.set_trace()
     if prop_id in selections.keys():
-        #import pdb; pdb.set_trace()
         selected_data = selections[prop_id]
-    # if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uw-map"):
-    #     if prop_id == "uw-map":
-    #         selected_data = uw_selected_data
-    #     if prop_id == "xy-map":
-    #         selected_data = xy_selected_data
-    #     if prop_id == "yz-map":
-    #         selected_data = yz_selected_data
-    #     if prop_id == "gaiadr3-cmd":
-    #         selected_data = cmd_selected_data
         #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
             print(len(selected_data['points']))
@@ -907,21 +860,12 @@ def update_uv_map(
         xymap_view=Input("xymap-view-selector", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uw-map", "figure")),
-    # inputs=[
-    #     Input("uv-map", "selectedData"),
-    #     Input("xy-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("xymap-view-selector", "value"),
-    # ],
-    # state=[State("aid-select", "value"),State("uw-map", "figure")],
 )
 def update_uw_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
-    #uv_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
+    # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
     
@@ -944,16 +888,6 @@ def update_uw_map(
     print("UW callback triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
-    # if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uv-map"):
-    #     if prop_id == "uv-map":
-    #         selected_data = uv_selected_data
-    #     if prop_id == "xy-map":
-    #         selected_data = xy_selected_data
-    #     if prop_id == "yz-map":
-    #         selected_data = yz_selected_data
-    #     if prop_id == "gaiadr3-cmd":
-    #         selected_data = cmd_selected_data
-    #     #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
             print(len(selected_data['points']))
             if len(selected_data['points']) == 0:
@@ -980,19 +914,9 @@ def update_uw_map(
         xymap_view=Input("xymap-view-selector", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("xy-map", "figure")),
-    # inputs=[
-    #     Input("uv-map", "selectedData"),
-    #     Input("uw-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("xymap-view-selector", "value"),
-    # ],
-    # state=[State("aid-select", "value"),State("xy-map", "figure")],
 )
 def update_xy_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
-    #uv_selected_data, uw_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -1018,15 +942,6 @@ def update_xy_map(
     print("XY callback triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
-    # if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map"):
-    #     if prop_id == "uv-map":
-    #         selected_data = uv_selected_data
-    #     if prop_id == "uw-map":
-    #         selected_data = uw_selected_data
-    #     if prop_id == "yz-map":
-    #         selected_data = yz_selected_data
-    #     if prop_id == "gaiadr3-cmd":
-    #         selected_data = cmd_selected_data
         #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
             print(len(selected_data['points']))
@@ -1054,19 +969,9 @@ def update_xy_map(
         xymap_view=Input("xymap-view-selector", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("yz-map", "figure")),
-    # inputs=[
-    #     Input("xy-map", "selectedData"),
-    #     Input("uv-map", "selectedData"),
-    #     Input("uw-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("xymap-view-selector", "value"),
-    # ],
-    # state=[State("aid-select", "value"), State("yz-map", "figure")],
 )
 def update_yz_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
-    #xy_selected_data, uv_selected_data, uw_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -1092,15 +997,6 @@ def update_yz_map(
     print("YZ callback triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
-    # if (prop_id == "gaiadr3-cmd" or prop_id == "xy-map" or prop_id == "uv-map" or prop_id == "uw-map"):
-    #     if prop_id == "xy-map":
-    #         selected_data = xy_selected_data
-    #     if prop_id == "uv-map":
-    #         selected_data = uv_selected_data
-    #     if prop_id == "uw-map":
-    #         selected_data = uw_selected_data
-    #     if prop_id == "gaiadr3-cmd":
-    #         selected_data = cmd_selected_data
         #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
             print(len(selected_data['points']))
@@ -1128,26 +1024,9 @@ def update_yz_map(
         cmd_layer_select=Input("cmd-layer-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("gaiadr3-cmd", "figure")),
-    # inputs=[
-    #     Input("xy-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("uv-map", "selectedData"),
-    #     Input("uw-map", "selectedData"),
-    #     Input("db-data", "data"),
-    #     Input("cmd-layer-select", "value"),
-    # ],
-    # state=[State("gaiadr3-cmd", "figure"), State("aid-select", "value")],
 )
 def update_gaiadr3_cmd(
     selections, jsonified_db_data, cmd_layer_select, aid_select, self_figure
-    # xy_selected_data,
-    # yz_selected_data,
-    # uv_selected_data,
-    # uw_selected_data,
-    # jsonified_db_data,
-    # layer_select,
-    # curr_fig,
-    # aid_select,
 ):
     sequences_visible = field_visible = True
     if "Field Stars" not in cmd_layer_select:
@@ -1200,32 +1079,6 @@ def update_gaiadr3_cmd(
             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
     return generate_gaiadr3_cmd(dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible)
-
-    # if prop_id != "cmd-layer-select":
-    #     if (prop_id == "xy-map" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map") and prop_type == "selectedData":
-    #         if prop_id == "xy-map":
-    #             selected_data = xy_selected_data
-    #         if prop_id == "yz-map":
-    #             selected_data = yz_selected_data
-    #         if prop_id == "uv-map":
-    #             selected_data = uv_selected_data
-    #         if prop_id == "uw-map":
-    #             selected_data = uw_selected_data
-    #         #Deal with circular callbacks that tend to reset selection
-    #         if selected_data is not None:
-    #             print(len(selected_data['points']))
-    #             if len(selected_data['points']) == 0:
-    #                 return self_figure
-    #         if selected_data is None:
-    #             processed_data = None
-    #         else:
-    #             processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
-        
-        # return generate_gaiadr3_cmd(
-        #     dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible
-        # )
-
-    
 
 # Running the server
 #if __name__ == "__main__":
