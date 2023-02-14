@@ -30,7 +30,8 @@ aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 # Load data
 moca = MocaEngine()
 
-unselected_opacity = 0.06
+#unselected_opacity = 0.06
+unselected_opacity = 0.1
 
 #Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
@@ -394,21 +395,14 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             customdata=dff_aid["moca_oid"],
         )
         
-        hexcolor = colormap[association]
-        rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
-        diff = bcg_color-rgbcolor
-        rgbcolor_pale = (rgbcolor+diff*(1.0-unselected_opacity)).astype(int)
-        #hsvcolor = list(colorsys.rgb_to_hsv(rgbcolor[0],rgbcolor[1],rgbcolor[2]))
-        ##hsvcolor[1] = 255-(255-hsvcolor[1])/50.0
-        #hsvcolor[1] = hsvcolor[1]/10.0
-        #hsvcolor[2] = 1-(1-hsvcolor[2])/10.0
-        ##hsvcolor[1] = hsvcolor[1]/10.0
-        ##hsvcolor[1] = 1.0-(1.0-hsvcolor[1])/10.0
-        #rgbcolor = list(colorsys.hsv_to_rgb(hsvcolor[0],hsvcolor[1],hsvcolor[2]))
-        rgbcolor = [str(int(i)) for i in rgbcolor_pale]
-        rgbcolorf = "rgb("+",".join(rgbcolor)+")"
-        new_trace.update(unselected=dict(marker=dict(color=rgbcolorf)))
-        #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        # hexcolor = colormap[association]
+        # rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+        # diff = bcg_color-rgbcolor
+        # rgbcolor_pale = (rgbcolor+diff*(1.0-unselected_opacity)).astype(int)
+        # rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+        # rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+        #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf)))
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
@@ -607,6 +601,7 @@ def update_aid_select(
     aid_select,
 ):
     
+    print("AID callback")
     # Query the moca database to obtain a Pandas DataFrame for the specific group needed
     aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
     df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
@@ -630,10 +625,10 @@ def update_aid_select(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"), State("xyz-map", "figure")],
 )
 def update_xyz_map(
-    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -656,6 +651,9 @@ def update_xyz_map(
     processed_data = None
     selected_data = None
 
+    #if prop_id == "gaiadr3-cmd":
+    #    import pdb; pdb.set_trace()
+    print("XYZ callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "uv-map" or prop_id == "uw-map" or prop_id == "xy-map" or prop_id == "yz-map"):
         if prop_id == "uv-map":
             selected_data = uv_selected_data
@@ -667,6 +665,11 @@ def update_xyz_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -686,10 +689,10 @@ def update_xyz_map(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"),State("uvw-map", "figure")],
 )
 def update_uvw_map(
-    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     df = pd.read_json(jsonified_db_data, orient='split')
@@ -711,6 +714,7 @@ def update_uvw_map(
     processed_data = None
     selected_data = None
 
+    print("UVW callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "uv-map" or prop_id == "uw-map" or prop_id == "xy-map" or prop_id == "yz-map"):
         if prop_id == "uv-map":
             selected_data = uv_selected_data
@@ -722,6 +726,11 @@ def update_uvw_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -740,10 +749,10 @@ def update_uvw_map(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"),State("uv-map", "figure")],
 )
 def update_uv_map(
-    uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -766,6 +775,7 @@ def update_uv_map(
     processed_data = None
     selected_data = None
 
+    print("UV callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uw-map"):
         if prop_id == "uw-map":
             selected_data = uw_selected_data
@@ -775,6 +785,11 @@ def update_uv_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -793,10 +808,10 @@ def update_uv_map(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"),State("uw-map", "figure")],
 )
 def update_uw_map(
-    uv_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     df = pd.read_json(jsonified_db_data, orient='split')
@@ -818,6 +833,7 @@ def update_uw_map(
     processed_data = None
     selected_data = None
 
+    print("UW callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "xy-map" or prop_id == "uv-map"):
         if prop_id == "uv-map":
             selected_data = uv_selected_data
@@ -827,6 +843,11 @@ def update_uw_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -845,10 +866,10 @@ def update_uw_map(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"),State("xy-map", "figure")],
 )
 def update_xy_map(
-    uv_selected_data, uw_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    uv_selected_data, uw_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -871,6 +892,7 @@ def update_xy_map(
     processed_data = None
     selected_data = None
 
+    print("XY callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map"):
         if prop_id == "uv-map":
             selected_data = uv_selected_data
@@ -880,6 +902,11 @@ def update_xy_map(
             selected_data = yz_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -898,10 +925,10 @@ def update_xy_map(
         Input("db-data", "data"),
         Input("xymap-view-selector", "value"),
     ],
-    state=[State("aid-select", "value")],
+    state=[State("aid-select", "value"), State("yz-map", "figure")],
 )
 def update_yz_map(
-    xy_selected_data, uv_selected_data, uw_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select
+    xy_selected_data, uv_selected_data, uw_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
     # Read data from session memory
@@ -924,6 +951,7 @@ def update_yz_map(
     processed_data = None
     selected_data = None
     
+    print("YZ callback triggered by "+prop_id)
     if (prop_id == "gaiadr3-cmd" or prop_id == "xy-map" or prop_id == "uv-map" or prop_id == "uw-map"):
         if prop_id == "xy-map":
             selected_data = xy_selected_data
@@ -933,6 +961,11 @@ def update_yz_map(
             selected_data = uw_selected_data
         if prop_id == "gaiadr3-cmd":
             selected_data = cmd_selected_data
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return self_figure
         if selected_data is None:
             processed_data = None
         else:
@@ -983,7 +1016,8 @@ def update_gaiadr3_cmd(
 
     processed_data = None
     selected_data = None
-
+    
+    print("CMD callback triggered by "+prop_id)
     if prop_id != "cmd-layer-select":
         if (prop_id == "xy-map" or prop_id == "yz-map" or prop_id == "uv-map" or prop_id == "uw-map") and prop_type == "selectedData":
             if prop_id == "xy-map":
@@ -994,8 +1028,11 @@ def update_gaiadr3_cmd(
                 selected_data = uv_selected_data
             if prop_id == "uw-map":
                 selected_data = uw_selected_data
-            
-            #Fetch the moca_oid identifiers of the selected data points
+            #Deal with circular callbacks that tend to reset selection
+            if selected_data is not None:
+                print(len(selected_data['points']))
+                if len(selected_data['points']) == 0:
+                    return curr_fig
             if selected_data is None:
                 processed_data = None
             else:
