@@ -157,7 +157,15 @@ def build_hover(dff):
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
 
-def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data, style):
+def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data, style, hover_select):
+
+    #Read hover property
+    hover = False
+    try:
+        if hover_select[0] == 'Enable Hover Properties':
+            hover = "closest"
+    except:
+        void = 1
 
     layout = go.Layout(
         clickmode="event+select",
@@ -167,7 +175,7 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
         yaxis={'title':ytitle},
         showlegend=True,
         #autosize=True,
-        hovermode="closest",
+        hovermode=hover,
         margin=dict(l=110, r=50, t=50, b=50),
         #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
@@ -202,13 +210,13 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
             y=dff_aid[yvar],#This is the y in the MOCA column
             opacity=0.8,
             mode="markers",
-            marker={"color": colormap[association], "size": 4},
+            marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
             text=dff_aid['text_list'],
             name=association,
             selectedpoints=selected_index,
             customdata=dff_aid["moca_oid"],
         )
-        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
         #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
         data.append(new_trace)
     
@@ -234,7 +242,15 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
 
     return fig
 
-def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, selected_data, style):
+def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, selected_data, style, hover_select):
+
+    #Read hover property
+    hover = False
+    try:
+        if hover_select[0] == 'Enable Hover Properties':
+            hover = "closest"
+    except:
+        void = 1
 
     layout = go.Layout(
         #clickmode="event+select",
@@ -245,7 +261,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
         #zaxis={'title':ztitle},
         showlegend=True,
         #autosize=True,
-        hovermode="closest",
+        hovermode=hover,
         margin=dict(l=110, r=50, t=50, b=50),
         #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
@@ -255,7 +271,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
             yanchor="top",
         ),
     )
-
+    
     colormap = colormap_picker(associations)
 
     data = []
@@ -349,7 +365,15 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
 
     return fig
 
-def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_visible, sequences_visible):
+def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_visible, sequences_visible, hover_select):
+
+    #Read hover property
+    hover = False
+    try:
+        if hover_select[0] == 'Enable Hover Properties':
+            hover = "closest"
+    except:
+        void = 1
 
     layout = go.Layout(
         clickmode="event+select",
@@ -359,7 +383,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
         yaxis={'title':'Gaia DR3 absolute G-band magnitude (mag)'},
         showlegend=True,
         #autosize=True,
-        hovermode="closest",
+        hovermode=hover,
         margin=dict(l=110, r=50, t=50, b=50),
         #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
@@ -506,6 +530,17 @@ app.layout = html.Div(
                                     ],
                                     multi=True,
                                     value=initial_aids
+                                ),
+                                build_graph_title("Select Options"),
+                                dcc.Checklist(
+                                    id="hover-select",
+                                    options=[
+                                        {
+                                            "label": html.Div(["Enable Hover Properties"], style={'color':'white',"width": "100%"}),
+                                            "value": "Enable Hover Properties",
+                                        },
+                                    ],
+                                    value=[],
                                 ),
                             ],
                         ),
@@ -712,11 +747,12 @@ def update_aid_select(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("xyz-map", "figure")),
 )
 def update_xyz_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("XYZ callback")
@@ -724,7 +760,7 @@ def update_xyz_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view, hover_select)
 
 # Update UVW Map
 @app.callback(
@@ -739,11 +775,12 @@ def update_xyz_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uvw-map", "figure")),
 )
 def update_uvw_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("UVW callback")
@@ -751,7 +788,7 @@ def update_uvw_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
+    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view, hover_select)
 
 # Update UV Map
 @app.callback(
@@ -766,11 +803,12 @@ def update_uvw_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uv-map", "figure")),
 )
 def update_uv_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("UV callback")
@@ -778,7 +816,7 @@ def update_uv_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
+    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view, hover_select)
 
 # Update UW Map
 @app.callback(
@@ -793,11 +831,12 @@ def update_uv_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uw-map", "figure")),
 )
 def update_uw_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("UW callback")
@@ -805,7 +844,7 @@ def update_uw_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
+    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view, hover_select)
 
 # Update XY Map
 @app.callback(
@@ -820,11 +859,12 @@ def update_uw_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("xy-map", "figure")),
 )
 def update_xy_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("XY callback")
@@ -832,7 +872,7 @@ def update_xy_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
+    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view, hover_select)
 
 # Update YZ Map
 @app.callback(
@@ -847,11 +887,12 @@ def update_xy_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("yz-map", "figure")),
 )
 def update_yz_map(
-    selections, jsonified_db_data, xymap_view, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
     print("YZ callback")
@@ -859,7 +900,7 @@ def update_yz_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view, hover_select)
 
 # Update Gaia DR3 CMD
 @app.callback(
@@ -874,11 +915,12 @@ def update_yz_map(
         },
         jsonified_db_data=Input("db-data", "data"),
         cmd_layer_select=Input("cmd-layer-select", "value"),
+        hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("gaiadr3-cmd", "figure")),
 )
 def update_gaiadr3_cmd(
-    selections, jsonified_db_data, cmd_layer_select, aid_select, self_figure
+    selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
 ):
     sequences_visible = field_visible = True
     if "Field Stars" not in cmd_layer_select:
@@ -903,7 +945,7 @@ def update_gaiadr3_cmd(
             return self_figure
 
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, field_visible, sequences_visible)
+    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, field_visible, sequences_visible, hover_select)
 
 # Running the server
 #if __name__ == "__main__":
