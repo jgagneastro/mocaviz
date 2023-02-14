@@ -462,7 +462,6 @@ app.layout = html.Div(
                                     " - In Safari, 3D scatter plots often keep an imprint of the original view point.",html.Br(),
                                     " - Plotly does not yet allow to perform selections in 3D scatter plots.",html.Br(),
                                     " - Some panels will sometimes fail to refresh a cross-filtering, especially with rapid selections in new panels. When this happens, simply re-select the desired data points.",html.Br(),
-                                    " - This page will crash if no associations are selected."
                                     ]
                                     , style={"width": "100%"},
                                 ),
@@ -610,12 +609,17 @@ def update_aid_select(
 ):
     
     print("AID callback")
-    # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-    aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-    df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
-    df['gr'] = df['gmag']-df['rmag']
-    df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-    df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+    
+    #Prevent app from crashing if no associations are selected
+    if len(aid_select) == 0:
+        df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND (moca_aid='nonexistent')")
+    else: 
+        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+        df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
+        df['gr'] = df['gmag']-df['rmag']
+        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
