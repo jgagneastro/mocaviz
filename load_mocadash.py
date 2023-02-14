@@ -102,6 +102,36 @@ def colormap_picker(aid_list):
         colormap[moca_aid] = colors[ind%len(colors)]
     return colormap
 
+def selection_helper(selections):
+
+    # Find which one has been triggered
+    ctx = dash.callback_context
+
+    prop_id = ""
+    prop_type = ""
+    if ctx.triggered:
+        splitted = ctx.triggered[0]["prop_id"].split(".")
+        prop_id = splitted[0]
+        prop_type = splitted[1]
+
+    processed_data = None
+    selected_data = None
+
+    print(" Triggered by "+prop_id)
+    if prop_id in selections.keys():
+        selected_data = selections[prop_id]
+        #Deal with circular callbacks that tend to reset selection
+        if selected_data is not None:
+            print(len(selected_data['points']))
+            if len(selected_data['points']) == 0:
+                return None, None
+        if selected_data is None:
+            processed_data = None
+        else:
+            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+
+    return processed_data, prop_id
+
 def build_banner():
     return html.Div(
         id="banner",
@@ -629,19 +659,9 @@ app.layout = html.Div(
         xymap_view=Input("xymap-view-selector", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data")),
-    # inputs=[
-    #     Input("uv-map", "selectedData"),
-    #     Input("uw-map", "selectedData"),
-    #     Input("xy-map", "selectedData"),
-    #     Input("yz-map", "selectedData"),
-    #     Input("gaiadr3-cmd", "selectedData"),
-    #     Input("db-data", "data"),
-    # ],
-    # state=[State("aid-select", "value"), State("df-table", "data")],
 )
 def update_table(
     selections, jsonified_db_data, xymap_view, aid_select, self_data
-    #uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, aid_select, self_figure
 ):
     
     print("TABLE callback")
@@ -699,40 +719,47 @@ def update_xyz_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("XYZ callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
     
-    # Preserve plotting order
-    associations = aid_select
+    # # Preserve plotting order
+    # associations = aid_select
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    processed_data = None
-    selected_data = None
+    # processed_data = None
+    # selected_data = None
 
-    print("XYZ callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # print("XYZ callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-    return generate_xyz_map(dff, associations, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+    # return generate_xyz_map(dff, associations, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
 # Update UVW Map
 @app.callback(
@@ -754,40 +781,47 @@ def update_uvw_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("UVW callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
+
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
     
-    # Preserve plotting order
-    associations = aid_select
+    # # Preserve plotting order
+    # associations = aid_select
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    processed_data = None
-    selected_data = None
+    # processed_data = None
+    # selected_data = None
 
-    print("UVW callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # print("UVW callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-    return generate_xyz_map(dff, associations, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
+    # return generate_xyz_map(dff, associations, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view)
 
 # Update UV Map
 @app.callback(
@@ -807,43 +841,49 @@ def update_uvw_map(
 )
 def update_uv_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
-    #uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("UV callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
+
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
     
-    # Preserve plotting order
-    associations = aid_select
+    # # Preserve plotting order
+    # associations = aid_select
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    processed_data = None
-    selected_data = None
+    # processed_data = None
+    # selected_data = None
 
-    print("UV callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # print("UV callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-    return generate_xy_map(dff, associations, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
+    # return generate_xy_map(dff, associations, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view)
 
 # Update UW Map
 @app.callback(
@@ -865,39 +905,46 @@ def update_uw_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("UW callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
+
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
     
-    # Preserve plotting order
-    associations = aid_select
+    # # Preserve plotting order
+    # associations = aid_select
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    processed_data = None
-    selected_data = None
+    # processed_data = None
+    # selected_data = None
 
-    print("UW callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # print("UW callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-    return generate_xy_map(dff, associations, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
+    # return generate_xy_map(dff, associations, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view)
 
 # Update XY Map
 @app.callback(
@@ -919,40 +966,50 @@ def update_xy_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("XY callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
 
-    # Preserve plotting order
-    associations = aid_select
+    # if dff is None and processed_data is None:
+    #     return self_figure
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # # Preserve plotting order
+    # associations = aid_select
 
-    processed_data = None
-    selected_data = None
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    print("XY callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    return generate_xy_map(dff, associations, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
+    # processed_data = None
+    # selected_data = None
+
+    # print("XY callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+
+    # return generate_xy_map(dff, associations, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view)
 
 # Update YZ Map
 @app.callback(
@@ -974,40 +1031,47 @@ def update_yz_map(
     selections, jsonified_db_data, xymap_view, aid_select, self_figure
 ):
     
-    # Read data from session memory
+    print("YZ callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
+    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+
+    # # Read data from session memory
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
     
-    # Preserve plotting order
-    associations = aid_select
+    # # Preserve plotting order
+    # associations = aid_select
 
-    # Find which one has been triggered
-    ctx = dash.callback_context
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
 
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
 
-    processed_data = None
-    selected_data = None
+    # processed_data = None
+    # selected_data = None
     
-    print("YZ callback triggered by "+prop_id)
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    # print("YZ callback triggered by "+prop_id)
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
 
-    return generate_xy_map(dff, associations, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
+    # return generate_xy_map(dff, associations, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view)
 
 # Update Gaia DR3 CMD
 @app.callback(
@@ -1036,26 +1100,10 @@ def update_gaiadr3_cmd(
         #sequences_visible = "legendonly"
         sequences_visible = False
 
-    df = pd.read_json(jsonified_db_data, orient='split')
-    dff = df[df["moca_aid"].isin(aid_select)]
-    
-    #Preserve plotting order
-    associations = aid_select
-
-    # Find which one has been triggered
-    ctx = dash.callback_context
-
-    prop_id = ""
-    prop_type = ""
-    if ctx.triggered:
-        splitted = ctx.triggered[0]["prop_id"].split(".")
-        prop_id = splitted[0]
-        prop_type = splitted[1]
-
-    processed_data = None
-    selected_data = None
-    
-    print("CMD callback triggered by "+prop_id)
+    print("CMD callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
     
     if prop_id == "cmd-layer-select":
         if self_figure is not None:
@@ -1066,19 +1114,54 @@ def update_gaiadr3_cmd(
         else:
             return self_figure
 
-    if prop_id in selections.keys():
-        selected_data = selections[prop_id]
-        #Deal with circular callbacks that tend to reset selection
-        if selected_data is not None:
-            print(len(selected_data['points']))
-            if len(selected_data['points']) == 0:
-                return self_figure
-        if selected_data is None:
-            processed_data = None
-        else:
-            processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, field_visible, sequences_visible)
 
-    return generate_gaiadr3_cmd(dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible)
+    # ########
+
+    # df = pd.read_json(jsonified_db_data, orient='split')
+    # dff = df[df["moca_aid"].isin(aid_select)]
+    
+    # #Preserve plotting order
+    # associations = aid_select
+
+    # # Find which one has been triggered
+    # ctx = dash.callback_context
+
+    # prop_id = ""
+    # prop_type = ""
+    # if ctx.triggered:
+    #     splitted = ctx.triggered[0]["prop_id"].split(".")
+    #     prop_id = splitted[0]
+    #     prop_type = splitted[1]
+
+    # processed_data = None
+    # selected_data = None
+    
+    # print("CMD callback triggered by "+prop_id)
+    
+    # if prop_id == "cmd-layer-select":
+    #     if self_figure is not None:
+    #         if ~field_visible:
+    #             self_figure["data"][0]["visible"] = "legendonly"
+
+    #         return self_figure
+    #     else:
+    #         return self_figure
+
+    # if prop_id in selections.keys():
+    #     selected_data = selections[prop_id]
+    #     #Deal with circular callbacks that tend to reset selection
+    #     if selected_data is not None:
+    #         print(len(selected_data['points']))
+    #         if len(selected_data['points']) == 0:
+    #             return self_figure
+    #     if selected_data is None:
+    #         processed_data = None
+    #     else:
+    #         processed_data = [seldatapoint['customdata'] for seldatapoint in selected_data['points']]
+
+    # return generate_gaiadr3_cmd(dff, associations, df_cmd_field, processed_data, field_visible, sequences_visible)
 
 # Running the server
 #if __name__ == "__main__":
