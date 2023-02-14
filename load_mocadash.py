@@ -37,10 +37,15 @@ df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
-df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field LIMIT 100")
+df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
+#df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field LIMIT 100")
 df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
 df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
 df_cmd_field['customdata'] = 'NaN'
+field_opacity = 0.03
+field_color_fraction = 1
+field_markersize = 2
+bcg_color = np.array([230,236,245])
 
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
@@ -286,31 +291,32 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
-    #Default axis range
-    if (xvar=='x' or xvar=='y' or xvar=='z'):
-        fig.update_scenes(xaxis={'range':[-150,150]})
-    if (yvar=='x' or yvar=='y' or yvar=='z'):
-        fig.update_scenes(yaxis={'range':[-150,150]})
-    if (zvar=='x' or zvar=='y' or zvar=='z'):
-        fig.update_scenes(zaxis={'range':[-150,150]})
-    if xvar=='u':
-        fig.update_scenes(xaxis={'range':[-80,70]})
-    if yvar=='u':
-        fig.update_scenes(yaxis={'range':[-80,70]})
-    if zvar=='u':
-        fig.update_scenes(zaxis={'range':[-80,70]})
-    if xvar=='v':
-        fig.update_scenes(xaxis={'range':[-70,20]})
-    if yvar=='v':
-        fig.update_scenes(yaxis={'range':[-70,20]})
-    if zvar=='v':
-        fig.update_scenes(zaxis={'range':[-70,20]})
-    if xvar=='w':
-        fig.update_scenes(xaxis={'range':[-70,20]})
-    if yvar=='w':
-        fig.update_scenes(yaxis={'range':[-70,20]})
-    if zvar=='w':
-        fig.update_scenes(zaxis={'range':[-70,20]})
+    #Dont set default axis range for now because I cannot zoom out of it in the dash app
+    # #Default axis range
+    # if (xvar=='x' or xvar=='y' or xvar=='z'):
+    #     fig.update_scenes(xaxis={'range':[-150,150]})
+    # if (yvar=='x' or yvar=='y' or yvar=='z'):
+    #     fig.update_scenes(yaxis={'range':[-150,150]})
+    # if (zvar=='x' or zvar=='y' or zvar=='z'):
+    #     fig.update_scenes(zaxis={'range':[-150,150]})
+    # if xvar=='u':
+    #     fig.update_scenes(xaxis={'range':[-80,70]})
+    # if yvar=='u':
+    #     fig.update_scenes(yaxis={'range':[-80,70]})
+    # if zvar=='u':
+    #     fig.update_scenes(zaxis={'range':[-80,70]})
+    # if xvar=='v':
+    #     fig.update_scenes(xaxis={'range':[-70,20]})
+    # if yvar=='v':
+    #     fig.update_scenes(yaxis={'range':[-70,20]})
+    # if zvar=='v':
+    #     fig.update_scenes(zaxis={'range':[-70,20]})
+    # if xvar=='w':
+    #     fig.update_scenes(xaxis={'range':[-70,20]})
+    # if yvar=='w':
+    #     fig.update_scenes(yaxis={'range':[-70,20]})
+    # if zvar=='w':
+    #     fig.update_scenes(zaxis={'range':[-70,20]})
 
     return fig
 
@@ -341,17 +347,24 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     colormap = colormap_picker(associations)
 
     data = []
+    hexcolor = "#000000"
+    rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+    diff = bcg_color-rgbcolor
+    rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
+    rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+    rgbcolorf = "rgb("+",".join(rgbcolor)+")"
     new_trace = go.Scattergl(
             x=df_cmd_field["gr"],
             y=df_cmd_field["m_g"],
-            opacity=0.1,
+            #opacity=field_opacity,
             mode="markers",
-            marker={"color": "#D3D3D3", "size": 2},
+            marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
             hoverinfo='skip',
             name='Field stars',
             customdata=df_cmd_field['customdata'],
             visible=field_visible,
         )
+    new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
     data.append(new_trace)
 
     text_list = build_hover(dff)
@@ -381,7 +394,6 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             customdata=dff_aid["moca_oid"],
         )
         
-        bcg_color = np.array([230,236,245])
         hexcolor = colormap[association]
         rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
         diff = bcg_color-rgbcolor
@@ -430,6 +442,20 @@ app.layout = html.Div(
                             children=[
                                 build_banner(),
                                 html.P(
+                                    #CODE CRASHES WHEN ZERO ASSO
+                                    #EXPLAIN SHIFT CLICK ON ASSO NAMES
+                                    #EXPLAIN 3D GRAPHS CANT YET SELECT
+                                    #EXPLAIN up to 20 colors
+                                    #EXPLAIN database is queried everytime asso are changed
+                                    #EXPLAIN graph ordering is like the ordering list of asso
+                                    #EXPLAIN CLICK TO SELECT 1 POIN
+                                    #EXPLAIN LASSO
+                                    #EXPLAIN BUG WHERE SELECTION IN A NEW PANEL REQUIRES RESELECTING
+                                    #EXPLAIN two fingers up and down swipe to zoom in/out in 3D scatter
+                                    #EXPLAIN two fingers click to drag 3D figure
+                                    #EXPLAIN bug in Safari where imprint of the first plot state can remain, not present in Google Chrome
+                                    #XPLAIN individual plots only appear when 1 star is selected
+                                    #EXPLAIN clicking on legend items
                                     id="instructions",
                                     children="Select data points from any plot to "
                                     "visualize cross-filtering to other plots. Selection could be done by "
