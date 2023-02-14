@@ -38,14 +38,17 @@ df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
-df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
+df_cmd_field = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiadr3_field_scatter'")
+#df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field")
 #df_cmd_field = moca.query("SELECT phot_g_mean_mag, phot_rp_mean_mag, parallax FROM data_gaiadr3_cmd_field LIMIT 100")
-df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
-df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
+#df_cmd_field['gr'] = df_cmd_field['phot_g_mean_mag']-df_cmd_field['phot_rp_mean_mag']
+#df_cmd_field['m_g'] = df_cmd_field['phot_g_mean_mag']-5.0*(np.log10(1000.0/df_cmd_field['parallax'])-1)
 df_cmd_field['customdata'] = 'NaN'
-field_opacity = 0.03
-field_color_fraction = 1
-field_markersize = 2
+#field_opacity = 0.03
+field_opacity = 0.2
+field_color_fraction = 0.5
+#field_markersize = 2
+field_markersize = 3
 bcg_color = np.array([230,236,245])
 
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
@@ -344,29 +347,30 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
         ),
     )
     hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
-
+    data = []
     colormap = colormap_picker(associations)
 
-    data = []
-    hexcolor = "#000000"
-    rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
-    diff = bcg_color-rgbcolor
-    rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
-    rgbcolor = [str(int(i)) for i in rgbcolor_pale]
-    rgbcolorf = "rgb("+",".join(rgbcolor)+")"
-    new_trace = go.Scattergl(
-            x=df_cmd_field["gr"],
-            y=df_cmd_field["m_g"],
-            #opacity=field_opacity,
-            mode="markers",
-            marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
-            hoverinfo='skip',
-            name='Field stars',
-            customdata=df_cmd_field['customdata'],
-            visible=field_visible,
-        )
-    new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
-    data.append(new_trace)
+    
+    if field_visible:
+        hexcolor = "#000000"
+        rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+        diff = bcg_color-rgbcolor
+        rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
+        rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+        rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+        new_trace = go.Scattergl(
+                x=df_cmd_field["gr"],
+                y=df_cmd_field["m_g"],
+                #opacity=field_opacity,
+                mode="markers",
+                marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
+                hoverinfo='skip',
+                name='Field stars',
+                customdata=df_cmd_field['customdata'],
+                visible=field_visible,
+            )
+        new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
+        data.append(new_trace)
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -997,6 +1001,12 @@ def update_gaiadr3_cmd(
     aid_select,
 ):
     sequences_visible = field_visible = True
+    if "Field Stars" not in layer_select:
+        field_visible = False
+        #field_visible = "legendonly"
+    if "Sequences" not in layer_select:
+        #sequences_visible = "legendonly"
+        sequences_visible = False
 
     df = pd.read_json(jsonified_db_data, orient='split')
     dff = df[df["moca_aid"].isin(aid_select)]
@@ -1044,13 +1054,8 @@ def update_gaiadr3_cmd(
 
     if prop_id == "cmd-layer-select":
         if curr_fig is not None:
-            #This is not coded yet
-            if "Field Stars" not in layer_select:
-                field_visible = "legendonly"
-            if "Sequences" not in layer_select:
-                sequences_visible = "legendonly"
-
-            curr_fig["data"][0]["visible"] = field_visible
+            if ~field_visible:
+                curr_fig["data"][0]["visible"] = "legendonly"
 
             return curr_fig
         else:
