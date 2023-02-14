@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 import dash
-from dash import dcc, html
+from dash import dcc, html, dash_table
 #from dash import html
 import plotly.graph_objs as go
 from dash.dependencies import Input, Output, State
@@ -29,6 +29,10 @@ aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
 # Load data
 moca = MocaEngine()
+
+#Query an empty row to obtain the structure for the table
+df_columns = ['moca_aid','moca_mtid','designation','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w']
+dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND (moca_aid='nonexistent')")
 
 #unselected_opacity = 0.06
 unselected_opacity = 0.1
@@ -594,8 +598,62 @@ app.layout = html.Div(
                 ),
             ],
         ),
+        html.Div(
+            className="row",
+            id="row-four",
+            children=[
+                #Table
+                html.Div(
+                    id="table-container",
+                    className="twelve columns",
+                    children=[
+                        html.Br(),
+                        build_graph_title("MOCA summary table"),
+                        #html.Br(),html.Br(),html.Br(),html.Br(),
+                        dash_table.DataTable(id="df-table",columns=[{"name": i, "id": i} for i in sorted(dfe.columns)]),#df.to_dict('records'), [{"name": i, "id": i} for i in df.columns], 
+                    ],
+                ),
+            ],
+        ),
     ]
 )
+
+# Update table
+@app.callback(
+    output=Output("df-table","data"),
+    inputs=[
+        Input("uv-map", "selectedData"),
+        Input("uw-map", "selectedData"),
+        Input("xy-map", "selectedData"),
+        Input("yz-map", "selectedData"),
+        Input("gaiadr3-cmd", "selectedData"),
+        Input("db-data", "data"),
+    ],
+    state=[State("aid-select", "value"), State("df-table", "data")],
+)
+def update_table(
+    uv_selected_data, uw_selected_data, xy_selected_data, yz_selected_data, cmd_selected_data, jsonified_db_data, aid_select, self_figure
+):
+    
+    print("TABLE callback")
+    
+    # Read data from session memory
+    df = pd.read_json(jsonified_db_data, orient='split')
+    dff = df[df["moca_aid"].isin(aid_select)]
+    return dff.to_dict('records')
+
+    # columns = list(dff.columns)
+    # import pdb; pdb.set_trace()
+
+    # return {
+    #     'data': [{
+    #         'type': 'parcoords',
+    #         'dimensions': [{
+    #             'label': col,
+    #             'values': dff[col]
+    #         } for i, col in enumerate(columns)]
+    #     }]
+    # }
 
 # Update AID-select
 @app.callback(
@@ -612,11 +670,11 @@ def update_aid_select(
     
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
-        df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND (moca_aid='nonexistent')")
+        df = dfe
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        df = moca.query("SELECT spt, designation, dr3_ruwe, gmag, rmag, plx, dmod, moca_oid, moca_aid, moca_mtid, x, y, z, u, v, w FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
+        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
