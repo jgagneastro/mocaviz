@@ -3,11 +3,23 @@ This repository contains plotly dash tools to visualize data from the MOCA datab
 
 For now we have only one file, load_mocadash.py which allows to visualize basic data from the Database by calling it in this way:
 
-python /path/load_mocadash.py
+`python /path/load_mocadash.py`
 
 And then open a web browser and type in the address:
 
 127.0.0.1:8050
+
+If you would like to ensure you are running exactly the right versions of each Python package, "cd" into your local mocaviz directory and create a virtual environment with:
+
+`python -m venv mocaviz-env`
+
+Then activate the virtual environment with:
+
+`source mocaviz-env/bin/activate`
+
+Then exact required packages can then be installed using:
+
+`pip install -r requirements.txt`
 
 The features that have been implemented as of Feb 13, 2023 are:
 
