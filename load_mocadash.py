@@ -1,5 +1,6 @@
 import pathlib, os
 import colorsys
+import numpy.core.defchararray as np_f
 #import os
 
 import pandas as pd
@@ -31,8 +32,10 @@ aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['moca_aid','moca_mtid','designation','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w']
-dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND (moca_aid='nonexistent')")
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w']
+#accepted_moca_mtids = ['BF','HM','CM','LM']
+accepted_moca_mtids = ['BF','HM','CM']
+dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE moca_aid='nonexistent'")
 
 #unselected_opacity = 0.06
 unselected_opacity = 0.1
@@ -698,6 +701,13 @@ app.layout = html.Div(
                             #columns=[{'id': x, 'name': x, 'presentation': 'markdown'} if x == 'designation' else {'id': x, 'name': x} for x in dfe.columns],
                             #columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
                             #row_selectable="multi",
+                            #style_cell={'presentation': 'markdown'},
+                            style_header={
+                                #'backgroundColor': 'white',
+                                'fontSize': 15,
+                                'fontWeight': 'bold',
+                                'textAlign': 'center',
+                            },
                             selected_rows=[],
                             style_data_conditional=get_style_data_conditional(),
                         ),
@@ -747,12 +757,22 @@ def update_table(
     #df['designation'] = '['+df['designation']
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation']+'&search-type=star)'
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation'].values.astype("U")+'&search-type=star)'
-    import numpy.core.defchararray as np_f
-    df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['designation'].values.astype("U")," ","%20")+'&search-type=star)'
     
+    df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['designation'].values.astype("U")," ","%20")+'&search-type=star)'
+
     #import numpy.core.defchararray as np_f
     #
-    df_sorted = df.sort_values(by=['moca_aid', 'moca_mtid', 'spt'])
+    df_sorted = df
+    df_sorted['num_moca_mtid'] = df_sorted['moca_mtid']
+    #This could probably be done better with the moca_membership_types table
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"BF","1.BF")
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"HM","2.HM")
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"CM","3.CM")
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"LM","4.LM")
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"AM","5.AM")
+    df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"R","6.R")
+    df_sorted = df_sorted.sort_values(by=['moca_aid', 'num_moca_mtid', 'spt'])
+    #df_sorted = df_sorted.drop('num_moca_mtid')
 
     if processed_data is None:
         selected_index = []
@@ -788,7 +808,7 @@ def update_aid_select(
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE (moca_mtid != 'CM' AND moca_mtid != 'LM' AND moca_mtid != 'R') AND ("+aid_query+")")
+        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+" OR ".join(["moca_mtid = '"+x+"'" for x in accepted_moca_mtids])+") AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
