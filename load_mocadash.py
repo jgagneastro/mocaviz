@@ -26,7 +26,8 @@ server = app.server
 #app.config["suppress_callback_exceptions"] = True
 
 initial_aids = ["ABDMG","BPMG","TWA"]
-aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
+initial_mtids = ["BF","HM"]
+#aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
 # Load data
 moca = MocaEngine()
@@ -42,8 +43,10 @@ unselected_opacity = 0.1
 
 #Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
-df_mtids = moca.query("SELECT moca_mtid, name, description FROM moca_membership_types")
-text_mtids = (df_mtids["moca_mtid"]+": "+df_mtids["name"]+". "+df_mtids["description"]).values.astype("U")
+df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+
+#text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["name"]+". "+df_mtids["description"]).values.astype("U").tolist()
+text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
@@ -546,6 +549,14 @@ app.layout = html.Div(
                                     , style={"width": "100%"},
                                 ),
                                 build_graph_title("Select Stellar Associations"),
+                                dcc.Markdown(
+                                #html.P(
+                                    id="mtid-instructions",
+                                    children=[
+                                        "Select the associations to be included in the visualizations below. More information on the short association names can be found [here](https://mocadb.ca/associations).",
+                                    ]
+                                    , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
+                                ),
                                 dcc.Dropdown(
                                     id="aid-select",
                                     options=[
@@ -558,13 +569,15 @@ app.layout = html.Div(
                                 ),
                                 html.Br(),
                                 build_graph_title("Select Membership Types"),
-                                html.P(
+                                dcc.Markdown(
+                                #html.P(
                                     id="mtid-instructions",
-                                    children=#[
-                                        [i+"<br>" for i in text_mtids]
+                                    children=["Select the data included in the visualizations below, among the following types of membership:  \n"]+text_mtids
+                                        #(sum([[i,html.Br()] for i in text_mtids],[]))[:-1]
+                                        #[i+"<br>" for i in text_mtids]
                                         #"BF: Bona fide member. Description",html.Br(),
                                         #"HM: Bona fide member. Description",html.Br(),
-                                    #]
+                                    
                                     , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
                                 ),
                                 dcc.Dropdown(
@@ -574,7 +587,7 @@ app.layout = html.Div(
                                         for i in df_mtids["moca_mtid"].unique().tolist()
                                     ],
                                     multi=True,
-                                    value=initial_aids
+                                    value=initial_mtids
                                 ),
                                 html.Br(),
                                 build_graph_title("Select Options"),
@@ -812,18 +825,19 @@ def update_table(
 
     return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
-# Update AID-select
+# Update AID- and MTID-select
 @app.callback(
     output=Output("db-data","data"),
     inputs=[
         Input("aid-select", "value"),
+        Input("mtid-select", "value"),
     ],
 )
 def update_aid_select(
-    aid_select,
+    aid_select, mtid_select
 ):
     
-    print("AID callback")
+    print("DBQUERY callback")
     
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
@@ -831,7 +845,8 @@ def update_aid_select(
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+" OR ".join(["moca_mtid = '"+x+"'" for x in accepted_moca_mtids])+") AND ("+aid_query+")")
+        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
@@ -839,6 +854,35 @@ def update_aid_select(
     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
     return df.to_json(date_format='iso', orient='split')
+
+# # Update MTID select
+# @app.callback(
+#     output=Output("db-data","data"),
+#     inputs=[
+#         Input("mtid-select", "value"),
+#     ],
+# )
+# def update_aid_select(
+#     aid_select,
+# ):
+    
+#     print("AID callback")
+    
+#     #Prevent app from crashing if no associations are selected
+#     if len(aid_select) == 0:
+#         df = dfe
+#     else: 
+#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+" OR ".join(["moca_mtid = '"+x+"'" for x in accepted_moca_mtids])+") AND ("+aid_query+")")
+#         df['gr'] = df['gmag']-df['rmag']
+#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+
+#     print("Downloaded "+str(len(df))+" rows of general data from DB")
+
+#     return df.to_json(date_format='iso', orient='split')
+
 
 # Update XYZ Map
 @app.callback(
