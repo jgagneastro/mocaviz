@@ -3,6 +3,10 @@ import colorsys
 import numpy.core.defchararray as np_f
 #import os
 
+#conda install python-dotenv or pip install python-dotenv
+from dotenv import load_dotenv
+load_dotenv()  # take environment variables from .env.
+
 import pandas as pd
 import numpy as np
 
