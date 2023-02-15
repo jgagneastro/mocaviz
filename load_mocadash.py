@@ -278,6 +278,18 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
         #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
         data.append(new_trace)
     
+    new_trace = go.Scattergl(
+            x=[0],
+            y=[0],
+            opacity=0.8,
+            mode="markers",
+            marker_symbol="cross",
+            marker={"color": "#000000", "size": 9},
+            text="Sun",
+            name="Sun",
+        )
+    data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
 
     fig.update_layout(title_text='MOCA database '+title)
@@ -393,6 +405,19 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
             )
             data.append(new_trace)
     
+    new_trace = go.Scatter3d(
+            x=[0],
+            y=[0],
+            z=[0],
+            opacity=0.8,
+            mode="markers",
+            marker_symbol="cross",
+            marker={"color": "#000000", "size": 5},#, "symbol":"circle-dot"
+            text="Sun",
+            name="Sun",
+        )
+    data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
