@@ -753,6 +753,7 @@ app.layout = html.Div(
                             #columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
                             #row_selectable="multi",
                             #style_cell={'presentation': 'markdown'},
+                            export_format='csv',
                             style_header={
                                 'fontSize': 15,
                                 'fontWeight': 'bold',
