@@ -694,7 +694,9 @@ app.layout = html.Div(
                         html.P("Rows are shown in order of selection, association and membership type. Selected rows are highlighted in green."),
                         dash_table.DataTable(
                             id="df-table",
-                            columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
+                            columns=[{'id': x, 'name': x, 'presentation': 'markdown'} for x in dfe.columns],
+                            #columns=[{'id': x, 'name': x, 'presentation': 'markdown'} if x == 'designation' else {'id': x, 'name': x} for x in dfe.columns],
+                            #columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
                             #row_selectable="multi",
                             selected_rows=[],
                             style_data_conditional=get_style_data_conditional(),
@@ -739,6 +741,17 @@ def update_table(
 
     # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
+    
+    #Add clickable links
+    #'[Google](https://www.google.com)'
+    #df['designation'] = '['+df['designation']
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation']+'&search-type=star)'
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation'].values.astype("U")+'&search-type=star)'
+    import numpy.core.defchararray as np_f
+    df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['designation'].values.astype("U")," ","%20")+'&search-type=star)'
+    
+    #import numpy.core.defchararray as np_f
+    #
     df_sorted = df.sort_values(by=['moca_aid', 'moca_mtid', 'spt'])
 
     if processed_data is None:
