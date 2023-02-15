@@ -61,6 +61,13 @@ field_color_fraction = 0.5
 field_markersize = 3
 bcg_color = np.array([230,236,245])
 
+df_cmd_seq_25 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_15myr_30myr'")
+df_cmd_seq_40 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_30myr_50myr'")
+df_cmd_seq_100 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_50myr_250myr'")
+df_cmd_seq_25['customdata'] = 'NaN'
+df_cmd_seq_40['customdata'] = 'NaN'
+df_cmd_seq_100['customdata'] = 'NaN'
+
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
@@ -441,27 +448,40 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     data = []
     colormap = colormap_picker(associations)
 
-    
-    if field_visible:
-        hexcolor = "#000000"
-        rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
-        diff = bcg_color-rgbcolor
-        rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
-        rgbcolor = [str(int(i)) for i in rgbcolor_pale]
-        rgbcolorf = "rgb("+",".join(rgbcolor)+")"
-        new_trace = go.Scattergl(
-                x=df_cmd_field["gr"],
-                y=df_cmd_field["m_g"],
-                #opacity=field_opacity,
-                mode="markers",
-                marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
-                hoverinfo='skip',
-                name='Field stars',
-                customdata=df_cmd_field['customdata'],
-                visible=field_visible,
-            )
-        new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
-        data.append(new_trace)
+    print(field_visible)
+    if not field_visible:
+        field_visible_input = "legendonly"
+    else:
+        field_visible_input = True
+
+    print(sequences_visible)
+    if not sequences_visible:
+        sequences_visible_input = "legendonly"
+    else:
+        sequences_visible_input = True
+
+    #import pdb; pdb.set_trace()
+    #if field_visible:
+    hexcolor = "#000000"
+    rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+    diff = bcg_color-rgbcolor
+    rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
+    rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+    rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+    new_trace = go.Scattergl(
+            x=df_cmd_field["gr"],
+            y=df_cmd_field["m_g"],
+            #opacity=field_opacity,
+            mode="markers",
+            marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
+            hoverinfo='skip',
+            name='Field stars',
+            showlegend=False,
+            customdata=df_cmd_field['customdata'],
+            visible=field_visible_input,
+        )
+    new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
+    data.append(new_trace)
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -499,6 +519,54 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
         #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf)))
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
+
+    #Add empirical isochrones
+    seqwid = 1
+    seqcol = '#0066FF'
+    new_trace = go.Scattergl(
+            x=df_cmd_seq_25["gr"],
+            y=df_cmd_seq_25["m_g"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='22 Myr',
+            showlegend=False,
+            customdata=df_cmd_seq_25['customdata'],
+            visible=sequences_visible_input,
+        )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
+    data.append(new_trace)
+
+    new_trace = go.Scattergl(
+            x=df_cmd_seq_40["gr"],
+            y=df_cmd_seq_40["m_g"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='40 Myr',
+            showlegend=False,
+            customdata=df_cmd_seq_40['customdata'],
+            visible=sequences_visible_input,
+        )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
+    data.append(new_trace)
+
+    new_trace = go.Scattergl(
+            x=df_cmd_seq_100["gr"],
+            y=df_cmd_seq_100["m_g"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='100 Myr',
+            showlegend=False,
+            customdata=df_cmd_seq_100['customdata'],
+            visible=sequences_visible_input,
+        )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
+    data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
     
@@ -642,11 +710,11 @@ app.layout = html.Div(
                                             "value": "Field Stars",
                                         },
                                         {
-                                            "label": " Sequences",
+                                            "label": " Empirical 22, 40, and 100 Myr Sequences",
                                             "value": "Sequences",
                                         },
                                     ],
-                                    value=["Field Stars", "Sequences"],
+                                    value=["Field Stars"],
                                 ),
                         html.Br(),
                         dcc.Graph(id="gaiadr3-cmd"),
@@ -1087,12 +1155,11 @@ def update_yz_map(
 def update_gaiadr3_cmd(
     selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
 ):
+    
     sequences_visible = field_visible = True
     if "Field Stars" not in cmd_layer_select:
         field_visible = False
-        #field_visible = "legendonly"
     if "Sequences" not in cmd_layer_select:
-        #sequences_visible = "legendonly"
         sequences_visible = False
 
     print("CMD callback")
@@ -1102,9 +1169,18 @@ def update_gaiadr3_cmd(
     
     if prop_id == "cmd-layer-select":
         if self_figure is not None:
-            if ~field_visible:
+            if not field_visible:
                 self_figure["data"][0]["visible"] = "legendonly"
-
+            else:
+                self_figure["data"][0]["visible"] = True
+            if not sequences_visible:
+                self_figure["data"][-1]["visible"] = "legendonly"
+                self_figure["data"][-2]["visible"] = "legendonly"
+                self_figure["data"][-3]["visible"] = "legendonly"
+            else:
+                self_figure["data"][-1]["visible"] = True
+                self_figure["data"][-2]["visible"] = True
+                self_figure["data"][-3]["visible"] = True
             return self_figure
         else:
             return self_figure
