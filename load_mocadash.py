@@ -33,6 +33,15 @@ initial_aids = ["ABDMG","BPMG","TWA"]
 initial_mtids = ["BF","HM"]
 #aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
+figure_export_config = {
+  'toImageButtonOptions': {
+    'format': 'png', # one of png, svg, jpeg, webp
+    'height': 500*2,
+    'width': 700*2,
+    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
+  }
+}
+
 # Load data
 moca = MocaEngine()
 
@@ -196,7 +205,7 @@ def build_hover(dff):
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
 
-def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data, style, hover_select):
+def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
 
     # #Read hover property
     # hover = False
@@ -271,6 +280,8 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
     
     fig = go.Figure(data=data,layout=layout)
 
+    fig.update_layout(title_text='MOCA database '+title)
+
     #Default axis range
     if (xvar=='x' or xvar=='y' or xvar=='z'):
         fig.update_layout(xaxis_range=[-150,150])
@@ -291,7 +302,7 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
 
     return fig
 
-def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, selected_data, style, hover_select):
+def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
 
     #Read hover property
     hover = False
@@ -385,6 +396,8 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
+    fig.update_layout(title_text='MOCA database '+title)
+
     #Dont set default axis range for now because I cannot zoom out of it in the dash app
     # #Default axis range
     # if (xvar=='x' or xvar=='y' or xvar=='z'):
@@ -570,6 +583,8 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
 
     fig = go.Figure(data=data,layout=layout)
     
+    fig.update_layout(title_text='MOCA database Gaia DR3 color-magnitude diagram')
+
     #Default axis range
     fig.update_layout(yaxis_range=[20,-2])
     fig.update_layout(xaxis_range=[-0.5,2.5])
@@ -717,7 +732,7 @@ app.layout = html.Div(
                                     value=["Field Stars"],
                                 ),
                         html.Br(),
-                        dcc.Graph(id="gaiadr3-cmd"),
+                        dcc.Graph(id="gaiadr3-cmd",config=figure_export_config),
                     ],
                 ),
                 # XYZ
@@ -728,7 +743,7 @@ app.layout = html.Div(
                         html.Br(),
                         build_graph_title("Galactic X, Y, Z coordinates"),
                         html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="xyz-map"),
+                        dcc.Graph(id="xyz-map",config=figure_export_config),
                     ],
                 ),
                 # UVW
@@ -739,7 +754,7 @@ app.layout = html.Div(
                         html.Br(),
                         build_graph_title("Galactic U, V, W space velocities"),
                         html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="uvw-map"),
+                        dcc.Graph(id="uvw-map",config=figure_export_config),
                     ],
                 ),
                 # XY
@@ -764,7 +779,7 @@ app.layout = html.Div(
                                     value=["Association Centers", "BANYAN Models"],
                                 ),
                         html.Br(),
-                        dcc.Graph(id="xy-map"),
+                        dcc.Graph(id="xy-map",config=figure_export_config),
                     ],
                 ),
                 # YZ
@@ -775,7 +790,7 @@ app.layout = html.Div(
                         html.Br(),
                         build_graph_title("Galactic Y, Z coordinates"),
                         html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="yz-map"),
+                        dcc.Graph(id="yz-map",config=figure_export_config),
                     ],
                 ),
                 # UV
@@ -786,7 +801,7 @@ app.layout = html.Div(
                         html.Br(),
                         build_graph_title("Galactic U, V space velocities"),
                         html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="uv-map"),
+                        dcc.Graph(id="uv-map",config=figure_export_config),
                     ],
                 ),
                 # UW
@@ -797,7 +812,7 @@ app.layout = html.Div(
                         html.Br(),
                         build_graph_title("Galactic U, W space velocities"),
                         html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="uw-map"),
+                        dcc.Graph(id="uw-map",config=figure_export_config),
                     ],
                 ),
             ],
@@ -993,7 +1008,7 @@ def update_xyz_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', processed_data, xymap_view, hover_select)
+    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update UVW Map
 @app.callback(
@@ -1021,7 +1036,7 @@ def update_uvw_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', processed_data, xymap_view, hover_select)
+    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UV Map
 @app.callback(
@@ -1049,7 +1064,7 @@ def update_uv_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', processed_data, xymap_view, hover_select)
+    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UW Map
 @app.callback(
@@ -1077,7 +1092,7 @@ def update_uw_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', processed_data, xymap_view, hover_select)
+    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update XY Map
 @app.callback(
@@ -1105,7 +1120,7 @@ def update_xy_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', processed_data, xymap_view, hover_select)
+    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update YZ Map
 @app.callback(
@@ -1133,7 +1148,7 @@ def update_yz_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', processed_data, xymap_view, hover_select)
+    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update Gaia DR3 CMD
 @app.callback(
