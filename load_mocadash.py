@@ -187,11 +187,19 @@ def build_graph_title(title):
 
 def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data, style, hover_select):
 
+    # #Read hover property
+    # hover = False
+    # try:
+    #     if hover_select[0] == 'Enable Hover Properties':
+    #         hover = "closest"
+    # except:
+    #     void = 1
+
     #Read hover property
-    hover = False
+    hoverinfo = "skip"
     try:
         if hover_select[0] == 'Enable Hover Properties':
-            hover = "closest"
+            hoverinfo = None
     except:
         void = 1
 
@@ -203,7 +211,8 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
         yaxis={'title':ytitle},
         showlegend=True,
         #autosize=True,
-        hovermode=hover,
+        #hovermode=hover,
+        hovermode="closest",
         margin=dict(l=110, r=50, t=50, b=50),
         #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
@@ -239,6 +248,7 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, selected_data
             opacity=0.8,
             mode="markers",
             marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
+            hoverinfo=hoverinfo,
             text=dff_aid['text_list'],
             name=association,
             selectedpoints=selected_index,
