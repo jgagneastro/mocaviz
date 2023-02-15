@@ -42,6 +42,8 @@ unselected_opacity = 0.1
 
 #Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+df_mtids = moca.query("SELECT moca_mtid, name, description FROM moca_membership_types")
+text_mtids = (df_mtids["moca_mtid"]+": "+df_mtids["name"]+". "+df_mtids["description"]).values.astype("U")
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
@@ -512,7 +514,7 @@ app.layout = html.Div(
                             children=[
                                 build_banner(),
                                 html.P(
-                                    #XPLAIN individual plots only appear when 1 star is selected
+                                    #Also explain here individual plots only appear when 1 star is selected
                                     id="instructions",
                                     children=["Select data points from any plot to "
                                     "visualize cross-filtering to other plots. Selection can be done by "
@@ -554,16 +556,38 @@ app.layout = html.Div(
                                     multi=True,
                                     value=initial_aids
                                 ),
+                                html.Br(),
+                                build_graph_title("Select Membership Types"),
+                                html.P(
+                                    id="mtid-instructions",
+                                    children=#[
+                                        [i+"<br>" for i in text_mtids]
+                                        #"BF: Bona fide member. Description",html.Br(),
+                                        #"HM: Bona fide member. Description",html.Br(),
+                                    #]
+                                    , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
+                                ),
+                                dcc.Dropdown(
+                                    id="mtid-select",
+                                    options=[
+                                        {"label": " "+i, "value": i}
+                                        for i in df_mtids["moca_mtid"].unique().tolist()
+                                    ],
+                                    multi=True,
+                                    value=initial_aids
+                                ),
+                                html.Br(),
                                 build_graph_title("Select Options"),
                                 dcc.Checklist(
                                     id="hover-select",
                                     options=[
                                         {
-                                            "label": html.Div(["Enable Hover Properties"], style={'color':'white',"width": "100%"}),
+                                            "label": " Enable Hover Properties",
                                             "value": "Enable Hover Properties",
                                         },
                                     ],
                                     value=[],
+                                    labelStyle={'color': 'white'}
                                 ),
                             ],
                         ),
@@ -587,11 +611,11 @@ app.layout = html.Div(
                                     id="cmd-layer-select",
                                     options=[
                                         {
-                                            "label": "Field Stars",
+                                            "label": " Field Stars",
                                             "value": "Field Stars",
                                         },
                                         {
-                                            "label": "Sequences",
+                                            "label": " Sequences",
                                             "value": "Sequences",
                                         },
                                     ],
@@ -703,7 +727,6 @@ app.layout = html.Div(
                             #row_selectable="multi",
                             #style_cell={'presentation': 'markdown'},
                             style_header={
-                                #'backgroundColor': 'white',
                                 'fontSize': 15,
                                 'fontWeight': 'bold',
                                 'textAlign': 'center',
