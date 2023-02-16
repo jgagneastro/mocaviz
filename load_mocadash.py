@@ -740,15 +740,6 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
 
     return fig
 
-# Helper for extracting select index from plots
-def get_selection(data, moca_aid, associations, selection_data, starting_index):
-    ind = []
-    current_curve = associations.index(moca_aid)
-    for point in selection_data["points"]:
-        if point["curveNumber"] - starting_index == current_curve:
-            ind.append(point["pointNumber"])
-    return ind
-
 app.layout = html.Div(
     children=[
         html.Div(
@@ -1127,35 +1118,6 @@ def update_aid_select(
     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
     return df.to_json(date_format='iso', orient='split')
-
-# # Update MTID select
-# @app.callback(
-#     output=Output("db-data","data"),
-#     inputs=[
-#         Input("mtid-select", "value"),
-#     ],
-# )
-# def update_aid_select(
-#     aid_select,
-# ):
-    
-#     print("AID callback")
-    
-#     #Prevent app from crashing if no associations are selected
-#     if len(aid_select) == 0:
-#         df = dfe
-#     else: 
-#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+" OR ".join(["moca_mtid = '"+x+"'" for x in accepted_moca_mtids])+") AND ("+aid_query+")")
-#         df['gr'] = df['gmag']-df['rmag']
-#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-
-#     print("Downloaded "+str(len(df))+" rows of general data from DB")
-
-#     return df.to_json(date_format='iso', orient='split')
-
 
 # Update prot-color
 @app.callback(
