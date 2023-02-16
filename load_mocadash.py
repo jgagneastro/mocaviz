@@ -1240,6 +1240,16 @@ app.layout = html.Div(
     ]
 )
 
+selections = {
+            "uv-map":Input("uv-map", "selectedData"),
+            "uw-map":Input("uw-map", "selectedData"),
+            "xy-map":Input("xy-map", "selectedData"),
+            "yz-map":Input("yz-map", "selectedData"),
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
+            "gaia-act-color":Input("gaia-act-color", "selectedData"),
+        }
+
 # Update table
 @app.callback(
     output=[
@@ -1248,15 +1258,7 @@ app.layout = html.Div(
         Output("df-table","style_data_conditional"),
     ],
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
     ),
@@ -1348,15 +1350,7 @@ def update_aid_select(
 @app.callback(
     output=Output("prot-color", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            #"prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         prot_layer_select=Input("prot-layer-select", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1369,6 +1363,8 @@ def update_prot_color(
     
     print("PROT callback")
     processed_data, prop_id = selection_helper(selections)
+    if prop_id == "prot-color":
+        return self_figure
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
@@ -1378,15 +1374,7 @@ def update_prot_color(
 @app.callback(
     output=Output("gaia-act-color", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            #"gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         gaia_act_layer_select=Input("gaia-act-layer-select", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1401,6 +1389,8 @@ def update_gaia_act_color(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "gaia-act-color":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaia_act_color(df, aid_select, processed_data, gaia_act_layer_select, hover_select)
 
@@ -1408,15 +1398,7 @@ def update_gaia_act_color(
 @app.callback(
     output=Output("xyz-map", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1431,6 +1413,8 @@ def update_xyz_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "xyz-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
@@ -1438,15 +1422,7 @@ def update_xyz_map(
 @app.callback(
     output=Output("uvw-map", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1461,6 +1437,8 @@ def update_uvw_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "uvw-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
 
@@ -1498,15 +1476,7 @@ def update_uv_map(
 @app.callback(
     output=Output("uw-map", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            #"uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1521,6 +1491,8 @@ def update_uw_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "uw-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
 
@@ -1528,15 +1500,7 @@ def update_uw_map(
 @app.callback(
     output=Output("xy-map", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            #"xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1551,6 +1515,8 @@ def update_xy_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "xy-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
 
@@ -1558,15 +1524,7 @@ def update_xy_map(
 @app.callback(
     output=Output("yz-map", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            #"yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1581,6 +1539,8 @@ def update_yz_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "yz-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
@@ -1588,15 +1548,7 @@ def update_yz_map(
 @app.callback(
     output=Output("gaiadr3-cmd", "figure"),
     inputs=dict(
-        selections={
-            "uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         cmd_layer_select=Input("cmd-layer-select", "value"),
         hover_select=Input("hover-select", "value"),
@@ -1611,25 +1563,9 @@ def update_gaiadr3_cmd(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "gaiadr3-cmd":
+        return self_figure
     
-    # if prop_id == "cmd-layer-select":
-    #     if self_figure is not None:
-    #         if not field_visible:
-    #             self_figure["data"][0]["visible"] = "legendonly"
-    #         else:
-    #             self_figure["data"][0]["visible"] = True
-    #         if not sequences_visible:
-    #             self_figure["data"][-1]["visible"] = "legendonly"
-    #             self_figure["data"][-2]["visible"] = "legendonly"
-    #             self_figure["data"][-3]["visible"] = "legendonly"
-    #         else:
-    #             self_figure["data"][-1]["visible"] = True
-    #             self_figure["data"][-2]["visible"] = True
-    #             self_figure["data"][-3]["visible"] = True
-    #         return self_figure
-    #     else:
-    #         return self_figure
-
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
 
