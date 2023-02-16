@@ -10,7 +10,7 @@ importlib-metadata==6.0.0
 itsdangerous==2.1.2
 Jinja2==3.1.2
 MarkupSafe==2.1.2
-mocapy==0.1.dev16+gcffd2ea
+mocapy @ git+https://github.com/jgagneastro/mocapy.git@cffd2ea747489cc335feefe06ed3ce119dc93a00
 numpy==1.24.2
 pandas==1.4.4
 pandasql==0.7.3

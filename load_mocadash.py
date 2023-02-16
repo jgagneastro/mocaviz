@@ -690,7 +690,7 @@ app.layout = html.Div(
                                 build_graph_title("Select Stellar Associations"),
                                 dcc.Markdown(
                                 #html.P(
-                                    id="mtid-instructions",
+                                    id="aid-instructions",
                                     children=[
                                         "Select the associations to be included in the visualizations below. More information on the short association names can be found [here](https://mocadb.ca/associations).",
                                     ]
