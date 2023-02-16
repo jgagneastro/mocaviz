@@ -46,7 +46,7 @@ figure_export_config = {
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days']
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days']
 #accepted_moca_mtids = ['BF','HM','CM','LM']
 accepted_moca_mtids = ['BF','HM','CM']
 dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE moca_aid='nonexistent'")
@@ -486,17 +486,24 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
         void = 1
 
     #Read layer properties
-    sequences_visible = ylog = True
+    sequences_visible = ylog = br = True
     if "ylog" not in prot_layer_select:
         ylog = False
+    if "br" not in prot_layer_select:
+        br = False
     if "Sequences" not in prot_layer_select:
         sequences_visible = False
+
+    if br:
+        xaxis_title = 'Gaia DR3 G_RP - G_RP color (mag)'
+    else:
+        xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
 
     layout = go.Layout(
         clickmode="event+select",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         dragmode="lasso",
-        xaxis={'title':'Gaia DR3 G - G_RP color (mag)'},
+        xaxis={'title':xaxis_title},
         yaxis={'title':'Rotation period (days)'},
         showlegend=True,
         #autosize=True,
@@ -509,7 +516,10 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
             yanchor="bottom",
         ),
     )
-    hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    if br:
+        hovertemplate = "%{text}<br><br>G_BP - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    else:    
+        hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
     data = []
     colormap = colormap_picker(associations)
 
@@ -526,8 +536,13 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
         else:
             selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
 
+        if br:
+            xdata = dff_aid["br"]
+        else:
+            xdata = dff_aid["gr"]
+
         new_trace = go.Scattergl(
-            x=dff_aid["gr"],#This is the x in the MOCA column
+            x=xdata,#This is the x in the MOCA column
             y=dff_aid["prot_days"],#This is the y in the MOCA column
             opacity=0.8,
             mode="markers",
@@ -547,7 +562,10 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
     #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
 
     #Default axis range
-    fig.update_layout(xaxis_range=[0.2,1.5])
+    if br:
+        fig.update_layout(xaxis_range=[0.2,3.2])
+    else:
+        fig.update_layout(xaxis_range=[0.2,1.5])
     
     yrange = [0.1,20]
     if ylog:
@@ -573,7 +591,21 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
 
     return fig
 
-def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_visible, sequences_visible, hover_select):
+def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_layer_select, hover_select):
+
+    #Read layer properties
+    sequences_visible = field_visible = br = True
+    if "Field Stars" not in cmd_layer_select:
+        field_visible = False
+    if "Sequences" not in cmd_layer_select:
+        sequences_visible = False
+    if "br" not in cmd_layer_select:
+        br = False
+
+    #Not yet implemented
+    if br:
+        sequences_visible = False
+        field_visible = False
 
     #Read hover property
     hover = False
@@ -583,11 +615,16 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     except:
         void = 1
 
+    if br:
+        xaxis_title = 'Gaia DR3 G_RP - G_RP color (mag)'
+    else:
+        xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
+
     layout = go.Layout(
         clickmode="event+select",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         dragmode="lasso",
-        xaxis={'title':'Gaia DR3 G - G_RP color (mag)'},
+        xaxis={'title':xaxis_title},
         yaxis={'title':'Gaia DR3 absolute G-band magnitude (mag)'},
         showlegend=True,
         #autosize=True,
@@ -607,13 +644,11 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     data = []
     colormap = colormap_picker(associations)
 
-    print(field_visible)
     if not field_visible:
         field_visible_input = "legendonly"
     else:
         field_visible_input = True
 
-    print(sequences_visible)
     if not sequences_visible:
         sequences_visible_input = "legendonly"
     else:
@@ -655,8 +690,13 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
         else:
             selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
 
+        if br:
+            xdata = dff_aid["br"]
+        else:
+            xdata = dff_aid["gr"]
+        
         new_trace = go.Scattergl(
-            x=dff_aid["gr"],#This is the x in the MOCA column
+            x=xdata,#This is the x in the MOCA column
             y=dff_aid["m_g"],#This is the y in the MOCA column
             opacity=0.8,
             mode="markers",
@@ -733,7 +773,10 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
 
     #Default axis range
     fig.update_layout(yaxis_range=[20,-2])
-    fig.update_layout(xaxis_range=[-0.5,2.5])
+    if br:
+        fig.update_layout(xaxis_range=[-0.5,3.5])
+    else:
+        fig.update_layout(xaxis_range=[-0.5,2.5])
 
     fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         text="MOCAdb",
@@ -880,6 +923,10 @@ app.layout = html.Div(
                                             "label": " Empirical 22, 40, and 100 Myr Sequences",
                                             "value": "Sequences",
                                         },
+                                        {
+                                            "label": " G_BP - G_RP X axis",
+                                            "value": "br",
+                                        },
                                     ],
                                     value=["Field Stars"],
                                 ),
@@ -999,6 +1046,10 @@ app.layout = html.Div(
                                         {
                                             "label": " Logarithmic Y axis",
                                             "value": "ylog",
+                                        },
+                                        {
+                                            "label": " G_BP - G_RP X axis",
+                                            "value": "br",
                                         },
                                     ],
                                     value=["ylog"],
@@ -1139,6 +1190,7 @@ def update_aid_select(
         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
+        df['br'] = df['bmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
@@ -1370,12 +1422,6 @@ def update_yz_map(
 def update_gaiadr3_cmd(
     selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
 ):
-    
-    sequences_visible = field_visible = True
-    if "Field Stars" not in cmd_layer_select:
-        field_visible = False
-    if "Sequences" not in cmd_layer_select:
-        sequences_visible = False
 
     print("CMD callback")
     processed_data, prop_id = selection_helper(selections)
@@ -1401,7 +1447,7 @@ def update_gaiadr3_cmd(
     #         return self_figure
 
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, field_visible, sequences_visible, hover_select)
+    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
 
 # Running the server
 #if __name__ == "__main__":
