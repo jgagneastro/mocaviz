@@ -475,7 +475,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
 
     return fig
 
-def generate_prot_color(dff, associations, selected_data, hover_select):
+def generate_prot_color(dff, associations, selected_data, prot_layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -484,6 +484,13 @@ def generate_prot_color(dff, associations, selected_data, hover_select):
             hover = "closest"
     except:
         void = 1
+
+    #Read layer properties
+    sequences_visible = ylog = True
+    if "ylog" not in prot_layer_select:
+        ylog = False
+    if "Sequences" not in prot_layer_select:
+        sequences_visible = False
 
     layout = go.Layout(
         clickmode="event+select",
@@ -540,9 +547,14 @@ def generate_prot_color(dff, associations, selected_data, hover_select):
     #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
 
     #Default axis range
-    fig.update_layout(yaxis_range=[np.log10(0.1),np.log10(50)])
     fig.update_layout(xaxis_range=[0.2,1.5])
-    fig.update_layout(yaxis_type = "log")
+    
+    yrange = [0.1,20]
+    if ylog:
+        fig.update_layout(yaxis_range=[np.log10(yrange[0]),np.log10(yrange[1])])
+        fig.update_layout(yaxis_type = "log")
+    else:
+        fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
 
     fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         text="MOCAdb",
@@ -977,6 +989,21 @@ app.layout = html.Div(
                     children=[
                         #html.Br(),
                         build_graph_title("Rotation periods"),
+                        dcc.Checklist(
+                                    id="prot-layer-select",
+                                    options=[
+                                        {
+                                            "label": " Empirical Sequences",
+                                            "value": "Empirical Sequences",
+                                        },
+                                        {
+                                            "label": " Logarithmic Y axis",
+                                            "value": "ylog",
+                                        },
+                                    ],
+                                    value=["ylog"],
+                                ),
+                        html.Br(),
                         dcc.Graph(id="prot-color",config=figure_export_config),
                     ],
                 ),
@@ -1132,13 +1159,13 @@ def update_aid_select(
             #"prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
-        #xymap_view=Input("xymap-view-selector", "value"),
+        prot_layer_select=Input("prot-layer-select", "value"),
         hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("prot-color", "figure")),
 )
 def update_prot_color(
-    selections, jsonified_db_data, hover_select, aid_select, self_figure
+    selections, jsonified_db_data, prot_layer_select, hover_select, aid_select, self_figure
 ):
     
     print("PROT callback")
@@ -1146,7 +1173,7 @@ def update_prot_color(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data, orient='split')
-    return generate_prot_color(df, aid_select, processed_data, hover_select)
+    return generate_prot_color(df, aid_select, processed_data, prot_layer_select, hover_select)
 
 # Update XYZ Map
 @app.callback(
@@ -1355,23 +1382,23 @@ def update_gaiadr3_cmd(
     if prop_id is None:
        return self_figure
     
-    if prop_id == "cmd-layer-select":
-        if self_figure is not None:
-            if not field_visible:
-                self_figure["data"][0]["visible"] = "legendonly"
-            else:
-                self_figure["data"][0]["visible"] = True
-            if not sequences_visible:
-                self_figure["data"][-1]["visible"] = "legendonly"
-                self_figure["data"][-2]["visible"] = "legendonly"
-                self_figure["data"][-3]["visible"] = "legendonly"
-            else:
-                self_figure["data"][-1]["visible"] = True
-                self_figure["data"][-2]["visible"] = True
-                self_figure["data"][-3]["visible"] = True
-            return self_figure
-        else:
-            return self_figure
+    # if prop_id == "cmd-layer-select":
+    #     if self_figure is not None:
+    #         if not field_visible:
+    #             self_figure["data"][0]["visible"] = "legendonly"
+    #         else:
+    #             self_figure["data"][0]["visible"] = True
+    #         if not sequences_visible:
+    #             self_figure["data"][-1]["visible"] = "legendonly"
+    #             self_figure["data"][-2]["visible"] = "legendonly"
+    #             self_figure["data"][-3]["visible"] = "legendonly"
+    #         else:
+    #             self_figure["data"][-1]["visible"] = True
+    #             self_figure["data"][-2]["visible"] = True
+    #             self_figure["data"][-3]["visible"] = True
+    #         return self_figure
+    #     else:
+    #         return self_figure
 
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, field_visible, sequences_visible, hover_select)
