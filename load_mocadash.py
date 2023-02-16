@@ -29,7 +29,7 @@ app = dash.Dash(
 server = app.server
 #app.config["suppress_callback_exceptions"] = True
 
-initial_aids = ["ABDMG","BPMG","TWA"]
+initial_aids = ["ABDMG","BPMG","TWA","THA"]
 initial_mtids = ["BF","HM"]
 #aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
@@ -292,7 +292,7 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
 
     fig = go.Figure(data=data,layout=layout)
 
-    fig.update_layout(title_text='MOCA database '+title)
+    #fig.update_layout(title_text='MOCA database '+title)
 
     #Default axis range
     if (xvar=='x' or xvar=='y' or xvar=='z'):
@@ -311,6 +311,23 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
         fig.update_layout(xaxis_range=[-70,20])
     if yvar=='w':
         fig.update_layout(yaxis_range=[-70,20])
+
+
+    #import pdb; pdb.set_trace()
+    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+        text="MOCAdb",
+        showarrow=False,
+        align="right",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        yshift=-10,
+        xshift=-25,
+        )
 
     return fig
 
@@ -733,7 +750,7 @@ app.layout = html.Div(
         ),
         html.Div(
             className="row",
-            id="bottom-row",
+            id="first-data-row",
             children=[
                 #CMD
                 html.Div(
@@ -767,28 +784,6 @@ app.layout = html.Div(
                     children=[
                         html.Br(),
                         build_graph_title("Galactic X, Y, Z coordinates"),
-                        html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="xyz-map",config=figure_export_config),
-                    ],
-                ),
-                # UVW
-                html.Div(
-                    id="uvw-container",
-                    className="four columns",
-                    children=[
-                        html.Br(),
-                        build_graph_title("Galactic U, V, W space velocities"),
-                        html.Br(),html.Br(),html.Br(),
-                        dcc.Graph(id="uvw-map",config=figure_export_config),
-                    ],
-                ),
-                # XY
-                html.Div(
-                    id="xy-container",
-                    className="three columns",
-                    children=[
-                        html.Br(),
-                        build_graph_title("Galactic X, Y coordinates"),
                         dcc.Checklist(
                                     id="xymap-view-selector",
                                     options=[
@@ -804,6 +799,34 @@ app.layout = html.Div(
                                     value=["Association Centers", "BANYAN Models"],
                                 ),
                         html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
+                        dcc.Graph(id="xyz-map",config=figure_export_config),
+                    ],
+                ),
+                # UVW
+                html.Div(
+                    id="uvw-container",
+                    className="four columns",
+                    children=[
+                        html.Br(),
+                        build_graph_title("Galactic U, V, W space velocities"),
+                        html.Br(),html.Br(),html.Br(),
+                        dcc.Graph(id="uvw-map",config=figure_export_config),
+                    ],
+                ),
+            ],
+        ),
+        html.Div(
+            className="row",
+            id="second-data-row",
+            children=[
+                # XY
+                html.Div(
+                    id="xy-container",
+                    className="three columns",
+                    children=[
+                        #html.Br(),
+                        build_graph_title("Galactic X, Y coordinates"),
                         dcc.Graph(id="xy-map",config=figure_export_config),
                     ],
                 ),
@@ -812,9 +835,10 @@ app.layout = html.Div(
                     id="yz-container",
                     className="three columns",
                     children=[
-                        html.Br(),
+                        #html.Br(),
                         build_graph_title("Galactic Y, Z coordinates"),
-                        html.Br(),html.Br(),html.Br(),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="yz-map",config=figure_export_config),
                     ],
                 ),
@@ -823,9 +847,10 @@ app.layout = html.Div(
                     id="uv-container",
                     className="three columns",
                     children=[
-                        html.Br(),
+                        #html.Br(),
                         build_graph_title("Galactic U, V space velocities"),
-                        html.Br(),html.Br(),html.Br(),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="uv-map",config=figure_export_config),
                     ],
                 ),
@@ -834,9 +859,10 @@ app.layout = html.Div(
                     id="uw-container",
                     className="three columns",
                     children=[
-                        html.Br(),
+                        #html.Br(),
                         build_graph_title("Galactic U, W space velocities"),
-                        html.Br(),html.Br(),html.Br(),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="uw-map",config=figure_export_config),
                     ],
                 ),
@@ -844,7 +870,7 @@ app.layout = html.Div(
         ),
         html.Div(
             className="row",
-            id="row-four",
+            id="table-row",
             children=[
                 #Table
                 html.Div(
