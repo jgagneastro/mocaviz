@@ -1259,3 +1259,8 @@ def update_gaiadr3_cmd(
 #    app.run_server(host='0.0.0.0',debug=True)
 if __name__ == "__main__":
     app.run_server(debug=True)
+
+# The following line is required by Phusion Passenger.
+# It exposes the WSGI App using the application variable.
+# by jmcouillard using this reference : https://community.plotly.com/t/deploying-dash-app-on-a-wsgi-service/57867
+application = app.server
