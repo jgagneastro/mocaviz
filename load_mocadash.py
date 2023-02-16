@@ -46,7 +46,7 @@ figure_export_config = {
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w']
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days']
 #accepted_moca_mtids = ['BF','HM','CM','LM']
 accepted_moca_mtids = ['BF','HM','CM']
 dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE moca_aid='nonexistent'")
@@ -475,6 +475,92 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
 
     return fig
 
+def generate_prot_color(dff, associations, selected_data, hover_select):
+
+    #Read hover property
+    hover = False
+    try:
+        if hover_select[0] == 'Enable Hover Properties':
+            hover = "closest"
+    except:
+        void = 1
+
+    layout = go.Layout(
+        clickmode="event+select",
+        uirevision=1, #Prevent the resetting of user-defined zoom level etc.
+        dragmode="lasso",
+        xaxis={'title':'Gaia DR3 G - G_RP color (mag)'},
+        yaxis={'title':'Rotation period (days)'},
+        showlegend=True,
+        #autosize=True,
+        hovermode=hover,
+        margin=dict(l=110, r=50, t=50, b=50),
+        legend=dict(
+            orientation="h",
+            x=0,
+            y=-0.25,
+            yanchor="bottom",
+        ),
+    )
+    hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    data = []
+    colormap = colormap_picker(associations)
+
+    text_list = build_hover(dff)
+    aid_list = dff["moca_aid"].tolist()
+    text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    dff['text_list'] = text_list
+
+    for association in associations:
+
+        dff_aid = dff[dff["moca_aid"] == association]
+        if selected_data is None:
+            selected_index = None
+        else:
+            selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
+
+        new_trace = go.Scattergl(
+            x=dff_aid["gr"],#This is the x in the MOCA column
+            y=dff_aid["prot_days"],#This is the y in the MOCA column
+            opacity=0.8,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": colormap[association], "size": 5},
+            text=dff_aid['text_list'],
+            name=association,
+            selectedpoints=selected_index,
+            customdata=dff_aid["moca_oid"],
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        data.append(new_trace)
+
+    fig = go.Figure(data=data,layout=layout)
+
+    #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
+
+    #Default axis range
+    fig.update_layout(yaxis_range=[np.log10(0.1),np.log10(50)])
+    fig.update_layout(xaxis_range=[0.2,1.5])
+    fig.update_layout(yaxis_type = "log")
+
+    fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+        text="MOCAdb",
+        showarrow=False,
+        align="left",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        yshift=-10,
+        xshift=30,
+        )
+
+    return fig
+
 def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_visible, sequences_visible, hover_select):
 
     #Read hover property
@@ -637,10 +723,10 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
     fig.update_layout(yaxis_range=[20,-2])
     fig.update_layout(xaxis_range=[-0.5,2.5])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         text="MOCAdb",
         showarrow=False,
-        align="right",
+        align="left",
         valign="top",
         opacity=0.8,
         font=dict(
@@ -649,7 +735,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
             color="rgb(192,198,206)",
             ),
         yshift=-10,
-        xshift=-30,
+        xshift=30,
         )
 
     return fig
@@ -891,6 +977,22 @@ app.layout = html.Div(
         ),
         html.Div(
             className="row",
+            id="third-data-row",
+            children=[
+                # PROT
+                html.Div(
+                    id="prot-container",
+                    className="four columns",
+                    children=[
+                        #html.Br(),
+                        build_graph_title("Rotation periods"),
+                        dcc.Graph(id="prot-color",config=figure_export_config),
+                    ],
+                ),
+            ],
+        ),
+        html.Div(
+            className="row",
             id="table-row",
             children=[
                 #Table
@@ -937,7 +1039,8 @@ app.layout = html.Div(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1054,6 +1157,35 @@ def update_aid_select(
 #     return df.to_json(date_format='iso', orient='split')
 
 
+# Update prot-color
+@app.callback(
+    output=Output("prot-color", "figure"),
+    inputs=dict(
+        selections={
+            "uv-map":Input("uv-map", "selectedData"),
+            "uw-map":Input("uw-map", "selectedData"),
+            "xy-map":Input("xy-map", "selectedData"),
+            "yz-map":Input("yz-map", "selectedData"),
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            #"prot-color":Input("prot-color", "selectedData"),
+        },
+        jsonified_db_data=Input("db-data", "data"),
+        #xymap_view=Input("xymap-view-selector", "value"),
+        hover_select=Input("hover-select", "value"),
+    ),
+    state=dict(aid_select=State("aid-select", "value"), self_figure=State("prot-color", "figure")),
+)
+def update_prot_color(
+    selections, jsonified_db_data, hover_select, aid_select, self_figure
+):
+    
+    print("PROT callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_prot_color(df, aid_select, processed_data, hover_select)
+
 # Update XYZ Map
 @app.callback(
     output=Output("xyz-map", "figure"),
@@ -1063,7 +1195,8 @@ def update_aid_select(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1091,7 +1224,8 @@ def update_xyz_map(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1119,7 +1253,8 @@ def update_uvw_map(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1147,7 +1282,8 @@ def update_uv_map(
             #"uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1175,7 +1311,8 @@ def update_uw_map(
             "uw-map":Input("uw-map", "selectedData"),
             #"xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1203,7 +1340,8 @@ def update_xy_map(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             #"yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
@@ -1231,7 +1369,8 @@ def update_yz_map(
             "uw-map":Input("uw-map", "selectedData"),
             "xy-map":Input("xy-map", "selectedData"),
             "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData")
+            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+            "prot-color":Input("prot-color", "selectedData"),
         },
         jsonified_db_data=Input("db-data", "data"),
         cmd_layer_select=Input("cmd-layer-select", "value"),
