@@ -312,8 +312,6 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
     if yvar=='w':
         fig.update_layout(yaxis_range=[-70,20])
 
-
-    #import pdb; pdb.set_trace()
     fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
         text="MOCAdb",
         showarrow=False,
@@ -326,7 +324,7 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
             color="rgb(192,198,206)",
             ),
         yshift=-10,
-        xshift=-25,
+        xshift=-30,
         )
 
     return fig
@@ -359,6 +357,15 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
             #font=dict(color="white"),
             yanchor="top",
         ),
+        annotations = [dict(
+            showarrow = False,
+            x = 0,
+            y = 0,
+            text = "MOCAdb",
+            xanchor = "left",
+            xshift = 10,
+            opacity = 0.7,
+          )],
     )
     
     colormap = colormap_picker(associations)
@@ -438,34 +445,33 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
-    fig.update_layout(title_text='MOCA database '+title)
+    #fig.update_layout(title_text='MOCA database '+title)
 
-    #Dont set default axis range for now because I cannot zoom out of it in the dash app
-    # #Default axis range
-    # if (xvar=='x' or xvar=='y' or xvar=='z'):
-    #     fig.update_scenes(xaxis={'range':[-150,150]})
-    # if (yvar=='x' or yvar=='y' or yvar=='z'):
-    #     fig.update_scenes(yaxis={'range':[-150,150]})
-    # if (zvar=='x' or zvar=='y' or zvar=='z'):
-    #     fig.update_scenes(zaxis={'range':[-150,150]})
-    # if xvar=='u':
-    #     fig.update_scenes(xaxis={'range':[-80,70]})
-    # if yvar=='u':
-    #     fig.update_scenes(yaxis={'range':[-80,70]})
-    # if zvar=='u':
-    #     fig.update_scenes(zaxis={'range':[-80,70]})
-    # if xvar=='v':
-    #     fig.update_scenes(xaxis={'range':[-70,20]})
-    # if yvar=='v':
-    #     fig.update_scenes(yaxis={'range':[-70,20]})
-    # if zvar=='v':
-    #     fig.update_scenes(zaxis={'range':[-70,20]})
-    # if xvar=='w':
-    #     fig.update_scenes(xaxis={'range':[-70,20]})
-    # if yvar=='w':
-    #     fig.update_scenes(yaxis={'range':[-70,20]})
-    # if zvar=='w':
-    #     fig.update_scenes(zaxis={'range':[-70,20]})
+    #Default axis range
+    if (xvar=='x' or xvar=='y' or xvar=='z'):
+        fig.update_scenes(xaxis={'range':[-150,150]})
+    if (yvar=='x' or yvar=='y' or yvar=='z'):
+        fig.update_scenes(yaxis={'range':[-150,150]})
+    if (zvar=='x' or zvar=='y' or zvar=='z'):
+        fig.update_scenes(zaxis={'range':[-150,150]})
+    if xvar=='u':
+        fig.update_scenes(xaxis={'range':[-80,70]})
+    if yvar=='u':
+        fig.update_scenes(yaxis={'range':[-80,70]})
+    if zvar=='u':
+        fig.update_scenes(zaxis={'range':[-80,70]})
+    if xvar=='v':
+        fig.update_scenes(xaxis={'range':[-70,20]})
+    if yvar=='v':
+        fig.update_scenes(yaxis={'range':[-70,20]})
+    if zvar=='v':
+        fig.update_scenes(zaxis={'range':[-70,20]})
+    if xvar=='w':
+        fig.update_scenes(xaxis={'range':[-70,20]})
+    if yvar=='w':
+        fig.update_scenes(yaxis={'range':[-70,20]})
+    if zvar=='w':
+        fig.update_scenes(zaxis={'range':[-70,20]})
 
     return fig
 
@@ -625,11 +631,26 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, field_v
 
     fig = go.Figure(data=data,layout=layout)
     
-    fig.update_layout(title_text='MOCA database Gaia DR3 color-magnitude diagram')
+    #fig.update_layout(title_text='MOCA database Gaia DR3 color-magnitude diagram')
 
     #Default axis range
     fig.update_layout(yaxis_range=[20,-2])
     fig.update_layout(xaxis_range=[-0.5,2.5])
+
+    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+        text="MOCAdb",
+        showarrow=False,
+        align="right",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        yshift=-10,
+        xshift=-30,
+        )
 
     return fig
 
