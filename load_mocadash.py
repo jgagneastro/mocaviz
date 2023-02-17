@@ -1285,6 +1285,8 @@ def update_table(
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation'].values.astype("U")+'&search-type=star)'
     
     df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['designation'].values.astype("U")," ","%20")+'&search-type=star)'
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['moca_oid'].values.astype("U")+'&search-type=star)'
+    df['moca_aid'] = '['+df['moca_aid'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['moca_aid'].values.astype("U")," ","%20")+'&search-type=association)'
 
     #import numpy.core.defchararray as np_f
     #
@@ -1565,7 +1567,7 @@ def update_gaiadr3_cmd(
        return self_figure
     if prop_id == "gaiadr3-cmd":
         return self_figure
-    
+
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
 
