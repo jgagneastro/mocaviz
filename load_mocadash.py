@@ -141,6 +141,9 @@ def selection_helper(selections):
         splitted = ctx.triggered[0]["prop_id"].split(".")
         prop_id = splitted[0]
         prop_type = splitted[1]
+    else:
+        return None, None
+        #import pdb; pdb.set_trace()
 
     processed_data = None
     selected_data = None
@@ -150,7 +153,7 @@ def selection_helper(selections):
         selected_data = selections[prop_id]
         #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
-            print(len(selected_data['points']))
+            #print(len(selected_data['points']))
             if len(selected_data['points']) == 0:
                 return None, None
         if selected_data is None:
@@ -204,6 +207,120 @@ def build_hover(dff):
 
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
+
+#RV Time series
+def generate_rvts(dfrvts):
+
+    layout = go.Layout(
+        uirevision=1, #Prevent the resetting of user-defined zoom level etc.
+        xaxis={'title':"Epoch (years)"},
+        yaxis={'title':"Radial velocity (km/s)"},
+        hovermode="closest",
+        margin=dict(l=110, r=50, t=50, b=50),
+    )
+
+    hovertemplate = "%{text}<br><br>Year : %{x:.1f}<br>RV (km/s) : %{y:.1f}<extra></extra>"
+    data = []
+
+    text_list = list(
+        map(
+            lambda x1, x2, x3, x4, x5, x6: "RV error (km/s) : "+str(x1)+"<br>N : "+str(x2)+"<br>Bibcode : "+str(x3)+"<br>Mission : "+str(x4)+str(x5)+"<br>Instrument : "+str(x6),
+            dfrvts["erv"],
+            dfrvts["n_measurements"],
+            dfrvts["bibcode"],
+            dfrvts["mission_name"],
+            dfrvts["data_release"],
+            dfrvts["moca_instid"],
+        ))
+
+    #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+
+    new_trace = go.Scatter(#go.Scattergl(
+        x=dfrvts["yr"].values,
+        y=dfrvts['rv'].values,
+        opacity=0.8,
+        mode="markers",
+        #marker=dict(color="#000000", size=8),
+        hovertemplate=hovertemplate,
+        marker=dict(
+            color='rgba(0,0,0,0)',
+            size=10,
+            line=dict(
+                color='DarkSlateGrey',
+                width=2,
+            ),
+        ),
+        text=text_list,
+        error_y=dict(
+            type='data',
+            array=dfrvts['erv'].values,
+            visible=True),
+        )
+    
+    # new_trace = go.Scattergl(
+    #         x=dfspe["wv"],#This is the x in the MOCA column
+    #         y=dfspe["ff"],#This is the y in the MOCA column
+    #         opacity=0.8,
+    #         #mode="lines",
+    #         mode="markers",
+    #         marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
+    #         #hoverinfo=hoverinfo,
+    #         #text=dff_aid['text_list'],
+    #         #name=association,
+    #         #selectedpoints=selected_index,
+    #         #customdata=dff_aid["moca_oid"],
+    #     )
+    #     #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
+    #     #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
+    
+    data.append(new_trace)
+
+    fig = go.Figure(data=data,layout=layout)
+    #fig.show()
+
+    #import pdb; pdb.set_trace()
+
+    #fig.update_layout(yaxis_range=[0,3])
+    #fig.update_layout(xaxis_range=[dfspe["wv"].min(),dfspe["wv"].max()])
+    print("RVTS FIGURE DRAWN")
+    #fig.show()
+
+    #fig.update_layout(title_text='MOCA database '+title)
+
+    # #Default axis range
+    # if (xvar=='x' or xvar=='y' or xvar=='z'):
+    #     fig.update_layout(xaxis_range=[-150,150])
+    # if (yvar=='x' or yvar=='y' or yvar=='z'):
+    #     fig.update_layout(yaxis_range=[-150,150])
+    # if xvar=='u':
+    #     fig.update_layout(xaxis_range=[-80,70])
+    # if yvar=='u':
+    #     fig.update_layout(yaxis_range=[-80,70])
+    # if xvar=='v':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='v':
+    #     fig.update_layout(yaxis_range=[-70,20])
+    # if xvar=='w':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='w':
+    #     fig.update_layout(yaxis_range=[-70,20])
+
+    # fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+    #     text="MOCAdb",
+    #     showarrow=False,
+    #     align="right",
+    #     valign="top",
+    #     opacity=0.8,
+    #     font=dict(
+    #         family="Courier New, monospace",
+    #         size=16,
+    #         color="rgb(192,198,206)",
+    #         ),
+    #     yshift=-10,
+    #     xshift=-30,
+    #     )
+    
+    return fig
 
 def generate_spectrum(dfspe):
 
@@ -507,6 +624,7 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
                 z=dff_plot[zvar],#This is the y in the MOCA column
                 opacity=unselected_opacity,
                 mode="markers",
+                showlegend=False,
                 marker={"color": colormap[association], "size": 3},
                 text=dff_plot["text_list"],
                 name=association,
@@ -1310,6 +1428,22 @@ app.layout = html.Div(
         #     className="row",
         #     id="singleobj-data-row-1",
         #     children=[
+        #         # RV time series
+        #         html.Div(
+        #             id="rvts-container",
+        #             className="four columns",
+        #             children=[
+        #                 #html.Br(),
+        #                 build_graph_title("Radial velocities"),
+        #                 dcc.Graph(id="rvts-fig",config=figure_export_config),
+        #             ],
+        #         ),
+        #     ],
+        # ),
+        # html.Div(
+        #     className="row",
+        #     id="singleobj-data-row-2",
+        #     children=[
         #         # Spectrum
         #         html.Div(
         #             id="spectrum-container",
@@ -1467,15 +1601,61 @@ def update_aid_select(
 
 # # Update spectrum figure
 # @app.callback(
+#     output=Output("rvts-fig", "figure"),
+#     inputs=dict(
+#         selections=selections,
+#     ),
+#     state=dict(self_figure=State("rvts-fig", "figure")),
+# )
+# def update_spectrum_fig(
+#     selections, self_figure
+# ):
+    
+#     print("RVTS callback")
+#     processed_data, prop_id = selection_helper(selections)
+    
+#     #import pdb; pdb.set_trace()
+
+#     if prop_id == "rvts-fig":
+#         print("RETURNS SELF1")
+#         return self_figure
+    
+#     if prop_id is None:
+#        #import pdb; pdb.set_trace()
+#        print("RETURNS SELF2")
+#        return self_figure
+
+#     if processed_data is None:
+#         print("RETURNS SELF3")
+#         return self_figure
+    
+#     if len(processed_data) != 1:
+#         print("RETURNS NONE1")
+#         return None
+
+#     #Query the database
+#     dfrvts = moca.query("SELECT radial_velocity_kms rv, radial_velocity_kms_unc erv, epoch yr, moca_instid, n_measurements, mission_name, data_release, mp.bibcode FROM data_radial_velocities dd LEFT JOIN moca_publications mp USING(moca_pid) WHERE adopted=1 AND moca_oid="+str(selections[prop_id]['points'][0]['customdata']))
+
+#     if dfrvts is None:
+#         print("RETURNS NONE2")
+#         return None
+    
+#     if len(dfrvts) == 0:
+#         print("RETURNS NONE3")
+#         return None
+
+#     return generate_rvts(dfrvts)
+
+# # Update spectrum figure
+# @app.callback(
 #     output=Output("spectrum-fig", "figure"),
 #     inputs=dict(
 #         selections=selections,
-#         jsonified_db_data=Input("db-data", "data"),
 #     ),
 #     state=dict(self_figure=State("spectrum-fig", "figure")),
 # )
 # def update_spectrum_fig(
-#     selections, jsonified_db_data, self_figure
+#     selections, self_figure
 # ):
     
 #     print("Spectrum callback")
