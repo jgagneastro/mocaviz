@@ -205,6 +205,107 @@ def build_hover(dff):
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
 
+def generate_spectrum(dfspe):
+
+    #Read hover property
+    hoverinfo = "skip"
+
+    layout = go.Layout(
+        #clickmode="event+select",
+        uirevision=1, #Prevent the resetting of user-defined zoom level etc.
+        #dragmode="lasso",
+        xaxis={'title':"Wavelength (Angstroms)"},
+        yaxis={'title':"Spectral flux density (Flambda)"},
+        #showlegend=True,
+        #autosize=True,
+        #hovermode=hover,
+        #hovermode="closest",
+        margin=dict(l=110, r=50, t=50, b=50),
+        #margin=dict(l=0, r=0, t=0, b=0),
+        # legend=dict(
+        #     #bgcolor="#1f2c56",
+        #     orientation="h",
+        #     #font=dict(color="white"),
+        #     x=0,
+        #     y=-0.25,
+        #     yanchor="bottom",
+        # ),
+    )
+
+    #colormap = colormap_picker(associations)
+
+    data = []
+
+    # text_list = build_hover(dff)
+    # aid_list = dff["moca_aid"].tolist()
+    # text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    # dff['text_list'] = text_list
+
+    new_trace = go.Scattergl(x=dfspe["wv"].values,y=dfspe['ff'].values/dfspe['ff'].median(),opacity=0.8,mode="lines")
+            
+    # new_trace = go.Scattergl(
+    #         x=dfspe["wv"],#This is the x in the MOCA column
+    #         y=dfspe["ff"],#This is the y in the MOCA column
+    #         opacity=0.8,
+    #         #mode="lines",
+    #         mode="markers",
+    #         marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
+    #         #hoverinfo=hoverinfo,
+    #         #text=dff_aid['text_list'],
+    #         #name=association,
+    #         #selectedpoints=selected_index,
+    #         #customdata=dff_aid["moca_oid"],
+    #     )
+    #     #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
+    #     #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
+    data.append(new_trace)
+
+    fig = go.Figure(data=data,layout=layout)
+
+    #import pdb; pdb.set_trace()
+
+    fig.update_layout(yaxis_range=[0,3])
+    fig.update_layout(xaxis_range=[dfspe["wv"].min(),dfspe["wv"].max()])
+    print("FIGURE DRAWN")
+
+    #fig.update_layout(title_text='MOCA database '+title)
+
+    # #Default axis range
+    # if (xvar=='x' or xvar=='y' or xvar=='z'):
+    #     fig.update_layout(xaxis_range=[-150,150])
+    # if (yvar=='x' or yvar=='y' or yvar=='z'):
+    #     fig.update_layout(yaxis_range=[-150,150])
+    # if xvar=='u':
+    #     fig.update_layout(xaxis_range=[-80,70])
+    # if yvar=='u':
+    #     fig.update_layout(yaxis_range=[-80,70])
+    # if xvar=='v':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='v':
+    #     fig.update_layout(yaxis_range=[-70,20])
+    # if xvar=='w':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='w':
+    #     fig.update_layout(yaxis_range=[-70,20])
+
+    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+        text="MOCAdb",
+        showarrow=False,
+        align="right",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        yshift=-10,
+        xshift=-30,
+        )
+    fig.show()
+
+    return fig
+
 def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
 
     # #Read hover property
@@ -1205,6 +1306,22 @@ app.layout = html.Div(
                 ),
             ],
         ),
+        # html.Div(
+        #     className="row",
+        #     id="singleobj-data-row-1",
+        #     children=[
+        #         # Spectrum
+        #         html.Div(
+        #             id="spectrum-container",
+        #             className="four columns",
+        #             children=[
+        #                 #html.Br(),
+        #                 build_graph_title("Spectrum"),
+        #                 dcc.Graph(id="spectrum-fig",config=figure_export_config),
+        #             ],
+        #         ),
+        #     ],
+        # ),
         html.Div(
             className="row",
             id="table-row",
@@ -1347,6 +1464,47 @@ def update_aid_select(
     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
     return df.to_json(date_format='iso', orient='split')
+
+# # Update spectrum figure
+# @app.callback(
+#     output=Output("spectrum-fig", "figure"),
+#     inputs=dict(
+#         selections=selections,
+#         jsonified_db_data=Input("db-data", "data"),
+#     ),
+#     state=dict(self_figure=State("spectrum-fig", "figure")),
+# )
+# def update_spectrum_fig(
+#     selections, jsonified_db_data, self_figure
+# ):
+    
+#     print("Spectrum callback")
+#     processed_data, prop_id = selection_helper(selections)
+    
+#     #import pdb; pdb.set_trace()
+#     #6912
+
+#     if prop_id == "spectrum-fig":
+#         return self_figure
+#     if prop_id is None:
+#        return self_figure
+
+#     if processed_data is None:
+#         return None
+    
+#     if len(processed_data) != 1:
+#         return None
+
+#     #Query the database
+#     dfspe = moca.query("SELECT wavelength_angstrom wv, flux_flambda ff FROM moca_spectra ms LEFT JOIN data_spectra ds USING(moca_specid) WHERE ms.moca_oid="+str(selections[prop_id]['points'][0]['customdata']))
+
+#     if dfspe is None:
+#         return None
+    
+#     if len(dfspe) == 0:
+#         return None
+
+#     return generate_spectrum(dfspe)
 
 # Update prot-color
 @app.callback(
