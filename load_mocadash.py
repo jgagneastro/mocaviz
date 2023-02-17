@@ -1284,7 +1284,7 @@ def update_table(
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation']+'&search-type=star)'
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation'].values.astype("U")+'&search-type=star)'
     
-    df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['designation'].values.astype("U")," ","%20")+'&search-type=star)'
+    df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(np_f.replace(df['designation'].values.astype("U")," ","%20"),"+","%2B")+'&search-type=star)'
     #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['moca_oid'].values.astype("U")+'&search-type=star)'
     df['moca_aid'] = '['+df['moca_aid'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['moca_aid'].values.astype("U")," ","%20")+'&search-type=association)'
 
