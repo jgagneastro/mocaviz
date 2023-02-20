@@ -77,6 +77,14 @@ df_cmd_seq_25['customdata'] = 'NaN'
 df_cmd_seq_40['customdata'] = 'NaN'
 df_cmd_seq_100['customdata'] = 'NaN'
 
+
+df_prot_seq_prae = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_prae_prelim'")
+df_prot_seq_ple = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ple_prelim'")
+df_prot_seq_ngc6811 = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ngc6811_prelim'")
+df_prot_seq_prae['customdata'] = 'NaN'
+df_prot_seq_ple['customdata'] = 'NaN'
+df_prot_seq_ngc6811['customdata'] = 'NaN'
+
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
@@ -235,7 +243,7 @@ def generate_rvts(dfrvts):
 
     #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
 
-    new_trace = go.Scatter(#go.Scattergl(
+    new_trace = go.Scattergl(
         x=dfrvts["yr"].values,
         y=dfrvts['rv'].values,
         opacity=0.8,
@@ -405,7 +413,11 @@ def generate_spectrum(dfspe):
     # if yvar=='w':
     #     fig.update_layout(yaxis_range=[-70,20])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+        x=1,
+        y=1,
+        xref="x domain",
+        yref="y domain",
         text="MOCAdb",
         showarrow=False,
         align="right",
@@ -416,8 +428,8 @@ def generate_spectrum(dfspe):
             size=16,
             color="rgb(192,198,206)",
             ),
-        yshift=-10,
-        xshift=-30,
+        #yshift=-10,
+        #xshift=-30,
         )
     fig.show()
 
@@ -458,8 +470,8 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
             orientation="h",
             #font=dict(color="white"),
             x=0,
-            y=-0.25,
-            yanchor="bottom",
+            y=-0.2,
+            yanchor="top",
         ),
     )
 
@@ -530,7 +542,11 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
     if yvar=='w':
         fig.update_layout(yaxis_range=[-70,20])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+        x=1,
+        y=1,
+        xref="x domain",
+        yref="y domain",
         text="MOCAdb",
         showarrow=False,
         align="right",
@@ -541,8 +557,8 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
             size=16,
             color="rgb(192,198,206)",
             ),
-        yshift=-10,
-        xshift=-30,
+        #yshift=-10,
+        #xshift=-30,
         )
 
     return fig
@@ -567,23 +583,24 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
         showlegend=True,
         #autosize=True,
         hovermode=hover,
-        margin=dict(l=110, r=50, t=50, b=50),
-        #margin=dict(l=0, r=0, t=0, b=0),
+        #margin=dict(l=110, r=50, t=50, b=50),
+        margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
             #bgcolor="#1f2c56",
             orientation="h",
             #font=dict(color="white"),
+            #y = -2,
             yanchor="top",
         ),
-        annotations = [dict(
-            showarrow = False,
-            x = 0,
-            y = 0,
-            text = "MOCAdb",
-            xanchor = "left",
-            xshift = 10,
-            opacity = 0.7,
-          )],
+        # annotations = [dict(
+        #     showarrow = False,
+        #     x = 0,
+        #     y = 0,
+        #     text = "MOCAdb",
+        #     xanchor = "left",
+        #     xshift = 10,
+        #     opacity = 0.7,
+        #   )],
     )
     
     colormap = colormap_picker(associations)
@@ -664,6 +681,25 @@ def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+        x=0,
+        y=1,
+        xref="x domain",
+        yref="y domain",
+        text="MOCAdb",
+        showarrow=False,
+        align="left",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        #yshift=-10,
+        #xshift=30,
+        )
+
     #fig.update_layout(title_text='MOCA database '+title)
 
     #Default axis range
@@ -713,8 +749,12 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
     if "Sequences" not in prot_layer_select:
         sequences_visible = False
 
+    #Only show preliminary sequences in B-R
+    if not br:
+        sequences_visible = False
+
     if br:
-        xaxis_title = 'Gaia DR3 G_RP - G_RP color (mag)'
+        xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
     else:
         xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
 
@@ -731,14 +771,15 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
         legend=dict(
             orientation="h",
             x=0,
-            y=-0.25,
-            yanchor="bottom",
+            y=-0.2,
+            yanchor="top",
         ),
     )
     if br:
         hovertemplate = "%{text}<br><br>G_BP - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
     else:    
         hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    
     data = []
     colormap = colormap_picker(associations)
 
@@ -776,6 +817,49 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    #Show preliminary sequences
+    seqwid = 1
+    seqcol = '#0066FF'
+    new_trace = go.Scattergl(
+            x=df_prot_seq_ple["br"],
+            y=df_prot_seq_ple["prot"],
+            customdata=df_prot_seq_ple['customdata'],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dot'),
+            hoverinfo='skip',
+            name='Pleiades (100 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scattergl(
+            x=df_prot_seq_prae["br"],
+            y=df_prot_seq_prae["prot"],
+            customdata=df_prot_seq_prae['customdata'],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),
+            hoverinfo='skip',
+            name='Praesepe (600 Myr)',
+            visible=sequences_visible,
+            #showlegend=False,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scattergl(
+            x=df_prot_seq_ngc6811["br"],
+            y=df_prot_seq_ngc6811["prot"],
+            customdata=df_prot_seq_ngc6811['customdata'],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),#, dash='dot'
+            hoverinfo='skip',
+            name='NGC 6811 (1 Gyr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
 
     #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
@@ -786,14 +870,18 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
     else:
         fig.update_layout(xaxis_range=[0.2,1.5])
     
-    yrange = [0.1,20]
+    yrange = [0.1,25]
     if ylog:
         fig.update_layout(yaxis_range=[np.log10(yrange[0]),np.log10(yrange[1])])
         fig.update_layout(yaxis_type = "log")
     else:
         fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+        x=0,
+        y=1,
+        xref="x domain",
+        yref="y domain",
         text="MOCAdb",
         showarrow=False,
         align="left",
@@ -804,8 +892,8 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
             size=16,
             color="rgb(192,198,206)",
             ),
-        yshift=-10,
-        xshift=30,
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -830,7 +918,7 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
         sequences_visible = False
 
     if br:
-        xaxis_title = 'Gaia DR3 G_RP - G_RP color (mag)'
+        xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
     else:
         xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
 
@@ -847,8 +935,8 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
         legend=dict(
             orientation="h",
             x=0,
-            y=-0.25,
-            yanchor="bottom",
+            y=-0.2,
+            yanchor="top",
         ),
     )
     if br:
@@ -909,7 +997,11 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
     else:
         fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+        xref="x domain",
+        yref="y domain",
+        x=0,
+        y=1,
         text="MOCAdb",
         showarrow=False,
         align="left",
@@ -920,8 +1012,8 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
             size=16,
             color="rgb(192,198,206)",
             ),
-        yshift=-10,
-        xshift=30,
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -951,7 +1043,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
         void = 1
 
     if br:
-        xaxis_title = 'Gaia DR3 G_RP - G_RP color (mag)'
+        xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
     else:
         xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
 
@@ -971,8 +1063,8 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             orientation="h",
             #font=dict(color="white"),
             x=0,
-            y=-0.25,
-            yanchor="bottom",
+            y=-0.2,
+            yanchor="top",
         ),
     )
     hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
@@ -1057,16 +1149,17 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
     #Add empirical isochrones
     seqwid = 1
     seqcol = '#0066FF'
+    
     new_trace = go.Scattergl(
-            x=df_cmd_seq_25["gr"],
-            y=df_cmd_seq_25["m_g"],
+            x=df_cmd_seq_100["gr"],
+            y=df_cmd_seq_100["m_g"],
             opacity=0.9,
             mode="lines",
             line=dict(color=seqcol, width=seqwid),
             hoverinfo='skip',
-            name='22 Myr',
-            showlegend=False,
-            customdata=df_cmd_seq_25['customdata'],
+            name='100 Myr',
+            #showlegend=False,
+            customdata=df_cmd_seq_100['customdata'],
             visible=sequences_visible_input,
         )
     #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
@@ -1077,10 +1170,10 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             y=df_cmd_seq_40["m_g"],
             opacity=0.9,
             mode="lines",
-            line=dict(color=seqcol, width=seqwid),
+            line=dict(color=seqcol, width=seqwid, dash="dash"),
             hoverinfo='skip',
             name='40 Myr',
-            showlegend=False,
+            #showlegend=False,
             customdata=df_cmd_seq_40['customdata'],
             visible=sequences_visible_input,
         )
@@ -1088,15 +1181,15 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
     data.append(new_trace)
 
     new_trace = go.Scattergl(
-            x=df_cmd_seq_100["gr"],
-            y=df_cmd_seq_100["m_g"],
+            x=df_cmd_seq_25["gr"],
+            y=df_cmd_seq_25["m_g"],
             opacity=0.9,
             mode="lines",
-            line=dict(color=seqcol, width=seqwid),
+            line=dict(color=seqcol, width=seqwid, dash="dot"),
             hoverinfo='skip',
-            name='100 Myr',
-            showlegend=False,
-            customdata=df_cmd_seq_100['customdata'],
+            name='22 Myr',
+            #showlegend=False,
+            customdata=df_cmd_seq_25['customdata'],
             visible=sequences_visible_input,
         )
     #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
@@ -1113,10 +1206,14 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
     else:
         fig.update_layout(xaxis_range=[-0.5,2.5])
 
-    fig.add_annotation(x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
+        x = 1,
+        y = 1,
+        xref="x domain",
+        yref="y domain",
         text="MOCAdb",
         showarrow=False,
-        align="left",
+        align="right",
         valign="top",
         opacity=0.8,
         font=dict(
@@ -1124,8 +1221,8 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             size=16,
             color="rgb(192,198,206)",
             ),
-        yshift=-10,
-        xshift=30,
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -1164,7 +1261,7 @@ app.layout = html.Div(
                                     "Holding the SHIFT key while clicking on an association name "
                                     "will open the MOCA report for that association in a new tab. "
                                     ,html.Br(),
-                                    "Clicking on a Plotly legend item will turn on or off the display of one association only in the specific panel where it was clicked."
+                                    "Clicking on a Plotly legend item will turn on or off the display of one association only in the specific panel where it was clicked. Double-clicking a legend item will only display the association in question."
                                     ,html.Br(),
                                     "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations."
                                     ,html.Br(),html.Br(),
@@ -1255,7 +1352,7 @@ app.layout = html.Div(
                                             "value": "Field Stars",
                                         },
                                         {
-                                            "label": " Empirical 22, 40, and 100 Myr Sequences",
+                                            "label": " Empirical Sequences",
                                             "value": "Sequences",
                                         },
                                         {
@@ -1263,7 +1360,8 @@ app.layout = html.Div(
                                             "value": "br",
                                         },
                                     ],
-                                    value=["Field Stars"],
+                                    value=["Sequences", "Field Stars"],
+                                    labelStyle={'presentation': 'markdown'},
                                 ),
                         html.Br(),
                         dcc.Graph(id="gaiadr3-cmd",config=figure_export_config),
@@ -1376,7 +1474,7 @@ app.layout = html.Div(
                                     options=[
                                         {
                                             "label": " Empirical Sequences",
-                                            "value": "Empirical Sequences",
+                                            "value": "Sequences",
                                         },
                                         {
                                             "label": " Logarithmic Y axis",
@@ -1387,7 +1485,7 @@ app.layout = html.Div(
                                             "value": "br",
                                         },
                                     ],
-                                    value=["ylog"],
+                                    value=["Sequences","br"],
                                 ),
                         html.Br(),
                         dcc.Graph(id="prot-color",config=figure_export_config),
@@ -1403,10 +1501,10 @@ app.layout = html.Div(
                         dcc.Checklist(
                                     id="gaia-act-layer-select",
                                     options=[
-                                        {
-                                            "label": " Empirical Sequences",
-                                            "value": "Empirical Sequences",
-                                        },
+                                        # {
+                                        #     "label": " Empirical Sequences",
+                                        #     "value": "Empirical Sequences",
+                                        # },
                                         {
                                             "label": " Logarithmic Y axis",
                                             "value": "ylog",
