@@ -1529,6 +1529,11 @@ def update_table(
     # Read data from session memory
     df = pd.read_json(jsonified_db_data, orient='split')
     
+    #If no group is loaded then return empty dataframe
+    if len(df) == 0:
+        selected_index = []
+        return dfe.to_dict('records'), selected_index, get_style_data_conditional(selected_index)
+
     #Add clickable links
     #'[Google](https://www.google.com)'
     #df['designation'] = '['+df['designation']
