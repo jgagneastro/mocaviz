@@ -602,13 +602,18 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
 
 def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
 
-    #Read hover property
+    # Read hover property
     hover = False
     try:
         if hover_select[0] == 'Enable Hover Properties':
             hover = "closest"
     except:
         void = 1
+
+    # Read layer properties
+    models_visible = True
+    if "BANYAN Models" not in style:
+        models_visible = False
 
     layout = go.Layout(
         #clickmode="event+select",
@@ -703,33 +708,27 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
             data.append(new_trace)
 
         #Plot the appropriate BANYAN models
-        dfm_aid = dfm[dfm["moca_aid"] == association]
+        if models_visible:
+            dfm_aid = dfm[dfm["moca_aid"] == association]
 
-        for index, dfm_row in dfm_aid.iterrows():
+            for index, dfm_row in dfm_aid.iterrows():
 
-            #Rebuild covariance matrix
-            covar_matrix = np.array([[dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],[dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],[dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]])
+                #Rebuild covariance matrix
+                covar_matrix = np.array([[dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],[dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],[dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]])
 
-            offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen'],dfm_row[zvar+'_cen']])
+                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen'],dfm_row[zvar+'_cen']])
 
-            covar_matrix = np.array([
-                [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],
-                [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],
-                [dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]
-                ])
+                covar_matrix = np.array([
+                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],
+                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],
+                    [dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]
+                    ])
 
-            ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
+                ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
 
-            for elli in ellipses:
-                data.append(elli)
+                for elli in ellipses:
+                    data.append(elli)
             
-            #[data.append(elli) for elli in ellipses]
-            #import pdb; pdb.set_trace()
-
-            
-
-            
-    
     new_trace = go.Scatter3d(
             x=[0],
             y=[0],
@@ -1441,16 +1440,16 @@ app.layout = html.Div(
                         dcc.Checklist(
                                     id="xymap-view-selector",
                                     options=[
-                                        {
-                                            "label": "Association Centers",
-                                            "value": "Association Centers",
-                                        },
+                                        # {
+                                        #     "label": "Association Centers",
+                                        #     "value": "Association Centers",
+                                        # },
                                         {
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
                                         },
                                     ],
-                                    value=["Association Centers", "BANYAN Models"],
+                                    value=["BANYAN Models"],
                                 ),
                         html.Br(),
                         #html.Br(),html.Br(),html.Br(),
