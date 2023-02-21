@@ -1,8 +1,8 @@
 from plotly.offline import iplot
 import plotly.graph_objs as go
-import plotly.express as px 
+#import plotly.express as px 
 
-from astropy.io import fits
+#from astropy.io import fits
 
 import numpy as np
 import pandas as pd
