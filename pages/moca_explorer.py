@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, dash_table
+from dash import html, dcc, dash_table, get_asset_url
 
 dash.register_page(__name__)
 
@@ -177,7 +177,7 @@ def build_banner():
         id="banner",
         className="banner",
         children=[
-            #html.Img(src=app.get_asset_url("dash-logo.png")),
+            html.Img(src=get_asset_url("dash-logo.png")),
             html.H6("MOCA explorer"),
         ],
     )

@@ -62,7 +62,7 @@ def gh_build_banner():
         className="banner",
         children=[
             #html.Img(src=app.get_asset_url("dash-logo.png")),
-            html.H6("Hierarchical breakdown of MOCA associations "),
+            html.H6("Hierarchical breakdown of MOCA associations ",style={'color':"#000000","backgroundColor":"#DEDDE1", "marginLeft": 0, "width":"100%"}),
         ],
     )
 
@@ -79,7 +79,7 @@ layout = html.Div(
                 children=[
                     "This page shows the hierarchical structures of subgroups in MOCAdb, ignoring duplicates, deprecated assocations, and associations without parents or children. Click on a young association to center the sunburst diagram on the association in question. More information on the short association names can be found [here](https://mocadb.ca/associations).",
                 ]
-                , style={"width": "100%", "whiteSpace": "pre-wrap"},#, "color":"white"
+                , style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"#F5F8FA"},#, "color":"white"
             ),
     	html.Br(),
         dcc.Graph(id="gh-sunburst",config=figure_export_config, figure=generate_gh_sunburst(), style={"height" : "100vh"}),#"width": "100%"
