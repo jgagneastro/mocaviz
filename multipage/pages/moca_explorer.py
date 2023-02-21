@@ -1685,36 +1685,36 @@ def update_table(
 
     return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
-# Update AID- and MTID-select
-@dash.callback(
-    output=Output("db-data","data"),
-    inputs=[
-        Input("aid-select", "value"),
-        Input("mtid-select", "value"),
-    ],
-)
-def update_aid_select(
-    aid_select, mtid_select
-):
+# # Update AID- and MTID-select
+# @dash.callback(
+#     output=Output("db-data","data"),
+#     inputs=[
+#         Input("aid-select", "value"),
+#         Input("mtid-select", "value"),
+#     ],
+# )
+# def update_aid_select(
+#     aid_select, mtid_select
+# ):
     
-    print("DBQUERY callback")
+#     print("DBQUERY callback")
     
-    #Prevent app from crashing if no associations are selected
-    if len(aid_select) == 0:
-        df = dfe
-    else: 
-        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
-        df['gr'] = df['gmag']-df['rmag']
-        df['br'] = df['bmag']-df['rmag']
-        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#     #Prevent app from crashing if no associations are selected
+#     if len(aid_select) == 0:
+#         df = dfe
+#     else: 
+#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+#         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+#         df['gr'] = df['gmag']-df['rmag']
+#         df['br'] = df['bmag']-df['rmag']
+#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
-    print("Downloaded "+str(len(df))+" rows of general data from DB")
+#     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
-    return df.to_json(date_format='iso', orient='split')
+#     return df.to_json(date_format='iso', orient='split')
 
 # # Update spectrum figure
 # @dash.callback(
@@ -2025,6 +2025,114 @@ def update_gaiadr3_cmd(
 
     df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+
+# def update_gaiadr3_cmd(
+#     selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
+# ):
+
+#     print("CMD callback")
+#     processed_data, prop_id = selection_helper(selections)
+#     if prop_id is None:
+#        return self_figure
+#     if prop_id == "gaiadr3-cmd":
+#         return self_figure
+
+#     df = pd.read_json(jsonified_db_data, orient='split')
+#     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+
+# Update AID- and MTID-select
+@dash.callback(
+    output=Output("db-data","data"),
+    inputs=[
+        Input("aid-select", "value"),
+        Input("mtid-select", "value"),
+    ],
+)
+def update_aid_select(
+    aid_select, mtid_select
+):
+    
+    print("DBQUERY callback")
+    
+    #Prevent app from crashing if no associations are selected
+    if len(aid_select) == 0:
+        df = dfe
+    else: 
+        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df['gr'] = df['gmag']-df['rmag']
+        df['br'] = df['bmag']-df['rmag']
+        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+
+    print("Downloaded "+str(len(df))+" rows of general data from DB")
+
+    return df.to_json(date_format='iso', orient='split')
+
+# def update_aid_select(
+#     aid_select, mtid_select
+# ):
+    
+#     print("DBQUERY callback")
+    
+#     #Prevent app from crashing if no associations are selected
+#     if len(aid_select) == 0:
+#         df = dfe
+#     else: 
+#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+#         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+#         df['gr'] = df['gmag']-df['rmag']
+#         df['br'] = df['bmag']-df['rmag']
+#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+
+#     print("Downloaded "+str(len(df))+" rows of general data from DB")
+
+#     return df.to_json(date_format='iso', orient='split')
+
+# from dash import clientside_callback
+
+# # Update AID- and MTID-select
+# clientside_callback(
+#     """
+#     update_aid_select_clientside(aid_select, mtid_select) {
+#         return update_aid_select(aid_select, mtid_select);
+#     }
+#     """,
+#     Output("db-data","data"),    
+#     Input("aid-select", "value"),
+#     Input("mtid-select", "value"),
+# )
+
+
+# # Update Gaia DR3 CMD
+# clientside_callback(
+#     """
+#     update_gaiadr3_cmd_clientside(selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure) {
+#         return update_gaiadr3_cmd(selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure);
+#     }
+#     """,
+#     output=Output("gaiadr3-cmd", "figure"),
+#     inputs=dict(
+#         selections={
+#             "uv-map":Input("uv-map", "selectedData"),
+#             "uw-map":Input("uw-map", "selectedData"),
+#             "xy-map":Input("xy-map", "selectedData"),
+#             "yz-map":Input("yz-map", "selectedData"),
+#             "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+#             "prot-color":Input("prot-color", "selectedData"),
+#             "gaia-act-color":Input("gaia-act-color", "selectedData"),
+#         },
+#         jsonified_db_data=Input("db-data", "data"),
+#         cmd_layer_select=Input("cmd-layer-select", "value"),
+#         hover_select=Input("hover-select", "value"),
+#     ),
+#     state=dict(aid_select=State("aid-select", "value"), self_figure=State("gaiadr3-cmd", "figure")),
+# )
 
 # # Running the server
 # #if __name__ == "__main__":
