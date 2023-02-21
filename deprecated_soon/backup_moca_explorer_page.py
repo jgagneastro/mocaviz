@@ -7,16 +7,35 @@ import pathlib, os
 import colorsys
 import numpy.core.defchararray as np_f
 
+#conda install python-dotenv or pip install python-dotenv
+#from dotenv import load_dotenv
+#load_dotenv()  # take environment variables from .env.
+
 import pandas as pd
 import numpy as np
 
+#import dash
+#from dash import dcc, html, dash_table
+#from dash import html
 import plotly.graph_objs as go
 from dash.dependencies import Input, Output, State
+import plotly.express as px
 
 from mocapy import *
 
+# # app initialize
+# app = dash.Dash(
+#     __name__,
+#     meta_tags=[
+#         {"name": "viewport", "content": "width=device-width, initial-scale=1.0"}
+#     ],
+# )
+# server = app.server
+# #app.config["suppress_callback_exceptions"] = True
+
 initial_aids = ["ABDMG","BPMG","TWA","THA"]
 initial_mtids = ["BF","HM"]
+#aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in initial_aids])
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -32,15 +51,18 @@ moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
 df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act']
-dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members LIMIT 0")
-dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
+#accepted_moca_mtids = ['BF','HM','CM','LM']
+accepted_moca_mtids = ['BF','HM','CM']
+dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE moca_aid='nonexistent'")
 
+#unselected_opacity = 0.06
 unselected_opacity = 0.1
 
-# Load a list of all associations for the Dropdown menu
+#Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
+#text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["name"]+". "+df_mtids["description"]).values.astype("U").tolist()
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
@@ -70,19 +92,20 @@ df_prot_seq_ngc6811['customdata'] = 'NaN'
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
+
 def colormap_picker(aid_list):
-    # Color palettes generated at http://vrl.cs.brown.edu/color
+    #Color palettes generated at http://vrl.cs.brown.edu/color
     la = len(aid_list)
     if la==1:
-        colors = ['#e52638']# red
+        colors = ['#e52638']#red
     elif la== 2:
-        colors = ["#e52638", "#69ef7b"]# red,green
+        colors = ["#e52638", "#69ef7b"]#red,green
     elif la==3:
-        colors = ["#e52638", "#3db447", "#793883"]# red,green,blue
+        colors = ["#e52638", "#3db447", "#793883"]#red,green,blue
     elif la==4:
-        colors = ["#e52638", "#7bde3f", "#84317b", "#1d8a20"]# red,geen,purple,green
+        colors = ["#e52638", "#7bde3f", "#84317b", "#1d8a20"]#red,geen,purple,green
     elif la==5:
-        colors = ["#e52638", "#4cf185", "#801967", "#3b8738", "#dd3dca"]# red,geen,purple,green,pink
+        colors = ["#e52638", "#4cf185", "#801967", "#3b8738", "#dd3dca"]#red,geen,purple,green,pink
     elif la==6:
         colors = ["#e52638", "#61f22d", "#d45fea", "#84bc04", "#672396", "#a4c28a"]
     elif la==7:
@@ -132,6 +155,7 @@ def selection_helper(selections):
         prop_type = splitted[1]
     else:
         return None, None
+        #import pdb; pdb.set_trace()
 
     processed_data = None
     selected_data = None
@@ -139,8 +163,9 @@ def selection_helper(selections):
     print(" Triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
-        # Deal with circular callbacks that tend to reset selection
+        #Deal with circular callbacks that tend to reset selection
         if selected_data is not None:
+            #print(len(selected_data['points']))
             if len(selected_data['points']) == 0:
                 return None, None
         if selected_data is None:
@@ -150,7 +175,6 @@ def selection_helper(selections):
 
     return processed_data, prop_id
 
-# Conditional styling for the DataTable
 def get_style_data_conditional(selected_rows: list = []) -> list:
     non_selected_band_color = "rgb(229, 236, 246)"
     selected_band_color = '#98c21f'
@@ -171,7 +195,6 @@ def get_style_data_conditional(selected_rows: list = []) -> list:
         },
     ]
 
-# Visual website banner
 def build_banner():
     return html.Div(
         id="banner",
@@ -182,7 +205,6 @@ def build_banner():
         ],
     )
 
-# Hover display
 def build_hover(dff):
     return list(
         map(
@@ -198,70 +220,7 @@ def build_hover(dff):
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
 
-# Build 3D ellipsoids to show BANYAN models
-def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.15):
-    
-    #Build rotation matrix with singular value decomposition
-    u, s, vh = np.linalg.svd(covar_matrix)
-    rotmat = u
-    
-    #3D version of 68% volume inclusion requires a factor 1.557
-    #inverf((erf(1d0/sqrt(2d0)))^(1d0/3))*sqrt(2d0)
-    a, b, c = np.sqrt(s)*1.557
-
-    #Build 3D grid
-    phi = np.linspace(0, 2*np.pi,num=20)
-    theta = np.linspace(-np.pi/2, np.pi/2,num=20)
-    phi, theta=np.meshgrid(phi, theta)
-
-    x = np.cos(theta) * np.sin(phi) * a
-    y = np.cos(theta) * np.cos(phi) * b
-    z = np.sin(theta) * c
-
-    xf = x
-    yf = z*b/c
-    zf = y*c/b
-
-    # Create the plot
-    lines = []
-    line_marker = dict(color=trace_color, width=2)
-    
-    # First layer of grid lines
-    for i, j, k in zip(x, y, z):
-        ir, jr, kr = rotmat@[i,j,k]
-        lines.append(go.Scatter3d(x=ir+offset[0], y=jr+offset[1], z=kr+offset[2], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
-    
-    # Second layer of grid lines rotated by 90 degrees
-    for i, j, k in zip(xf, yf, zf):
-        ir, jr, kr = rotmat@[i,j,k]
-        lines.append(go.Scatter3d(x=ir+offset[0], y=jr+offset[1], z=kr+offset[2], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
-
-    return lines
-
-def build_ellipsoid_2d(offset, covar_matrix, trace_color, opacity=0.3):
-    
-    # Build rotation matrix with singular value decomposition
-    u, s, vh = np.linalg.svd(covar_matrix)
-    rotmat = u
-    
-    # 2D version of 68% volume inclusion requires a factor 1.3605
-    # inverf((erf(1d0/sqrt(2d0)))^(1d0/2))*sqrt(2d0)
-    a, b = np.sqrt(s)*1.3605
-
-    # Build 3D grid
-    theta = np.linspace(-np.pi, np.pi, num=50)
-
-    x = np.cos(theta) * a
-    y = np.sin(theta) * b
-
-    # Create the plot
-    line_marker = dict(color=trace_color, width=2)
-    xr, yr = rotmat@[x,y]
-    data = go.Scattergl(x=xr+offset[0], y=yr+offset[1], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False)
-    
-    return data
-
-# RV Time series
+#RV Time series
 def generate_rvts(dfrvts):
 
     layout = go.Layout(
@@ -286,6 +245,8 @@ def generate_rvts(dfrvts):
             dfrvts["moca_instid"],
         ))
 
+    #text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+
     new_trace = go.Scattergl(
         x=dfrvts["yr"].values,
         y=dfrvts['rv'].values,
@@ -308,11 +269,68 @@ def generate_rvts(dfrvts):
             visible=True),
         )
     
+    # new_trace = go.Scattergl(
+    #         x=dfspe["wv"],#This is the x in the MOCA column
+    #         y=dfspe["ff"],#This is the y in the MOCA column
+    #         opacity=0.8,
+    #         #mode="lines",
+    #         mode="markers",
+    #         marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
+    #         #hoverinfo=hoverinfo,
+    #         #text=dff_aid['text_list'],
+    #         #name=association,
+    #         #selectedpoints=selected_index,
+    #         #customdata=dff_aid["moca_oid"],
+    #     )
+    #     #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
+    #     #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
+    
     data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
+    #fig.show()
 
+    #import pdb; pdb.set_trace()
+
+    #fig.update_layout(yaxis_range=[0,3])
+    #fig.update_layout(xaxis_range=[dfspe["wv"].min(),dfspe["wv"].max()])
     print("RVTS FIGURE DRAWN")
+    #fig.show()
+
+    #fig.update_layout(title_text='MOCA database '+title)
+
+    # #Default axis range
+    # if (xvar=='x' or xvar=='y' or xvar=='z'):
+    #     fig.update_layout(xaxis_range=[-150,150])
+    # if (yvar=='x' or yvar=='y' or yvar=='z'):
+    #     fig.update_layout(yaxis_range=[-150,150])
+    # if xvar=='u':
+    #     fig.update_layout(xaxis_range=[-80,70])
+    # if yvar=='u':
+    #     fig.update_layout(yaxis_range=[-80,70])
+    # if xvar=='v':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='v':
+    #     fig.update_layout(yaxis_range=[-70,20])
+    # if xvar=='w':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='w':
+    #     fig.update_layout(yaxis_range=[-70,20])
+
+    # fig.add_annotation(x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
+    #     text="MOCAdb",
+    #     showarrow=False,
+    #     align="right",
+    #     valign="top",
+    #     opacity=0.8,
+    #     font=dict(
+    #         family="Courier New, monospace",
+    #         size=16,
+    #         color="rgb(192,198,206)",
+    #         ),
+    #     yshift=-10,
+    #     xshift=-30,
+    #     )
     
     return fig
 
@@ -322,24 +340,84 @@ def generate_spectrum(dfspe):
     hoverinfo = "skip"
 
     layout = go.Layout(
+        #clickmode="event+select",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
+        #dragmode="lasso",
         xaxis={'title':"Wavelength (Angstroms)"},
         yaxis={'title':"Spectral flux density (Flambda)"},
+        #showlegend=True,
+        #autosize=True,
+        #hovermode=hover,
+        #hovermode="closest",
         margin=dict(l=110, r=50, t=50, b=50),
+        #margin=dict(l=0, r=0, t=0, b=0),
+        # legend=dict(
+        #     #bgcolor="#1f2c56",
+        #     orientation="h",
+        #     #font=dict(color="white"),
+        #     x=0,
+        #     y=-0.25,
+        #     yanchor="bottom",
+        # ),
     )
+
+    #colormap = colormap_picker(associations)
 
     data = []
 
+    # text_list = build_hover(dff)
+    # aid_list = dff["moca_aid"].tolist()
+    # text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    # dff['text_list'] = text_list
+
     new_trace = go.Scattergl(x=dfspe["wv"].values,y=dfspe['ff'].values/dfspe['ff'].median(),opacity=0.8,mode="lines")
+            
+    # new_trace = go.Scattergl(
+    #         x=dfspe["wv"],#This is the x in the MOCA column
+    #         y=dfspe["ff"],#This is the y in the MOCA column
+    #         opacity=0.8,
+    #         #mode="lines",
+    #         mode="markers",
+    #         marker=dict(color=colormap[association], size=4),#, line=dict(width=2,color='DarkSlateGrey')
+    #         #hoverinfo=hoverinfo,
+    #         #text=dff_aid['text_list'],
+    #         #name=association,
+    #         #selectedpoints=selected_index,
+    #         #customdata=dff_aid["moca_oid"],
+    #     )
+    #     #new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
+    #     #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
     data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
 
+    #import pdb; pdb.set_trace()
+
     fig.update_layout(yaxis_range=[0,3])
     fig.update_layout(xaxis_range=[dfspe["wv"].min(),dfspe["wv"].max()])
-    print("SP FIGURE DRAWN")
+    print("FIGURE DRAWN")
 
-    fig.add_annotation(
+    #fig.update_layout(title_text='MOCA database '+title)
+
+    # #Default axis range
+    # if (xvar=='x' or xvar=='y' or xvar=='z'):
+    #     fig.update_layout(xaxis_range=[-150,150])
+    # if (yvar=='x' or yvar=='y' or yvar=='z'):
+    #     fig.update_layout(yaxis_range=[-150,150])
+    # if xvar=='u':
+    #     fig.update_layout(xaxis_range=[-80,70])
+    # if yvar=='u':
+    #     fig.update_layout(yaxis_range=[-80,70])
+    # if xvar=='v':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='v':
+    #     fig.update_layout(yaxis_range=[-70,20])
+    # if xvar=='w':
+    #     fig.update_layout(xaxis_range=[-70,20])
+    # if yvar=='w':
+    #     fig.update_layout(yaxis_range=[-70,20])
+
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
         x=1,
         y=1,
         xref="x domain",
@@ -354,12 +432,22 @@ def generate_spectrum(dfspe):
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=-30,
         )
     fig.show()
 
     return fig
 
-def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
+def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
+
+    # #Read hover property
+    # hover = False
+    # try:
+    #     if hover_select[0] == 'Enable Hover Properties':
+    #         hover = "closest"
+    # except:
+    #     void = 1
 
     #Read hover property
     hoverinfo = "skip"
@@ -368,11 +456,6 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
             hoverinfo = None
     except:
         void = 1
-
-    # Read layer properties
-    models_visible = True
-    if "BANYAN Models" not in style:
-        models_visible = False
 
     layout = go.Layout(
         clickmode="event+select",
@@ -385,8 +468,11 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
         #hovermode=hover,
         hovermode="closest",
         margin=dict(l=110, r=50, t=50, b=50),
+        #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
+            #bgcolor="#1f2c56",
             orientation="h",
+            #font=dict(color="white"),
             x=0,
             y=-0.2,
             yanchor="top",
@@ -423,24 +509,8 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
             customdata=dff_aid["moca_oid"],
         )
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
+        #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
         data.append(new_trace)
-
-        if models_visible:
-        
-            dfm_aid = dfm[dfm["moca_aid"] == association]
-
-            for index, dfm_row in dfm_aid.iterrows():
-
-                #Rebuild covariance matrix and offset from the models dataframe
-                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen']])
-                covar_matrix = np.array([
-                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar']],
-                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar']]
-                    ])
-
-                ellipse = build_ellipsoid_2d(offset, covar_matrix, colormap[association])
-                
-                data.append(ellipse)
     
     new_trace = go.Scattergl(
             x=[0],
@@ -455,6 +525,8 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
     data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
+
+    #fig.update_layout(title_text='MOCA database '+title)
 
     #Default axis range
     if (xvar=='x' or xvar=='y' or xvar=='z'):
@@ -474,7 +546,7 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
     if yvar=='w':
         fig.update_layout(yaxis_range=[-70,20])
 
-    fig.add_annotation(
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][1], y=fig['layout']['yaxis']['range'][1],
         x=1,
         y=1,
         xref="x domain",
@@ -489,13 +561,15 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=-30,
         )
 
     return fig
 
-def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
+def generate_xyz_map(dff, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
 
-    # Read hover property
+    #Read hover property
     hover = False
     try:
         if hover_select[0] == 'Enable Hover Properties':
@@ -503,23 +577,34 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
     except:
         void = 1
 
-    # Read layer properties
-    models_visible = True
-    if "BANYAN Models" not in style:
-        models_visible = False
-
     layout = go.Layout(
+        #clickmode="event+select",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         dragmode="lasso",
         xaxis={'title':xtitle},
         yaxis={'title':ytitle},
+        #zaxis={'title':ztitle},
         showlegend=True,
+        #autosize=True,
         hovermode=hover,
+        #margin=dict(l=110, r=50, t=50, b=50),
         margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
+            #bgcolor="#1f2c56",
             orientation="h",
+            #font=dict(color="white"),
+            #y = -2,
             yanchor="top",
         ),
+        # annotations = [dict(
+        #     showarrow = False,
+        #     x = 0,
+        #     y = 0,
+        #     text = "MOCAdb",
+        #     xanchor = "left",
+        #     xshift = 10,
+        #     opacity = 0.7,
+        #   )],
     )
     
     colormap = colormap_picker(associations)
@@ -551,7 +636,7 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
             dff_deselect = dff_aid[~df_select_index]
             dff_select = dff_aid[df_select_index]
 
-        # Plot the *DE*selected data points
+        #Plot the *DE*selected data points
         if dff_deselect is not None:
             dff_plot = dff_deselect
             new_trace = go.Scatter3d(
@@ -568,7 +653,7 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
             )
             data.append(new_trace)
 
-        # Plot the selected data points
+        #Plot the selected data points
         if dff_select is not None:
             dff_plot = dff_select
             new_trace = go.Scatter3d(
@@ -583,26 +668,7 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
                 customdata=dff_plot["moca_oid"],
             )
             data.append(new_trace)
-
-        # Plot the appropriate BANYAN models
-        if models_visible:
-            dfm_aid = dfm[dfm["moca_aid"] == association]
-
-            for index, dfm_row in dfm_aid.iterrows():
-
-                # Rebuild covariance matrix and offset from the models dataframe
-                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen'],dfm_row[zvar+'_cen']])
-                covar_matrix = np.array([
-                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],
-                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],
-                    [dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]
-                    ])
-
-                ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
-
-                for elli in ellipses:
-                    data.append(elli)
-            
+    
     new_trace = go.Scatter3d(
             x=[0],
             y=[0],
@@ -619,7 +685,7 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
     fig = go.Figure(data=data,layout=layout)
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
     
-    fig.add_annotation(
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         x=0,
         y=1,
         xref="x domain",
@@ -634,7 +700,11 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=30,
         )
+
+    #fig.update_layout(title_text='MOCA database '+title)
 
     #Default axis range
     if (xvar=='x' or xvar=='y' or xvar=='z'):
@@ -777,6 +847,7 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
             hoverinfo='skip',
             name='Praesepe (600 Myr)',
             visible=sequences_visible,
+            #showlegend=False,
         )
     data.append(new_trace)
 
@@ -795,6 +866,8 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
 
     fig = go.Figure(data=data,layout=layout)
 
+    #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
+
     #Default axis range
     if br:
         fig.update_layout(xaxis_range=[0.2,3.2])
@@ -808,7 +881,7 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
     else:
         fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
 
-    fig.add_annotation(
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         x=0,
         y=1,
         xref="x domain",
@@ -823,6 +896,8 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -911,6 +986,8 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
 
     fig = go.Figure(data=data,layout=layout)
 
+    #fig.update_layout(title_text='MOCA database Gaia DR3 color vs rotation period')
+
     #Default axis range
     if br:
         fig.update_layout(xaxis_range=[0.2,3.2])
@@ -924,7 +1001,7 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
     else:
         fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
 
-    fig.add_annotation(
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         xref="x domain",
         yref="y domain",
         x=0,
@@ -939,6 +1016,8 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -979,10 +1058,14 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
         xaxis={'title':xaxis_title},
         yaxis={'title':'Gaia DR3 absolute G-band magnitude (mag)'},
         showlegend=True,
+        #autosize=True,
         hovermode=hover,
         margin=dict(l=110, r=50, t=50, b=50),
+        #margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
+            #bgcolor="#1f2c56",
             orientation="h",
+            #font=dict(color="white"),
             x=0,
             y=-0.2,
             yanchor="top",
@@ -1002,6 +1085,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
     else:
         sequences_visible_input = True
 
+    #import pdb; pdb.set_trace()
     #if field_visible:
     hexcolor = "#000000"
     rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
@@ -1051,10 +1135,18 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             marker={"color": colormap[association], "size": 5},
             text=dff_aid['text_list'],
             name=association,
+            #selectedpoints=[],
             selectedpoints=selected_index,
             customdata=dff_aid["moca_oid"],
         )
         
+        # hexcolor = colormap[association]
+        # rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+        # diff = bcg_color-rgbcolor
+        # rgbcolor_pale = (rgbcolor+diff*(1.0-unselected_opacity)).astype(int)
+        # rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+        # rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+        #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf)))
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
@@ -1074,6 +1166,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             customdata=df_cmd_seq_100['customdata'],
             visible=sequences_visible_input,
         )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
     data.append(new_trace)
 
     new_trace = go.Scattergl(
@@ -1088,6 +1181,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             customdata=df_cmd_seq_40['customdata'],
             visible=sequences_visible_input,
         )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
     data.append(new_trace)
 
     new_trace = go.Scattergl(
@@ -1102,9 +1196,12 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             customdata=df_cmd_seq_25['customdata'],
             visible=sequences_visible_input,
         )
+    #new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
     data.append(new_trace)
 
     fig = go.Figure(data=data,layout=layout)
+    
+    #fig.update_layout(title_text='MOCA database Gaia DR3 color-magnitude diagram')
 
     #Default axis range
     fig.update_layout(yaxis_range=[20,-2])
@@ -1113,7 +1210,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
     else:
         fig.update_layout(xaxis_range=[-0.5,2.5])
 
-    fig.add_annotation(
+    fig.add_annotation(#x=fig['layout']['xaxis']['range'][0], y=fig['layout']['yaxis']['range'][1],
         x = 1,
         y = 1,
         xref="x domain",
@@ -1128,6 +1225,8 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
             size=16,
             color="rgb(192,198,206)",
             ),
+        #yshift=-10,
+        #xshift=30,
         )
 
     return fig
@@ -1199,8 +1298,14 @@ layout = html.Div(
                                 html.Br(),
                                 build_graph_title("Select Membership Types"),
                                 dcc.Markdown(
+                                #html.P(
                                     id="mtid-instructions",
                                     children=["Select the data included in the visualizations below, among the following types of membership:  \n"]+text_mtids
+                                        #(sum([[i,html.Br()] for i in text_mtids],[]))[:-1]
+                                        #[i+"<br>" for i in text_mtids]
+                                        #"BF: Bona fide member. Description",html.Br(),
+                                        #"HM: Bona fide member. Description",html.Br(),
+                                    
                                     , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
                                 ),
                                 dcc.Dropdown(
@@ -1276,18 +1381,19 @@ layout = html.Div(
                         dcc.Checklist(
                                     id="xymap-view-selector",
                                     options=[
-                                        # {
-                                        #     "label": "Association Centers",
-                                        #     "value": "Association Centers",
-                                        # },
+                                        {
+                                            "label": "Association Centers",
+                                            "value": "Association Centers",
+                                        },
                                         {
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
                                         },
                                     ],
-                                    value=["BANYAN Models"],
+                                    value=["Association Centers", "BANYAN Models"],
                                 ),
                         html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="xyz-map",config=figure_export_config),
                     ],
                 ),
@@ -1313,6 +1419,7 @@ layout = html.Div(
                     id="xy-container",
                     className="three columns",
                     children=[
+                        #html.Br(),
                         build_graph_title("Galactic X, Y coordinates"),
                         dcc.Graph(id="xy-map",config=figure_export_config),
                     ],
@@ -1322,7 +1429,10 @@ layout = html.Div(
                     id="yz-container",
                     className="three columns",
                     children=[
+                        #html.Br(),
                         build_graph_title("Galactic Y, Z coordinates"),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="yz-map",config=figure_export_config),
                     ],
                 ),
@@ -1331,7 +1441,10 @@ layout = html.Div(
                     id="uv-container",
                     className="three columns",
                     children=[
+                        #html.Br(),
                         build_graph_title("Galactic U, V space velocities"),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="uv-map",config=figure_export_config),
                     ],
                 ),
@@ -1340,7 +1453,10 @@ layout = html.Div(
                     id="uw-container",
                     className="three columns",
                     children=[
+                        #html.Br(),
                         build_graph_title("Galactic U, W space velocities"),
+                        #html.Br(),
+                        #html.Br(),html.Br(),html.Br(),
                         dcc.Graph(id="uw-map",config=figure_export_config),
                     ],
                 ),
@@ -1355,6 +1471,7 @@ layout = html.Div(
                     id="prot-container",
                     className="four columns",
                     children=[
+                        #html.Br(),
                         build_graph_title("Rotation periods"),
                         dcc.Checklist(
                                     id="prot-layer-select",
@@ -1456,6 +1573,10 @@ layout = html.Div(
                         dash_table.DataTable(
                             id="df-table",
                             columns=[{'id': x, 'name': x, 'presentation': 'markdown'} for x in dfe.columns],
+                            #columns=[{'id': x, 'name': x, 'presentation': 'markdown'} if x == 'designation' else {'id': x, 'name': x} for x in dfe.columns],
+                            #columns=[{"name": i, "id": i} for i in sorted(dfe.columns)],
+                            #row_selectable="multi",
+                            #style_cell={'presentation': 'markdown'},
                             export_format='csv',
                             style_header={
                                 'fontSize': 15,
@@ -1508,7 +1629,7 @@ def update_table(
         return self_data, self_selrows, self_style
 
     # Read data from session memory
-    df = pd.read_json(jsonified_db_data[0], orient='split')
+    df = pd.read_json(jsonified_db_data, orient='split')
     
     #If no group is loaded then return empty dataframe
     if len(df) == 0:
@@ -1516,12 +1637,19 @@ def update_table(
         return dfe.to_dict('records'), selected_index, get_style_data_conditional(selected_index)
 
     #Add clickable links
+    #'[Google](https://www.google.com)'
+    #df['designation'] = '['+df['designation']
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation']+'&search-type=star)'
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['designation'].values.astype("U")+'&search-type=star)'
+    
     df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(np_f.replace(df['designation'].values.astype("U")," ","%20"),"+","%2B")+'&search-type=star)'
+    #df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+df['moca_oid'].values.astype("U")+'&search-type=star)'
     df['moca_aid'] = '['+df['moca_aid'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['moca_aid'].values.astype("U")," ","%20")+'&search-type=association)'
 
+    #import numpy.core.defchararray as np_f
+    #
     df_sorted = df
     df_sorted['num_moca_mtid'] = df_sorted['moca_mtid']
-    
     #This could probably be done better with the moca_membership_types table
     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"BF","1.BF")
     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"HM","2.HM")
@@ -1530,6 +1658,7 @@ def update_table(
     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"AM","5.AM")
     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"R","6.R")
     df_sorted = df_sorted.sort_values(by=['moca_aid', 'num_moca_mtid', 'spt'])
+    #df_sorted = df_sorted.drop('num_moca_mtid')
 
     if processed_data is None:
         selected_index = []
@@ -1542,45 +1671,42 @@ def update_table(
         selected_index = list(range(len(selected_index)))
 
     table_data_style_conditional = get_style_data_conditional(selected_index)
+    #import pdb; pdb.set_trace()
 
     return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
-# Update AID- and MTID-select
-@dash.callback(
-    output=Output("db-data","data"),
-    inputs=[
-        Input("aid-select", "value"),
-        Input("mtid-select", "value"),
-    ],
-)
-def update_aid_select(
-    aid_select, mtid_select
-):
+# # Update AID- and MTID-select
+# @dash.callback(
+#     output=Output("db-data","data"),
+#     inputs=[
+#         Input("aid-select", "value"),
+#         Input("mtid-select", "value"),
+#     ],
+# )
+# def update_aid_select(
+#     aid_select, mtid_select
+# ):
     
-    print("DBQUERY callback")
+#     print("DBQUERY callback")
     
-    #Prevent app from crashing if no associations are selected
-    if len(aid_select) == 0:
-        df = dfe
-        dfm = dfme
-    else: 
-        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
-        df['gr'] = df['gmag']-df['rmag']
-        df['br'] = df['bmag']-df['rmag']
-        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#     #Prevent app from crashing if no associations are selected
+#     if len(aid_select) == 0:
+#         df = dfe
+#     else: 
+#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+#         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+#         df['gr'] = df['gmag']-df['rmag']
+#         df['br'] = df['bmag']-df['rmag']
+#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
 
-        # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
-        dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
+#     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
-    print("Downloaded "+str(len(df))+" rows of general data from DB")
+#     return df.to_json(date_format='iso', orient='split')
 
-    return df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split')
-
-# # Update RVTS figure
+# # Update spectrum figure
 # @dash.callback(
 #     output=Output("rvts-fig", "figure"),
 #     inputs=dict(
@@ -1595,12 +1721,14 @@ def update_aid_select(
 #     print("RVTS callback")
 #     processed_data, prop_id = selection_helper(selections)
     
+#     #import pdb; pdb.set_trace()
 
 #     if prop_id == "rvts-fig":
 #         print("RETURNS SELF1")
 #         return self_figure
     
 #     if prop_id is None:
+#        #import pdb; pdb.set_trace()
 #        print("RETURNS SELF2")
 #        return self_figure
 
@@ -1640,6 +1768,9 @@ def update_aid_select(
 #     print("Spectrum callback")
 #     processed_data, prop_id = selection_helper(selections)
     
+#     #import pdb; pdb.set_trace()
+#     #6912
+
 #     if prop_id == "spectrum-fig":
 #         return self_figure
 #     if prop_id is None:
@@ -1683,7 +1814,7 @@ def update_prot_color(
         return self_figure
     if prop_id is None:
        return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
+    df = pd.read_json(jsonified_db_data, orient='split')
     return generate_prot_color(df, aid_select, processed_data, prot_layer_select, hover_select)
 
 # Update gaia-act-color
@@ -1707,7 +1838,7 @@ def update_gaia_act_color(
        return self_figure
     if prop_id == "gaia-act-color":
         return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
+    df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaia_act_color(df, aid_select, processed_data, gaia_act_layer_select, hover_select)
 
 # Update XYZ Map
@@ -1731,10 +1862,8 @@ def update_xyz_map(
        return self_figure
     if prop_id == "xyz-map":
         return self_figure
-    
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xyz_map(df, dfm, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xyz_map(df, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update UVW Map
 @dash.callback(
@@ -1757,9 +1886,8 @@ def update_uvw_map(
        return self_figure
     if prop_id == "uvw-map":
         return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xyz_map(df, dfm, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xyz_map(df, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UV Map
 @dash.callback(
@@ -1788,9 +1916,8 @@ def update_uv_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UW Map
 @dash.callback(
@@ -1813,9 +1940,8 @@ def update_uw_map(
        return self_figure
     if prop_id == "uw-map":
         return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update XY Map
 @dash.callback(
@@ -1838,9 +1964,8 @@ def update_xy_map(
        return self_figure
     if prop_id == "xy-map":
         return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update YZ Map
 @dash.callback(
@@ -1863,9 +1988,8 @@ def update_yz_map(
        return self_figure
     if prop_id == "yz-map":
         return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    df = pd.read_json(jsonified_db_data, orient='split')
+    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update Gaia DR3 CMD
 @dash.callback(
@@ -1889,5 +2013,124 @@ def update_gaiadr3_cmd(
     if prop_id == "gaiadr3-cmd":
         return self_figure
 
-    df = pd.read_json(jsonified_db_data[0], orient='split')
+    df = pd.read_json(jsonified_db_data, orient='split')
     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+
+# def update_gaiadr3_cmd(
+#     selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
+# ):
+
+#     print("CMD callback")
+#     processed_data, prop_id = selection_helper(selections)
+#     if prop_id is None:
+#        return self_figure
+#     if prop_id == "gaiadr3-cmd":
+#         return self_figure
+
+#     df = pd.read_json(jsonified_db_data, orient='split')
+#     return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+
+# Update AID- and MTID-select
+@dash.callback(
+    output=Output("db-data","data"),
+    inputs=[
+        Input("aid-select", "value"),
+        Input("mtid-select", "value"),
+    ],
+)
+def update_aid_select(
+    aid_select, mtid_select
+):
+    
+    print("DBQUERY callback")
+    
+    #Prevent app from crashing if no associations are selected
+    if len(aid_select) == 0:
+        df = dfe
+    else: 
+        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df['gr'] = df['gmag']-df['rmag']
+        df['br'] = df['bmag']-df['rmag']
+        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+
+    print("Downloaded "+str(len(df))+" rows of general data from DB")
+
+    return df.to_json(date_format='iso', orient='split')
+
+# def update_aid_select(
+#     aid_select, mtid_select
+# ):
+    
+#     print("DBQUERY callback")
+    
+#     #Prevent app from crashing if no associations are selected
+#     if len(aid_select) == 0:
+#         df = dfe
+#     else: 
+#         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+#         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+#         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+#         df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+#         df['gr'] = df['gmag']-df['rmag']
+#         df['br'] = df['bmag']-df['rmag']
+#         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+#         df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+
+#     print("Downloaded "+str(len(df))+" rows of general data from DB")
+
+#     return df.to_json(date_format='iso', orient='split')
+
+# from dash import clientside_callback
+
+# # Update AID- and MTID-select
+# clientside_callback(
+#     """
+#     update_aid_select_clientside(aid_select, mtid_select) {
+#         return update_aid_select(aid_select, mtid_select);
+#     }
+#     """,
+#     Output("db-data","data"),    
+#     Input("aid-select", "value"),
+#     Input("mtid-select", "value"),
+# )
+
+
+# # Update Gaia DR3 CMD
+# clientside_callback(
+#     """
+#     update_gaiadr3_cmd_clientside(selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure) {
+#         return update_gaiadr3_cmd(selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure);
+#     }
+#     """,
+#     output=Output("gaiadr3-cmd", "figure"),
+#     inputs=dict(
+#         selections={
+#             "uv-map":Input("uv-map", "selectedData"),
+#             "uw-map":Input("uw-map", "selectedData"),
+#             "xy-map":Input("xy-map", "selectedData"),
+#             "yz-map":Input("yz-map", "selectedData"),
+#             "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
+#             "prot-color":Input("prot-color", "selectedData"),
+#             "gaia-act-color":Input("gaia-act-color", "selectedData"),
+#         },
+#         jsonified_db_data=Input("db-data", "data"),
+#         cmd_layer_select=Input("cmd-layer-select", "value"),
+#         hover_select=Input("hover-select", "value"),
+#     ),
+#     state=dict(aid_select=State("aid-select", "value"), self_figure=State("gaiadr3-cmd", "figure")),
+# )
+
+# # Running the server
+# #if __name__ == "__main__":
+# #    app.run_server(host='0.0.0.0',debug=True)
+# if __name__ == "__main__":
+#     app.run_server(debug=True)
+
+# # The following line is required by Phusion Passenger.
+# # It exposes the WSGI App using the application variable.
+# # by jmcouillard using this reference : https://community.plotly.com/t/deploying-dash-app-on-a-wsgi-service/57867
+# application = app.server
