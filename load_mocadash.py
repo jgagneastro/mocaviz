@@ -223,8 +223,9 @@ def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.15):
     #Build rotation matrix with singular value decomposition
     u, s, vh = np.linalg.svd(covar_matrix)
     rotmat = u
-    #rotmat = np.linalg.inv(u)
+    
     #3D version of 68% volume inclusion requires a factor 1.557
+    #inverf((erf(1d0/sqrt(2d0)))^(1d0/3))*sqrt(2d0)
     a, b, c = np.sqrt(s)*1.557
 
     #Build 3D grid
@@ -255,6 +256,31 @@ def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.15):
         lines.append(go.Scatter3d(x=ir+offset[0], y=jr+offset[1], z=kr+offset[2], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
 
     return lines
+
+def build_ellipsoid_2d(offset, covar_matrix, trace_color, opacity=0.3):
+    
+    #Build rotation matrix with singular value decomposition
+    u, s, vh = np.linalg.svd(covar_matrix)
+    rotmat = u
+    
+    #2D version of 68% volume inclusion requires a factor 1.3605
+    #inverf((erf(1d0/sqrt(2d0)))^(1d0/2))*sqrt(2d0)
+    a, b = np.sqrt(s)*1.3605
+
+    #Build 3D grid
+    #phi = np.linspace(0, 2*np.pi,num=20)
+    theta = np.linspace(-np.pi, np.pi, num=50)
+    #phi, theta=np.meshgrid(phi, theta)
+
+    x = np.cos(theta) * a
+    y = np.sin(theta) * b
+
+    # Create the plot
+    line_marker = dict(color=trace_color, width=2)
+    xr, yr = rotmat@[x,y]
+    data = go.Scattergl(x=xr+offset[0], y=yr+offset[1], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False)
+    
+    return data
 
 #RV Time series
 def generate_rvts(dfrvts):
@@ -472,7 +498,7 @@ def generate_spectrum(dfspe):
 
     return fig
 
-def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
+def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
 
     # #Read hover property
     # hover = False
@@ -489,6 +515,11 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
             hoverinfo = None
     except:
         void = 1
+
+    # Read layer properties
+    models_visible = True
+    if "BANYAN Models" not in style:
+        models_visible = False
 
     layout = go.Layout(
         clickmode="event+select",
@@ -544,6 +575,23 @@ def generate_xy_map(dff, associations, xvar, yvar, xtitle, ytitle, title, select
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))#, line=dict(width=2,color='DarkSlateGrey')
         #new_trace.update(selected=dict(marker=dict(color='red')),unselected=dict(marker=dict(color='blue',opacity=0.001)))
         data.append(new_trace)
+
+        if models_visible:
+        
+            dfm_aid = dfm[dfm["moca_aid"] == association]
+
+            for index, dfm_row in dfm_aid.iterrows():
+
+                #Rebuild covariance matrix and offset from the models dataframe
+                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen']])
+                covar_matrix = np.array([
+                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar']],
+                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar']]
+                    ])
+
+                ellipse = build_ellipsoid_2d(offset, covar_matrix, colormap[association])
+                #import pdb; pdb.set_trace()
+                data.append(ellipse)
     
     new_trace = go.Scattergl(
             x=[0],
@@ -713,11 +761,8 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
 
             for index, dfm_row in dfm_aid.iterrows():
 
-                #Rebuild covariance matrix
-                covar_matrix = np.array([[dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],[dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],[dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]])
-
+                #Rebuild covariance matrix and offset from the models dataframe
                 offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen'],dfm_row[zvar+'_cen']])
-
                 covar_matrix = np.array([
                     [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],
                     [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],
@@ -1977,7 +2022,8 @@ def update_uv_map(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
+    dfm = pd.read_json(jsonified_db_data[1], orient='split')
+    return generate_xy_map(df, dfm, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UW Map
 @app.callback(
@@ -2001,7 +2047,8 @@ def update_uw_map(
     if prop_id == "uw-map":
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_xy_map(df, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
+    dfm = pd.read_json(jsonified_db_data[1], orient='split')
+    return generate_xy_map(df, dfm, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update XY Map
 @app.callback(
@@ -2025,7 +2072,8 @@ def update_xy_map(
     if prop_id == "xy-map":
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_xy_map(df, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
+    dfm = pd.read_json(jsonified_db_data[1], orient='split')
+    return generate_xy_map(df, dfm, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update YZ Map
 @app.callback(
@@ -2049,7 +2097,8 @@ def update_yz_map(
     if prop_id == "yz-map":
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_xy_map(df, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    dfm = pd.read_json(jsonified_db_data[1], orient='split')
+    return generate_xy_map(df, dfm, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update Gaia DR3 CMD
 @app.callback(
