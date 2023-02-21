@@ -370,9 +370,15 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
         void = 1
 
     # Read layer properties
-    models_visible = True
+    models_visible = assume_membership = True
     if "BANYAN Models" not in style:
         models_visible = False
+    if "assmem" not in style:
+        assume_membership = False
+
+    if assume_membership:
+        xvar += "_assmem"
+        yvar += "_assmem"
 
     layout = go.Layout(
         clickmode="event+select",
@@ -504,9 +510,16 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
         void = 1
 
     # Read layer properties
-    models_visible = True
+    models_visible = assume_membership = True
     if "BANYAN Models" not in style:
         models_visible = False
+    if "assmem" not in style:
+        assume_membership = False
+
+    if assume_membership:
+        xvar += "_assmem"
+        yvar += "_assmem"
+        zvar += "_assmem"
 
     layout = go.Layout(
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
@@ -1283,6 +1296,10 @@ layout = html.Div(
                                         {
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
+                                        },
+                                        {
+                                            "label": "Assume Membership",
+                                            "value": "assmem",
                                         },
                                     ],
                                     value=["BANYAN Models"],
