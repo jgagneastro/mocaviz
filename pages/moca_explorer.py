@@ -660,7 +660,7 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
             z=dfo[zvar],#This is the y in the MOCA column
             #opacity=1,
             mode="markers",
-            marker={"color": obj_color, "size": 12, "symbol":"diamond"},
+            marker={"color": obj_color, "size": 8, "symbol":"diamond"},
             text=text_list,
             name="Individual Objects",
         )
