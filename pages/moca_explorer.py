@@ -34,12 +34,14 @@ moca = MocaEngine()
 #Query an empty row to obtain the structure for the table
 df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act']
 dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members LIMIT 0")
+dfoe = dfe.copy(deep=True)
 dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
 unselected_opacity = 0.1
 
 # Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+#df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
 df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
@@ -190,6 +192,19 @@ def build_hover(dff):
             lambda x1, x2, x3, x4, x5: "MOCA OID : "+str(int(x1))+"<br>Designation : "+str(x2)+"<br>Membership : "+str(x3)+"<br>SPT : "+str(x4)+"<br>RUWE : "+str('%.1f' %x5),
             dff["moca_oid"],
             dff["designation"],
+            dff["moca_mtid"],
+            dff["spt"],
+            dff["dr3_ruwe"],
+        )
+    )
+
+def build_hover_dfo(dff):
+    return list(
+        map(
+            lambda x1, x2, x3, x4, x5, x6: "MOCA OID : "+str(int(x1))+"<br>Designation : "+str(x2)+"<br>Membership : "+str(x4)+" in "+str(x3)+"<br>SPT : "+str(x5)+"<br>RUWE : "+str('%.1f' %x6),
+            dff["moca_oid"],
+            dff["designation"],
+            dff["moca_aid"],
             dff["moca_mtid"],
             dff["spt"],
             dff["dr3_ruwe"],
@@ -360,7 +375,7 @@ def generate_spectrum(dfspe):
 
     return fig
 
-def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
+def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, title, selected_data, style, hover_select):
 
     #Read hover property
     hoverinfo = "skip"
@@ -449,6 +464,24 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
                 
                 data.append(ellipse)
     
+    if len(dfo) != 0:
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "red"
+        new_trace = go.Scattergl(
+            x=dfo[xvar],#This is the x in the MOCA column
+            y=dfo[yvar],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            hoverinfo=hoverinfo,
+            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=text_list,
+            name="Individual Objects",
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
+        data.append(new_trace)
+
     new_trace = go.Scattergl(
             x=[0],
             y=[0],
@@ -500,7 +533,7 @@ def generate_xy_map(dff, dfm, associations, xvar, yvar, xtitle, ytitle, title, s
 
     return fig
 
-def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
+def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
 
     # Read hover property
     hover = False
@@ -616,7 +649,23 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
 
                 for elli in ellipses:
                     data.append(elli)
-            
+    
+    if len(dfo) != 0:
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "black"
+        new_trace = go.Scatter3d(
+            x=dfo[xvar],#This is the x in the MOCA column
+            y=dfo[yvar],#This is the y in the MOCA column
+            z=dfo[zvar],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            marker={"color": obj_color, "size": 12, "symbol":"diamond"},
+            text=text_list,
+            name="Individual Objects",
+        )
+        data.append(new_trace)
+
     new_trace = go.Scatter3d(
             x=[0],
             y=[0],
@@ -678,7 +727,7 @@ def generate_xyz_map(dff, dfm, associations, xvar, yvar, zvar, xtitle, ytitle, z
 
     return fig
 
-def generate_prot_color(dff, associations, selected_data, prot_layer_select, hover_select):
+def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -807,6 +856,29 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
         )
     data.append(new_trace)
 
+    if len(dfo) != 0:
+        
+        if br:
+            xdata = dfo["br"]
+        else:
+            xdata = dfo["gr"]
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "red"
+        new_trace = go.Scattergl(
+            x=xdata,#This is the x in the MOCA column
+            y=dfo["prot_days"],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=text_list,
+            name="Individual Objects",
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
+        data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
@@ -841,7 +913,7 @@ def generate_prot_color(dff, associations, selected_data, prot_layer_select, hov
 
     return fig
 
-def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, hover_select):
+def generate_gaia_act_color(dff, dfo, associations, selected_data, act_layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -923,6 +995,29 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    if len(dfo) != 0:
+        
+        if br:
+            xdata = dfo["br"]
+        else:
+            xdata = dfo["gr"]
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "red"
+        new_trace = go.Scattergl(
+            x=xdata,#This is the x in the MOCA column
+            y=dfo["gaia_act"],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=text_list,
+            name="Individual Objects",
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
+        data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
@@ -957,7 +1052,7 @@ def generate_gaia_act_color(dff, associations, selected_data, act_layer_select, 
 
     return fig
 
-def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_layer_select, hover_select):
+def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cmd_layer_select, hover_select):
 
     #Read layer properties
     sequences_visible = field_visible = br = True
@@ -1118,6 +1213,29 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
         )
     data.append(new_trace)
 
+    if len(dfo) != 0:
+        
+        if br:
+            xdata = dfo["br"]
+        else:
+            xdata = dfo["gr"]
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "red"
+        new_trace = go.Scattergl(
+            x=xdata,#This is the x in the MOCA column
+            y=dfo["m_g"],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=text_list,
+            name="Individual Objects",
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
+        data.append(new_trace)
+
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
@@ -1228,7 +1346,15 @@ layout = html.Div(
                                     value=None,
                                 ),
                                 html.Br(),
-                                build_graph_title("Select Options"),
+                                build_graph_title("Select Individual Stars"),
+                                dcc.Markdown(
+                                    id="mtid-instructions",
+                                    children=["Select additional stars to be included in the visualizations below. \n Only moca_oids can be used in an effort to prevent the MOCA explorer from becoming too slow; use the [MOCAdb Reports](https://mocadb.ca/search?type=star) page to resolve object names into moca_oids."]
+                                    , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
+                                ),
+                                dcc.Input(id="oid-select", type="text", placeholder="Insert MOCA object IDs separated by commas.", debounce=True, style={"width": "100%", "whiteSpace": "pre-wrap"}),
+                                html.Br(),html.Br(),
+                                build_graph_title("General Options"),
                                 dcc.Checklist(
                                     id="hover-select",
                                     options=[
@@ -1574,15 +1700,17 @@ def update_table(
         Output("db-data","data"),
         Output("aid-select","value"),
         Output("mtid-select","value"),
+        Output("oid-select","value"),
         ],
     inputs=[
         Input("aid-select", "value"),
         Input("mtid-select", "value"),
+        Input("oid-select", "value"),
     ],
     state=[State("url","search")]
 )
 def update_aid_select(
-    aid_select, mtid_select, url_search
+    aid_select, mtid_select, oid_select, url_search
 ):
     
     print("DBQUERY callback")
@@ -1621,9 +1749,27 @@ def update_aid_select(
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
 
-    print("Downloaded "+str(len(df))+" rows of general data from DB")
+    #Object-based selections
+    oid_set = False
+    if oid_select is not None:
+        if len(oid_select) != 0:
+            oid_set = True
+    
+    if not oid_set:
+        dfo = dfoe
+    else:
+        # Query the moca database to obtain a Pandas DataFrame for the specific group needed
+        oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
+        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
+        dfo['gr'] = dfo['gmag']-dfo['rmag']
+        dfo['br'] = dfo['bmag']-dfo['rmag']
+        dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'])-1)
+        dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'])-1)
 
-    return (df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split')), aid_select, mtid_select
+    print("Downloaded "+str(len(df))+" rows of general data from DB")
+    print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
+
+    return (df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split'), dfo.to_json(date_format='iso', orient='split')), aid_select, mtid_select, oid_select
 
 # # Update RVTS figure
 # @dash.callback(
@@ -1729,7 +1875,8 @@ def update_prot_color(
     if prop_id is None:
        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_prot_color(df, aid_select, processed_data, prot_layer_select, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_prot_color(df, dfo, aid_select, processed_data, prot_layer_select, hover_select)
 
 # Update gaia-act-color
 @dash.callback(
@@ -1753,7 +1900,8 @@ def update_gaia_act_color(
     if prop_id == "gaia-act-color":
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_gaia_act_color(df, aid_select, processed_data, gaia_act_layer_select, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_gaia_act_color(df, dfo, aid_select, processed_data, gaia_act_layer_select, hover_select)
 
 # Update XYZ Map
 @dash.callback(
@@ -1779,7 +1927,8 @@ def update_xyz_map(
     
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xyz_map(df, dfm, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xyz_map(df, dfm, dfo, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update UVW Map
 @dash.callback(
@@ -1804,7 +1953,8 @@ def update_uvw_map(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xyz_map(df, dfm, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xyz_map(df, dfm, dfo, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UV Map
 @dash.callback(
@@ -1835,7 +1985,8 @@ def update_uv_map(
        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xy_map(df, dfm, dfo, aid_select, 'u', 'v', 'U (km/s)', 'V (km/s)', 'UV Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update UW Map
 @dash.callback(
@@ -1860,7 +2011,8 @@ def update_uw_map(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xy_map(df, dfm, dfo, aid_select, 'u', 'w', 'U (km/s)', 'W (km/s)', 'UW Galactic space velocities', processed_data, xymap_view, hover_select)
 
 # Update XY Map
 @dash.callback(
@@ -1885,7 +2037,8 @@ def update_xy_map(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xy_map(df, dfm, dfo, aid_select, 'x', 'y', 'X (pc)', 'Y (pc)', 'XY Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update YZ Map
 @dash.callback(
@@ -1910,7 +2063,8 @@ def update_yz_map(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    return generate_xy_map(df, dfm, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_xy_map(df, dfm, dfo, aid_select, 'y', 'z', 'Y (pc)', 'Z (pc)', 'YZ Galactic coordinates', processed_data, xymap_view, hover_select)
 
 # Update Gaia DR3 CMD
 @dash.callback(
@@ -1935,4 +2089,5 @@ def update_gaiadr3_cmd(
         return self_figure
 
     df = pd.read_json(jsonified_db_data[0], orient='split')
-    return generate_gaiadr3_cmd(df, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_gaiadr3_cmd(df, dfo, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
