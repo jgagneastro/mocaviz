@@ -33,6 +33,8 @@ def generate_gh_sunburst():
         #hovermode=hover,
         #hovermode="closest",
         #margin=dict(l=110, r=50, t=50, b=50),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
         margin=dict(l=0, r=0, t=0, b=0),
     )
 
