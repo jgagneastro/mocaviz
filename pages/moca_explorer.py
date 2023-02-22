@@ -1729,9 +1729,10 @@ def update_aid_select(
                 aid_select = parsed_url_data['asso'][0].split(',')
             if 'mtid' in parsed_url_data.keys():
                 mtid_select = parsed_url_data['mtid'][0].split(',')
+            #OID is always a string in the input box so do not already split it into an array
+            if 'oid' in parsed_url_data.keys():
+                oid_select = parsed_url_data['oid'][0]
     
-    #import pdb; pdb.set_trace()
-
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
         df = dfe
