@@ -1,5 +1,6 @@
 import dash
 from dash import html, dcc, dash_table, get_asset_url
+from urllib.parse import urlparse, parse_qs
 
 dash.register_page(__name__)
 
@@ -1147,6 +1148,7 @@ def generate_gaiadr3_cmd(dff, associations, df_cmd_field, selected_data, cmd_lay
 
 layout = html.Div(
     children=[
+        dcc.Location(id='url', refresh=False),
         html.Div(
             id="top-row",
             children=[
@@ -1207,7 +1209,7 @@ layout = html.Div(
                                         for i in df_aids["moca_aid"].unique().tolist()
                                     ],
                                     multi=True,
-                                    value=initial_aids
+                                    value=None,
                                 ),
                                 html.Br(),
                                 build_graph_title("Select Membership Types"),
@@ -1223,7 +1225,7 @@ layout = html.Div(
                                         for i in df_mtids["moca_mtid"].unique().tolist()
                                     ],
                                     multi=True,
-                                    value=initial_mtids
+                                    value=None,
                                 ),
                                 html.Br(),
                                 build_graph_title("Select Options"),
@@ -1511,7 +1513,11 @@ selections = {
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
     ),
-    state=dict(aid_select=State("aid-select", "value"), self_data=State("df-table", "data"), self_selrows=State("df-table", "selected_rows"), self_style=State("df-table", "style_data_conditional")),
+    state=dict(
+        aid_select=State("aid-select", "value"),
+        self_data=State("df-table", "data"),
+        self_selrows=State("df-table", "selected_rows"),
+        self_style=State("df-table", "style_data_conditional")),
 )
 def update_table(
     selections, jsonified_db_data, xymap_view, aid_select, self_data, self_selrows, self_style
@@ -1564,18 +1570,40 @@ def update_table(
 
 # Update AID- and MTID-select
 @dash.callback(
-    output=Output("db-data","data"),
+    output=[
+        Output("db-data","data"),
+        Output("aid-select","value"),
+        Output("mtid-select","value"),
+        ],
     inputs=[
         Input("aid-select", "value"),
         Input("mtid-select", "value"),
     ],
+    state=[State("url","search")]
 )
 def update_aid_select(
-    aid_select, mtid_select
+    aid_select, mtid_select, url_search
 ):
     
     print("DBQUERY callback")
     
+    # Read default associations from URL if none are selected
+    # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
+    if aid_select is None:
+        #Default values without URL variables
+        if url_search == "":
+            aid_select = initial_aids
+            mtid_select = initial_mtids
+        else:
+            parsed_url = urlparse(url_search)
+            parsed_url_data = parse_qs(parsed_url.query)
+            if 'asso' in parsed_url_data.keys():
+                aid_select = parsed_url_data['asso'][0].split(',')
+            if 'mtid' in parsed_url_data.keys():
+                mtid_select = parsed_url_data['mtid'][0].split(',')
+    
+    #import pdb; pdb.set_trace()
+
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
         df = dfe
@@ -1595,7 +1623,7 @@ def update_aid_select(
 
     print("Downloaded "+str(len(df))+" rows of general data from DB")
 
-    return df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split')
+    return (df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split')), aid_select, mtid_select
 
 # # Update RVTS figure
 # @dash.callback(
