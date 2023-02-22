@@ -71,17 +71,17 @@ layout = html.Div(
     className="twelve columns",
     #id="top-row",
     children=[
-        gh_build_banner(),
+        #gh_build_banner(),
         #html.H1(children='MOCAdb associations hierarchical breakdown'),
-    	dcc.Markdown(
-            #html.P(
-                id="gh-instructions",
-                children=[
-                    "This page shows the hierarchical structures of subgroups in MOCAdb, ignoring duplicates, deprecated assocations, and associations without parents or children. Click on a young association to center the sunburst diagram on the association in question. More information on the short association names can be found [here](https://mocadb.ca/associations).",
-                ]
-                , style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"#F5F8FA"},#, "color":"white"
-            ),
-    	html.Br(),
+    	# dcc.Markdown(
+     #        #html.P(
+     #            id="gh-instructions",
+     #            children=[
+     #                "This page shows the hierarchical structures of subgroups in MOCAdb, ignoring duplicates, deprecated assocations, and associations without parents or children. Click on a young association to center the sunburst diagram on the association in question. More information on the short association names can be found [here](https://mocadb.ca/associations).",
+     #            ]
+     #            , style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"#F5F8FA"},#, "color":"white"
+     #        ),
+    	# html.Br(),
         dcc.Graph(id="gh-sunburst",config=figure_export_config, figure=generate_gh_sunburst(), style={"height" : "100vh"}),#"width": "100%"
 ])
 
