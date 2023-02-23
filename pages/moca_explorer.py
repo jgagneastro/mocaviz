@@ -1762,35 +1762,35 @@ layout = html.Div(
                         dcc.Graph(id="gaia-act-color",config=figure_export_config),
                     ],
                 ),
-                # Lithium
-                html.Div(
-                    id="ewli-container",
-                    className="four columns",
-                    children=[
-                        #html.Br(),
-                        build_graph_title("Lithium equivalent widths"),
-                        dcc.Checklist(
-                                    id="ewli-layer-select",
-                                    options=[
-                                        # {
-                                        #     "label": " Empirical Sequences",
-                                        #     "value": "Empirical Sequences",
-                                        # },
-                                        {
-                                            "label": " Logarithmic Y axis",
-                                            "value": "ylog",
-                                        },
-                                        {
-                                            "label": " G_BP - G_RP X axis",
-                                            "value": "br",
-                                        },
-                                    ],
-                                    value=[],
-                                ),
-                        html.Br(),
-                        dcc.Graph(id="ewli-color",config=figure_export_config),
-                    ],
-                ),
+                # # Lithium
+                # html.Div(
+                #     id="ewli-container",
+                #     className="four columns",
+                #     children=[
+                #         #html.Br(),
+                #         build_graph_title("Lithium equivalent widths"),
+                #         dcc.Checklist(
+                #                     id="ewli-layer-select",
+                #                     options=[
+                #                         # {
+                #                         #     "label": " Empirical Sequences",
+                #                         #     "value": "Empirical Sequences",
+                #                         # },
+                #                         {
+                #                             "label": " Logarithmic Y axis",
+                #                             "value": "ylog",
+                #                         },
+                #                         {
+                #                             "label": " G_BP - G_RP X axis",
+                #                             "value": "br",
+                #                         },
+                #                     ],
+                #                     value=[],
+                #                 ),
+                #         html.Br(),
+                #         dcc.Graph(id="ewli-color",config=figure_export_config),
+                #     ],
+                # ),
             ],
         ),
         # html.Div(
@@ -1864,7 +1864,7 @@ selections = {
             "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
             "prot-color":Input("prot-color", "selectedData"),
             "gaia-act-color":Input("gaia-act-color", "selectedData"),
-            "ewli-color":Input("ewli-color", "selectedData"),
+            #"ewli-color":Input("ewli-color", "selectedData"),
         }
 
 # Update table
@@ -2167,30 +2167,30 @@ def update_gaia_act_color(
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
     return generate_gaia_act_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
 
-# Update ewli-color
-@dash.callback(
-    output=Output("ewli-color", "figure"),
-    inputs=dict(
-        selections=selections,
-        jsonified_db_data=Input("db-data", "data"),
-        layer_select=Input("ewli-layer-select", "value"),
-        hover_select=Input("hover-select", "value"),
-    ),
-    state=dict(aid_select=State("aid-select", "value"), self_figure=State("ewli-color", "figure")),
-)
-def update_gaia_act_color(
-    selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
-):
+# # Update ewli-color
+# @dash.callback(
+#     output=Output("ewli-color", "figure"),
+#     inputs=dict(
+#         selections=selections,
+#         jsonified_db_data=Input("db-data", "data"),
+#         layer_select=Input("ewli-layer-select", "value"),
+#         hover_select=Input("hover-select", "value"),
+#     ),
+#     state=dict(aid_select=State("aid-select", "value"), self_figure=State("ewli-color", "figure")),
+# )
+# def update_gaia_act_color(
+#     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
+# ):
     
-    print("EWLI callback")
-    processed_data, prop_id = selection_helper(selections)
-    if prop_id is None:
-       return self_figure
-    if prop_id == "ewli-color":
-        return self_figure
-    df = pd.read_json(jsonified_db_data[0], orient='split')
-    dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_ewli_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+#     print("EWLI callback")
+#     processed_data, prop_id = selection_helper(selections)
+#     if prop_id is None:
+#        return self_figure
+#     if prop_id == "ewli-color":
+#         return self_figure
+#     df = pd.read_json(jsonified_db_data[0], orient='split')
+#     dfo = pd.read_json(jsonified_db_data[2], orient='split')
+#     return generate_ewli_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
 
 # Update XYZ Map
 @dash.callback(
