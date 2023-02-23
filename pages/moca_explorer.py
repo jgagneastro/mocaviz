@@ -32,7 +32,7 @@ figure_export_config = {
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha','x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
 dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members LIMIT 0")
 dfoe = dfe.copy(deep=True)
 dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
@@ -1151,7 +1151,7 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         dragmode="lasso",
         xaxis={'title':xaxis_title},
-        yaxis={'title':'Lithium equivalent width'},
+        yaxis={'title':'Lithium equivalent width (mA)'},
         showlegend=True,
         #autosize=True,
         hovermode=hover,
@@ -1238,6 +1238,147 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
         fig.update_layout(xaxis_range=[0.2,1.5])
     
     yrange = [-100,750]
+    if ylog:
+        fig.update_layout(yaxis_range=[np.log10(0.001),np.log10(yrange[1])])
+        fig.update_layout(yaxis_type = "log")
+    else:
+        fig.update_layout(yaxis_range=[yrange[0],yrange[1]])
+
+    fig.add_annotation(
+        xref="x domain",
+        yref="y domain",
+        x=0,
+        y=1,
+        text="MOCAdb",
+        showarrow=False,
+        align="left",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        )
+
+    return fig
+
+def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hover_select):
+
+    #Read hover property
+    hover = False
+    try:
+        if hover_select[0] == 'Enable Hover Properties':
+            hover = "closest"
+    except:
+        void = 1
+
+    #Read layer properties
+    sequences_visible = ylog = br = True
+    if "ylog" not in layer_select:
+        ylog = False
+    if "br" not in layer_select:
+        br = False
+    if "Sequences" not in layer_select:
+        sequences_visible = False
+
+    if br:
+        xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
+    else:
+        xaxis_title = 'Gaia DR3 G - G_RP color (mag)'
+
+    layout = go.Layout(
+        clickmode="event+select",
+        uirevision=1, #Prevent the resetting of user-defined zoom level etc.
+        dragmode="lasso",
+        xaxis={'title':xaxis_title},
+        yaxis={'title':'H-alpha equivalent width in emission (A)'},
+        showlegend=True,
+        #autosize=True,
+        hovermode=hover,
+        margin=dict(l=110, r=50, t=50, b=50),
+        legend=dict(
+            orientation="h",
+            x=0,
+            y=-0.2,
+            yanchor="top",
+        ),
+    )
+    if br:
+        hovertemplate = "%{text}<br><br>G_BP - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    else:    
+        hovertemplate = "%{text}<br><br>G - G_RP : %{x:.2f}<br>M_G : %{y:.2f}<extra></extra>"
+    data = []
+    colormap = colormap_picker(associations)
+
+    text_list = build_hover(dff)
+    aid_list = dff["moca_aid"].tolist()
+    text_list = [aid_list[i] + "<br>" + text_list[i] for i in range(len(text_list))]
+    dff['text_list'] = text_list
+
+    for association in associations:
+
+        dff_aid = dff[dff["moca_aid"] == association]
+        if selected_data is None:
+            selected_index = None
+        else:
+            selected_index = np.where(dff_aid['moca_oid'].isin(selected_data))[0]
+
+        if br:
+            xdata = dff_aid["br"]
+        else:
+            xdata = dff_aid["gr"]
+
+        new_trace = go.Scatter(
+        #new_trace = go.Scattergl(
+            x=xdata,#This is the x in the MOCA column
+            y=-dff_aid["ewha"],#This is the y in the MOCA column
+            opacity=0.8,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": colormap[association], "size": 5},
+            text=dff_aid['text_list'],
+            name=association,
+            selectedpoints=selected_index,
+            customdata=dff_aid["moca_oid"],
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
+        data.append(new_trace)
+
+    if len(dfo) != 0:
+        
+        if br:
+            xdata = dfo["br"]
+        else:
+            xdata = dfo["gr"]
+        
+        text_list = build_hover_dfo(dfo)
+        obj_color = "red"
+        new_trace = go.Scatter(
+        #new_trace = go.Scattergl(
+            x=xdata,#This is the x in the MOCA column
+            y=-dfo["ewha"],#This is the y in the MOCA column
+            #opacity=1,
+            mode="markers",
+            hovertemplate=hovertemplate,
+            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=text_list,
+            name="Individual Objects",
+        )
+        
+        new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
+        data.append(new_trace)
+
+    fig = go.Figure(data=data,layout=layout)
+
+    #Default axis range
+    if br:
+        fig.update_layout(xaxis_range=[0.2,3.2])
+    else:
+        fig.update_layout(xaxis_range=[0.2,1.5])
+    
+    yrange = [-5,15]
     if ylog:
         fig.update_layout(yaxis_range=[np.log10(0.001),np.log10(yrange[1])])
         fig.update_layout(yaxis_type = "log")
@@ -1717,7 +1858,7 @@ layout = html.Div(
                 # PROT
                 html.Div(
                     id="prot-container",
-                    className="four columns",
+                    className="three columns",
                     children=[
                         build_graph_title("Rotation periods"),
                         dcc.Checklist(
@@ -1745,7 +1886,7 @@ layout = html.Div(
                 # GAIA ACT
                 html.Div(
                     id="gaia-act-container",
-                    className="four columns",
+                    className="three columns",
                     children=[
                         #html.Br(),
                         build_graph_title("Gaia DR3 activity index"),
@@ -1771,10 +1912,39 @@ layout = html.Div(
                         dcc.Graph(id="gaia-act-color",config=figure_export_config),
                     ],
                 ),
+                # H-alpha
+                html.Div(
+                    id="ewha-container",
+                    className="three columns",
+                    children=[
+                        #html.Br(),
+                        build_graph_title("H-alpha equivalent widths"),
+                        dcc.Checklist(
+                                    id="ewha-layer-select",
+                                    options=[
+                                        # {
+                                        #     "label": " Empirical Sequences",
+                                        #     "value": "Empirical Sequences",
+                                        # },
+                                        {
+                                            "label": " Logarithmic Y axis",
+                                            "value": "ylog",
+                                        },
+                                        {
+                                            "label": " G_BP - G_RP X axis",
+                                            "value": "br",
+                                        },
+                                    ],
+                                    value=[],
+                                ),
+                        html.Br(),
+                        dcc.Graph(id="ewha-color",config=figure_export_config),
+                    ],
+                ),
                 # Lithium
                 html.Div(
                     id="ewli-container",
-                    className="four columns",
+                    className="three columns",
                     children=[
                         #html.Br(),
                         build_graph_title("Lithium equivalent widths"),
@@ -1874,6 +2044,7 @@ selections = {
             "prot-color":Input("prot-color", "selectedData"),
             "gaia-act-color":Input("gaia-act-color", "selectedData"),
             "ewli-color":Input("ewli-color", "selectedData"),
+            "ewha-color":Input("ewha-color", "selectedData"),
         }
 
 # Update table
@@ -2187,7 +2358,7 @@ def update_gaia_act_color(
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("ewli-color", "figure")),
 )
-def update_gaia_act_color(
+def update_ewli_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
@@ -2200,6 +2371,31 @@ def update_gaia_act_color(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
     return generate_ewli_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+
+# Update ewha-color
+@dash.callback(
+    output=Output("ewha-color", "figure"),
+    inputs=dict(
+        selections=selections,
+        jsonified_db_data=Input("db-data", "data"),
+        layer_select=Input("ewha-layer-select", "value"),
+        hover_select=Input("hover-select", "value"),
+    ),
+    state=dict(aid_select=State("aid-select", "value"), self_figure=State("ewha-color", "figure")),
+)
+def update_ewha_color(
+    selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
+):
+    
+    print("EWHA callback")
+    processed_data, prop_id = selection_helper(selections)
+    if prop_id is None:
+       return self_figure
+    if prop_id == "ewha-color":
+        return self_figure
+    df = pd.read_json(jsonified_db_data[0], orient='split')
+    dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    return generate_ewha_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
 
 # Update XYZ Map
 @dash.callback(
