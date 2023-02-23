@@ -30,6 +30,8 @@ The features that have been implemented as of Feb 23, 2023 are:
 - A table showing basic data for the selected stars.
 - Gaia activity index vs G-R
 - Prot vs G-R
+- H-alpha vs G-R
+- Lithium EW vs G-R
 
 The features I still want to implement are:
 
@@ -38,7 +40,6 @@ The features I still want to implement are:
   - Individual RV, PM, PLX epochs + spectrum when selecting one data point.
   - Galex colors
   - ROSAT X-ray flux and hardness ratio
-  - Lithium EW vs G-R
   - Teff vs Age
   - Distance vs Age
   - Mass vs Age
@@ -46,7 +47,6 @@ The features I still want to implement are:
   - Initial mass functions
   - Log R'HK index vs G-R
   - Spectral types of components in binary systems
-  - H-alpha vs G-R
   - Exoplanet Prot/radius and AU/mass
   - SpT vs color
   
