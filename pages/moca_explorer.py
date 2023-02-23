@@ -32,7 +32,7 @@ figure_export_config = {
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act']
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
 dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members LIMIT 0")
 dfoe = dfe.copy(deep=True)
 dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
@@ -392,9 +392,11 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
     if "assmem" not in style:
         assume_membership = False
 
+    xvar_orig = xvar
+    yvar_orig = yvar
     if assume_membership:
-        xvar += "_assmem"
-        yvar += "_assmem"
+        xvar += "_opt"
+        yvar += "_opt"
 
     layout = go.Layout(
         clickmode="event+select",
@@ -454,10 +456,10 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
             for index, dfm_row in dfm_aid.iterrows():
 
                 #Rebuild covariance matrix and offset from the models dataframe
-                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen']])
+                offset = np.array([dfm_row[xvar_orig+'_cen'],dfm_row[yvar_orig+'_cen']])
                 covar_matrix = np.array([
-                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar']],
-                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar']]
+                    [dfm_row[xvar_orig+xvar_orig+'_covar'],dfm_row[xvar_orig+yvar_orig+'_covar']],
+                    [dfm_row[xvar_orig+yvar_orig+'_covar'],dfm_row[yvar_orig+yvar_orig+'_covar']]
                     ])
 
                 ellipse = build_ellipsoid_2d(offset, covar_matrix, colormap[association])
@@ -469,8 +471,9 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
         text_list = build_hover_dfo(dfo)
         obj_color = "red"
         new_trace = go.Scattergl(
-            x=dfo[xvar],#This is the x in the MOCA column
-            y=dfo[yvar],#This is the y in the MOCA column
+            #Use xvar_orig, yvar_orig because moca_oid displays cannot assume membership
+            x=dfo[xvar_orig],#This is the x in the MOCA column
+            y=dfo[yvar_orig],#This is the y in the MOCA column
             #opacity=1,
             mode="markers",
             hoverinfo=hoverinfo,
@@ -497,21 +500,21 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
-    if (xvar=='x' or xvar=='y' or xvar=='z'):
+    if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
         fig.update_layout(xaxis_range=[-150,150])
-    if (yvar=='x' or yvar=='y' or yvar=='z'):
+    if (yvar_orig=='x' or yvar_orig=='y' or yvar_orig=='z'):
         fig.update_layout(yaxis_range=[-150,150])
-    if xvar=='u':
+    if xvar_orig=='u':
         fig.update_layout(xaxis_range=[-80,70])
-    if yvar=='u':
+    if yvar_orig=='u':
         fig.update_layout(yaxis_range=[-80,70])
-    if xvar=='v':
+    if xvar_orig=='v':
         fig.update_layout(xaxis_range=[-70,20])
-    if yvar=='v':
+    if yvar_orig=='v':
         fig.update_layout(yaxis_range=[-70,20])
-    if xvar=='w':
+    if xvar_orig=='w':
         fig.update_layout(xaxis_range=[-70,20])
-    if yvar=='w':
+    if yvar_orig=='w':
         fig.update_layout(yaxis_range=[-70,20])
 
     fig.add_annotation(
@@ -550,10 +553,13 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
     if "assmem" not in style:
         assume_membership = False
 
+    xvar_orig = xvar
+    yvar_orig = yvar
+    zvar_orig = zvar
     if assume_membership:
-        xvar += "_assmem"
-        yvar += "_assmem"
-        zvar += "_assmem"
+        xvar += "_opt"
+        yvar += "_opt"
+        zvar += "_opt"
 
     layout = go.Layout(
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
@@ -638,11 +644,11 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
             for index, dfm_row in dfm_aid.iterrows():
 
                 # Rebuild covariance matrix and offset from the models dataframe
-                offset = np.array([dfm_row[xvar+'_cen'],dfm_row[yvar+'_cen'],dfm_row[zvar+'_cen']])
+                offset = np.array([dfm_row[xvar_orig+'_cen'],dfm_row[yvar_orig+'_cen'],dfm_row[zvar_orig+'_cen']])
                 covar_matrix = np.array([
-                    [dfm_row[xvar+xvar+'_covar'],dfm_row[xvar+yvar+'_covar'],dfm_row[xvar+zvar+'_covar']],
-                    [dfm_row[xvar+yvar+'_covar'],dfm_row[yvar+yvar+'_covar'],dfm_row[yvar+zvar+'_covar']],
-                    [dfm_row[xvar+zvar+'_covar'],dfm_row[yvar+zvar+'_covar'],dfm_row[zvar+zvar+'_covar']]
+                    [dfm_row[xvar_orig+xvar_orig+'_covar'],dfm_row[xvar_orig+yvar_orig+'_covar'],dfm_row[xvar_orig+zvar_orig+'_covar']],
+                    [dfm_row[xvar_orig+yvar_orig+'_covar'],dfm_row[yvar_orig+yvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar']],
+                    [dfm_row[xvar_orig+zvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar'],dfm_row[zvar_orig+zvar_orig+'_covar']]
                     ])
 
                 ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
@@ -654,10 +660,11 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         
         text_list = build_hover_dfo(dfo)
         obj_color = "black"
+        #Use xvar_orig, yvar_orig, zvar_orig because moca_oid displays cannot assume membership
         new_trace = go.Scatter3d(
-            x=dfo[xvar],#This is the x in the MOCA column
-            y=dfo[yvar],#This is the y in the MOCA column
-            z=dfo[zvar],#This is the y in the MOCA column
+            x=dfo[xvar_orig],#This is the x in the MOCA column
+            y=dfo[yvar_orig],#This is the y in the MOCA column
+            z=dfo[zvar_orig],#This is the y in the MOCA column
             #opacity=1,
             mode="markers",
             marker={"color": obj_color, "size": 8, "symbol":"diamond"},
@@ -700,32 +707,33 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         )
 
     #Default axis range
-    if (xvar=='x' or xvar=='y' or xvar=='z'):
+    if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
         fig.update_scenes(xaxis={'range':[-150,150]})
-    if (yvar=='x' or yvar=='y' or yvar=='z'):
+    if (yvar_orig=='x' or yvar_orig=='y' or yvar_orig=='z'):
         fig.update_scenes(yaxis={'range':[-150,150]})
-    if (zvar=='x' or zvar=='y' or zvar=='z'):
+    if (zvar_orig=='x' or zvar_orig=='y' or zvar_orig=='z'):
         fig.update_scenes(zaxis={'range':[-150,150]})
-    if xvar=='u':
+    if xvar_orig=='u':
         fig.update_scenes(xaxis={'range':[-80,70]})
-    if yvar=='u':
+    if yvar_orig=='u':
         fig.update_scenes(yaxis={'range':[-80,70]})
-    if zvar=='u':
+    if zvar_orig=='u':
         fig.update_scenes(zaxis={'range':[-80,70]})
-    if xvar=='v':
+    if xvar_orig=='v':
         fig.update_scenes(xaxis={'range':[-70,20]})
-    if yvar=='v':
+    if yvar_orig=='v':
         fig.update_scenes(yaxis={'range':[-70,20]})
-    if zvar=='v':
+    if zvar_orig=='v':
         fig.update_scenes(zaxis={'range':[-70,20]})
-    if xvar=='w':
+    if xvar_orig=='w':
         fig.update_scenes(xaxis={'range':[-70,20]})
-    if yvar=='w':
+    if yvar_orig=='w':
         fig.update_scenes(yaxis={'range':[-70,20]})
-    if zvar=='w':
+    if zvar_orig=='w':
         fig.update_scenes(zaxis={'range':[-70,20]})
 
     #Adjust range from zoom level
+    #import pdb; pdb.set_trace()
     dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
     dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
     dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
@@ -1323,6 +1331,8 @@ layout = html.Div(
                                     ,html.Br(),
                                     "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations. Using the orbital rotation mode allows users to re-center the view by double-clicking and dragging. Although this is a bit tricky, it can allow to rotate around a specific location in 3D space."
                                     ,html.Br(),
+                                    "The 'Assume Membership' option will display the optimal XYZ and UVW positions of stars if they are members of their respective associations, therefore greatly reducing observational uncertainties. Only stars with a credible BANYAN memebrship probability in the said association will be displayed. Overlaid moca_oid objects will still be displayed at their empirical XYZUVW positions because their membership can be ambiguous."
+                                    ,html.Br(),
                                     "You can run this plotly app locally for faster response times by downloading the Python package on my [GitHub](https://github.com/jgagneastro/mocaviz)."
                                     ,html.Br(),html.Br(),
                                     "Known issues:",html.Br(),
@@ -1447,10 +1457,10 @@ layout = html.Div(
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
                                         },
-                                        # {
-                                        #     "label": "Assume Membership",
-                                        #     "value": "assmem",
-                                        # },
+                                        {
+                                            "label": "Assume Membership",
+                                            "value": "assmem",
+                                        },
                                     ],
                                     value=["BANYAN Models"],
                                 ),
