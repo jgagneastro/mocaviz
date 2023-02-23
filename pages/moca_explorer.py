@@ -861,7 +861,8 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
         else:
             xdata = dff_aid["gr"]
 
-        new_trace = go.Scattergl(
+        new_trace = go.Scatter(
+        #new_trace = go.Scattergl(
             x=xdata,#This is the x in the MOCA column
             y=dff_aid["prot_days"],#This is the y in the MOCA column
             opacity=0.8,
@@ -880,7 +881,8 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
     #Show preliminary sequences
     seqwid = 1
     seqcol = '#0066FF'
-    new_trace = go.Scattergl(
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
             x=df_prot_seq_ple["br"],
             y=df_prot_seq_ple["prot"],
             customdata=df_prot_seq_ple['customdata'],
@@ -893,7 +895,8 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
         )
     data.append(new_trace)
 
-    new_trace = go.Scattergl(
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
             x=df_prot_seq_prae["br"],
             y=df_prot_seq_prae["prot"],
             customdata=df_prot_seq_prae['customdata'],
@@ -906,7 +909,8 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
         )
     data.append(new_trace)
 
-    new_trace = go.Scattergl(
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
             x=df_prot_seq_ngc6811["br"],
             y=df_prot_seq_ngc6811["prot"],
             customdata=df_prot_seq_ngc6811['customdata'],
@@ -928,7 +932,8 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
         
         text_list = build_hover_dfo(dfo)
         obj_color = "red"
-        new_trace = go.Scattergl(
+        new_trace = go.Scatter(
+        #new_trace = go.Scattergl(
             x=xdata,#This is the x in the MOCA column
             y=dfo["prot_days"],#This is the y in the MOCA column
             #opacity=1,
@@ -1232,7 +1237,7 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
     else:
         fig.update_layout(xaxis_range=[0.2,1.5])
     
-    yrange = [-50,600]
+    yrange = [-100,750]
     if ylog:
         fig.update_layout(yaxis_range=[np.log10(0.001),np.log10(yrange[1])])
         fig.update_layout(yaxis_type = "log")
