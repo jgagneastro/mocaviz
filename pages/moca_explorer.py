@@ -533,7 +533,7 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
 
     return fig
 
-def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select):
+def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select, zoom_out_level):
 
     # Read hover property
     hover = False
@@ -724,6 +724,26 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         fig.update_scenes(yaxis={'range':[-70,20]})
     if zvar=='w':
         fig.update_scenes(zaxis={'range':[-70,20]})
+
+    #Adjust range from zoom level
+    dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
+    dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
+    dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
+    xc = (fig['layout']['scene']['xaxis']['range'][1] + fig['layout']['scene']['xaxis']['range'][0])/2
+    yc = (fig['layout']['scene']['yaxis']['range'][1] + fig['layout']['scene']['yaxis']['range'][0])/2
+    zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
+    
+    dx_zoom = dx*2**zoom_out_level
+    dy_zoom = dy*2**zoom_out_level
+    dz_zoom = dz*2**zoom_out_level
+
+    #Update zoom level
+    fig.update_scenes(xaxis={'range':[xc-dx_zoom/2,xc+dx_zoom/2]})
+    fig.update_scenes(yaxis={'range':[yc-dy_zoom/2,yc+dy_zoom/2]})
+    fig.update_scenes(zaxis={'range':[zc-dz_zoom/2,zc+dz_zoom/2]})
+
+    #zoom_out_level
+    #import pdb; pdb.set_trace()
 
     return fig
 
@@ -1301,7 +1321,7 @@ layout = html.Div(
                                     ,html.Br(),
                                     "Clicking on a Plotly legend item will turn on or off the display of one association only in the specific panel where it was clicked. Double-clicking a legend item will only display the association in question."
                                     ,html.Br(),
-                                    "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations."
+                                    "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations. Using the orbital rotation mode allows users to re-center the view by double-clicking and dragging. Although this is a bit tricky, it can allow to rotate around a specific location in 3D space."
                                     ,html.Br(),html.Br(),
                                     "Known issues:",html.Br(),
                                     " - In Safari, 3D scatter plots often keep an imprint of the original view point.",html.Br(),
@@ -1425,14 +1445,16 @@ layout = html.Div(
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
                                         },
-                                        {
-                                            "label": "Assume Membership",
-                                            "value": "assmem",
-                                        },
+                                        # {
+                                        #     "label": "Assume Membership",
+                                        #     "value": "assmem",
+                                        # },
                                     ],
                                     value=["BANYAN Models"],
                                 ),
                         html.Br(),
+                        html.Button('Zoom Out', id='xyz-zoom-out', n_clicks=0),
+                        html.Button('Zoom In', id='xyz-zoom-in', n_clicks=0),
                         dcc.Graph(id="xyz-map",config=figure_export_config),
                     ],
                 ),
@@ -1443,7 +1465,9 @@ layout = html.Div(
                     children=[
                         html.Br(),
                         build_graph_title("Galactic U, V, W space velocities"),
-                        html.Br(),html.Br(),html.Br(),
+                        html.Br(),html.Br(),#html.Br(),
+                        html.Button('Zoom Out', id='uvw-zoom-out', n_clicks=0),
+                        html.Button('Zoom In', id='uvw-zoom-in', n_clicks=0),
                         dcc.Graph(id="uvw-map",config=figure_export_config),
                     ],
                 ),
@@ -1694,6 +1718,29 @@ def update_table(
 
     return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
+# # Update XYZ zoom
+# @dash.callback(
+#     output=[
+#         Output("db-data","data"),
+#         Output("aid-select","value"),
+#         Output("mtid-select","value"),
+#         Output("oid-select","value"),
+#         ],
+#     inputs=[
+#         Input("aid-select", "value"),
+#         Input("mtid-select", "value"),
+#         Input("oid-select", "value"),
+#     ],
+#     state=[State("url","search")]
+# )
+# def update_xyz_zoom(
+#     aid_select, mtid_select, oid_select, url_search
+# ):
+#     #html.Button('Zoom Out', id='uvw-zoom-out', n_clicks=0),
+#     void = 1
+
+
+
 # Update AID- and MTID-select
 @dash.callback(
     output=[
@@ -1912,24 +1959,28 @@ def update_gaia_act_color(
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
+        zoom_out=Input("xyz-zoom-out", "n_clicks"),
+        zoom_in=Input("xyz-zoom-in", "n_clicks"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("xyz-map", "figure")),
 )
 def update_xyz_map(
-    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, zoom_out, zoom_in, aid_select, self_figure
 ):
     
     print("XYZ callback")
+    zoom_out_level = zoom_out - zoom_in
+
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
     if prop_id == "xyz-map":
         return self_figure
-    
+
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_xyz_map(df, dfm, dfo, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select)
+    return generate_xyz_map(df, dfm, dfo, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select, zoom_out_level)
 
 # Update UVW Map
 @dash.callback(
@@ -1939,14 +1990,18 @@ def update_xyz_map(
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
+        zoom_out=Input("uvw-zoom-out", "n_clicks"),
+        zoom_in=Input("uvw-zoom-in", "n_clicks"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("uvw-map", "figure")),
 )
 def update_uvw_map(
-    selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
+    selections, jsonified_db_data, xymap_view, hover_select, zoom_out, zoom_in, aid_select, self_figure
 ):
     
     print("UVW callback")
+    zoom_out_level = zoom_out - zoom_in
+
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -1955,7 +2010,7 @@ def update_uvw_map(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_xyz_map(df, dfm, dfo, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select)
+    return generate_xyz_map(df, dfm, dfo, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select, zoom_out_level)
 
 # Update UV Map
 @dash.callback(
