@@ -435,7 +435,7 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
     #         #hoverinfo=hoverinfo,
     #         #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
     #         text=df_asso_centers["moca_aid"],
-    #         name="Association Centers",
+    #         name="All Association Centers",
     #     )
     #     data.append(new_trace)
 
@@ -609,7 +609,7 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
             #hoverinfo=hoverinfo,
             #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
             text=df_asso_centers["moca_aid"],
-            name="Association Centers",
+            name="All Association Centers",
         )
         data.append(new_trace)
 
@@ -1485,7 +1485,7 @@ layout = html.Div(
                                     id="xymap-view-selector",
                                     options=[
                                         {
-                                            "label": "Association Centers",
+                                            "label": "All Association Centers (slow load)",
                                             "value": "asscen",
                                         },
                                         {
