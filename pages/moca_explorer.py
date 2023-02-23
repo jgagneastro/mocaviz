@@ -1322,6 +1322,8 @@ layout = html.Div(
                                     "Clicking on a Plotly legend item will turn on or off the display of one association only in the specific panel where it was clicked. Double-clicking a legend item will only display the association in question."
                                     ,html.Br(),
                                     "The 3D scatter plots are more easily controlled in Turntable Rotation mode, by using two fingers swiped up or down for zooming, two-fingers clicking for drag, or simple clicking for rotations. Using the orbital rotation mode allows users to re-center the view by double-clicking and dragging. Although this is a bit tricky, it can allow to rotate around a specific location in 3D space."
+                                    ,html.Br(),
+                                    "You can run this plotly app locally for faster response times by downloading the Python package on my [GitHub](https://github.com/jgagneastro/mocaviz)."
                                     ,html.Br(),html.Br(),
                                     "Known issues:",html.Br(),
                                     " - In Safari, 3D scatter plots often keep an imprint of the original view point.",html.Br(),
