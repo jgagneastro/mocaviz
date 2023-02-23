@@ -32,9 +32,11 @@ figure_export_config = {
 moca = MocaEngine()
 
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha','x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
-dfe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members LIMIT 0")
-dfoe = dfe.copy(deep=True)
+df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
+df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
+dfe = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
+dfoe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
+#dfoe = dfe.copy(deep=True)
 dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
 unselected_opacity = 0.1
@@ -2184,7 +2186,7 @@ def update_aid_select(
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
         df['br'] = df['bmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
