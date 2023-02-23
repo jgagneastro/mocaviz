@@ -3,7 +3,7 @@ This repository contains plotly dash tools to visualize data from the MOCA datab
 
 For now we have only one file, load_mocadash.py which allows to visualize basic data from the Database by calling it in this way:
 
-`python /path/load_mocadash.py`
+`python /path/mocaviz/app.py`
 
 And then open a web browser and type in the address:
 
@@ -21,13 +21,15 @@ Then exact required packages can then be installed using:
 
 `pip install -r requirements.txt`
 
-The features that have been implemented as of Feb 13, 2023 are:
+The features that have been implemented as of Feb 23, 2023 are:
 
 - Visualizing the CMD, XYZ, UVW and projections in XYZUVW.
-- Cross-filtering across diagrams (except 3D diagrams).
+- Cross-filtering across diagrams.
 - Selecting among associations using a Dropdown menu.
 - Dynamic update based on the (private) mocadb server upon selection of new associations only.
 - A table showing basic data for the selected stars.
+- Gaia activity index vs G-R
+- Prot vs G-R
 
 The features I still want to implement are:
 
@@ -36,9 +38,7 @@ The features I still want to implement are:
   - Individual RV, PM, PLX epochs + spectrum when selecting one data point.
   - Galex colors
   - ROSAT X-ray flux and hardness ratio
-  - Gaia activity index vs G-R
   - Lithium EW vs G-R
-  - Prot vs G-R
   - Teff vs Age
   - Distance vs Age
   - Mass vs Age
@@ -49,7 +49,6 @@ The features I still want to implement are:
   - H-alpha vs G-R
   - Exoplanet Prot/radius and AU/mass
   - SpT vs color
-- Make table rows selectable
   
 I also want to eventually implement other data control centers (in distinct .py files):
 
@@ -91,4 +90,3 @@ I also want to eventually implement other data control centers (in distinct .py 
 The more long-term features:
 
 - Selecting data points in 3D scatter plots (not yet allowed by plotly).
-- Showing BANYAN Sigma ellipsoid models.
