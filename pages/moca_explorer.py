@@ -70,6 +70,8 @@ df_prot_seq_prae['customdata'] = 'NaN'
 df_prot_seq_ple['customdata'] = 'NaN'
 df_prot_seq_ngc6811['customdata'] = 'NaN'
 
+df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
+
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
@@ -386,11 +388,13 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
         void = 1
 
     # Read layer properties
-    models_visible = assume_membership = True
+    models_visible = assume_membership = show_asso_centers = True
     if "BANYAN Models" not in style:
         models_visible = False
     if "assmem" not in style:
         assume_membership = False
+    if "asscen" not in style:
+        show_asso_centers = False
 
     xvar_orig = xvar
     yvar_orig = yvar
@@ -420,6 +424,20 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
     colormap = colormap_picker(associations)
 
     data = []
+
+    # #This gets way too busy in 2D
+    # if show_asso_centers:
+    #     new_trace = go.Scattergl(
+    #         x=df_asso_centers[xvar_orig],
+    #         y=df_asso_centers[yvar_orig],
+    #         opacity=0.2,
+    #         mode="text",
+    #         #hoverinfo=hoverinfo,
+    #         #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+    #         text=df_asso_centers["moca_aid"],
+    #         name="Association Centers",
+    #     )
+    #     data.append(new_trace)
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -547,11 +565,13 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         void = 1
 
     # Read layer properties
-    models_visible = assume_membership = True
+    models_visible = assume_membership = show_asso_centers = True
     if "BANYAN Models" not in style:
         models_visible = False
     if "assmem" not in style:
         assume_membership = False
+    if "asscen" not in style:
+        show_asso_centers = False
 
     xvar_orig = xvar
     yvar_orig = yvar
@@ -578,6 +598,21 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
     colormap = colormap_picker(associations)
 
     data = []
+
+    if show_asso_centers:
+        new_trace = go.Scatter3d(
+            x=df_asso_centers[xvar_orig],
+            y=df_asso_centers[yvar_orig],
+            z=df_asso_centers[zvar_orig],
+            opacity=0.2,
+            mode="text",
+            #hoverinfo=hoverinfo,
+            #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            text=df_asso_centers["moca_aid"],
+            name="Association Centers",
+        )
+        data.append(new_trace)
+
     if selected_data is None:
         totsel = 0
     else:
@@ -664,7 +699,7 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         new_trace = go.Scatter3d(
             x=dfo[xvar_orig],#This is the x in the MOCA column
             y=dfo[yvar_orig],#This is the y in the MOCA column
-            z=dfo[zvar_orig],#This is the y in the MOCA column
+            z=dfo[zvar_orig],#This is the z in the MOCA column
             #opacity=1,
             mode="markers",
             marker={"color": obj_color, "size": 8, "symbol":"diamond"},
@@ -1449,10 +1484,10 @@ layout = html.Div(
                         dcc.Checklist(
                                     id="xymap-view-selector",
                                     options=[
-                                        # {
-                                        #     "label": "Association Centers",
-                                        #     "value": "Association Centers",
-                                        # },
+                                        {
+                                            "label": "Association Centers",
+                                            "value": "asscen",
+                                        },
                                         {
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
