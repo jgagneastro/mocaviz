@@ -72,6 +72,22 @@ df_prot_seq_prae['customdata'] = 'NaN'
 df_prot_seq_ple['customdata'] = 'NaN'
 df_prot_seq_ngc6811['customdata'] = 'NaN'
 
+#df_act_seq_pra = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_pra_prelim'")
+df_act_seq_hya = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_hya_prelim'")
+df_act_seq_peri = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_peri_prelim'")
+df_act_seq_lcc = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_lcc_prelim'")
+
+df_ewli_seq_hya = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_hya_prelim'")
+df_ewli_seq_abdmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_abdmg_prelim'")
+df_ewli_seq_tha = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_tha_prelim'")
+df_ewli_seq_bpmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_bpmg_prelim'")
+df_ewli_seq_lcc = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_lcc_prelim'")
+
+df_ewha_seq_hya = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_hya_prelim'")
+df_ewha_seq_abdmg = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_abdmg_prelim'")
+df_ewha_seq_tha = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_tha_prelim'")
+df_ewha_seq_lcc = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_lcc_prelim'")
+
 df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
 
 print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
@@ -792,7 +808,7 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
 
     return fig
 
-def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select, hover_select):
+def generate_prot_color(dff, dfo, associations, selected_data, layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -804,11 +820,11 @@ def generate_prot_color(dff, dfo, associations, selected_data, prot_layer_select
 
     #Read layer properties
     sequences_visible = ylog = br = True
-    if "ylog" not in prot_layer_select:
+    if "ylog" not in layer_select:
         ylog = False
-    if "br" not in prot_layer_select:
+    if "br" not in layer_select:
         br = False
-    if "Sequences" not in prot_layer_select:
+    if "Sequences" not in layer_select:
         sequences_visible = False
 
     #Only show preliminary sequences in B-R
@@ -1002,6 +1018,10 @@ def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select,
     if "Sequences" not in layer_select:
         sequences_visible = False
 
+    #Not yet implemented
+    if not br:
+        sequences_visible = False
+
     if br:
         xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
     else:
@@ -1065,6 +1085,62 @@ def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select,
         
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
+
+    #Show preliminary sequences
+    seqwid = 1
+    seqcol = '#0066FF'
+    # new_trace = go.Scatter(
+    # #new_trace = go.Scattergl(
+    #         x=df_act_seq_pra["br"],
+    #         y=df_act_seq_pra["gaia_act"],
+    #         opacity=0.9,
+    #         mode="lines",
+    #         line=dict(color=seqcol, width=seqwid, dash='dot'),
+    #         hoverinfo='skip',
+    #         name='Praesepe (600 Myr)',
+    #         visible=sequences_visible,
+    #     )
+    # data.append(new_trace)
+    
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_act_seq_hya["br"],
+            y=df_act_seq_hya["gaia_act"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='Hyades (700 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_act_seq_peri["br"],
+            y=df_act_seq_peri["gaia_act"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),#, dash='dash'
+            hoverinfo='skip',
+            name='Pisces Eri (120 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    #seqcol = '#F67060'
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_act_seq_lcc["br"],
+            y=df_act_seq_lcc["gaia_act"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dot'),
+            hoverinfo='skip',
+            name='LCC (15 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
 
     if len(dfo) != 0:
         
@@ -1143,6 +1219,10 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
     if "Sequences" not in layer_select:
         sequences_visible = False
 
+    #Not yet implemented
+    if not br:
+        sequences_visible = False
+
     if br:
         xaxis_title = 'Gaia DR3 G_BP - G_RP color (mag)'
     else:
@@ -1207,6 +1287,76 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    # Show preliminary sequences
+    seqwid = 1
+    seqcol = '#0066FF'
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewli_seq_hya["br"],
+            y=df_ewli_seq_hya["ewli"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='Hyades (700 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewli_seq_abdmg["br"],
+            y=df_ewli_seq_abdmg["ewli"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),
+            hoverinfo='skip',
+            name='AB Dor MG (130 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    seqcol = '#F67060'
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewli_seq_tha["br"],
+            y=df_ewli_seq_tha["ewli"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='Tuc-Hor (50 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewli_seq_bpmg["br"],
+            y=df_ewli_seq_bpmg["ewli"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),
+            hoverinfo='skip',
+            name='Beta Pic MG (26 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewli_seq_lcc["br"],
+            y=df_ewli_seq_lcc["ewli"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dot'),
+            hoverinfo='skip',
+            name='LCC (15 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+
     if len(dfo) != 0:
         
         if br:
@@ -1235,9 +1385,9 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
 
     #Default axis range
     if br:
-        fig.update_layout(xaxis_range=[0.2,3.2])
+        fig.update_layout(xaxis_range=[0.2,4])
     else:
-        fig.update_layout(xaxis_range=[0.2,1.5])
+        fig.update_layout(xaxis_range=[0.2,2.5])
     
     yrange = [-100,750]
     if ylog:
@@ -1282,6 +1432,10 @@ def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hov
     if "br" not in layer_select:
         br = False
     if "Sequences" not in layer_select:
+        sequences_visible = False
+
+    #Not yet implemented
+    if not br:
         sequences_visible = False
 
     if br:
@@ -1347,6 +1501,75 @@ def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hov
         
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
+
+    # Show preliminary sequences
+    seqwid = 1
+    seqcol = '#0066FF'
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewha_seq_hya["br"],
+            y=-df_ewha_seq_hya["ewha"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='Hyades (700 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewha_seq_abdmg["br"],
+            y=-df_ewha_seq_abdmg["ewha"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),
+            hoverinfo='skip',
+            name='AB Dor MG (130 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    seqcol = '#F67060'
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewha_seq_tha["br"],
+            y=-df_ewha_seq_tha["ewha"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid),
+            hoverinfo='skip',
+            name='Tuc-Hor (50 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
+
+    # new_trace = go.Scatter(
+    # #new_trace = go.Scattergl(
+    #         x=df_ewha_seq_bpmg["br"],
+    #         y=-df_ewha_seq_bpmg["ewha"],
+    #         opacity=0.9,
+    #         mode="lines",
+    #         line=dict(color=seqcol, width=seqwid, dash='dash'),
+    #         hoverinfo='skip',
+    #         name='Beta Pic MG (26 Myr)',
+    #         visible=sequences_visible,
+    #     )
+    # data.append(new_trace)
+
+    new_trace = go.Scatter(
+    #new_trace = go.Scattergl(
+            x=df_ewha_seq_lcc["br"],
+            y=-df_ewha_seq_lcc["ewha"],
+            opacity=0.9,
+            mode="lines",
+            line=dict(color=seqcol, width=seqwid, dash='dash'),
+            hoverinfo='skip',
+            name='LCC (15 Myr)',
+            visible=sequences_visible,
+        )
+    data.append(new_trace)
 
     if len(dfo) != 0:
         
@@ -1750,7 +1973,7 @@ layout = html.Div(
                                             "value": "Field Stars",
                                         },
                                         {
-                                            "label": " Empirical Sequences",
+                                            "label": " Empirical Sequences (G - G_RP only)",
                                             "value": "Sequences",
                                         },
                                         {
@@ -1867,7 +2090,7 @@ layout = html.Div(
                                     id="prot-layer-select",
                                     options=[
                                         {
-                                            "label": " Empirical Sequences",
+                                            "label": " Empirical Sequences (G_BP - G_RP only)",
                                             "value": "Sequences",
                                         },
                                         {
@@ -1895,10 +2118,10 @@ layout = html.Div(
                         dcc.Checklist(
                                     id="gaia-act-layer-select",
                                     options=[
-                                        # {
-                                        #     "label": " Empirical Sequences",
-                                        #     "value": "Empirical Sequences",
-                                        # },
+                                        {
+                                            "label": " Empirical Sequences (G_BP - G_RP only)",
+                                            "value": "Sequences",
+                                        },
                                         {
                                             "label": " Logarithmic Y axis",
                                             "value": "ylog",
@@ -1908,7 +2131,7 @@ layout = html.Div(
                                             "value": "br",
                                         },
                                     ],
-                                    value=[],
+                                    value=["Sequences","br"],
                                 ),
                         html.Br(),
                         dcc.Graph(id="gaia-act-color",config=figure_export_config),
@@ -1924,10 +2147,10 @@ layout = html.Div(
                         dcc.Checklist(
                                     id="ewha-layer-select",
                                     options=[
-                                        # {
-                                        #     "label": " Empirical Sequences",
-                                        #     "value": "Empirical Sequences",
-                                        # },
+                                        {
+                                            "label": " Empirical Sequences (G_BP - G_RP only)",
+                                            "value": "Sequences",
+                                        },
                                         {
                                             "label": " Logarithmic Y axis",
                                             "value": "ylog",
@@ -1937,7 +2160,7 @@ layout = html.Div(
                                             "value": "br",
                                         },
                                     ],
-                                    value=[],
+                                    value=["Sequences","br"],
                                 ),
                         html.Br(),
                         dcc.Graph(id="ewha-color",config=figure_export_config),
@@ -1953,10 +2176,10 @@ layout = html.Div(
                         dcc.Checklist(
                                     id="ewli-layer-select",
                                     options=[
-                                        # {
-                                        #     "label": " Empirical Sequences",
-                                        #     "value": "Empirical Sequences",
-                                        # },
+                                        {
+                                            "label": " Empirical Sequences (G_BP - G_RP only)",
+                                            "value": "Sequences",
+                                        },
                                         {
                                             "label": " Logarithmic Y axis",
                                             "value": "ylog",
@@ -1966,7 +2189,7 @@ layout = html.Div(
                                             "value": "br",
                                         },
                                     ],
-                                    value=[],
+                                    value=["Sequences","br"],
                                 ),
                         html.Br(),
                         dcc.Graph(id="ewli-color",config=figure_export_config),
@@ -2305,13 +2528,13 @@ def update_aid_select(
     inputs=dict(
         selections=selections,
         jsonified_db_data=Input("db-data", "data"),
-        prot_layer_select=Input("prot-layer-select", "value"),
+        layer_select=Input("prot-layer-select", "value"),
         hover_select=Input("hover-select", "value"),
     ),
     state=dict(aid_select=State("aid-select", "value"), self_figure=State("prot-color", "figure")),
 )
 def update_prot_color(
-    selections, jsonified_db_data, prot_layer_select, hover_select, aid_select, self_figure
+    selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
     print("PROT callback")
@@ -2322,7 +2545,7 @@ def update_prot_color(
        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_prot_color(df, dfo, aid_select, processed_data, prot_layer_select, hover_select)
+    return generate_prot_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
 
 # Update gaia-act-color
 @dash.callback(
@@ -2339,7 +2562,7 @@ def update_gaia_act_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
-    print("PROT callback")
+    print("GAIAACT callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
