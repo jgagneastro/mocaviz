@@ -137,6 +137,10 @@ def colormap_picker(aid_list):
     #20 or more
     else:
         colors = ["#e52638", "#1ed46b", "#bc337d", "#9ee5a4", "#db2bee", "#167b2b", "#f2b0f6", "#bce333", "#710c9e", "#d9c771", "#5e3966", "#65e6f9", "#9e4302", "#389eaa", "#f19189", "#214a65", "#ded1d4", "#1b48bc", "#fd8f2f", "#4c93e9"]
+    
+    #Flip colors to get red on top
+    colors.reverse()
+    
     colormap = {}
     for ind, moca_aid in enumerate(aid_list):
         colormap[moca_aid] = colors[ind%len(colors)]
