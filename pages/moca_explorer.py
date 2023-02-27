@@ -2416,8 +2416,8 @@ def update_aid_select(
         df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         df['gr'] = df['gmag']-df['rmag']
         df['br'] = df['bmag']-df['rmag']
-        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'])-1)
-        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'])-1)
+        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
+        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
 
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
@@ -2436,8 +2436,8 @@ def update_aid_select(
         dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
         dfo['gr'] = dfo['gmag']-dfo['rmag']
         dfo['br'] = dfo['bmag']-dfo['rmag']
-        dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'])-1)
-        dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'])-1)
+        dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
+        dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
     print("Downloaded "+str(len(df))+" rows of general data from DB")
     print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
