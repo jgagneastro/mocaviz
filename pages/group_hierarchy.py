@@ -41,6 +41,11 @@ def generate_gh_sunburst():
     data = go.Sunburst(
         labels=df['moca_aid'].values,
         parents=df['parent_aid'].values,
+        #marker = {
+        #    "line": {"width":4},
+            #"colors": "white",
+        #},
+        #line=dict(width=2,color='white'),
         #values=df['nobj'].values,
         )
     
