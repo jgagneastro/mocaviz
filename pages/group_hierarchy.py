@@ -44,7 +44,7 @@ def generate_gh_sunburst():
 
     text_list = list(
         map(
-            lambda x1, x2, x3, x4, x5, x6, x7, x8, x9: "Other names : "+str(x1)+"<br>Type : "+str(x2)+"<br>Age : "+str(x3)+" Myr, "+str(x4)+"<br>Distance : "+str(x5)+" pc"+("<br>Only a subset of this group overlaps with parent" if x6==1 else "")+("<br>Complete Overlap with Parent" if x7 == 1 else "")+"<br>Relationship Comments : "+str(x8).replace(".",".<br>").replace("al.<br> ","al. ")+"<br>Comments : "+str(x9).replace(".",".<br>").replace("al.<br> ","al. "),
+            lambda x1, x2, x3, x4, x5, x6, x7, x8, x9, x10: str(x10)+"<br>Other names : "+str(x1)+"<br>Type : "+str(x2)+"<br>Age : "+str(x3)+" Myr, "+str(x4)+"<br>Distance : "+str(x5)+" pc"+("<br>Only a subset of this group overlaps with parent" if x6==1 else "")+("<br>Complete Overlap with Parent" if x7 == 1 else "")+"<br>Relationship Comments : "+str(x8).replace(".",".<br>").replace("al.<br> ","al. ")+"<br>Comments : "+str(x9).replace(".",".<br>").replace("al.<br> ","al. "),
             df["alternate_names"],
             df["physical_nature"],
             df["age_myr"],
@@ -54,6 +54,7 @@ def generate_gh_sunburst():
             df["complete_parent_overlap"],
             df["relationship_comments"],
             df["comments"],
+            df["name"],
         ))
 
     data = go.Sunburst(
