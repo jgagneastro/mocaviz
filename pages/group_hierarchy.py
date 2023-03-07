@@ -22,7 +22,7 @@ df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='AL
 #Show the group hierarchy sunburst figure
 def generate_gh_sunburst():
     
-    layout = go.Layout(
+    #layout = go.Layout(
         #clickmode="event+select",
         #uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         #dragmode="lasso",
@@ -33,23 +33,46 @@ def generate_gh_sunburst():
         #hovermode=hover,
         #hovermode="closest",
         #margin=dict(l=110, r=50, t=50, b=50),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, t=0, b=0),
-    )
+    #    paper_bgcolor='rgba(0,0,0,0)',
+    #    plot_bgcolor='rgba(0,0,0,0)',
+    #    margin=dict(l=0, r=0, t=0, b=0),
+    #)
+
+    fig = go.Figure()
+
+    text_list = list(
+        map(
+            lambda x1, x2, x3, x4, x5, x6, x7, x8, x9: "Other names : "+str(x1)+"<br>Type : "+str(x2)+"<br>Age : "+str(x3)+" Myr, "+str(x4)+"<br>Distance : "+str(x5)+" pc"+("<br>Only a subset of this group overlaps with parent" if x6==1 else "")+("<br>Complete Overlap with Parent" if x7 == 1 else "")+"<br>Relationship Comments : "+str(x8).replace(".",".<br>").replace("al.<br> ","al. ")+"<br>Comments : "+str(x9).replace(".",".<br>").replace("al.<br> ","al. "),
+            df["alternate_names"],
+            df["physical_nature"],
+            df["age_myr"],
+            df["age_ref"],
+            df["avg_dist"],
+            df["partial_subgroup_overlap"],
+            df["complete_parent_overlap"],
+            df["relationship_comments"],
+            df["comments"],
+        ))
 
     data = go.Sunburst(
-        labels=df['moca_aid'].values,
-        parents=df['parent_aid'].values,
-        #marker = {
-        #    "line": {"width":4},
-            #"colors": "white",
-        #},
-        #line=dict(width=2,color='white'),
+        labels=df['moca_aid'],
+        parents=df['parent_aid'],
+        #data_frame=df,
+        #labels='moca_aid',
+        #parents='parent_aid',
+        #customdata=df,
+        #hovertemplate="Price: %{y:$.2f}",
+        #hover_name=df['moca_aid'],
+        #hover_data=
+        hovertext=text_list,
         #values=df['nobj'].values,
         )
     
-    fig = go.Figure(data=data, layout=layout)
+    fig.add_trace(data)
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0),plot_bgcolor='rgba(0,0,0,0)')#,paper_bgcolor='rgba(0,0,0,0)'
+    #import pdb; pdb.set_trace()
+
+    #fig = go.Figure(data=data, layout=layout)
     return fig
 
 #fig.show()
