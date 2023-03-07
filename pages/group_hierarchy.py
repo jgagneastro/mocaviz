@@ -15,6 +15,8 @@ dash.register_page(__name__)
 moca = MocaEngine()
 df = moca.query("CALL select_aid_hierarchy();")
 
+df.loc[df["original_aid"]=="OTHERS","comments"] = "Groups with two or less direct children defined in a useful way"
+
 #Append "ALL" to the data
 df.loc[df['nobj'].isnull(),'nobj'] = 10
 df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='ALL'].nobj.sum(), ''
