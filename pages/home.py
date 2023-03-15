@@ -15,6 +15,7 @@ layout = html.Div(
                     " Welcome to the MOCAdb data visualizations center. This web page contains several tools that will allow you to interactively explore the contents of the MOCA database. You can also access the Python codes used to run these visualizations [on my GitHub](https://github.com/jgagneastro/mocaviz) and run them locally.\n\n"
                     " Please choose one of the following tools:\n"
                     " * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer).",
+                    " * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyz).",
                     " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy).",
                     " * Return to the [MOCAdb website](https://mocadb.ca).",
                 ]
