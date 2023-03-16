@@ -1,5 +1,6 @@
 import dash
-from dash import html, dcc, callback, Input, Output
+from dash import html, dcc, callback, Input, Output, State
+from urllib.parse import urlparse, parse_qs
 
 #from plotly.offline import iplot
 import plotly.graph_objs as go
@@ -10,6 +11,8 @@ from mocapy import *
 
 #Register web page in the Dash app
 dash.register_page(__name__)
+
+default_title = 'Click on a graph node to explore children and other data visualization tools.'
 
 #Set up and query MOCAdb for current group hierarchy
 moca = MocaEngine()
@@ -22,8 +25,8 @@ df.loc[df['nobj'].isnull(),'nobj'] = 10
 df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='ALL'].nobj.sum(), ''
 
 #Show the group hierarchy sunburst figure
-def generate_gh_sunburst():
-    
+def generate_gh_sunburst(aid_select):
+
     #layout = go.Layout(
         #clickmode="event+select",
         #uirevision=1, #Prevent the resetting of user-defined zoom level etc.
@@ -42,6 +45,10 @@ def generate_gh_sunburst():
 
     fig = go.Figure()
 
+    if aid_select is None:
+        aid_select = 'ALL'
+    print(aid_select)
+
     text_list = list(
         map(
             lambda x1, x2, x3, x4, x5, x6, x7, x8, x9, x10: str(x10)+"<br>Other names : "+str(x1)+"<br>Type : "+str(x2)+"<br>Age : "+str(x3)+" Myr, "+str(x4)+"<br>Distance : "+str(x5)+" pc"+("<br>Only a subset of this group overlaps with parent" if x6==1 else "")+("<br>Complete Overlap with Parent" if x7 == 1 else "")+"<br>Relationship Comments : "+str(x8).replace(". ",".<br>").replace("al.<br> ","al. ")+"<br>Comments : "+str(x9).replace(". ",".<br>").replace("al.<br> ","al. "),
@@ -56,14 +63,18 @@ def generate_gh_sunburst():
             df["comments"],
             df["name"],
         ))
-
+    #import pdb; pdb.set_trace()
+    #df["url"] = np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
     data = go.Sunburst(
         labels=df['moca_aid'],
         parents=df['parent_aid'],
+        level=aid_select,
+        #text=df['url'],
         #data_frame=df,
         #labels='moca_aid',
         #parents='parent_aid',
-        #customdata=df,
+        customdata=df['original_aid'],
+        #customdata=np.stack((df['original_aid'], df['child_aid']), axis=-1),
         #hovertemplate="Price: %{y:$.2f}",
         #hover_name=df['moca_aid'],
         #hover_data=
@@ -89,20 +100,22 @@ figure_export_config = {
   }
 }
 
-def gh_build_banner():
-    return html.Div(
-        id="gh-banner",
-        className="banner",
-        children=[
-            #html.Img(src=app.get_asset_url("dash-logo.png")),
-            html.H6("Hierarchical breakdown of MOCA associations ",style={'color':"#000000","backgroundColor":"#DEDDE1", "marginLeft": 0, "width":"100%"}),
-        ],
-    )
+# def gh_build_banner():
+#     return html.Div(
+#         id="gh-banner",
+#         className="banner",
+#         children=[
+#             #html.Img(src=app.get_asset_url("dash-logo.png")),
+#             html.H6("Hierarchical breakdown of MOCA associations ",style={'color':"#000000","backgroundColor":"#DEDDE1", "marginLeft": 0, "width":"100%"}),
+#         ],
+#     )
 
 #Page layout
 layout = html.Div(
     className="twelve columns",
-    #id="top-row",
+    id="gh-div",
+    #style={"width": "100%", "whiteSpace": "pre-wrap", "align":"center"},
+    #n_clicks=0,
     children=[
         #gh_build_banner(),
         #html.H1(children='MOCAdb associations hierarchical breakdown'),
@@ -115,15 +128,84 @@ layout = html.Div(
      #            , style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"#F5F8FA"},#, "color":"white"
      #        ),
     	# html.Br(),
-        dcc.Graph(id="gh-sunburst",config=figure_export_config, figure=generate_gh_sunburst(), style={"height" : "100vh"}),#"width": "100%"
+        dcc.Location(id="url", refresh=False),
+        dcc.Markdown(id="gh-title",children=default_title),#,style={"width": "100%", "whiteSpace": "pre-wrap", "align":"center"}
+        #dcc.Graph(id="gh-sunburst",config=figure_export_config, figure=generate_gh_sunburst(), style={"height" : "100vh"}),#"width": "100%"
+        dcc.Graph(id="gh-sunburst",config=figure_export_config, style={"height" : "100vh"}),#"width": "100%"
+        html.Div(id='dummy_div'),
 ])
 
+@dash.callback(
+    output=Output("gh-title", "children"),
+    inputs=dict(
+        #selections=selections,
+        clickdata=Input("gh-sunburst", "clickData"),
+        #n_clicks=Input("gh-div", "n_clicks"),
+        #xymap_view=Input("xymap-view-selector-xyzpage", "value"),
+        #hover_select=Input("hover-select-xyzpage", "value"),
+        #recenter=Input("xyz-recenter-in-xyzpage", "n_clicks"),
+        #zoom_out=Input("xyz-zoom-out-xyzpage", "n_clicks"),
+        #zoom_in=Input("xyz-zoom-in-xyzpage", "n_clicks"),
+    ),
+    state=dict(self_figure=State("gh-sunburst", "figure")),
+)
+def gh_callback(clickdata, self_figure):
+    if clickdata is not None:
+        #import pdb; pdb.set_trace()
+        label = clickdata['points'][0]['customdata']
+        if label is not None:
+            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM) to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
+            return text
+        #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
+
+    return default_title
+
+# Update Hierarchy graph once - the dummy trigger is the solution I found to allow reading the URL
+@dash.callback(
+    output=Output("gh-sunburst", "figure"),
+    inputs=dict(
+        dummy=Input("dummy_div", "children"),
+    ),
+    state=dict(url_search=State("url", "search")),
+)
+def update_gh_figure(dummy, url_search):
+    
+    print("GH callback")
+    aid_select = 'ALL'
+    if url_search != "":
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+        if 'asso' in parsed_url_data.keys():
+            aid_select = parsed_url_data['asso'][0]
+        else:
+            aid_select = 'ALL'
+
+    return generate_gh_sunburst(aid_select)
 
 # @dash.callback(
-#     Output(component_id='analytics-output', component_property='children'),
-#     Input(component_id='analytics-input', component_property='value')
+#     output=Output("gh-sunburst", "data"),
+#     inputs=dict(
+#         url_search=Input("url", "search"),
+#     ),
+#     #state=dict(self_figure=State("gh-sunburst", "figure")),
 # )
-# def update_city_selected(input_value):
-#     return f'You selected: {input_value}'
+# def url_callback(url_search):
+#     if clickdata is not None:
+#         #import pdb; pdb.set_trace()
+#         label = clickdata['points'][0]['customdata']
+#         text = "You are now viewing the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM) to open a 3D XYZ map of this branch.\n\n Use Command + click to open links in a new tab."
+#         return text
+#         #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
 
+#     return default_title
 
+# url_search = State("url","search")
+#     if url_search != "":
+#         parsed_url = urlparse(url_search)
+#         parsed_url_data = parse_qs(parsed_url.query)
+#         if 'asso' in parsed_url_data.keys():
+#             aid_select = parsed_url_data['asso'][0]
+#         else:
+#             aid_select = 'ALL'
+
+#     import pdb; pdb.set_trace()

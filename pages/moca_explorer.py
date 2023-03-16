@@ -2399,8 +2399,14 @@ def update_aid_select(
             parsed_url_data = parse_qs(parsed_url.query)
             if 'asso' in parsed_url_data.keys():
                 aid_select = parsed_url_data['asso'][0].split(',')
+            else:
+                if aid_select is None:
+                    aid_select = initial_aids
             if 'mtid' in parsed_url_data.keys():
                 mtid_select = parsed_url_data['mtid'][0].split(',')
+            else:
+                if mtid_select is None:
+                    mtid_select = initial_mtids
             #OID is always a string in the input box so do not already split it into an array
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
