@@ -252,6 +252,43 @@ def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.15):
 
     return lines
 
+def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opacity=0.2, npoints=500):
+    
+    #Build 3D grid
+    phi = np.linspace(0, 2*np.pi,num=npoints)
+    radii = (np.linspace(0,radius,num=nlines+1))[1:]
+    phim, radiim = np.meshgrid(phi, radii)
+
+    x = np.cos(phim) * radiim
+    y = np.sin(phim) * radiim
+    z = phim * 0
+
+    # Create the plot
+    thick = 3
+    lines = []
+    line_marker = dict(color=trace_color, width=thick)
+
+    # First layer of grid lines
+    for i, j, k in zip(x, y, z):
+        lines.append(go.Scatter3d(x=i, y=j, z=k, mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
+
+    #Add 500 pc blue line
+
+    opacity=0.5
+    maxrad = 500
+    thick = 5
+    linvec = np.linspace(0,maxrad,num=npoints)
+    zeros = np.zeros(npoints)
+
+    lines.append(go.Scatter3d(x=zeros, y=zeros, z=linvec, mode='lines', line=dict(color='blue', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=linvec, y=zeros, z=zeros, mode='lines', line=dict(color='red', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=zeros, y=linvec, z=zeros, mode='lines', line=dict(color='green', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=zeros, y=zeros, z=-linvec, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=-linvec, y=zeros, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=zeros, y=-linvec, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+
+    return lines
+
 # Eventually move this to a subroutine
 def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure):
 
@@ -274,8 +311,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
         show_asso_centers = False
     if "hover" not in style:
         hover = False
-    #import pdb; pdb.set_trace()
-
+    
     xvar_orig = xvar
     yvar_orig = yvar
     zvar_orig = zvar
@@ -433,13 +469,20 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
         )
     data.append(new_trace)
 
+    # Plot the Solar neighborhood reference
+    sn = build_solar_neighborhood_3d()
+    for sni in sn:
+        data.append(sni)
+
     #if self_figure is not None:
     #    fig = go.Figure(data=data,layout=self_figure['layout'])
     #else:
     fig = go.Figure(data=data,layout=layout)
 
     #Default axis range
-    pc_range = 1e4
+    default_pc_range = 500
+    pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
+
     if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
         #fig.update_scenes(xaxis={'range':[-1e4,3e4]})
         fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
