@@ -456,32 +456,43 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
         )
         data.append(new_trace)
 
-    new_trace = go.Scatter3d(
-            x=[0],
-            y=[0],
-            z=[0],
-            opacity=1,
-            mode="markers",
-            marker_symbol="cross",
-            marker={"color": "#000000", "size": 5},#, "symbol":"circle-dot"
-            text="Sun",
-            name="Sun",
-        )
-    data.append(new_trace)
+    # new_trace = go.Scatter3d(
+    #         x=[0],
+    #         y=[0],
+    #         z=[0],
+    #         opacity=1,
+    #         mode="markers",
+    #         marker_symbol="cross",
+    #         marker={"color": "#000000", "size": 5},#, "symbol":"circle-dot"
+    #         text="Sun",
+    #         name="Sun",
+    #     )
+    # data.append(new_trace)
 
     # Plot the Solar neighborhood reference
     sn = build_solar_neighborhood_3d()
     for sni in sn:
         data.append(sni)
 
+    #Default axis range
+    default_pc_range = 500
+    pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
+
+    # Add invisible points because plotly is too much of an idiot to correctly enforce even aspect ratio
+    new_trace = go.Scatter3d(
+            x=[pc_range,-pc_range],
+            y=[pc_range,-pc_range],
+            z=[pc_range,-pc_range],
+            mode="markers",
+            marker={"color": "rgba(255,255,255,0)", "size": 1},
+            showlegend=False,
+        )
+    data.append(new_trace)
+
     #if self_figure is not None:
     #    fig = go.Figure(data=data,layout=self_figure['layout'])
     #else:
     fig = go.Figure(data=data,layout=layout)
-
-    #Default axis range
-    default_pc_range = 500
-    pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
 
     if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
         #fig.update_scenes(xaxis={'range':[-1e4,3e4]})
@@ -499,8 +510,10 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     if (zvar_orig=='u' or zvar_orig=='v' or zvar_orig=='w'):
         fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
 
-    # #Adjust range from zoom level
-    # #import pdb; pdb.set_trace()
+    # Try to force aspect ratio (does not always work)
+    fig.update_scenes(aspectmode='data')
+
+    #import pdb; pdb.set_trace()
     # dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
     # dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
     # dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
