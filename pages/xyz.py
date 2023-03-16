@@ -45,8 +45,9 @@ dfoe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIM
 dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
 unselected_opacity = 0.1
-#selected_opacity = 0.6
 selected_opacity = 1
+#selected_opacity = 0.3
+#selected_opacity = 1
 
 # Load a list of all associations for the Dropdown menu
 df_aids = moca.query("SELECT moca_aid FROM moca_associations")
@@ -312,6 +313,14 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     if "hover" not in style:
         hover = False
     
+    max_pc_range = 1e3
+    #max_pc_range = 100
+    
+    dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan
+    dff.loc[dff[yvar].abs()>=max_pc_range, yvar] = np.nan
+    dff.loc[dff[zvar].abs()>=max_pc_range, zvar] = np.nan
+    #import pdb; pdb.set_trace()
+
     xvar_orig = xvar
     yvar_orig = yvar
     zvar_orig = zvar
@@ -413,7 +422,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
                 z=dff_plot[zvar],#This is the y in the MOCA column
                 #opacity=selected_opacity,
                 mode="markers",
-                marker={"color": colormap[association], "size": 3},
+                marker={"color": colormap[association], "size": 3, "opacity":selected_opacity},
                 text=dff_plot["text_list"],
                 name=association,
                 customdata=dff_plot["moca_oid"],
@@ -477,6 +486,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     #Default axis range
     default_pc_range = 500
     pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
+    pc_range = min([pc_range,max_pc_range])
 
     # Add invisible points because plotly is too much of an idiot to correctly enforce even aspect ratio
     new_trace = go.Scatter3d(
@@ -539,7 +549,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
 
     #eye_pos_xyz = [100.,100.,100.]
-    eye_pos_xyz = [200.,200.,200.]
+    eye_pos_xyz = [-500.,-500.,500.]
     eye_pos_xrel = (eye_pos_xyz[0] - xc)/dx*2
     eye_pos_yrel = (eye_pos_xyz[1] - yc)/dy*2
     eye_pos_zrel = (eye_pos_xyz[2] - zc)/dz*2
