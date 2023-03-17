@@ -47,58 +47,10 @@ field_color_fraction = 0.5
 field_markersize = 3
 bcg_color = np.array([230,236,245])
 
-# Load a list of all associations for the Dropdown menu
-#df_aids = moca.query("SELECT moca_aid FROM moca_associations")
-#df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
-
 #Here we are assuming that MTIDs are the same regardless of credentials
 df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
-
-#print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
-
-# df_cmd_field = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiadr3_field_scatter'")
-# df_cmd_field['customdata'] = 'NaN'
-# field_opacity = 0.2
-# field_color_fraction = 0.5
-# field_markersize = 3
-# bcg_color = np.array([230,236,245])
-
-# df_cmd_seq_25 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_15myr_30myr'")
-# df_cmd_seq_40 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_30myr_50myr'")
-# df_cmd_seq_100 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_50myr_250myr'")
-# df_cmd_seq_25['customdata'] = 'NaN'
-# df_cmd_seq_40['customdata'] = 'NaN'
-# df_cmd_seq_100['customdata'] = 'NaN'
-
-
-# df_prot_seq_prae = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_prae_prelim'")
-# df_prot_seq_ple = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ple_prelim'")
-# df_prot_seq_ngc6811 = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ngc6811_prelim'")
-# df_prot_seq_prae['customdata'] = 'NaN'
-# df_prot_seq_ple['customdata'] = 'NaN'
-# df_prot_seq_ngc6811['customdata'] = 'NaN'
-
-# #df_act_seq_pra = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_pra_prelim'")
-# df_act_seq_hya = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_hya_prelim'")
-# df_act_seq_peri = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_peri_prelim'")
-# df_act_seq_lcc = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_lcc_prelim'")
-
-# df_ewli_seq_hya = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_hya_prelim'")
-# df_ewli_seq_abdmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_abdmg_prelim'")
-# df_ewli_seq_tha = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_tha_prelim'")
-# df_ewli_seq_bpmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_bpmg_prelim'")
-# df_ewli_seq_lcc = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_lcc_prelim'")
-
-# df_ewha_seq_hya = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_hya_prelim'")
-# df_ewha_seq_abdmg = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_abdmg_prelim'")
-# df_ewha_seq_tha = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_tha_prelim'")
-# df_ewha_seq_lcc = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_lcc_prelim'")
-
-# df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
-
-# print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
 def colormap_picker(aid_list):
@@ -636,10 +588,8 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
             z=df_asso_centers[zvar_orig],
             opacity=0.2,
             mode="text",
-            #hoverinfo=hoverinfo,
-            #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
             text=df_asso_centers["moca_aid"],
-            name="All Association Centers",
+            name="Association labels",
         )
         data.append(new_trace)
 
@@ -1085,63 +1035,6 @@ def generate_gaia_act_color(dff, dfo, dfs, associations, selected_data, layer_se
                 )
             data.append(new_trace)
 
-    '''#Show preliminary sequences
-    seqwid = 1
-    seqcol = '#0066FF'
-    # new_trace = go.Scatter(
-    # #new_trace = go.Scattergl(
-    #         x=df_act_seq_pra["br"],
-    #         y=df_act_seq_pra["gaia_act"],
-    #         opacity=0.9,
-    #         mode="lines",
-    #         line=dict(color=seqcol, width=seqwid, dash='dot'),
-    #         hoverinfo='skip',
-    #         name='Praesepe (600 Myr)',
-    #         visible=sequences_visible,
-    #     )
-    # data.append(new_trace)
-    
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_act_seq_hya["br"],
-            y=df_act_seq_hya["gaia_act"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='Hyades (700 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_act_seq_peri["br"],
-            y=df_act_seq_peri["gaia_act"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),#, dash='dash'
-            hoverinfo='skip',
-            name='Pisces Eri (120 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    #seqcol = '#F67060'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_act_seq_lcc["br"],
-            y=df_act_seq_lcc["gaia_act"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dot'),
-            hoverinfo='skip',
-            name='LCC (15 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-    '''
-
     if len(dfo) != 0:
         
         if br:
@@ -1304,77 +1197,6 @@ def generate_ewli_color(dff, dfo, dfs, associations, selected_data, layer_select
                     visible=sequences_visible,
                 )
             data.append(new_trace)
-
-    '''
-    # Show preliminary sequences
-    seqwid = 1
-    seqcol = '#0066FF'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewli_seq_hya["br"],
-            y=df_ewli_seq_hya["ewli"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='Hyades (700 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewli_seq_abdmg["br"],
-            y=df_ewli_seq_abdmg["ewli"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),
-            hoverinfo='skip',
-            name='AB Dor MG (130 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    seqcol = '#F67060'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewli_seq_tha["br"],
-            y=df_ewli_seq_tha["ewli"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='Tuc-Hor (50 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewli_seq_bpmg["br"],
-            y=df_ewli_seq_bpmg["ewli"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),
-            hoverinfo='skip',
-            name='Beta Pic MG (26 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewli_seq_lcc["br"],
-            y=df_ewli_seq_lcc["ewli"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dot'),
-            hoverinfo='skip',
-            name='LCC (15 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-    '''
 
     if len(dfo) != 0:
         
@@ -1539,77 +1361,6 @@ def generate_ewha_color(dff, dfo, dfs, associations, selected_data, layer_select
                 )
             data.append(new_trace)
 
-    '''
-    # Show preliminary sequences
-    seqwid = 1
-    seqcol = '#0066FF'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewha_seq_hya["br"],
-            y=-df_ewha_seq_hya["ewha"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='Hyades (700 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewha_seq_abdmg["br"],
-            y=-df_ewha_seq_abdmg["ewha"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),
-            hoverinfo='skip',
-            name='AB Dor MG (130 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    seqcol = '#F67060'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewha_seq_tha["br"],
-            y=-df_ewha_seq_tha["ewha"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='Tuc-Hor (50 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    # new_trace = go.Scatter(
-    # #new_trace = go.Scattergl(
-    #         x=df_ewha_seq_bpmg["br"],
-    #         y=-df_ewha_seq_bpmg["ewha"],
-    #         opacity=0.9,
-    #         mode="lines",
-    #         line=dict(color=seqcol, width=seqwid, dash='dash'),
-    #         hoverinfo='skip',
-    #         name='Beta Pic MG (26 Myr)',
-    #         visible=sequences_visible,
-    #     )
-    # data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_ewha_seq_lcc["br"],
-            y=-df_ewha_seq_lcc["ewha"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),
-            hoverinfo='skip',
-            name='LCC (15 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-    '''
-
     if len(dfo) != 0:
         
         if br:
@@ -1726,30 +1477,6 @@ def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_dat
         sequences_visible_input = "legendonly"
     else:
         sequences_visible_input = True
-    
-    '''
-    #if field_visible:
-    hexcolor = "#000000"
-    rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
-    diff = bcg_color-rgbcolor
-    rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
-    rgbcolor = [str(int(i)) for i in rgbcolor_pale]
-    rgbcolorf = "rgb("+",".join(rgbcolor)+")"
-    new_trace = go.Scattergl(
-            x=df_cmd_field["gr"],
-            y=df_cmd_field["m_g"],
-            #opacity=field_opacity,
-            mode="markers",
-            marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
-            hoverinfo='skip',
-            name='Field stars',
-            showlegend=False,
-            customdata=df_cmd_field['customdata'],
-            visible=field_visible_input,
-        )
-    new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
-    data.append(new_trace)
-    '''
 
     #Show field sequence
     if len(df_cmd_field) != 0:
@@ -1824,54 +1551,6 @@ def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_dat
                     visible=sequences_visible,
                 )
             data.append(new_trace)
-
-    '''
-    #Add empirical isochrones
-    seqwid = 1
-    seqcol = '#0066FF'
-    
-    new_trace = go.Scattergl(
-            x=df_cmd_seq_100["gr"],
-            y=df_cmd_seq_100["m_g"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),
-            hoverinfo='skip',
-            name='100 Myr',
-            #showlegend=False,
-            customdata=df_cmd_seq_100['customdata'],
-            visible=sequences_visible_input,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scattergl(
-            x=df_cmd_seq_40["gr"],
-            y=df_cmd_seq_40["m_g"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash="dash"),
-            hoverinfo='skip',
-            name='40 Myr',
-            #showlegend=False,
-            customdata=df_cmd_seq_40['customdata'],
-            visible=sequences_visible_input,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scattergl(
-            x=df_cmd_seq_25["gr"],
-            y=df_cmd_seq_25["m_g"],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash="dot"),
-            hoverinfo='skip',
-            name='22 Myr',
-            #showlegend=False,
-            customdata=df_cmd_seq_25['customdata'],
-            visible=sequences_visible_input,
-        )
-    data.append(new_trace)
-    '''
 
     if len(dfo) != 0:
         
@@ -1985,11 +1664,6 @@ layout = html.Div(
                                 ),
                                 dcc.Dropdown(
                                     id="aid-select",
-                                    # options=[
-                                    #     {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
-                                    #     #{"label": i, "value": i}
-                                    #     for i in df_aids["moca_aid"].unique().tolist()
-                                    # ],
                                     multi=True,
                                     value=None,
                                 ),
@@ -2421,29 +2095,6 @@ def update_table(
     table_data_style_conditional = get_style_data_conditional(selected_index)
 
     return df_out.to_dict('records'), selected_index, table_data_style_conditional
-
-# # Update XYZ zoom
-# @dash.callback(
-#     output=[
-#         Output("db-data","data"),
-#         Output("aid-select","value"),
-#         Output("mtid-select","value"),
-#         Output("oid-select","value"),
-#         ],
-#     inputs=[
-#         Input("aid-select", "value"),
-#         Input("mtid-select", "value"),
-#         Input("oid-select", "value"),
-#     ],
-#     state=[State("url","search")]
-# )
-# def update_xyz_zoom(
-#     aid_select, mtid_select, oid_select, url_search
-# ):
-#     #html.Button('Zoom Out', id='uvw-zoom-out', n_clicks=0),
-#     void = 1
-
-
 
 # Update AID- and MTID-select
 @dash.callback(

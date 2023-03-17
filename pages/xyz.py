@@ -372,8 +372,6 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
             z=df_asso_display[zvar_orig],
             opacity=0.2,
             mode="text",
-            #hoverinfo=hoverinfo,
-            #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
             text=df_asso_display["moca_aid"],
             name="Association labels",
         )
