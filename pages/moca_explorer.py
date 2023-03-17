@@ -30,15 +30,15 @@ figure_export_config = {
 }
 
 # Prepare a MOCA engine for loading data
-moca = MocaEngine()
+moca_vanilla = MocaEngine()
 
 #Query an empty row to obtain the structure for the table (this needs to be the same regardless of credentials)
 df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
 df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
-dfe = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
-dfoe = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
+dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
+dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
 #dfoe = dfe.copy(deep=True)
-dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
+dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
 unselected_opacity = 0.1
 
@@ -48,7 +48,7 @@ field_markersize = 3
 bcg_color = np.array([230,236,245])
 
 #Here we are assuming that MTIDs are the same regardless of credentials
-df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
@@ -2152,6 +2152,9 @@ def update_aid_select(
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
     
+    # Load MOCA engine for this user
+    moca = MocaEngine()
+
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
         engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
