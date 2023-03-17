@@ -58,7 +58,8 @@ text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).value
 
 print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
-df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
+#df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
+df_asso_centers = moca.query("CALL list_association_labels();")
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -356,19 +357,25 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     
     colormap = colormap_picker(associations)
 
+    #Default axis range
+    default_pc_range = 500
+    pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
+    pc_range = min([pc_range,max_pc_range])
+
     data = []
 
     if show_asso_centers:
+        df_asso_display = df_asso_centers.loc[(df_asso_centers[xvar_orig].abs()<=pc_range)&(df_asso_centers[yvar_orig].abs()<=pc_range)&(df_asso_centers[zvar_orig].abs()<=pc_range)]
         new_trace = go.Scatter3d(
-            x=df_asso_centers[xvar_orig],
-            y=df_asso_centers[yvar_orig],
-            z=df_asso_centers[zvar_orig],
+            x=df_asso_display[xvar_orig],
+            y=df_asso_display[yvar_orig],
+            z=df_asso_display[zvar_orig],
             opacity=0.2,
             mode="text",
             #hoverinfo=hoverinfo,
             #marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
-            text=df_asso_centers["moca_aid"],
-            name="All Association Centers",
+            text=df_asso_display["moca_aid"],
+            name="Association labels",
         )
         data.append(new_trace)
 
@@ -484,11 +491,6 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     sn = build_solar_neighborhood_3d()
     for sni in sn:
         data.append(sni)
-
-    #Default axis range
-    default_pc_range = 500
-    pc_range = max([dff[xvar].abs().max(),dff[yvar].abs().max(),dff[zvar].abs().max(),default_pc_range])
-    pc_range = min([pc_range,max_pc_range])
 
     # Add invisible points because plotly is too much of an idiot to correctly enforce even aspect ratio
     new_trace = go.Scatter3d(
