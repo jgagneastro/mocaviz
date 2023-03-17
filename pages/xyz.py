@@ -313,6 +313,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     if "hover" not in style:
         hover = False
     
+    #max_pc_range = 1e5
     max_pc_range = 1e3
     #max_pc_range = 100
     
@@ -332,6 +333,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     layout = go.Layout(
         height=850,
         #width=1200,
+        #uirevision="constant",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
         #dragmode="lasso",
         xaxis={'title':xtitle,'uirevision':'fixed'},
@@ -562,7 +564,8 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
     camera = dict(
         up=dict(x=0, y=0, z=1),
         center=dict(x=cen_pos_xrel, y=cen_pos_yrel, z=cen_pos_zrel),
-        eye=dict(x=eye_pos_xrel, y=eye_pos_yrel, z=eye_pos_zrel)
+        eye=dict(x=eye_pos_xrel, y=eye_pos_yrel, z=eye_pos_zrel),
+        #projection=dict(type='orthographic'),
     )
 
     fig.update_layout(scene_camera=camera)
@@ -634,6 +637,8 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtit
 
     #zoom_out_level
     #import pdb; pdb.set_trace()
+
+    #fig.update_layout(uirevision='constant')
 
     return fig
 
