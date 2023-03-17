@@ -1,6 +1,7 @@
 import dash
 from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
+from sqlalchemy import create_engine
 
 dash.register_page(__name__)
 
@@ -28,10 +29,10 @@ figure_export_config = {
   }
 }
 
-# Load data
+# Prepare a MOCA engine for loading data
 moca = MocaEngine()
 
-#Query an empty row to obtain the structure for the table
+#Query an empty row to obtain the structure for the table (this needs to be the same regardless of credentials)
 df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
 df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
 dfe = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
@@ -41,56 +42,63 @@ dfme = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data
 
 unselected_opacity = 0.1
 
-# Load a list of all associations for the Dropdown menu
-df_aids = moca.query("SELECT moca_aid FROM moca_associations")
-#df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
-df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
-
-text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
-
-print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
-
-df_cmd_field = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiadr3_field_scatter'")
-df_cmd_field['customdata'] = 'NaN'
 field_opacity = 0.2
 field_color_fraction = 0.5
 field_markersize = 3
 bcg_color = np.array([230,236,245])
 
-df_cmd_seq_25 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_15myr_30myr'")
-df_cmd_seq_40 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_30myr_50myr'")
-df_cmd_seq_100 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_50myr_250myr'")
-df_cmd_seq_25['customdata'] = 'NaN'
-df_cmd_seq_40['customdata'] = 'NaN'
-df_cmd_seq_100['customdata'] = 'NaN'
+# Load a list of all associations for the Dropdown menu
+#df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+#df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
+
+#Here we are assuming that MTIDs are the same regardless of credentials
+df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+
+text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
+
+#print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
+
+# df_cmd_field = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiadr3_field_scatter'")
+# df_cmd_field['customdata'] = 'NaN'
+# field_opacity = 0.2
+# field_color_fraction = 0.5
+# field_markersize = 3
+# bcg_color = np.array([230,236,245])
+
+# df_cmd_seq_25 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_15myr_30myr'")
+# df_cmd_seq_40 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_30myr_50myr'")
+# df_cmd_seq_100 = moca.query("SELECT xdata gr, ydata m_g FROM data_astro_sequences WHERE moca_seqid='grp_mg_gaiaedr3_50myr_250myr'")
+# df_cmd_seq_25['customdata'] = 'NaN'
+# df_cmd_seq_40['customdata'] = 'NaN'
+# df_cmd_seq_100['customdata'] = 'NaN'
 
 
-df_prot_seq_prae = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_prae_prelim'")
-df_prot_seq_ple = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ple_prelim'")
-df_prot_seq_ngc6811 = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ngc6811_prelim'")
-df_prot_seq_prae['customdata'] = 'NaN'
-df_prot_seq_ple['customdata'] = 'NaN'
-df_prot_seq_ngc6811['customdata'] = 'NaN'
+# df_prot_seq_prae = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_prae_prelim'")
+# df_prot_seq_ple = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ple_prelim'")
+# df_prot_seq_ngc6811 = moca.query("SELECT xdata br, ydata prot FROM data_astro_sequences WHERE moca_seqid='bprp_prot_ngc6811_prelim'")
+# df_prot_seq_prae['customdata'] = 'NaN'
+# df_prot_seq_ple['customdata'] = 'NaN'
+# df_prot_seq_ngc6811['customdata'] = 'NaN'
 
-#df_act_seq_pra = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_pra_prelim'")
-df_act_seq_hya = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_hya_prelim'")
-df_act_seq_peri = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_peri_prelim'")
-df_act_seq_lcc = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_lcc_prelim'")
+# #df_act_seq_pra = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_pra_prelim'")
+# df_act_seq_hya = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_hya_prelim'")
+# df_act_seq_peri = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_peri_prelim'")
+# df_act_seq_lcc = moca.query("SELECT xdata br, ydata gaia_act FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_act_lcc_prelim'")
 
-df_ewli_seq_hya = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_hya_prelim'")
-df_ewli_seq_abdmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_abdmg_prelim'")
-df_ewli_seq_tha = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_tha_prelim'")
-df_ewli_seq_bpmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_bpmg_prelim'")
-df_ewli_seq_lcc = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_lcc_prelim'")
+# df_ewli_seq_hya = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_hya_prelim'")
+# df_ewli_seq_abdmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_abdmg_prelim'")
+# df_ewli_seq_tha = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_tha_prelim'")
+# df_ewli_seq_bpmg = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_bpmg_prelim'")
+# df_ewli_seq_lcc = moca.query("SELECT xdata br, ydata ewli FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewli_lcc_prelim'")
 
-df_ewha_seq_hya = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_hya_prelim'")
-df_ewha_seq_abdmg = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_abdmg_prelim'")
-df_ewha_seq_tha = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_tha_prelim'")
-df_ewha_seq_lcc = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_lcc_prelim'")
+# df_ewha_seq_hya = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_hya_prelim'")
+# df_ewha_seq_abdmg = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_abdmg_prelim'")
+# df_ewha_seq_tha = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_tha_prelim'")
+# df_ewha_seq_lcc = moca.query("SELECT xdata br, ydata ewha FROM data_astro_sequences WHERE moca_seqid='bprp_gaiadr3_ewha_lcc_prelim'")
 
-df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
+# df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
 
-print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
+# print("Downloaded "+str(len(df_cmd_field))+" rows of data for field stars")
 
 # Assign color to legend
 def colormap_picker(aid_list):
@@ -790,7 +798,6 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
         fig.update_scenes(zaxis={'range':[-70,20]})
 
     #Adjust range from zoom level
-    #import pdb; pdb.set_trace()
     dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
     dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
     dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
@@ -807,12 +814,9 @@ def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytit
     fig.update_scenes(yaxis={'range':[yc-dy_zoom/2,yc+dy_zoom/2]})
     fig.update_scenes(zaxis={'range':[zc-dz_zoom/2,zc+dz_zoom/2]})
 
-    #zoom_out_level
-    #import pdb; pdb.set_trace()
-
     return fig
 
-def generate_prot_color(dff, dfo, associations, selected_data, layer_select, hover_select):
+def generate_prot_color(dff, dfo, dfs, associations, selected_data, layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -901,49 +905,22 @@ def generate_prot_color(dff, dfo, associations, selected_data, layer_select, hov
         data.append(new_trace)
 
     #Show preliminary sequences
-    seqwid = 1
-    seqcol = '#0066FF'
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_prot_seq_ple["br"],
-            y=df_prot_seq_ple["prot"],
-            customdata=df_prot_seq_ple['customdata'],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dot'),
-            hoverinfo='skip',
-            name='Pleiades (100 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_prot_seq_prae["br"],
-            y=df_prot_seq_prae["prot"],
-            customdata=df_prot_seq_prae['customdata'],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid, dash='dash'),
-            hoverinfo='skip',
-            name='Praesepe (600 Myr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
-
-    new_trace = go.Scatter(
-    #new_trace = go.Scattergl(
-            x=df_prot_seq_ngc6811["br"],
-            y=df_prot_seq_ngc6811["prot"],
-            customdata=df_prot_seq_ngc6811['customdata'],
-            opacity=0.9,
-            mode="lines",
-            line=dict(color=seqcol, width=seqwid),#, dash='dot'
-            hoverinfo='skip',
-            name='NGC 6811 (1 Gyr)',
-            visible=sequences_visible,
-        )
-    data.append(new_trace)
+    seq_opacity = 0.9
+    if len(dfs) != 0:
+        for seqi in dfs["moca_seqid"].unique():
+            dfsi = dfs[dfs["moca_seqid"] == seqi]
+            i0 = dfsi.index.min()
+            new_trace = go.Scatter(
+                    x=dfsi["xdata"],
+                    y=dfsi["ydata"],
+                    opacity=seq_opacity,
+                    mode="lines",
+                    line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                    hoverinfo='skip',
+                    name=dfsi.loc[i0,'tag'],
+                    visible=sequences_visible,
+                )
+            data.append(new_trace)
 
     if len(dfo) != 0:
         
@@ -1003,7 +980,7 @@ def generate_prot_color(dff, dfo, associations, selected_data, layer_select, hov
 
     return fig
 
-def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select, hover_select):
+def generate_gaia_act_color(dff, dfo, dfs, associations, selected_data, layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -1091,6 +1068,24 @@ def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select,
         data.append(new_trace)
 
     #Show preliminary sequences
+    seq_opacity = 0.9
+    if len(dfs) != 0:
+        for seqi in dfs["moca_seqid"].unique():
+            dfsi = dfs[dfs["moca_seqid"] == seqi]
+            i0 = dfsi.index.min()
+            new_trace = go.Scatter(
+                    x=dfsi["xdata"],
+                    y=dfsi["ydata"],
+                    opacity=seq_opacity,
+                    mode="lines",
+                    line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                    hoverinfo='skip',
+                    name=dfsi.loc[i0,'tag'],
+                    visible=sequences_visible,
+                )
+            data.append(new_trace)
+
+    '''#Show preliminary sequences
     seqwid = 1
     seqcol = '#0066FF'
     # new_trace = go.Scatter(
@@ -1145,6 +1140,7 @@ def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select,
             visible=sequences_visible,
         )
     data.append(new_trace)
+    '''
 
     if len(dfo) != 0:
         
@@ -1204,7 +1200,7 @@ def generate_gaia_act_color(dff, dfo, associations, selected_data, layer_select,
 
     return fig
 
-def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hover_select):
+def generate_ewli_color(dff, dfo, dfs, associations, selected_data, layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -1291,6 +1287,25 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    #Show preliminary sequences
+    seq_opacity = 0.9
+    if len(dfs) != 0:
+        for seqi in dfs["moca_seqid"].unique():
+            dfsi = dfs[dfs["moca_seqid"] == seqi]
+            i0 = dfsi.index.min()
+            new_trace = go.Scatter(
+                    x=dfsi["xdata"],
+                    y=dfsi["ydata"],
+                    opacity=seq_opacity,
+                    mode="lines",
+                    line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                    hoverinfo='skip',
+                    name=dfsi.loc[i0,'tag'],
+                    visible=sequences_visible,
+                )
+            data.append(new_trace)
+
+    '''
     # Show preliminary sequences
     seqwid = 1
     seqcol = '#0066FF'
@@ -1359,7 +1374,7 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
             visible=sequences_visible,
         )
     data.append(new_trace)
-
+    '''
 
     if len(dfo) != 0:
         
@@ -1419,7 +1434,7 @@ def generate_ewli_color(dff, dfo, associations, selected_data, layer_select, hov
 
     return fig
 
-def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hover_select):
+def generate_ewha_color(dff, dfo, dfs, associations, selected_data, layer_select, hover_select):
 
     #Read hover property
     hover = False
@@ -1506,6 +1521,25 @@ def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hov
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    #Show preliminary sequences
+    seq_opacity = 0.9
+    if len(dfs) != 0:
+        for seqi in dfs["moca_seqid"].unique():
+            dfsi = dfs[dfs["moca_seqid"] == seqi]
+            i0 = dfsi.index.min()
+            new_trace = go.Scatter(
+                    x=dfsi["xdata"],
+                    y=-dfsi["ydata"],
+                    opacity=seq_opacity,
+                    mode="lines",
+                    line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                    hoverinfo='skip',
+                    name=dfsi.loc[i0,'tag'],
+                    visible=sequences_visible,
+                )
+            data.append(new_trace)
+
+    '''
     # Show preliminary sequences
     seqwid = 1
     seqcol = '#0066FF'
@@ -1574,6 +1608,7 @@ def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hov
             visible=sequences_visible,
         )
     data.append(new_trace)
+    '''
 
     if len(dfo) != 0:
         
@@ -1633,7 +1668,7 @@ def generate_ewha_color(dff, dfo, associations, selected_data, layer_select, hov
 
     return fig
 
-def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cmd_layer_select, hover_select):
+def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_data, cmd_layer_select, hover_select):
 
     #Read layer properties
     sequences_visible = field_visible = br = True
@@ -1691,7 +1726,8 @@ def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cm
         sequences_visible_input = "legendonly"
     else:
         sequences_visible_input = True
-
+    
+    '''
     #if field_visible:
     hexcolor = "#000000"
     rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
@@ -1713,6 +1749,29 @@ def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cm
         )
     new_trace.update(unselected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)),selected=dict(marker=dict(color=rgbcolorf,opacity=field_opacity)))
     data.append(new_trace)
+    '''
+
+    #Show field sequence
+    if len(df_cmd_field) != 0:
+        i0 = df_cmd_field.index.min()
+        hexcolor = df_cmd_field.loc[i0,'color']
+        rgbcolor = np.array([int(hexcolor.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)])
+        diff = bcg_color-rgbcolor
+        rgbcolor_pale = (rgbcolor+diff*(1.0-field_color_fraction)).astype(int)
+        rgbcolor = [str(int(i)) for i in rgbcolor_pale]
+        rgbcolorf = "rgb("+",".join(rgbcolor)+")"
+        new_trace = go.Scattergl(
+                x=df_cmd_field["xdata"],
+                y=df_cmd_field["ydata"],
+                mode="markers",
+                marker={"color": rgbcolorf, "size": field_markersize, "opacity": field_opacity},
+                #line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                hoverinfo='skip',
+                name=df_cmd_field.loc[i0,'tag'],
+                showlegend=False,
+                visible=field_visible_input,
+            )
+        data.append(new_trace)
 
     text_list = build_hover(dff)
     aid_list = dff["moca_aid"].tolist()
@@ -1748,6 +1807,25 @@ def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cm
         new_trace.update(unselected=dict(marker=dict(opacity=unselected_opacity)))
         data.append(new_trace)
 
+    #Show preliminary sequences
+    seq_opacity = 0.9
+    if len(dfs) != 0:
+        for seqi in dfs["moca_seqid"].unique():
+            dfsi = dfs[dfs["moca_seqid"] == seqi]
+            i0 = dfsi.index.min()
+            new_trace = go.Scattergl(
+                    x=dfsi["xdata"],
+                    y=dfsi["ydata"],
+                    opacity=seq_opacity,
+                    mode="lines",
+                    line=dict(color=dfsi.loc[i0,'color'], width=dfsi.loc[i0,'width'], dash=dfsi.loc[i0,'style']),
+                    hoverinfo='skip',
+                    name=dfsi.loc[i0,'tag'],
+                    visible=sequences_visible,
+                )
+            data.append(new_trace)
+
+    '''
     #Add empirical isochrones
     seqwid = 1
     seqcol = '#0066FF'
@@ -1793,6 +1871,7 @@ def generate_gaiadr3_cmd(dff, dfo, associations, df_cmd_field, selected_data, cm
             visible=sequences_visible_input,
         )
     data.append(new_trace)
+    '''
 
     if len(dfo) != 0:
         
@@ -1906,11 +1985,11 @@ layout = html.Div(
                                 ),
                                 dcc.Dropdown(
                                     id="aid-select",
-                                    options=[
-                                        {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
-                                        #{"label": i, "value": i}
-                                        for i in df_aids["moca_aid"].unique().tolist()
-                                    ],
+                                    # options=[
+                                    #     {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
+                                    #     #{"label": i, "value": i}
+                                    #     for i in df_aids["moca_aid"].unique().tolist()
+                                    # ],
                                     multi=True,
                                     value=None,
                                 ),
@@ -2370,6 +2449,7 @@ def update_table(
 @dash.callback(
     output=[
         Output("db-data","data"),
+        Output("aid-select","options"),
         Output("aid-select","value"),
         Output("mtid-select","value"),
         Output("oid-select","value"),
@@ -2389,6 +2469,9 @@ def update_aid_select(
     
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
+    user = None
+    pwd = None
+    dbase = None
     if aid_select is None:
         #Default values without URL variables
         if url_search == "":
@@ -2397,6 +2480,12 @@ def update_aid_select(
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
+            if 'user' in parsed_url_data.keys():
+                user = parsed_url_data['user'][0]
+            if 'pwd' in parsed_url_data.keys():
+                pwd = parsed_url_data['pwd'][0]
+            if 'dbase' in parsed_url_data.keys():
+                dbase = parsed_url_data['dbase'][0]
             if 'asso' in parsed_url_data.keys():
                 aid_select = parsed_url_data['asso'][0].split(',')
             else:
@@ -2411,7 +2500,27 @@ def update_aid_select(
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
     
-    #Prevent app from crashing if no associations are selected
+    #Substitute MOCA engine's connection if credentials are provided
+    if user is not None and pwd is not None and dbase is not None:
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd+'@104.248.106.21/'+dbase)
+        
+        # This is only required for CALL statements
+        raw_con = engine.raw_connection()
+        rmoca.raw_connection = raw_con
+
+        # This is required for all queries
+        con = engine.connect()
+        moca.connection = con
+
+    # Testing a query for AID list here
+    df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+    aid_options=[
+        {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
+        #{"label": i, "value": i}
+        for i in df_aids["moca_aid"].unique().tolist()
+    ]
+
+    # Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
         df = dfe
         dfm = dfme
@@ -2420,6 +2529,7 @@ def update_aid_select(
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
         df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+
         df['gr'] = df['gmag']-df['rmag']
         df['br'] = df['bmag']-df['rmag']
         df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
@@ -2448,7 +2558,26 @@ def update_aid_select(
     print("Downloaded "+str(len(df))+" rows of general data from DB")
     print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
 
-    return (df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split'), dfo.to_json(date_format='iso', orient='split')), aid_select, mtid_select, oid_select
+    df_cmd_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr'")
+    df_cmd_field = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr_fieldscatter'")
+    df_prot_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_prot_br'")
+    df_act_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_act_br'")
+    df_ewha_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_ewha_br'")
+    df_ewli_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_ewli_br'")    
+    df_asso_centers = moca.query("CALL list_association_labels();")
+
+    return (
+        df.to_json(date_format='iso', orient='split'),
+        dfm.to_json(date_format='iso', orient='split'),
+        dfo.to_json(date_format='iso', orient='split'),
+        df_cmd_seq.to_json(date_format='iso', orient='split'),
+        df_cmd_field.to_json(date_format='iso', orient='split'),
+        df_prot_seq.to_json(date_format='iso', orient='split'),
+        df_act_seq.to_json(date_format='iso', orient='split'),
+        df_ewha_seq.to_json(date_format='iso', orient='split'),
+        df_ewli_seq.to_json(date_format='iso', orient='split'),
+        df_asso_centers.to_json(date_format='iso', orient='split')
+        ), aid_options, aid_select, mtid_select, oid_select
 
 # # Update RVTS figure
 # @dash.callback(
@@ -2555,7 +2684,8 @@ def update_prot_color(
        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_prot_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+    dfs = pd.read_json(jsonified_db_data[5], orient='split')
+    return generate_prot_color(df, dfo, dfs, aid_select, processed_data, layer_select, hover_select)
 
 # Update gaia-act-color
 @dash.callback(
@@ -2580,7 +2710,8 @@ def update_gaia_act_color(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_gaia_act_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+    dfs = pd.read_json(jsonified_db_data[6], orient='split')
+    return generate_gaia_act_color(df, dfo, dfs, aid_select, processed_data, layer_select, hover_select)
 
 # Update ewli-color
 @dash.callback(
@@ -2605,7 +2736,8 @@ def update_ewli_color(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_ewli_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+    dfs = pd.read_json(jsonified_db_data[8], orient='split')
+    return generate_ewli_color(df, dfo, dfs, aid_select, processed_data, layer_select, hover_select)
 
 # Update ewha-color
 @dash.callback(
@@ -2630,7 +2762,8 @@ def update_ewha_color(
         return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_ewha_color(df, dfo, aid_select, processed_data, layer_select, hover_select)
+    dfs = pd.read_json(jsonified_db_data[7], orient='split')
+    return generate_ewha_color(df, dfo, dfs, aid_select, processed_data, layer_select, hover_select)
 
 # Update XYZ Map
 @dash.callback(
@@ -2827,4 +2960,6 @@ def update_gaiadr3_cmd(
 
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_gaiadr3_cmd(df, dfo, aid_select, df_cmd_field, processed_data, cmd_layer_select, hover_select)
+    dfs = pd.read_json(jsonified_db_data[3], orient='split')
+    df_cmd_field = pd.read_json(jsonified_db_data[4], orient='split')
+    return generate_gaiadr3_cmd(df, dfo, dfs, df_cmd_field, aid_select, processed_data, cmd_layer_select, hover_select)
