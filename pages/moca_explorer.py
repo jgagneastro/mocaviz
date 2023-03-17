@@ -18,7 +18,7 @@ from dash.dependencies import Input, Output, State
 from mocapy import *
 
 initial_aids = ["ABDMG","BPMG","TWA","THA"]
-initial_mtids = ["BF","HM"]
+initial_mtids = ["BF","HM","CM"]
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -536,7 +536,7 @@ def generate_xy_map(dff, dfm, dfo, associations, xvar, yvar, xtitle, ytitle, tit
 
     return fig
 
-def generate_xyz_map(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select, zoom_out_level):
+def generate_xyz_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, hover_select, zoom_out_level):
 
     # Read hover property
     hover = False
@@ -2123,6 +2123,7 @@ def update_aid_select(
     user = None
     pwd = None
     dbase = None
+    url_add = None
     if aid_select is None:
         #Default values without URL variables
         if url_search == "":
@@ -2153,17 +2154,17 @@ def update_aid_select(
     
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
-        engine = create_engine('mysql+pymysql://'+user+':'+pwd+'@104.248.106.21/'+dbase)
-        
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+
         # This is only required for CALL statements
         raw_con = engine.raw_connection()
-        rmoca.raw_connection = raw_con
+        moca.raw_connection = raw_con
 
         # This is required for all queries
         con = engine.connect()
         moca.connection = con
 
-    # Testing a query for AID list here
+    # Query for AID list here
     df_aids = moca.query("SELECT moca_aid FROM moca_associations")
     aid_options=[
         {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
@@ -2445,7 +2446,8 @@ def update_xyz_map(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_xyz_map(df, dfm, dfo, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select, zoom_out_level)
+    df_asso_centers = pd.read_json(jsonified_db_data[9], orient='split')
+    return generate_xyz_map(df, dfm, dfo, df_asso_centers, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, hover_select, zoom_out_level)
 
 # Update UVW Map
 @dash.callback(
@@ -2475,21 +2477,14 @@ def update_uvw_map(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    return generate_xyz_map(df, dfm, dfo, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select, zoom_out_level)
+    df_asso_centers = pd.read_json(jsonified_db_data[9], orient='split')
+    return generate_xyz_map(df, dfm, dfo, df_asso_centers, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, hover_select, zoom_out_level)
 
 # Update UV Map
 @dash.callback(
     output=Output("uv-map", "figure"),
     inputs=dict(
-        selections={
-            #"uv-map":Input("uv-map", "selectedData"),
-            "uw-map":Input("uw-map", "selectedData"),
-            "xy-map":Input("xy-map", "selectedData"),
-            "yz-map":Input("yz-map", "selectedData"),
-            "gaiadr3-cmd":Input("gaiadr3-cmd", "selectedData"),
-            "prot-color":Input("prot-color", "selectedData"),
-            "gaia-act-color":Input("prot-color", "selectedData"),
-        },
+        selections=selections,
         jsonified_db_data=Input("db-data", "data"),
         xymap_view=Input("xymap-view-selector", "value"),
         hover_select=Input("hover-select", "value"),
@@ -2504,6 +2499,8 @@ def update_uv_map(
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
+    if prop_id == "uv-map":
+        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')

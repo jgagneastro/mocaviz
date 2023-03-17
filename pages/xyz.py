@@ -1,6 +1,7 @@
 import dash
 from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
+from sqlalchemy import create_engine
 
 dash.register_page(__name__)
 
@@ -22,7 +23,7 @@ bcg_color = 'rgb(255,255,255)'
 
 #initial_aids = ["ABDMG","BPMG","TWA","THA"]
 initial_aids = ["HYA","CBER","TWA","THA"]
-initial_mtids = ["BF","HM"]
+initial_mtids = ["BF","HM","CM"]
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -50,16 +51,16 @@ selected_opacity = 1
 #selected_opacity = 1
 
 # Load a list of all associations for the Dropdown menu
-df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+#df_aids = moca.query("SELECT moca_aid FROM moca_associations")
 #df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
 df_mtids = moca.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
-print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
+#print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
 
 #df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
-df_asso_centers = moca.query("CALL list_association_labels();")
+#df_asso_centers = moca.query("CALL list_association_labels();")
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -292,7 +293,7 @@ def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opaci
     return lines
 
 # Eventually move this to a subroutine
-def generate_xyz_map_xyzpage(dff, dfm, dfo, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure):
+def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure):
 
     # Read hover property
     # hover = False
@@ -678,11 +679,6 @@ layout = html.Div(
                         dcc.Markdown(children=["Select stellar associations"]),
                         dcc.Dropdown(
                             id="aid-select-xyzpage",
-                            options=[
-                                {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
-                                #{"label": i, "value": i}
-                                for i in df_aids["moca_aid"].unique().tolist()
-                            ],
                             multi=True,
                             value=None,
                             style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
@@ -885,6 +881,7 @@ selections = {
 @dash.callback(
     output=[
         Output("db-data-xyzpage","data"),
+        Output("aid-select-xyzpage","options"),
         Output("aid-select-xyzpage","value"),
         Output("mtid-select-xyzpage","value"),
         Output("oid-select-xyzpage","value"),
@@ -904,6 +901,9 @@ def update_aid_select_xyzpage(
     
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
+    user = None
+    pwd = None
+    dbase = None
     if aid_select is None:
         #Default values without URL variables
         if url_search == "":
@@ -912,6 +912,12 @@ def update_aid_select_xyzpage(
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
+            if 'user' in parsed_url_data.keys():
+                user = parsed_url_data['user'][0]
+            if 'pwd' in parsed_url_data.keys():
+                pwd = parsed_url_data['pwd'][0]
+            if 'dbase' in parsed_url_data.keys():
+                dbase = parsed_url_data['dbase'][0]
             if 'asso' in parsed_url_data.keys():
                 aid_select = parsed_url_data['asso'][0].split(',')
             else:
@@ -925,7 +931,27 @@ def update_aid_select_xyzpage(
             #OID is always a string in the input box so do not already split it into an array
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
-    
+
+    #Substitute MOCA engine's connection if credentials are provided
+    if user is not None and pwd is not None and dbase is not None:
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+
+        # This is only required for CALL statements
+        raw_con = engine.raw_connection()
+        moca.raw_connection = raw_con
+
+        # This is required for all queries
+        con = engine.connect()
+        moca.connection = con
+
+    # Query for AID list here
+    df_aids = moca.query("SELECT moca_aid FROM moca_associations")
+    aid_options=[
+        {"label": dcc.Link(children=i ,href="https://mocadb.ca/search/results?search-query="+i+"&search-type=association"), "value": i}
+        #{"label": i, "value": i}
+        for i in df_aids["moca_aid"].unique().tolist()
+    ]
+
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0:
         df = dfe
@@ -960,10 +986,16 @@ def update_aid_select_xyzpage(
         dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
         dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
+    df_asso_centers = moca.query("CALL list_association_labels();")
     print("Downloaded "+str(len(df))+" rows of general data from DB")
     print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
 
-    return (df.to_json(date_format='iso', orient='split'), dfm.to_json(date_format='iso', orient='split'), dfo.to_json(date_format='iso', orient='split')), aid_select, mtid_select, oid_select
+    return (
+        df.to_json(date_format='iso', orient='split'),
+        dfm.to_json(date_format='iso', orient='split'),
+        dfo.to_json(date_format='iso', orient='split'),
+        df_asso_centers.to_json(date_format='iso', orient='split'),
+        ), aid_options, aid_select, mtid_select, oid_select
 
 # Update XYZ Map
 @dash.callback(
@@ -1000,9 +1032,10 @@ def update_xyz_map_xyzpage(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
+    df_asso_centers = pd.read_json(jsonified_db_data[3], orient='split')
     #import pdb; pdb.set_trace()
 
-    return generate_xyz_map_xyzpage(df, dfm, dfo, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, self_figure)
+    return generate_xyz_map_xyzpage(df, dfm, dfo, df_asso_centers, aid_select, 'x', 'y', 'z', 'X (pc)', 'Y (pc)', 'Z (pc)', 'XYZ Galactic coordinates', processed_data, xymap_view, self_figure)
 
 # # Update UVW Map
 # @dash.callback(

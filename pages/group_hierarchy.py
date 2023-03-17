@@ -1,6 +1,7 @@
 import dash
 from dash import html, dcc, callback, Input, Output, State
 from urllib.parse import urlparse, parse_qs
+from sqlalchemy import create_engine
 
 #from plotly.offline import iplot
 import plotly.graph_objs as go
@@ -16,16 +17,9 @@ default_title = 'Click on a graph node to explore children and other data visual
 
 #Set up and query MOCAdb for current group hierarchy
 moca = MocaEngine()
-df = moca.query("CALL select_aid_hierarchy();")
-
-df.loc[df["original_aid"]=="OTHERS","comments"] = "Groups with two or less direct children defined in a useful way"
-
-#Append "ALL" to the data
-df.loc[df['nobj'].isnull(),'nobj'] = 10
-df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='ALL'].nobj.sum(), ''
 
 #Show the group hierarchy sunburst figure
-def generate_gh_sunburst(aid_select):
+def generate_gh_sunburst(df, aid_select):
 
     #layout = go.Layout(
         #clickmode="event+select",
@@ -147,14 +141,26 @@ layout = html.Div(
         #zoom_out=Input("xyz-zoom-out-xyzpage", "n_clicks"),
         #zoom_in=Input("xyz-zoom-in-xyzpage", "n_clicks"),
     ),
-    state=dict(self_figure=State("gh-sunburst", "figure")),
+    state=dict(url_search=State("url", "search"),self_figure=State("gh-sunburst", "figure")),
 )
-def gh_callback(clickdata, self_figure):
+def gh_callback(clickdata, url_search, self_figure):
+    
     if clickdata is not None:
+
+        url_add = ""
+        if url_search != "":
+            parsed_url = urlparse(url_search)
+            parsed_url_data = parse_qs(parsed_url.query)
+            if ('user' in parsed_url_data.keys()) & ('pwd' in parsed_url_data.keys()) & ('dbase' in parsed_url_data.keys()):
+                user = parsed_url_data['user'][0]
+                pwd = parsed_url_data['pwd'][0]
+                dbase = parsed_url_data['dbase'][0]
+                url_add = "&user="+user+"&pwd="+pwd+"&dbase="+dbase
+
         #import pdb; pdb.set_trace()
         label = clickdata['points'][0]['customdata']
         if label is not None:
-            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM) to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
+            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
             return text
         #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
 
@@ -172,6 +178,10 @@ def update_gh_figure(dummy, url_search):
     
     print("GH callback")
     aid_select = 'ALL'
+    user = None
+    pwd = None
+    dbase = None
+    url_add = None
     if url_search != "":
         parsed_url = urlparse(url_search)
         parsed_url_data = parse_qs(parsed_url.query)
@@ -179,8 +189,33 @@ def update_gh_figure(dummy, url_search):
             aid_select = parsed_url_data['asso'][0]
         else:
             aid_select = 'ALL'
+        if 'user' in parsed_url_data.keys():
+            user = parsed_url_data['user'][0]
+        if 'pwd' in parsed_url_data.keys():
+            pwd = parsed_url_data['pwd'][0]
+        if 'dbase' in parsed_url_data.keys():
+            dbase = parsed_url_data['dbase'][0]
 
-    return generate_gh_sunburst(aid_select)
+    #Substitute MOCA engine's connection if credentials are provided
+    if user is not None and pwd is not None and dbase is not None:
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+
+        # This is only required for CALL statements
+        raw_con = engine.raw_connection()
+        moca.raw_connection = raw_con
+
+        # This is required for all queries
+        con = engine.connect()
+        moca.connection = con
+
+    df = moca.query("CALL select_aid_hierarchy();")
+    df.loc[df["original_aid"]=="OTHERS","comments"] = "Groups with two or less direct children defined in a useful way"
+
+    #Append "ALL" to the data
+    df.loc[df['nobj'].isnull(),'nobj'] = 10
+    df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='ALL'].nobj.sum(), ''
+
+    return generate_gh_sunburst(df, aid_select)
 
 # @dash.callback(
 #     output=Output("gh-sunburst", "data"),
