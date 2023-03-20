@@ -901,9 +901,6 @@ def update_aid_select_xyzpage(
     
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
-    user = None
-    pwd = None
-    dbase = None
     if aid_select is None:
         #Default values without URL variables
         if url_search == "":
@@ -912,12 +909,6 @@ def update_aid_select_xyzpage(
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
-            if 'user' in parsed_url_data.keys():
-                user = parsed_url_data['user'][0]
-            if 'pwd' in parsed_url_data.keys():
-                pwd = parsed_url_data['pwd'][0]
-            if 'dbase' in parsed_url_data.keys():
-                dbase = parsed_url_data['dbase'][0]
             if 'asso' in parsed_url_data.keys():
                 aid_select = parsed_url_data['asso'][0].split(',')
             else:
@@ -931,6 +922,20 @@ def update_aid_select_xyzpage(
             #OID is always a string in the input box so do not already split it into an array
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
+
+    # Read credentials
+    user = None
+    pwd = None
+    dbase = None
+    if url_search != "":
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+        if 'user' in parsed_url_data.keys():
+            user = parsed_url_data['user'][0]
+        if 'pwd' in parsed_url_data.keys():
+            pwd = parsed_url_data['pwd'][0]
+        if 'dbase' in parsed_url_data.keys():
+            dbase = parsed_url_data['dbase'][0]
 
     # Load MOCA engine for this user
     moca = MocaEngine()
