@@ -145,6 +145,9 @@ def gh_callback(clickdata, url_search, self_figure):
     if clickdata is not None:
 
         url_add = ""
+        user = None
+        pwd = None
+        dbase = None
         if url_search != "":
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
@@ -154,10 +157,32 @@ def gh_callback(clickdata, url_search, self_figure):
                 dbase = parsed_url_data['dbase'][0]
                 url_add = "&user="+user+"&pwd="+pwd+"&dbase="+dbase
 
-        #import pdb; pdb.set_trace()
+        #Set up and query MOCAdb for clean lists of children
+        moca = MocaEngine()
+
+        #Substitute MOCA engine's connection if credentials are provided
+        if user is not None and pwd is not None and dbase is not None:
+            engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+
+            # This is only required for CALL statements
+            raw_con = engine.raw_connection()
+            moca.raw_connection = raw_con
+
+            # This is required for all queries
+            con = engine.connect()
+            moca.connection = con
+
+        dfrel = moca.query("CALL list_association_children();")
+        clean_children_list = dfrel.loc[dfrel['moca_aid']==clickdata['points'][0]['customdata'],'clean_children'].values
+        #clean_children_list2 = dfrel.loc[dfrel['moca_aid']=="BANANE",'clean_children'].values[0]
+
+        child_aid = ""
+        if len(clean_children_list) != 0:
+            child_aid = ","+clean_children_list[0]
+        
         label = clickdata['points'][0]['customdata']
         if label is not None:
-            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
+            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+child_aid+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
             return text
         #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
 
@@ -195,7 +220,7 @@ def update_gh_figure(dummy, url_search):
 
     #Set up and query MOCAdb for current group hierarchy
     moca = MocaEngine()
-    
+
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
         engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
