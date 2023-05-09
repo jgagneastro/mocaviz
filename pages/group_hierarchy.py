@@ -174,12 +174,11 @@ def gh_callback(clickdata, url_search, self_figure):
 
         dfrel = moca.query("CALL list_association_children();")
         clean_children_list = dfrel.loc[dfrel['moca_aid']==clickdata['points'][0]['customdata'],'clean_children'].values
-        #clean_children_list2 = dfrel.loc[dfrel['moca_aid']=="BANANE",'clean_children'].values[0]
 
         child_aid = ""
         if len(clean_children_list) != 0:
             child_aid = ","+clean_children_list[0]
-        
+
         label = clickdata['points'][0]['customdata']
         if label is not None:
             text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+child_aid+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
