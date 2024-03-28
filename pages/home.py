@@ -12,6 +12,7 @@ default_text = \
 " Please choose one of the following tools:\n" + \
 " * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer#args#).\n" + \
 " * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz#args#).\n" + \
+" * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA spatial explorer](/uvw#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy#args#).\n" + \
 " * Return to the [MOCAdb website](https://mocadb.ca).\n"
 
