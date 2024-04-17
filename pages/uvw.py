@@ -180,7 +180,7 @@ def build_banner():
         #className="banner",
         children=[
             #html.Img(src=get_asset_url("dash-logo.png")),
-            html.H2("MOCA SPATIAL EXPLORER"),
+            html.H2("MOCA KINEMATIC EXPLORER"),
         ],
         style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
     )
