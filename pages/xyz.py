@@ -51,7 +51,7 @@ query_e = """
 """
 query_oe = """
     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z
-    FROM mechanics_memberships_vetted mv
+    FROM mechanics_best_memberships mv
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
 """
@@ -1009,11 +1009,12 @@ def update_aid_select_xyzpage(
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
-        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
-        dfo['gr'] = dfo['gmag']-dfo['rmag']
-        dfo['br'] = dfo['bmag']-dfo['rmag']
-        dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
-        dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
+        dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
+        #dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
+        #dfo['gr'] = dfo['gmag']-dfo['rmag']
+        #dfo['br'] = dfo['bmag']-dfo['rmag']
+        #dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
+        #dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
     df_asso_centers = moca.query("CALL list_association_labels();")
     print("Downloaded "+str(len(df))+" rows of general data from DB")
