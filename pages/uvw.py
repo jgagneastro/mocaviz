@@ -38,11 +38,33 @@ figure_export_config = {
 # Load data
 moca_vanilla = MocaEngine()
 
+query_e = """
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, COALESCE(uvw.u_kms,uvwany.u_kms) AS u, COALESCE(uvw.v_kms,uvwany.v_kms) AS v, COALESCE(uvw.w_kms,uvwany.w_kms) AS w, cbsd.u_opt, cbsd.v_opt, cbsd.w_opt
+    FROM mechanics_memberships_vetted mv
+    LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
+    LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+    LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
+    LEFT JOIN moca_objects mo USING(moca_oid)
+    LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
+    LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
+"""
+query_oe = """
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, COALESCE(uvw.u_kms,uvwany.u_kms) AS u, COALESCE(uvw.v_kms,uvwany.v_kms) AS v, COALESCE(uvw.w_kms,uvwany.w_kms) AS w
+    FROM mechanics_best_memberships mv
+    LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+    LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
+    LEFT JOIN summary_all_objects sao USING(moca_oid)
+    LEFT JOIN moca_objects mo USING(moca_oid)
+"""
+
+dfe = moca_vanilla.query(query_e+" LIMIT 0")
+dfoe = moca_vanilla.query(query_oe+" LIMIT 0")
+
 #Query an empty row to obtain the structure for the table
-df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
-df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
-dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
-dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
+#df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
+#df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
+#dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
+#dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
 #dfoe = dfe.copy(deep=True)
 dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
@@ -800,16 +822,18 @@ def update_aid_select_uvwpage(
         dfm = dfme
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
-        df['gr'] = df['gmag']-df['rmag']
-        df['br'] = df['bmag']-df['rmag']
-        df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
-        df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
+        aid_query = " OR ".join(["mv.moca_aid='"+stri+"'" for stri in aid_select])
+        mtid_query = " OR ".join(["mv.moca_mtid = '"+stri+"'" for stri in mtid_select])
+        df = moca.query(query_e+" WHERE ("+mtid_query+") AND ("+aid_query+")")
+        #df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        #df['gr'] = df['gmag']-df['rmag']
+        #df['br'] = df['bmag']-df['rmag']
+        #df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
+        #df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
 
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         #dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
+        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         dfm = moca.query("SELECT*FROM(SELECT ROW_NUMBER()OVER(PARTITION BY moca_aid ORDER BY mbsm.adopted DESC,dbs.moca_bsmdid DESC)AS nn,dbs.*FROM data_banyan_sigma_models dbs LEFT JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid)WHERE ("+aid_query+"))inq WHERE nn=1")
 
     #Object-based selections
@@ -822,12 +846,13 @@ def update_aid_select_uvwpage(
         dfo = dfoe
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
-        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
-        dfo['gr'] = dfo['gmag']-dfo['rmag']
-        dfo['br'] = dfo['bmag']-dfo['rmag']
-        dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
-        dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
+        oid_query = " OR ".join(["mv.moca_oid='"+stri+"'" for stri in oid_select.split(',')])
+        dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
+        #dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
+        #dfo['gr'] = dfo['gmag']-dfo['rmag']
+        #dfo['br'] = dfo['bmag']-dfo['rmag']
+        #dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
+        #dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
     df_asso_centers = moca.query("CALL list_association_labels();")
     print("Downloaded "+str(len(df))+" rows of general data from DB")
