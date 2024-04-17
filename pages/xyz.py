@@ -42,16 +42,18 @@ moca_vanilla = MocaEngine()
 #df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
 
 query_e = """
-    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, cbsd.x_opt, cbsd.y_opt, cbsd.z_opt
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, cbsd.x_opt, cbsd.y_opt, cbsd.z_opt
     FROM mechanics_memberships_vetted mv
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
+    LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
     LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
 query_oe = """
-    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z
     FROM mechanics_best_memberships mv
+    LEFT JOIN summary_all_objects sao USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
 """
@@ -985,8 +987,8 @@ def update_aid_select_xyzpage(
         dfm = dfme
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+        aid_query = " OR ".join(["mv.moca_aid='"+stri+"'" for stri in aid_select])
+        mtid_query = " OR ".join(["mv.moca_mtid = '"+stri+"'" for stri in mtid_select])
         df = moca.query(query_e+" WHERE ("+mtid_query+") AND ("+aid_query+")")
         #df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         #df['gr'] = df['gmag']-df['rmag']
@@ -996,6 +998,7 @@ def update_aid_select_xyzpage(
 
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         #dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
+        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         dfm = moca.query("SELECT*FROM(SELECT ROW_NUMBER()OVER(PARTITION BY moca_aid ORDER BY mbsm.adopted DESC,dbs.moca_bsmdid DESC)AS nn,dbs.*FROM data_banyan_sigma_models dbs LEFT JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid)WHERE ("+aid_query+"))inq WHERE nn=1")
 
     #Object-based selections
@@ -1008,7 +1011,7 @@ def update_aid_select_xyzpage(
         dfo = dfoe
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
+        oid_query = " OR ".join(["mv.moca_oid='"+stri+"'" for stri in oid_select.split(',')])
         dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
         #dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
         #dfo['gr'] = dfo['gmag']-dfo['rmag']
