@@ -2,7 +2,6 @@ import dash
 from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
-import matplotlib.pyplot as plt
 
 dash.register_page(__name__)
 
