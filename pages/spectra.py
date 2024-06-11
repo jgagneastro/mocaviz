@@ -133,7 +133,7 @@ def colormap_picker(aid_list):
     return colormap
 
 # Eventually move this to a subroutine
-def selection_helper(selections):
+def selection_helper_spectra(selections):
 
     # Find which one has been triggered
     ctx = dash.callback_context
@@ -527,7 +527,7 @@ def update_spectrum_spectrapage(
 ):
     
     #print("SPECTRA callback-spectrapage")
-    processed_data, prop_id = selection_helper(selections)
+    processed_data, prop_id = selection_helper_spectra(selections)
     if prop_id is None:
        return self_figure
     if prop_id == "spectra-map-spectrapage":
