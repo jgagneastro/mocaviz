@@ -337,7 +337,7 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
         hover = False
     
     #max_pc_range = 1e5
-    max_pc_range = 1e3
+    max_pc_range = 2e3
     #max_pc_range = 100
     
     dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan

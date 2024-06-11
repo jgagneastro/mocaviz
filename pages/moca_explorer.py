@@ -327,7 +327,8 @@ def generate_spectrum(dfspe):
         yaxis={'title':"Spectral flux density (Flambda)"},
         margin=dict(l=110, r=50, t=50, b=50),
     )
-
+    import pdb; pdb.set_trace()
+    
     data = []
 
     new_trace = go.Scattergl(x=dfspe["wv"].values,y=dfspe['ff'].values/dfspe['ff'].median(),opacity=0.8,mode="lines")
