@@ -79,7 +79,7 @@ def weighted_median(data, weights):
 
 # Assign color to legend
 # Eventually move this to a subroutine
-def colormap_picker(aid_list):
+def colormap_picker_spectra(aid_list):
     # Color palettes generated at http://vrl.cs.brown.edu/color
     la = len(aid_list)
     if la==1:
@@ -249,7 +249,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
     unique_specids = np.unique(df_spectra.moca_specid.values)
     nspectra = unique_specids.shape[0]
 
-    colormap = colormap_picker(unique_specids)
+    colormap = colormap_picker_spectra(unique_specids)
 
     xrange = np.array([float('inf'), float('-inf')])
     yrange = np.array([float('inf'), float('-inf')])
