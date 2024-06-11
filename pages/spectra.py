@@ -20,7 +20,7 @@ from mocapy import *
 
 bcg_color = 'rgb(255,255,255)'
 
-initial_aids = [683,2105,1954]
+initial_specids = [683,2105,1954]
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -241,9 +241,10 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
         ),
     )
 
-    layout['xaxis']['titlefont'] = dict(size=18)  # Adjust the size as needed
-    layout['yaxis']['titlefont'] = dict(size=18)  # Adjust the size as needed
-    layout.update(xaxis=dict(showgrid=True, gridcolor='rgba(241, 241, 241, 1)', gridwidth=2, zeroline=False), yaxis=dict(showgrid=True, gridcolor='rgba(211, 211, 211, 0.5)', gridwidth=2, zeroline=False), plot_bgcolor='white');
+    #layout['xaxis']['titlefont'] = dict(size=18)  # Adjust the size as needed
+    #layout['yaxis']['titlefont'] = dict(size=18)  # Adjust the size as needed
+    #tickfont=dict(size=20)
+    layout.update(font=dict(size=16),xaxis=dict(showgrid=True, gridcolor='rgba(241, 241, 241, 1)', gridwidth=2, zeroline=False), yaxis=dict(showgrid=True, gridcolor='rgba(211, 211, 211, 0.5)', gridwidth=2, zeroline=False), plot_bgcolor='white');
 
     unique_specids = np.unique(df_spectra.moca_specid.values)
     nspectra = unique_specids.shape[0]
@@ -328,7 +329,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
     layout.yaxis.range = yrange
 
     fig = go.Figure(data=data,layout=layout)
-
+                     
     return fig
 
 layout = html.Div(
@@ -364,7 +365,7 @@ layout = html.Div(
                                 html.Br(),
                                 dcc.Markdown(children=["  Select a set of spectra to be displayed: "], style={'fontSize': 22, 'fontWeight': 'bold'}),
                                 dcc.Dropdown(
-                                    id="aid-select-spectrapage",
+                                    id="specid-select-spectrapage",
                                     multi=True,
                                     value=None,
                                     style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white","fontSize": 16},
@@ -418,44 +419,41 @@ layout = html.Div(
     ]
 )
 
-
-
 selections = {
         }
 
 # Eventually move this to a subroutine if possible
-# Update AID- and MTID-select
 @dash.callback(
     output=[
         Output("db-data-spectrapage","data"),
-        Output("aid-select-spectrapage","options"),
-        Output("aid-select-spectrapage","value"),
+        Output("specid-select-spectrapage","options"),
+        Output("specid-select-spectrapage","value"),
         ],
     inputs=[
-        Input("aid-select-spectrapage", "value"),
+        Input("specid-select-spectrapage", "value"),
     ],
     state=[State("url","search")]
 )
-def update_aid_select_spectrapage(
-    aid_select, url_search
+def update_specid_select_spectrapage(
+    specid_select, url_search
 ):
     
     #print("DBQUERY callback-spectrapage")
     
     # Read default spectra from URL if none are selected
     # Example query type '?moca_specid=203,212'
-    if aid_select is None:
+    if specid_select is None:
         #Default values without URL variables
         if url_search == "":
-            aid_select = initial_aids
+            specid_select = initial_specids
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
             if 'moca_specid' in parsed_url_data.keys():
-                aid_select = parsed_url_data['moca_specid'][0].split(',')
+                specid_select = parsed_url_data['moca_specid'][0].split(',')
             else:
-                if aid_select is None:
-                    aid_select = initial_aids
+                if specid_select is None:
+                    specid_select = initial_specids
 
     # Read credentials
     user = None
@@ -492,11 +490,11 @@ def update_aid_select_spectrapage(
 
     #Prevent app from crashing if no spectra are selected
     #import pdb; pdb.set_trace()
-    if len(aid_select) == 0:
+    if len(specid_select) == 0:
         df = dfe
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["ms.moca_specid='"+str(stri)+"'" for stri in aid_select])
+        aid_query = " OR ".join(["ms.moca_specid='"+str(stri)+"'" for stri in specid_select])
         df = moca.query(query_e+" WHERE ("+aid_query+")")
         
         #Normalize spectra before jsonifying to avoid memory problems
@@ -510,10 +508,7 @@ def update_aid_select_spectrapage(
     return (
         df.to_json(date_format='iso', orient='split'),
         df_aids.to_json(date_format='iso', orient='split'),
-        #dfm.to_json(date_format='iso', orient='split'),
-        #dfo.to_json(date_format='iso', orient='split'),
-        #df_asso_centers.to_json(date_format='iso', orient='split'),
-        ), aid_options, aid_select
+        ), aid_options, specid_select
 
 # Update spectrum figure
 @dash.callback(
@@ -523,16 +518,15 @@ def update_aid_select_spectrapage(
         jsonified_db_data=Input("db-data-spectrapage", "data"),
         spectra_view=Input("spectram-view-selector-spectrapage", "value"),
     ),
-    state=dict(aid_select=State("aid-select-spectrapage", "value"), self_figure=State("spectra-map-spectrapage", "figure")),
+    state=dict(specid_select=State("specid-select-spectrapage", "value"), self_figure=State("spectra-map-spectrapage", "figure")),
 )
 def update_spectrum_spectrapage(
     selections, 
     jsonified_db_data, spectra_view
-    , aid_select, self_figure
+    , specid_select, self_figure
 ):
     
     #print("SPECTRA callback-spectrapage")
-
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
