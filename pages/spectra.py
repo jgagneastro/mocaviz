@@ -165,30 +165,8 @@ def selection_helper_spectra(selections):
     return processed_data, prop_id
 
 # Eventually move this to a subroutine
-# Conditional styling for the DataTable
-def get_style_data_conditional(selected_rows: list = []) -> list:
-    non_selected_band_color = "rgb(229, 236, 246)"
-    selected_band_color = '#98c21f'
-    return [
-        {
-            'if': {'row_index': 'odd'},
-            'backgroundColor': non_selected_band_color
-        },
-        {
-            'if': {'row_index': 'even'},
-            'backgroundColor': "white"
-        },
-        {
-            'if': {'row_index': selected_rows},
-            'backgroundColor': selected_band_color,
-            'fontWeight': 'bold',
-            'color': 'white',
-        },
-    ]
-
-# Eventually move this to a subroutine
 # Visual website banner
-def build_banner():
+def build_banner_spectra():
     return html.Div(
         id="banner",
         #className="banner",
@@ -200,7 +178,7 @@ def build_banner():
     )
 
 # Hover display
-def build_hover(dff):
+def build_hover_spectra(dff):
     return list(
         map(
             lambda x1, x2, x3, x4, x5: "MOCA OID : "+str(int(x1))+"<br>Designation : "+str(x2)+"<br>Spectrum ID : "+str(x3)+"<br>SPT : "+str(x4),
@@ -210,10 +188,6 @@ def build_hover(dff):
             dff["spt"],
         )
     )
-
-# Eventually move this to a subroutine
-def build_graph_title(title):
-    return html.P(className="graph-title", children=title)
 
 # Eventually move this to a subroutine
 def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
@@ -345,7 +319,7 @@ layout = html.Div(
                         html.Div(
                             id="header-container-spectrapage",
                             children=[
-                                build_banner(),
+                                build_banner_spectra(),
                                 # dcc.Markdown(children=["MOCA Spatial-Kinematic Explorer"]),
                             ],
                         ),
