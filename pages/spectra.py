@@ -237,8 +237,8 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
         dfi = df_spectra[df_spectra['moca_specid'] == unique_specids[i]].dropna(subset=['sp', 'lam']).copy()
 
         #Normalize the spectrum with a weighted median, weight = SNR^2 if ESP is defined, SP^2 otherwise
-        if not dfi['esp'].isna().all():
-            signal_values = dfi['sp'].fillna(0).values / dfi['esp'].fillna(dfi['esp'].median()).values
+        if not dfi['esp'].replace(0, pd.NA).isna().all():
+            signal_values = dfi['sp'].fillna(0).values / dfi['esp'].replace(0, pd.NA).fillna(dfi['esp'].median()).fillna(1).values
         else:
             signal_values = dfi['sp'].fillna(0).values
         
