@@ -53,28 +53,10 @@ def hex_to_rgba(hex_color, alpha=0.5):
     hex_color = hex_color.lstrip('#')
     return f'rgba({int(hex_color[0:2], 16)}, {int(hex_color[2:4], 16)}, {int(hex_color[4:6], 16)}, {alpha})'
 
-def weighted_median(data, weights):
-    # Sort the data and weights
-    sorted_data = np.sort(data)
-    sorted_weights = np.array(weights)[np.argsort(data)]
-    
-    # Compute cumulative sum of weights
-    cumulative_weights = np.cumsum(sorted_weights)
-    
-    # Find position of the weighted median
-    total_weight = np.sum(sorted_weights)
-    median_position = total_weight / 2.0
-    
-    # Find index of the first element whose cumulative weight exceeds median_position
-    idx = np.searchsorted(cumulative_weights, median_position)
-    
-    # If median_position falls exactly on a cumulative weight, return the corresponding data point
-    if cumulative_weights[idx] == median_position:
-        return sorted_data[idx]
-    else:
-        # Interpolate between neighboring data points
-        frac = (median_position - cumulative_weights[idx-1]) / sorted_weights[idx]
-        return sorted_data[idx-1] + frac * (sorted_data[idx] - sorted_data[idx-1])
+def weighted_median(values, weights):
+    i = np.argsort(values)
+    c = np.cumsum(weights[i])
+    return values[i[np.searchsorted(c, 0.5 * c[-1])]]
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -243,10 +225,13 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
         #    signal_values = dfi['sp'].fillna(0).values
         
         #Using a simpler way to normalize because errors often misbehave
-        signal_values = dfi['sp'].fillna(0).values
-        weights = signal_values ** 2
-        #import pdb; pdb.set_trace()
-        norm = weighted_median(dfi['sp'], weights)
+
+        smoothed_signal = dfi['sp'].rolling(window=50).median().values
+        
+        weights = np.nan_to_num(smoothed_signal ** 2)
+        smoothed_signal = np.nan_to_num(smoothed_signal, nan=np.nanmedian(smoothed_signal))
+        
+        norm = weighted_median(smoothed_signal, weights/np.sum(weights))
 
         dfi.loc[:, 'esp'] = dfi['esp'] / norm
         dfi.loc[:, 'sp'] = dfi['sp'] / norm
