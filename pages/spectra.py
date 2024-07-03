@@ -240,10 +240,12 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
 
         if not dfi['esp'].isna().all():
             
+            dfi_filtered = dfi[['lam', 'sp', 'esp']].dropna()
+
             # Create the upper bound trace
             upper_bound_trace = go.Scatter(
-                x=dfi['lam'].values,
-                y=dfi['sp'].values + dfi['esp'].values,
+                x=dfi_filtered['lam'].values,
+                y=dfi_filtered['sp'].values + dfi_filtered['esp'].values,
                 mode='lines',
                 line=dict(width=0, shape='hv'),
                 fill=None,
@@ -253,8 +255,8 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
 
             # Create the lower bound trace
             lower_bound_trace = go.Scatter(
-                x=dfi['lam'].values,
-                y=dfi['sp'].values - dfi['esp'].values,
+                x=dfi_filtered['lam'].values,
+                y=dfi_filtered['sp'].values - dfi_filtered['esp'].values,
                 mode='lines',
                 line=dict(width=0, shape='hv'),
                 fill='tonexty',
