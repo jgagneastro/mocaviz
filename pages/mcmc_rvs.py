@@ -19,6 +19,20 @@ env_password = os.environ.get('MOCA_PASSWORD', default_password)
 env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
 env_host = os.environ.get('MOCA_HOST', default_host)
 
+# Read credentials
+user = None
+pwd = None
+dbase = None
+if url_search != "":
+    parsed_url = urlparse(url_search)
+    parsed_url_data = parse_qs(parsed_url.query)
+    if 'user' in parsed_url_data.keys():
+        env_username = parsed_url_data['user'][0]
+    if 'pwd' in parsed_url_data.keys():
+        env_password = parsed_url_data['pwd'][0]
+    if 'dbase' in parsed_url_data.keys():
+        env_dbname = parsed_url_data['dbase'][0]
+
 connection_string = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
 
 # List of required tables
