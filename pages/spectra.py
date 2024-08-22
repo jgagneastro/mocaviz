@@ -328,10 +328,11 @@ layout = html.Div(
                                 html.Br(),
                                 dcc.Markdown(children=["  Select a set of spectra to be displayed: "], style={'fontSize': 22, 'fontWeight': 'bold'}),
                                 dcc.Dropdown(
+                                    className='custom-dropdown',
                                     id="specid-select-spectrapage",
                                     multi=True,
                                     value=None,
-                                    style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white","fontSize": 16},
+                                    #style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white","fontSize": 16},
                                 ),
                             ],
                         ),

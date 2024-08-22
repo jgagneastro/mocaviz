@@ -37,6 +37,7 @@
 /* Top-row-header
 –––––––––––––––––––––––––––––––––––––––––––––––––– */
 #top-row-header {
+    color: white;
     background-color: #1f2c56;
     padding: 6rem 3rem 9rem 3rem;
 }
@@ -73,6 +74,7 @@
 
 .Select-control, .Select-multi-value-wrapper, .Select-menu-outer div {
     background-color: #1f2c56;
+    color: white !important;
 }
 
 .Select-control, .Select, .Select-value-label, .Select-clear-zone {
@@ -81,6 +83,7 @@
 
 .Select-menu-outer {
     background-color: #1f2c56;
+    color: white !important;
     border: 1px solid gray !important;
 }
 
@@ -92,13 +95,13 @@
 .Select--single > .Select-control .Select-value, .Select-placeholder {
     border: 1px solid white;
     border-radius: 4px;
-    color: white;
+    color: white !important;
     background-color: #1f2c56;
 }
 
 .Select--multi .Select-value-label, .Select--multi .Select-value {
-    color: #3c81e8;
     background-color: #dfecff;
+    color: white;
 }
 
 .Select-arrow {
@@ -106,7 +109,8 @@
 }
 
 .Select-arrow-zone, .Select-clear-zone, .is-open > .Select-control {
-    background-color: #1f2c56 !important;
+    background-color: #1f2c56;
+    color: white !important;
 }
 
 #selected-rows .Select-multi-value-wrapper, #selected-columns .Select-multi-value-wrapper {
@@ -519,4 +523,24 @@
     #bottom-row .legendtext{
         font-size: 0.8rem !important;
     }
+}
+
+ /* Ensure the selected value text is white */
+.Select--single > .Select-control .Select-value {
+    color: white !important;
+}
+
+/* If the dropdown is open and displaying selected value, make sure it's white */
+.Select--single > .Select-control .Select-value-label {
+    color: white !important;
+}
+
+/* Make sure the placeholder text (if any) is also white */
+.Select-placeholder {
+    color: white !important;
+}
+
+/* Ensure the dropdown arrow remains visible */
+.Select-arrow {
+    border-color: white transparent transparent !important;
 }
