@@ -132,17 +132,36 @@ layout = html.Div([
 # Define the callback to update the scatter plot based on input
 @dash.callback(
     Output("mcmcrv-scatter-plot", "figure"),
-    Input("mcmcrv-dataset-dropdown", "value"),
+    [Input("mcmcrv-scatter-plot", "selectedData"), Input("mcmcrv-dataset-dropdown", "value"), Input("mcmcrv-scatter-plot", "relayoutData")],
+    #Input("mcmcrv-dataset-dropdown", "value"),
     prevent_initial_call=False  # Allow initial call with default value
     #Input("submit-button", "n_clicks"),
     #State("input-moca_specid", "value")
 )
-def update_scatter_plot(selected_dataset):
+def update_scatter_plot(selectedData, selected_dataset, relayoutData):
+    ctx = dash.callback_context
+    #triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
+    #triggered_by_relayout = 'relayoutData' in ctx.triggered[0]['prop_id']
+    
+    triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
+
+    # If the selection was triggered but selectedData is empty, do nothing
+    if triggered_by_selection and (selectedData is None or not selectedData.get('points')):
+        return dash.no_update
+
+    #print(ctx.triggered[0]['prop_id'])
+     # If the plot was relayed out (e.g., zoomed/panned), but not due to selection, skip the update
+    #if triggered_by_relayout and not triggered_by_selection:
+    #    return dash.no_update
+    
     if not selected_dataset:
         return go.Figure()
-
+    #print(1)
     # Split the selected dataset into its components
-    target_name, template_name, pipeline_version = selected_dataset.split('|')
+    try:
+        target_name, template_name, pipeline_version = selected_dataset.split('|')
+    except ValueError:
+        return go.Figure()
 
     # Establish connection to the database
     engine = create_engine(connection_string)
@@ -166,6 +185,11 @@ def update_scatter_plot(selected_dataset):
     # Close the connection
     connection.close()
 
+    # If multiple data points are selected, update the average RV and horizontal lines
+    if selectedData and len(selectedData['points']) > 1:
+        selected_indices = [point['pointIndex'] for point in selectedData['points']]
+        df_filtered = df_filtered.iloc[selected_indices]
+    
     # Calculate weights as 1/error^2
     weights = 1 / df_filtered['radial_velocity_kms_unc']**2
 
@@ -178,6 +202,17 @@ def update_scatter_plot(selected_dataset):
 
     # Calculate segment wavelength
     df['segment_wavelength'] = (df['wave_min'] + df['wave_max']) / 2
+
+    # Initialize selected points
+    selected_indices = list(range(len(df_filtered)))  # Select all points by default
+
+    # Preserve selected data points if they exist
+    if selectedData and 'points' in selectedData:
+        selected_indices = [point['pointIndex'] for point in selectedData['points']]
+
+     # If this was triggered by selectedData, and the selected points are the same, return no update
+    #if triggered_by_selected_data:
+    #    return dash.no_update  # Skip the update if we're re-triggered by selection
 
     fig = go.Figure(data=go.Scatter(
         x=df['segment_wavelength'],
@@ -192,6 +227,7 @@ def update_scatter_plot(selected_dataset):
                 color='black'     # Outline color
             )
         ),
+        selectedpoints=selected_indices,  # Preserve selected points
         error_y=dict(
             type='data',
             array=df['radial_velocity_kms_unc'],
@@ -279,7 +315,7 @@ def update_scatter_plot(selected_dataset):
 def update_image_and_table(clickData):
     if not clickData:
         return "", []
-
+    
     clicked_id = clickData['points'][0]['customdata']
 
     # Establish connection to the database
