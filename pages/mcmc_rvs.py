@@ -62,7 +62,7 @@ layout = html.Div([
     
     dcc.Dropdown(
         className='custom-dropdown',
-        id="dataset-dropdown",
+        id="mcmcrv-dataset-dropdown",
         options=[{'label': dataset, 'value': dataset} for dataset in dataset_options],
         #style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white","fontSize": 16},
         placeholder="Select a dataset",
@@ -82,16 +82,16 @@ layout = html.Div([
     #], style={'display': 'flex', 'align-items': 'center', 'margin-top': '20px'}),
     
     html.Div([
-        dcc.Graph(id="scatter-plot"),
+        dcc.Graph(id="mcmcrv-scatter-plot"),
     ], style={'width': '65%', 'display': 'inline-block'}),
     
     # Add dcc.Loading to show a loading spinner while the image is updating
     html.Div([
         dcc.Loading(
-            id="loading-image",
+            id="mcmcrv-loading-image",
             type="default",
             children=html.Img(
-                id="image-display",
+                id="mcmcrv-image-display",
                 style={
                     "max-width": "100%",
                     "height": "auto",
@@ -105,13 +105,13 @@ layout = html.Div([
     ], style={'width': '30%', 'display': 'inline-block', 'margin-left': '5%'}),
     
     #Add some text output
-    html.Div(id="text-output"),
+    html.Div(id="mcmcrv-text-output"),
 ])
 
  # Add a table to display the selected row's data
 #   """ html.Div([
  #       dcc.Loading(
-  #          id="loading-table",
+  #          id="mcmcrv-loading-table",
   #          type="default",
   #          children=dash_table.DataTable(id="data-table", columns=[], data=[],style_table={'overflowX': 'auto'},
   #  style_header={
@@ -131,8 +131,8 @@ layout = html.Div([
 
 # Define the callback to update the scatter plot based on input
 @dash.callback(
-    Output("scatter-plot", "figure"),
-    Input("dataset-dropdown", "value"),
+    Output("mcmcrv-scatter-plot", "figure"),
+    Input("mcmcrv-dataset-dropdown", "value"),
     prevent_initial_call=False  # Allow initial call with default value
     #Input("submit-button", "n_clicks"),
     #State("input-moca_specid", "value")
@@ -269,11 +269,11 @@ def update_scatter_plot(selected_dataset):
 
 # Single callback: Clear the image, load the new image, and update the table
 @dash.callback(
-    [Output("image-display", "src"),
-     Output("text-output", "children")],
+    [Output("mcmcrv-image-display", "src"),
+     Output("mcmcrv-text-output", "children")],
      #Output("data-table", "columns"),
      #Output("data-table", "data")],
-    Input("scatter-plot", "clickData"),
+    Input("mcmcrv-scatter-plot", "clickData"),
     prevent_initial_call=True
 )
 def update_image_and_table(clickData):
