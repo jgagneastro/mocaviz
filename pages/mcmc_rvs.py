@@ -56,6 +56,38 @@ layout = html.Div([
     ], style={'width': '30%', 'display': 'inline-block', 'margin-left': '5%'}),
     
     html.Div(id="mcmcrv-text-output"),
+
+    # New row for the additional images
+    html.Div([
+        dcc.Loading(
+            id="mcmcrv-loading-chi2",
+            type="default",
+            children=html.Img(
+                id="mcmcrv-chi2-image",
+                style={
+                    "max-width": "100%",
+                    "height": "auto",
+                    "display": "block",
+                    "margin-left": "auto",
+                    "margin-right": "auto",
+                }
+            )
+        ),
+        dcc.Loading(
+            id="mcmcrv-loading-bestmodelfit",
+            type="default",
+            children=html.Img(
+                id="mcmcrv-bestmodelfit-image",
+                style={
+                    "max-width": "100%",
+                    "height": "auto",
+                    "display": "block",
+                    "margin-left": "auto",
+                    "margin-right": "auto",
+                }
+            )
+        ),
+    ], style={'display': 'flex', 'justify-content': 'space-between', 'margin-top': '20px'}),
 ])
 
 # Callback to populate the dropdown and initialize connection based on URL parameters
@@ -370,3 +402,86 @@ def update_image_and_table(clickData):
     connection.close()
 
     return file_url + '/download' if file_url else "", grid_output
+
+# Callback to update the additional images (chi2 and bestmodelfit) when a dataset is selected
+@dash.callback(
+    [Output("mcmcrv-chi2-image", "src"),
+     Output("mcmcrv-bestmodelfit-image", "src")],
+    Input("mcmcrv-dataset-dropdown", "value")
+)
+def update_model_fit_images(selected_dataset):
+    if not selected_dataset:
+        return "", ""
+    
+    try:
+        target_name, template_name, pipeline_version = selected_dataset.split('|')
+    except ValueError:
+        return "", ""
+
+    engine = create_engine(connection_string)
+    connection = engine.connect()
+    metadata = MetaData()
+
+    pcat_mcmc_rv_pipeline = Table('pcat_mcmc_rv_pipeline', metadata, autoload_with=engine)
+    calc_model_grid_fits = Table('calc_model_grid_fits', metadata, autoload_with=engine)
+    data_model_grid_files = Table('data_model_grid_files', metadata, autoload_with=engine)
+    mechanics_file_sets = Table('mechanics_file_sets', metadata, autoload_with=engine)
+    mechanics_files = Table('mechanics_files', metadata, autoload_with=engine)
+
+    # Query to match template_name on CONCAT(calc_model_grid_fits.moca_mgridid, '_', data_model_grid_files.file_name)
+    query_template_name = select(calc_model_grid_fits.c.moca_fsid).select_from(
+        calc_model_grid_fits.join(
+            data_model_grid_files,
+            calc_model_grid_fits.c.moca_mgridfileid == data_model_grid_files.c.moca_mgridfileid
+        )
+    ).where(
+        (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name
+    ).limit(1)
+
+    result_template_name = connection.execute(query_template_name).fetchone()
+    if not result_template_name:
+        connection.close()
+        return "", ""
+
+    moca_fsid = result_template_name[0]
+
+    # Query to get the moca_fid for the "Best model fit"
+    query_bestmodelfit_fid = select(mechanics_file_sets.c.moca_fid).where(
+        mechanics_file_sets.c.moca_fsid == moca_fsid
+    ).where(
+        mechanics_file_sets.c.description.like('Best model fit')
+    )
+    result_bestmodelfit_fid = connection.execute(query_bestmodelfit_fid).fetchone()
+
+    # Query to get the moca_fid for the "All model fit chi2"
+    query_chi2_fid = select(mechanics_file_sets.c.moca_fid).where(
+        mechanics_file_sets.c.moca_fsid == moca_fsid
+    ).where(
+        mechanics_file_sets.c.description.like('All model fit chi2')
+    )
+    result_chi2_fid = connection.execute(query_chi2_fid).fetchone()
+
+    bestmodelfit_url = ""
+    chi2_url = ""
+
+    # If we found a moca_fid for bestmodelfit, fetch its URL
+    if result_bestmodelfit_fid:
+        bestmodelfit_fid = result_bestmodelfit_fid[0]
+        query_bestmodelfit_url = select(mechanics_files.c.url).where(
+            mechanics_files.c.moca_fid == bestmodelfit_fid
+        )
+        result_bestmodelfit_url = connection.execute(query_bestmodelfit_url).fetchone()
+        bestmodelfit_url = result_bestmodelfit_url[0] if result_bestmodelfit_url else ""
+
+    # If we found a moca_fid for chi2, fetch its URL
+    if result_chi2_fid:
+        chi2_fid = result_chi2_fid[0]
+        query_chi2_url = select(mechanics_files.c.url).where(
+            mechanics_files.c.moca_fid == chi2_fid
+        )
+        result_chi2_url = connection.execute(query_chi2_url).fetchone()
+        chi2_url = result_chi2_url[0] if result_chi2_url else ""
+
+    connection.close()
+
+    return chi2_url + '/download' if chi2_url else "", bestmodelfit_url + '/download' if bestmodelfit_url else ""
