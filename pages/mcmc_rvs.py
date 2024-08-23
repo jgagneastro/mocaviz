@@ -19,6 +19,10 @@ layout = html.Div([
     dcc.Location(id='url', refresh=False),
     html.Div([
         html.H1("MCMC Radial Velocity Diagnostics"),
+        html.P("This page shows the measured radial velocities by the Markov Chain Monte Carlo method in specific wavelength segments of the observed spectrum. "
+               "You can click on one data point in the scatter plot to see the detailed data corresponding to this segment and the model fit figure. "
+               "You can also select specific data points with the plotly box selection tool to refine the average radial velocity that is displayed in the title "
+               "and as a red line, which corresponds to an average weighted by measurement errors."),
     ], style={'width': '100%', 'display': 'inline-block'}),
     
     dcc.Dropdown(
@@ -55,6 +59,9 @@ layout = html.Div([
         ),
     ], style={'width': '30%', 'display': 'inline-block', 'margin-left': '5%'}),
     
+    # Container for the dataset-level text outputs
+    html.Div(id="mcmcrv-dataset-info-output", style={'margin-top': '20px'}),
+
     html.Div(id="mcmcrv-text-output"),
 
     # New row for the additional images
@@ -213,6 +220,7 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
                 color='black'     # Outline color
             )
         ),
+        selectedpoints=selected_indices,  # Preserve selected points
         error_y=dict(
             type='data',
             array=df['radial_velocity_kms_unc'],
@@ -241,6 +249,38 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         y=weighted_avg_rv - weighted_stddev_rv,
         line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  # Thicker dashed line, same color, longer dashes
         layer='below'  # Display behind data points
+    )
+
+    fig.update_layout(
+        plot_bgcolor='white',
+        xaxis=dict(
+            gridcolor='rgba(211, 211, 211, 0.6)',
+            zerolinecolor='lightgray',
+            showline=True,
+            linewidth=2,
+            linecolor='black',
+            mirror=True,
+            ticks='outside',
+            tickwidth=2,
+        ),
+        yaxis=dict(
+            gridcolor='rgba(211, 211, 211, 0.6)',
+            zerolinecolor='lightgray',
+            showline=True,
+            linewidth=2,
+            linecolor='black',
+            mirror=True,
+            ticks='outside',
+            tickwidth=2,
+        ),
+        margin=dict(l=40, r=40, t=40, b=40),
+        paper_bgcolor='white',
+        showlegend=False,
+        title=f"Average RV = {weighted_avg_rv:.2f} ± {weighted_stddev_rv:.2f} km/s",
+        title_x=0.5,
+        title_y=0.98,
+        title_xanchor='center',
+        title_yanchor='top'
     )
 
     return fig
@@ -403,32 +443,88 @@ def update_image_and_table(clickData):
 
     return file_url + '/download' if file_url else "", grid_output
 
-# Callback to update the additional images (chi2 and bestmodelfit) when a dataset is selected
+# Callback to update the model fit images and dataset-level text outputs
 @dash.callback(
     [Output("mcmcrv-chi2-image", "src"),
-     Output("mcmcrv-bestmodelfit-image", "src")],
+     Output("mcmcrv-bestmodelfit-image", "src"),
+     Output("mcmcrv-dataset-info-output", "children")],
     Input("mcmcrv-dataset-dropdown", "value")
 )
 def update_model_fit_images(selected_dataset):
     if not selected_dataset:
-        return "", ""
-    
-    try:
-        target_name, template_name, pipeline_version = selected_dataset.split('|')
-    except ValueError:
-        return "", ""
+        return "", "", []
+
+    target_name, template_name, pipeline_version = selected_dataset.split('|')
 
     engine = create_engine(connection_string)
     connection = engine.connect()
     metadata = MetaData()
 
     pcat_mcmc_rv_pipeline = Table('pcat_mcmc_rv_pipeline', metadata, autoload_with=engine)
+
+    query = select(pcat_mcmc_rv_pipeline).where(
+        (pcat_mcmc_rv_pipeline.c.target_name == target_name) &
+        (pcat_mcmc_rv_pipeline.c.template_name == template_name) &
+        (pcat_mcmc_rv_pipeline.c.pipeline_version == pipeline_version)
+    )
+    df = pd.read_sql(query, connection)
+    
+    # Extract the relevant data for the dataset-level text output
+    first_row = df.iloc[0] if not df.empty else None
+    dataset_info = []
+    if first_row is not None:
+        info_columns = [
+            'pipeline_version', 'target_name', 'berv_kms', 'berv_kms_unc',
+            'nwindows', 'nsegments', 'npoints', 'origin', 'parscale_rv',
+            'rv_min_bound', 'rv_max_bound', 'niter_mcmc', 'nburnin_mcmc', 'nchains_mcmc'
+        ]
+        column_mappings = {
+            'pipeline_version': 'Pipeline Version',
+            'target_name': 'Target Name',
+            'berv_kms': 'BERV',
+            'berv_kms_unc': 'E_BERV',
+            'nwindows': 'N_Windows',
+            'nsegments': 'N_Segments',
+            'npoints': 'N_Data_Points',
+            'origin': 'Origin',
+            'parscale_rv': 'RV Scale',
+            'rv_min_bound': 'RV Min Bound',
+            'rv_max_bound': 'RV Max Bound',
+            'niter_mcmc': 'MCMC Iterations',
+            'nburnin_mcmc': 'MCMC Burn-in',
+            'nchains_mcmc': 'MCMC Chains'
+        }
+        for col in info_columns:
+            value = first_row[col]
+            display_key = column_mappings.get(col, col)
+            if value is None:
+                continue
+            
+            unit = ""
+            if display_key in ['BERV', 'E_BERV']:
+                unit = " km/s"
+
+            if display_key in ['RV Min Bound', 'RV Max Bound', 'RV Scale']:
+                unit = " km/s"
+                value = int(value)
+
+            dataset_info.append(
+                html.Div([
+                    dcc.Markdown((f"**{display_key} :** {value:.2f}" if isinstance(value, (float, decimal.Decimal)) else f"**{display_key} :** {value}")+unit, dangerously_allow_html=True)
+                ], style={'margin': '5px', 'width': '23%'})
+            )
+
+    dataset_info_output = html.Div(dataset_info, style={
+        'display': 'flex',
+        'flex-wrap': 'wrap',
+        'justify-content': 'space-between',
+        'max-width': '100%'
+    })
+
+    # Query the chi2 and bestmodelfit URLs
     calc_model_grid_fits = Table('calc_model_grid_fits', metadata, autoload_with=engine)
     data_model_grid_files = Table('data_model_grid_files', metadata, autoload_with=engine)
-    mechanics_file_sets = Table('mechanics_file_sets', metadata, autoload_with=engine)
-    mechanics_files = Table('mechanics_files', metadata, autoload_with=engine)
 
-    # Query to match template_name on CONCAT(calc_model_grid_fits.moca_mgridid, '_', data_model_grid_files.file_name)
     query_template_name = select(calc_model_grid_fits.c.moca_fsid).select_from(
         calc_model_grid_fits.join(
             data_model_grid_files,
@@ -438,50 +534,36 @@ def update_model_fit_images(selected_dataset):
         (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name
     ).limit(1)
 
-    result_template_name = connection.execute(query_template_name).fetchone()
-    if not result_template_name:
+    template_name_fsid = connection.execute(query_template_name).scalar()
+
+    if not template_name_fsid:
         connection.close()
-        return "", ""
+        return "", "", dataset_info_output
 
-    moca_fsid = result_template_name[0]
+    mechanics_file_sets = Table('mechanics_file_sets', metadata, autoload_with=engine)
+    mechanics_files = Table('mechanics_files', metadata, autoload_with=engine)
 
-    # Query to get the moca_fid for the "Best model fit"
-    query_bestmodelfit_fid = select(mechanics_file_sets.c.moca_fid).where(
-        mechanics_file_sets.c.moca_fsid == moca_fsid
+    query_chi2 = select(mechanics_files.c.url).select_from(
+        mechanics_files.join(mechanics_file_sets)
     ).where(
-        mechanics_file_sets.c.description.like('Best model fit')
-    )
-    result_bestmodelfit_fid = connection.execute(query_bestmodelfit_fid).fetchone()
-
-    # Query to get the moca_fid for the "All model fit chi2"
-    query_chi2_fid = select(mechanics_file_sets.c.moca_fid).where(
-        mechanics_file_sets.c.moca_fsid == moca_fsid
+        mechanics_file_sets.c.moca_fsid == template_name_fsid
     ).where(
         mechanics_file_sets.c.description.like('All model fit chi2')
-    )
-    result_chi2_fid = connection.execute(query_chi2_fid).fetchone()
+    ).limit(1)
 
-    bestmodelfit_url = ""
-    chi2_url = ""
+    query_bestmodelfit = select(mechanics_files.c.url).select_from(
+        mechanics_files.join(mechanics_file_sets)
+    ).where(
+        mechanics_file_sets.c.moca_fsid == template_name_fsid
+    ).where(
+        mechanics_file_sets.c.description.like('Best model fit')
+    ).limit(1)
 
-    # If we found a moca_fid for bestmodelfit, fetch its URL
-    if result_bestmodelfit_fid:
-        bestmodelfit_fid = result_bestmodelfit_fid[0]
-        query_bestmodelfit_url = select(mechanics_files.c.url).where(
-            mechanics_files.c.moca_fid == bestmodelfit_fid
-        )
-        result_bestmodelfit_url = connection.execute(query_bestmodelfit_url).fetchone()
-        bestmodelfit_url = result_bestmodelfit_url[0] if result_bestmodelfit_url else ""
-
-    # If we found a moca_fid for chi2, fetch its URL
-    if result_chi2_fid:
-        chi2_fid = result_chi2_fid[0]
-        query_chi2_url = select(mechanics_files.c.url).where(
-            mechanics_files.c.moca_fid == chi2_fid
-        )
-        result_chi2_url = connection.execute(query_chi2_url).fetchone()
-        chi2_url = result_chi2_url[0] if result_chi2_url else ""
+    chi2_url = connection.execute(query_chi2).scalar()
+    bestmodelfit_url = connection.execute(query_bestmodelfit).scalar()
 
     connection.close()
 
-    return chi2_url + '/download' if chi2_url else "", bestmodelfit_url + '/download' if bestmodelfit_url else ""
+    return (chi2_url + '/download' if chi2_url else "", 
+            bestmodelfit_url + '/download' if bestmodelfit_url else "", 
+            dataset_info_output)
