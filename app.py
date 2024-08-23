@@ -21,7 +21,7 @@ for page in page_registry.values():
     print() """
 
 if __name__ == '__main__':
-	app.run_server(debug=True)
+	app.run_server()#debug=True
 
 # The following line is required by Phusion Passenger.
 # It exposes the WSGI App using the application variable.
