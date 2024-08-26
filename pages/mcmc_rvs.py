@@ -338,6 +338,7 @@ def update_image_and_table(clickData):
     row_data = connection.execute(query_row).fetchone()
 
     if row_data is None:
+        connection.close()
         return "", []
     
     row_dict = {col: round(float(value), 2) if isinstance(value, decimal.Decimal) else value for col, value in row_data._mapping.items()}
