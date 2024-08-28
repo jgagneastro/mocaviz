@@ -4,7 +4,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table
+from sqlalchemy import create_engine, select, MetaData, Table, and_
 import pandas as pd
 import os
 
@@ -452,10 +452,20 @@ def update_image_and_table(clickData):
     Input("mcmcrv-dataset-dropdown", "value")
 )
 def update_model_fit_images(selected_dataset):
+    print('Triggered update_model_fit_images')
     if not selected_dataset:
+        print('Exiting because no data set selected')
         return "", "", []
+    print('Date set selected:',selected_dataset)
 
     target_name, template_name, pipeline_version = selected_dataset.split('|')
+    
+    specid = target_name.split('_')[1]
+
+    print('specid: ', int(specid))
+    print('target_name: ', target_name)
+    print('template_name: ', template_name)
+    print('pipeline_version: ', pipeline_version)
 
     engine = create_engine(connection_string)
     connection = engine.connect()
@@ -531,14 +541,19 @@ def update_model_fit_images(selected_dataset):
             data_model_grid_files,
             calc_model_grid_fits.c.moca_mgridfileid == data_model_grid_files.c.moca_mgridfileid
         )
-    ).where(
-        (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name
-    ).limit(1)
+        ).where(
+            and_(
+                (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name,
+                calc_model_grid_fits.c.moca_specid == int(specid)
+            )
+        ).limit(1)
 
     template_name_fsid = connection.execute(query_template_name).scalar()
-
+    
+    print('Template name fsid:',template_name_fsid)
     if not template_name_fsid:
         connection.close()
+        print('Exiting because no template name fsid')
         return "", "", dataset_info_output
 
     mechanics_file_sets = Table('mechanics_file_sets', metadata, autoload_with=engine)
@@ -562,7 +577,8 @@ def update_model_fit_images(selected_dataset):
 
     chi2_url = connection.execute(query_chi2).scalar()
     bestmodelfit_url = connection.execute(query_bestmodelfit).scalar()
-
+    print(chi2_url)
+    print(bestmodelfit_url)
     connection.close()
 
     return (chi2_url + '/download' if chi2_url else "", 
