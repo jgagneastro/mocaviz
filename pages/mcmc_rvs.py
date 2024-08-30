@@ -163,6 +163,11 @@ def update_dropdown(href, url_search):
 )
 def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     ctx = dash.callback_context
+
+    # Handle the case where relayoutData triggers the callback but we don't want to reset the plot
+    if 'relayoutData' in ctx.triggered[0]['prop_id'] and len(ctx.triggered) == 1:
+        return dash.no_update
+
     triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
 
     if triggered_by_selection and (selectedData is None or not selectedData.get('points')):
@@ -205,6 +210,10 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
                   (df['model_contrast'] < 0.1) |
                   (df['lsf'] > df['lsf_threshold'])]
 
+    # If all data points are flagged as outliers, treat none as outliers
+    if len(outliers) == len(df):
+        outliers = pd.DataFrame()  # Empty outliers DataFrame
+    
     # Initialize selected_indices to include all points by default
     selected_indices = list(df.index)
 
@@ -331,7 +340,7 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
 )
 def update_image_and_table(clickData):
     if not clickData:
-        return "", []
+        return dash.no_update
 
     # If clickData is provided, check for customdata to ensure it’s not a red cross
     if clickData is not None and 'customdata' not in clickData['points'][0]:
@@ -496,7 +505,7 @@ def update_model_fit_images(selected_dataset):
     #print('Triggered update_model_fit_images')
     if not selected_dataset:
         #print('Exiting because no data set selected')
-        return "", "", []
+        return dash.no_update
     #print('Date set selected:',selected_dataset)
 
     target_name, template_name, pipeline_version = selected_dataset.split('|')
