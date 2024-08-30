@@ -213,7 +213,7 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     # If all data points are flagged as outliers, treat none as outliers
     if len(outliers) == len(df):
         outliers = pd.DataFrame()  # Empty outliers DataFrame
-    
+
     # Initialize selected_indices to include all points by default
     selected_indices = list(df.index)
 
@@ -232,7 +232,10 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         weights = 1 / df_filtered['radial_velocity_kms_unc']**2
         weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
         variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
+        #This equation does not allow the error to decrease by a factor 1/SQRT(N)
         weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
+        #This one does
+        #weighted_stddev_rv = np.sqrt(1 / np.sum(weights))*np.sqrt(1.5)#Factor 1.5 for window overlap
     else:
         weighted_avg_rv = np.nan
         weighted_stddev_rv = np.nan
