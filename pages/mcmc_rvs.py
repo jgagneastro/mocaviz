@@ -236,7 +236,7 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         x=outliers['segment_wavelength'],
         y=outliers['radial_velocity_kms'],
         mode='markers',
-        marker=dict(color='red', size=12, symbol='x', line=dict(width=1)),
+        marker=dict(size=15, symbol='x-thin', line=dict(color='red', width=3)),
         name='Bad data'
     ))
 
