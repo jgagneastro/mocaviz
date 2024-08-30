@@ -157,23 +157,22 @@ def update_dropdown(href, url_search):
     Output("mcmcrv-scatter-plot", "figure"),
     [Input("mcmcrv-dataset-dropdown", "value"),
      Input("mcmcrv-scatter-plot", "selectedData"),
-     Input("mcmcrv-scatter-plot", "relayoutData")]
+     Input("mcmcrv-scatter-plot", "relayoutData")],
 )
 def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     ctx = dash.callback_context
     triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
 
-    # If the selection was triggered but selectedData is empty, do nothing
     if triggered_by_selection and (selectedData is None or not selectedData.get('points')):
         return dash.no_update
 
     if not selected_dataset:
-        return go.Figure()
+        return dash.no_update
 
     try:
         target_name, template_name, pipeline_version = selected_dataset.split('|')
     except ValueError:
-        return go.Figure()
+        return dash.no_update
 
     engine = create_engine(connection_string)
     connection = engine.connect()
@@ -187,70 +186,103 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         (pcat_mcmc_rv_pipeline.c.pipeline_version == pipeline_version)
     )
     df = pd.read_sql(query, connection)
-    df_filtered = df[df['radial_velocity_kms_unc'] > 0]
-
     connection.close()
 
-    if selectedData and len(selectedData['points']) > 1:
-        selected_indices = [point['pointIndex'] for point in selectedData['points']]
-        df_filtered = df_filtered.iloc[selected_indices]
+    # Define LSF thresholds based on moca_instid
+    lsf_thresholds = {
+        'spex_irtf': 1.33,
+        'fire_magellan': 1.384,
+        'nires_keck': 1.378
+    }
 
-    weights = 1 / df_filtered['radial_velocity_kms_unc']**2
-    weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
-    variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
-    weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
-
+    df['lsf_threshold'] = df['moca_instid'].map(lsf_thresholds).fillna(1.5)
     df['segment_wavelength'] = (df['wave_min'] + df['wave_max']) / 2
 
-    selected_indices = list(range(len(df_filtered)))
+    # Identify outliers based on criteria
+    outliers = df[(df['data_contrast'] < 0.01) |
+                  (df['model_contrast'] < 0.1) |
+                  (df['lsf'] > df['lsf_threshold'])]
 
-    if selectedData and 'points' in selectedData:
+    # Initialize selected_indices to include all points by default
+    selected_indices = list(df.index)
+
+    # Apply manual selection first
+    if selectedData and len(selectedData['points']) > 1:
         selected_indices = [point['pointIndex'] for point in selectedData['points']]
+        df_selected = df.iloc[selected_indices]
+    else:
+        df_selected = df.copy()
 
+    # Filter out outliers from the selected data
+    df_filtered = df_selected[~df_selected.index.isin(outliers.index)]
+
+    # Calculate weighted average RV excluding outliers
+    if not df_filtered.empty:
+        weights = 1 / df_filtered['radial_velocity_kms_unc']**2
+        weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
+        variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
+        weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
+    else:
+        weighted_avg_rv = np.nan
+        weighted_stddev_rv = np.nan
+
+    # Create scatter plot with normal data points
     fig = go.Figure(data=go.Scatter(
         x=df['segment_wavelength'],
         y=df['radial_velocity_kms'],
         mode='markers',
+        name='All data',
         marker=dict(
-            color='white',        # White center
-            size=6,               # Slightly smaller symbol size
-            symbol='circle',      # Filled circle
+            color='white',        
+            size=6,               
+            symbol='circle',      
             line=dict(
-                width=2,          # Thick black outline
-                color='black'     # Outline color
+                width=2,          
+                color='black'     
             )
         ),
-        selectedpoints=selected_indices,  # Preserve selected points
+        selectedpoints=selected_indices,  
         error_y=dict(
             type='data',
             array=df['radial_velocity_kms_unc'],
             visible=True,
-            color='rgba(0, 0, 0, 0.2)',  # Paler and lighter color for error bars
-            thickness=1.5,               # Slightly thicker error bars
-            width=2                      # Capsize width
+            color='rgba(0, 0, 0, 0.2)',  
+            thickness=1.5,               
+            width=2                      
         ),
         customdata=df['id'],
         text=df.apply(lambda row: f"RV: {row['radial_velocity_kms']:.2f} ± {row['radial_velocity_kms_unc']:.2f} km/s<br>Wavelength: {row['segment_wavelength']:.2f} μm", axis=1),
-        hoverinfo='text'                # Use the formatted text for hover information
+        hoverinfo='text'
+    ))
+
+    # Add red 'x' markers for outliers
+    fig.add_trace(go.Scatter(
+        x=outliers['segment_wavelength'],
+        y=outliers['radial_velocity_kms'],
+        mode='markers',
+        marker=dict(color='red', size=10, symbol='x', line=dict(width=1)),
+        name='Bad data'
     ))
 
     # Add horizontal lines for weighted average and standard deviation
-    fig.add_hline(
-        y=weighted_avg_rv,
-        line=dict(color='rgba(139, 0, 0, 0.5)', width=3),  # Thicker and darker red line
-        layer='below'  # Display behind data points
-    )
-    fig.add_hline(
-        y=weighted_avg_rv + weighted_stddev_rv,
-        line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  # Thicker dashed line, same color, longer dashes
-        layer='below'  # Display behind data points
-    )
-    fig.add_hline(
-        y=weighted_avg_rv - weighted_stddev_rv,
-        line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  # Thicker dashed line, same color, longer dashes
-        layer='below'  # Display behind data points
-    )
+    if not np.isnan(weighted_avg_rv):
+        fig.add_hline(
+            y=weighted_avg_rv,
+            line=dict(color='rgba(139, 0, 0, 0.5)', width=3),  
+            layer='below'
+        )
+        fig.add_hline(
+            y=weighted_avg_rv + weighted_stddev_rv,
+            line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  
+            layer='below'
+        )
+        fig.add_hline(
+            y=weighted_avg_rv - weighted_stddev_rv,
+            line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  
+            layer='below'
+        )
 
+    # Update layout and add legend
     fig.update_layout(
         plot_bgcolor='white',
         xaxis=dict(
@@ -275,8 +307,9 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         ),
         margin=dict(l=40, r=40, t=40, b=40),
         paper_bgcolor='white',
-        showlegend=False,
-        title=f"{df['target_name'].iloc[0]}: Average RV = {weighted_avg_rv:.2f} ± {weighted_stddev_rv:.2f} km/s",
+        showlegend=True,
+        legend=dict(x=0.02, y=0.98, bgcolor='rgba(255, 255, 255, 0.5)'),  # Adjust legend position and background color
+        title=f"{df['target_name'].iloc[0]}: Average RV = {weighted_avg_rv:.2f} ± {weighted_stddev_rv:.2f} km/s" if not np.isnan(weighted_avg_rv) else f"{df['target_name'].iloc[0]}: Average RV could not be calculated",
         title_x=0.5,
         title_y=0.98,
         title_xanchor='center',
