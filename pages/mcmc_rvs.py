@@ -22,7 +22,9 @@ layout = html.Div([
         html.P("This page shows the measured radial velocities by the Markov Chain Monte Carlo method in specific wavelength segments of the observed spectrum. "
                "You can click on one data point in the scatter plot to see the detailed data corresponding to this segment and the model fit figure. "
                "You can also select specific data points with the plotly box selection tool to refine the average radial velocity that is displayed in the title "
-               "and as a red line, which corresponds to an average weighted by measurement errors."),
+               "and as a red line, which corresponds to an average weighted by measurement errors.\n"
+               "The data points which LSF value is too large, or for which data_contrast or model_contrast are too low, are automatically flagged as bad data "
+               " and those are not used in the average radial velocity calculation."),
     ], style={'width': '100%', 'display': 'inline-block'}),
     
     dcc.Dropdown(
@@ -157,7 +159,7 @@ def update_dropdown(href, url_search):
     Output("mcmcrv-scatter-plot", "figure"),
     [Input("mcmcrv-dataset-dropdown", "value"),
      Input("mcmcrv-scatter-plot", "selectedData"),
-     Input("mcmcrv-scatter-plot", "relayoutData")],
+     Input("mcmcrv-scatter-plot", "relayoutData")]
 )
 def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     ctx = dash.callback_context
@@ -168,7 +170,7 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
 
     if not selected_dataset:
         return dash.no_update
-
+    
     try:
         target_name, template_name, pipeline_version = selected_dataset.split('|')
     except ValueError:
@@ -227,7 +229,18 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         weighted_stddev_rv = np.nan
 
     # Create scatter plot with normal data points
-    fig = go.Figure(data=go.Scatter(
+    fig = go.Figure()
+
+    # Add red 'x' markers for outliers
+    fig.add_trace(go.Scatter(
+        x=outliers['segment_wavelength'],
+        y=outliers['radial_velocity_kms'],
+        mode='markers',
+        marker=dict(color='red', size=12, symbol='x', line=dict(width=1)),
+        name='Bad data'
+    ))
+
+    fig.add_trace(go.Scatter(
         x=df['segment_wavelength'],
         y=df['radial_velocity_kms'],
         mode='markers',
@@ -253,15 +266,6 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
         customdata=df['id'],
         text=df.apply(lambda row: f"RV: {row['radial_velocity_kms']:.2f} ± {row['radial_velocity_kms_unc']:.2f} km/s<br>Wavelength: {row['segment_wavelength']:.2f} μm", axis=1),
         hoverinfo='text'
-    ))
-
-    # Add red 'x' markers for outliers
-    fig.add_trace(go.Scatter(
-        x=outliers['segment_wavelength'],
-        y=outliers['radial_velocity_kms'],
-        mode='markers',
-        marker=dict(color='red', size=10, symbol='x', line=dict(width=1)),
-        name='Bad data'
     ))
 
     # Add horizontal lines for weighted average and standard deviation
@@ -328,7 +332,11 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
 def update_image_and_table(clickData):
     if not clickData:
         return "", []
-    
+
+    # If clickData is provided, check for customdata to ensure it’s not a red cross
+    if clickData is not None and 'customdata' not in clickData['points'][0]:
+        return dash.no_update
+        
     clicked_id = clickData['points'][0]['customdata']
 
     engine = create_engine(connection_string)
