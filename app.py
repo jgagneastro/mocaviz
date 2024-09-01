@@ -12,13 +12,13 @@ app.layout = html.Div([
 ])
 
 # Print all registered pages
-""" print("Registered pages:")
+print("Registered pages:")
 for page in page_registry.values():
     print(f"- Path: {page.get('path', 'N/A')}")
     print(f"  Module: {page.get('module_name', 'N/A')}")
     print(f"  Name: {page.get('name', 'N/A')}")
     print(f"  Keys: {list(page.keys())}")
-    print() """
+    print()
 
 if __name__ == '__main__':
 	app.run_server(debug=True)
