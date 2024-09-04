@@ -181,8 +181,8 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     if triggered_by_selection and (selectedData is None or not selectedData.get('points')):
         return dash.no_update
 
-    if not selected_dataset:
-        return dash.no_update
+    #if not selected_dataset:
+    #    return dash.no_update
     
     try:
         target_name, template_name, pipeline_version = selected_dataset.split('|')
