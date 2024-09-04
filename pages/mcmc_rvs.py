@@ -4,7 +4,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, and_
+from sqlalchemy import create_engine, select, MetaData, Table
 import pandas as pd
 import os
 
@@ -587,12 +587,10 @@ def update_model_fit_images(selected_dataset):
             data_model_grid_files,
             calc_model_grid_fits.c.moca_mgridfileid == data_model_grid_files.c.moca_mgridfileid
         )
-        ).where(
-            and_(
-                (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name,
-                calc_model_grid_fits.c.moca_specid == int(specid)
-            )
-        ).limit(1)
+    ).where(
+        (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name,
+        calc_model_grid_fits.c.moca_specid == int(specid)
+    ).limit(1)
 
     template_name_fsid = connection.execute(query_template_name).scalar()
     
