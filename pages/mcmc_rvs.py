@@ -165,8 +165,8 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     ctx = dash.callback_context
 
     # Handle the case where relayoutData triggers the callback but we don't want to reset the plot
-    if 'relayoutData' in ctx.triggered[0]['prop_id'] and len(ctx.triggered) == 1:
-        return dash.no_update
+    #if 'relayoutData' in ctx.triggered[0]['prop_id'] and len(ctx.triggered) == 1:
+    #    return dash.no_update
 
     triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
 
