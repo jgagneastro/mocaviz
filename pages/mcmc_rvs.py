@@ -166,7 +166,8 @@ def update_dropdown(href, url_search):
     Output("mcmcrv-scatter-plot", "figure"),
     [Input("mcmcrv-dataset-dropdown", "value"),
      Input("mcmcrv-scatter-plot", "selectedData"),
-     Input("mcmcrv-scatter-plot", "relayoutData")]
+     Input("mcmcrv-scatter-plot", "relayoutData")],
+     prevent_initial_call=True,
 )
 def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     ctx = dash.callback_context
