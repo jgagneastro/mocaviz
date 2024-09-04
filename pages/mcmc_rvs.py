@@ -119,6 +119,13 @@ def update_dropdown(href, url_search):
     env_dbname = parsed_url_data.get('dbase', [None])[0]
     env_host = '104.248.106.21'
 
+    if env_username is None:
+        return dash.no_update
+    if env_password is None:
+        return dash.no_update
+    if env_dbname is None:
+        return dash.no_update
+
     global connection_string
     connection_string = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
 
