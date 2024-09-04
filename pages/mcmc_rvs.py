@@ -206,7 +206,8 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
     df['segment_wavelength'] = (df['wave_min'] + df['wave_max']) / 2
 
     # Identify outliers based on criteria
-    outliers = df[(df['data_contrast'] < 0.01) |
+    outliers = df[(df['radial_velocity_kms_unc'] <= 0) |
+                  (df['data_contrast'] < 0.01) |
                   (df['model_contrast'] < 0.1) |
                   (df['lsf'] > df['lsf_threshold'])]
 
