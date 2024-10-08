@@ -170,6 +170,68 @@ def build_hover_spectra(dff):
         )
     )
 
+def insert_nans_in_gaps(x_array, y_array, threshold_factor=10, ey_array=None):
+    """
+    Insert NaNs in y_array and ey_array where gaps in x_array are larger than the threshold.
+    
+    Parameters:
+    - x_array: array of x values (e.g., wavelengths)
+    - y_array: array of y values (e.g., spectral flux)
+    - threshold_factor: multiplier of the median x spacing to determine the gap threshold
+    - ey_array: optional array of errors for y values (will insert NaNs in the same locations as y_array if provided)
+    
+    Returns:
+    - x_with_nans: x array with NaNs inserted at large gaps
+    - y_with_nans: y array with NaNs inserted at large gaps
+    - ey_with_nans: ey array with NaNs inserted at large gaps (if provided)
+    """
+    # Step 1: Calculate the differences between consecutive x values
+    gaps = np.diff(x_array)
+    
+    # Step 2: Calculate the median gap
+    median_gap = np.median(gaps)
+
+    # Step 3: Set the threshold (10x the median gap by default)
+    gap_threshold = threshold_factor * median_gap
+
+    # Step 4: Find the indices where the gap exceeds the threshold
+    gap_indices = np.where(gaps > gap_threshold)[0]
+    
+    # Step 5: Create new arrays with NaNs inserted at the gaps
+    x_with_nans = []
+    y_with_nans = []
+    ey_with_nans = [] if ey_array is not None else None
+    
+    start_idx = 0
+    for gap_idx in gap_indices:
+        # Add the data up to the gap
+        x_with_nans.extend(x_array[start_idx:gap_idx+1])
+        y_with_nans.extend(y_array[start_idx:gap_idx+1])
+        if ey_with_nans is not None:
+            ey_with_nans.extend(ey_array[start_idx:gap_idx+1])
+        
+        # Insert a NaN in the middle of the gap
+        x_gap_middle = (x_array[gap_idx] + x_array[gap_idx+1]) / 2
+        x_with_nans.append(x_gap_middle)
+        y_with_nans.append(np.nan)
+        if ey_with_nans is not None:
+            ey_with_nans.append(np.nan)
+        
+        # Move the start index to after the gap
+        start_idx = gap_idx + 1
+    
+    # Add the remaining data after the last gap
+    x_with_nans.extend(x_array[start_idx:])
+    y_with_nans.extend(y_array[start_idx:])
+    if ey_with_nans is not None:
+        ey_with_nans.extend(ey_array[start_idx:])
+    
+    # Return all arrays (including ey_with_nans if provided)
+    if ey_with_nans is not None:
+        return np.array(x_with_nans), np.array(y_with_nans), np.array(ey_with_nans)
+    else:
+        return np.array(x_with_nans), np.array(y_with_nans)
+
 # Eventually move this to a subroutine
 def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
 
@@ -236,36 +298,93 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
         dfi.loc[:, 'esp'] = dfi['esp'] / norm
         dfi.loc[:, 'sp'] = dfi['sp'] / norm
 
-        new_trace = go.Scattergl(x=dfi['lam'].values,y=dfi['sp'].values,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'))
+        x_array = dfi['lam'].values
+        y_array = dfi['sp'].values
+
+        # Insert NaNs in the gaps larger than 10x the median spacing
+        x_with_nans, y_with_nans, ey_with_nans = insert_nans_in_gaps(dfi['lam'].values, dfi['sp'].values, ey_array=dfi['esp'].values, threshold_factor=10)
+
+        new_trace = go.Scattergl(x=x_with_nans,y=y_with_nans,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'),connectgaps=False)
 
         if not dfi['esp'].isna().all():
             
-            dfi_filtered = dfi[['lam', 'sp', 'esp']].dropna()
+            #dfi_filtered = dfi[['lam', 'sp', 'esp']].dropna()
 
-            # Create the upper bound trace
-            upper_bound_trace = go.Scatter(
-                x=dfi_filtered['lam'].values,
-                y=dfi_filtered['sp'].values + dfi_filtered['esp'].values,
-                mode='lines',
-                line=dict(width=0, shape='hv'),
-                fill=None,
-                hoverinfo='none',
-                showlegend=False
-            )
+            # Upper bound trace
+            # Upper bound trace
+            # Find the indices where NaNs occur in x_with_nans
+            # Find the indices where NaNs occur in x_with_nans
+            nan_indices = np.where(np.isnan(y_with_nans))[0]
 
-            # Create the lower bound trace
-            lower_bound_trace = go.Scatter(
-                x=dfi_filtered['lam'].values,
-                y=dfi_filtered['sp'].values - dfi_filtered['esp'].values,
-                mode='lines',
-                line=dict(width=0, shape='hv'),
-                fill='tonexty',
-                hoverinfo='none',
-                fillcolor=hex_to_rgba(colori,alpha),
-                showlegend=False
-            )
-            data.append(upper_bound_trace)
-            data.append(lower_bound_trace)
+            # Initialize start_idx at 0
+            start_idx = 0
+
+            # Loop over the nan_indices to handle each segment
+            for nan_idx in nan_indices:
+                #if start_idx !=0:
+                #    continue
+                # Only plot valid segments (ignore consecutive NaNs)
+                if nan_idx > start_idx:
+                    # Upper bound trace for the current segment
+                    upper_bound_trace = go.Scatter(
+                        x=x_with_nans[start_idx:nan_idx],  # Plot until nan_idx-1
+                        y=y_with_nans[start_idx:nan_idx] + ey_with_nans[start_idx:nan_idx],
+                        mode='lines',
+                        line=dict(width=0),  # No line for the upper bound
+                        hoverinfo='none',
+                        fill=None,
+                        showlegend=False
+                    )
+
+                    # Lower bound trace with fill='tonexty' for the current segment
+                    lower_bound_trace = go.Scatter(
+                        x=x_with_nans[start_idx:nan_idx],  # Plot until nan_idx-1
+                        y=y_with_nans[start_idx:nan_idx] - ey_with_nans[start_idx:nan_idx],
+                        mode='lines',
+                        line=dict(width=0),  # No line for the lower bound
+                        fill='tonexty',  # Fill between lower and upper bound
+                        fillcolor=hex_to_rgba(colori, alpha),  # Set the fill color
+                        hoverinfo='none',
+                        showlegend=False
+                    )
+
+                    # Append traces to data
+                    data.append(upper_bound_trace)
+                    data.append(lower_bound_trace)
+
+                # Move the start index to the point after the current NaN
+                start_idx = nan_idx + 1
+
+            # Handle the last segment after the last NaN
+            if start_idx < len(x_with_nans):
+                upper_bound_trace = go.Scatter(
+                    x=x_with_nans[start_idx:],  # Plot remaining segment
+                    y=y_with_nans[start_idx:] + ey_with_nans[start_idx:],
+                    mode='lines',
+                    line=dict(width=0),
+                    hoverinfo='none',
+                    fill=None,
+                    showlegend=False
+                )
+
+                lower_bound_trace = go.Scatter(
+                    x=x_with_nans[start_idx:],  # Plot remaining segment
+                    y=y_with_nans[start_idx:] - ey_with_nans[start_idx:],
+                    mode='lines',
+                    line=dict(width=0),
+                    fill='tonexty',
+                    fillcolor=hex_to_rgba(colori, alpha),
+                    hoverinfo='none',
+                    showlegend=False
+                )
+
+                # Append final segment traces to data
+                data.append(upper_bound_trace)
+                data.append(lower_bound_trace)
+
+
+            #data.append(upper_bound_trace)
+            #data.append(lower_bound_trace)
         
         data.append(new_trace)
 
