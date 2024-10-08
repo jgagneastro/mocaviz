@@ -166,16 +166,11 @@ def update_dropdown(href, url_search):
     Output("mcmcrv-scatter-plot", "figure"),
     [Input("mcmcrv-dataset-dropdown", "value"),
      Input("mcmcrv-scatter-plot", "selectedData")],
-     #Input("mcmcrv-scatter-plot", "relayoutData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selectedData):#, relayoutData
+def update_scatter_plot(selected_dataset, selectedData):
     ctx = dash.callback_context
-
-    # Handle the case where relayoutData triggers the callback but we don't want to reset the plot
-    #if 'relayoutData' in ctx.triggered[0]['prop_id'] and len(ctx.triggered) == 1:
-    #    return dash.no_update
-
+    
     if not selected_dataset:
         return dash.no_update
     
