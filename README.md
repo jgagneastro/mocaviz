@@ -21,6 +21,8 @@ Then exact required packages can then be installed using:
 
 `pip install -r requirements.txt`
 
+Note that this package has been tested with Python 3.9.12.
+
 The features that have been implemented as of Feb 23, 2023 are:
 
 - Visualizing the CMD, XYZ, UVW and projections in XYZUVW.
