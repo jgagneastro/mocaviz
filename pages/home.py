@@ -15,6 +15,8 @@ default_text = \
 " * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA spatial explorer](/uvw#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy#args#).\n" + \
 " * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra#args#).\n" + \
+" * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs#args#).\n" + \
+" * Visualize astromtry in MOCAdb with the [Astrometric Explorer](/astrometry#args#).\n" + \
 " * Return to the [MOCAdb website](https://mocadb.ca).\n"
 
 layout = html.Div(

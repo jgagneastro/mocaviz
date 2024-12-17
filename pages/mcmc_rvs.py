@@ -104,7 +104,7 @@ layout = html.Div([
     output=[
         Output("mcmcrv-dataset-dropdown", "options"),
         Output("mcmcrv-dataset-dropdown", "value"),
-        Output("url", "search"),  # This triggers the callback once the options are set
+        #Output("mcmcrv-url", "search"),  # This triggers the callback once the options are set
     ],
     inputs=[Input("url", "href")],
     state=[State("url", "search")]
@@ -159,7 +159,7 @@ def update_dropdown(href, url_search):
     # Set the first option as default if available
     default_value = dataset_options[0] if dataset_options else None
 
-    return [{"label": dataset, "value": dataset} for dataset in dataset_options], default_value, url_search
+    return [{"label": dataset, "value": dataset} for dataset in dataset_options], default_value#, url_search
 
 # Define the callback to update the scatter plot based on input
 @dash.callback(

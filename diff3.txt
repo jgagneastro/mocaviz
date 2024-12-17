@@ -1,0 +1,294 @@
+diff --git a/pages/mcmc_rvs.py b/pages/mcmc_rvs.py
+index b1887ed..97e390e 100644
+--- a/pages/mcmc_rvs.py
++++ b/pages/mcmc_rvs.py
+@@ -4,7 +4,7 @@ import decimal
+ from dash import dcc, html, Input, Output, State, callback_context
+ import plotly.graph_objs as go
+ from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
+-from sqlalchemy import create_engine, select, MetaData, Table
++from sqlalchemy import create_engine, select, MetaData, Table, and_
+ import pandas as pd
+ import os
+ 
+@@ -22,7 +22,9 @@ layout = html.Div([
+         html.P("This page shows the measured radial velocities by the Markov Chain Monte Carlo method in specific wavelength segments of the observed spectrum. "
+                "You can click on one data point in the scatter plot to see the detailed data corresponding to this segment and the model fit figure. "
+                "You can also select specific data points with the plotly box selection tool to refine the average radial velocity that is displayed in the title "
+-               "and as a red line, which corresponds to an average weighted by measurement errors."),
++               "and as a red line, which corresponds to an average weighted by measurement errors.\n"
++               "The data points which LSF value is too large, or for which data_contrast or model_contrast are too low, are automatically flagged as bad data "
++               " and those are not used in the average radial velocity calculation."),
+     ], style={'width': '100%', 'display': 'inline-block'}),
+     
+     dcc.Dropdown(
+@@ -161,19 +163,23 @@ def update_dropdown(href, url_search):
+ )
+ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
+     ctx = dash.callback_context
++
++    # Handle the case where relayoutData triggers the callback but we don't want to reset the plot
++    if 'relayoutData' in ctx.triggered[0]['prop_id'] and len(ctx.triggered) == 1:
++        return dash.no_update
++
+     triggered_by_selection = 'selectedData' in ctx.triggered[0]['prop_id']
+ 
+-    # If the selection was triggered but selectedData is empty, do nothing
+     if triggered_by_selection and (selectedData is None or not selectedData.get('points')):
+         return dash.no_update
+ 
+     if not selected_dataset:
+-        return go.Figure()
+-
++        return dash.no_update
++    
+     try:
+         target_name, template_name, pipeline_version = selected_dataset.split('|')
+     except ValueError:
+-        return go.Figure()
++        return dash.no_update
+ 
+     engine = create_engine(connection_string)
+     connection = engine.connect()
+@@ -187,70 +193,112 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
+         (pcat_mcmc_rv_pipeline.c.pipeline_version == pipeline_version)
+     )
+     df = pd.read_sql(query, connection)
+-    df_filtered = df[df['radial_velocity_kms_unc'] > 0]
+-
+     connection.close()
+ 
+-    if selectedData and len(selectedData['points']) > 1:
+-        selected_indices = [point['pointIndex'] for point in selectedData['points']]
+-        df_filtered = df_filtered.iloc[selected_indices]
+-
+-    weights = 1 / df_filtered['radial_velocity_kms_unc']**2
+-    weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
+-    variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
+-    weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
++    # Define LSF thresholds based on moca_instid
++    lsf_thresholds = {
++        'spex_irtf': 1.33,
++        'fire_magellan': 1.384,
++        'nires_keck': 1.378
++    }
+ 
++    df['lsf_threshold'] = df['moca_instid'].map(lsf_thresholds).fillna(1.5)
+     df['segment_wavelength'] = (df['wave_min'] + df['wave_max']) / 2
+ 
+-    selected_indices = list(range(len(df_filtered)))
++    # Identify outliers based on criteria
++    outliers = df[(df['data_contrast'] < 0.01) |
++                  (df['model_contrast'] < 0.1) |
++                  (df['lsf'] > df['lsf_threshold'])]
++
++    # If all data points are flagged as outliers, treat none as outliers
++    if len(outliers) == len(df):
++        outliers = pd.DataFrame()  # Empty outliers DataFrame
+ 
+-    if selectedData and 'points' in selectedData:
++    # Initialize selected_indices to include all points by default
++    selected_indices = list(df.index)
++
++    # Apply manual selection first
++    if selectedData and len(selectedData['points']) > 1:
+         selected_indices = [point['pointIndex'] for point in selectedData['points']]
++        df_selected = df.iloc[selected_indices]
++    else:
++        df_selected = df.copy()
++
++    # Filter out outliers from the selected data
++    df_filtered = df_selected[~df_selected.index.isin(outliers.index)]
++
++    # Calculate weighted average RV excluding outliers
++    if not df_filtered.empty:
++        weights = 1 / df_filtered['radial_velocity_kms_unc']**2
++        weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
++        variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
++        #This equation does not allow the error to decrease by a factor 1/SQRT(N)
++        weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
++        #This one does
++        #weighted_stddev_rv = np.sqrt(1 / np.sum(weights))*np.sqrt(1.5)#Factor 1.5 for window overlap
++    else:
++        weighted_avg_rv = np.nan
++        weighted_stddev_rv = np.nan
++
++    # Create scatter plot with normal data points
++    fig = go.Figure()
++
++    # Add red 'x' markers for outliers
++    fig.add_trace(go.Scatter(
++        x=outliers['segment_wavelength'],
++        y=outliers['radial_velocity_kms'],
++        mode='markers',
++        marker=dict(size=15, symbol='x-thin', line=dict(color='red', width=3)),
++        name='Bad data'
++    ))
+ 
+-    fig = go.Figure(data=go.Scatter(
++    fig.add_trace(go.Scatter(
+         x=df['segment_wavelength'],
+         y=df['radial_velocity_kms'],
+         mode='markers',
++        name='All data',
+         marker=dict(
+-            color='white',        # White center
+-            size=6,               # Slightly smaller symbol size
+-            symbol='circle',      # Filled circle
++            color='white',        
++            size=6,               
++            symbol='circle',      
+             line=dict(
+-                width=2,          # Thick black outline
+-                color='black'     # Outline color
++                width=2,          
++                color='black'     
+             )
+         ),
+-        selectedpoints=selected_indices,  # Preserve selected points
++        selectedpoints=selected_indices,  
+         error_y=dict(
+             type='data',
+             array=df['radial_velocity_kms_unc'],
+             visible=True,
+-            color='rgba(0, 0, 0, 0.2)',  # Paler and lighter color for error bars
+-            thickness=1.5,               # Slightly thicker error bars
+-            width=2                      # Capsize width
++            color='rgba(0, 0, 0, 0.2)',  
++            thickness=1.5,               
++            width=2                      
+         ),
+         customdata=df['id'],
+         text=df.apply(lambda row: f"RV: {row['radial_velocity_kms']:.2f} ± {row['radial_velocity_kms_unc']:.2f} km/s<br>Wavelength: {row['segment_wavelength']:.2f} μm", axis=1),
+-        hoverinfo='text'                # Use the formatted text for hover information
++        hoverinfo='text'
+     ))
+ 
+     # Add horizontal lines for weighted average and standard deviation
+-    fig.add_hline(
+-        y=weighted_avg_rv,
+-        line=dict(color='rgba(139, 0, 0, 0.5)', width=3),  # Thicker and darker red line
+-        layer='below'  # Display behind data points
+-    )
+-    fig.add_hline(
+-        y=weighted_avg_rv + weighted_stddev_rv,
+-        line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  # Thicker dashed line, same color, longer dashes
+-        layer='below'  # Display behind data points
+-    )
+-    fig.add_hline(
+-        y=weighted_avg_rv - weighted_stddev_rv,
+-        line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  # Thicker dashed line, same color, longer dashes
+-        layer='below'  # Display behind data points
+-    )
++    if not np.isnan(weighted_avg_rv):
++        fig.add_hline(
++            y=weighted_avg_rv,
++            line=dict(color='rgba(139, 0, 0, 0.5)', width=3),  
++            layer='below'
++        )
++        fig.add_hline(
++            y=weighted_avg_rv + weighted_stddev_rv,
++            line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  
++            layer='below'
++        )
++        fig.add_hline(
++            y=weighted_avg_rv - weighted_stddev_rv,
++            line=dict(color='rgba(139, 0, 0, 0.3)', dash='longdash', width=1),  
++            layer='below'
++        )
+ 
++    # Update layout and add legend
+     fig.update_layout(
+         plot_bgcolor='white',
+         xaxis=dict(
+@@ -275,8 +323,9 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
+         ),
+         margin=dict(l=40, r=40, t=40, b=40),
+         paper_bgcolor='white',
+-        showlegend=False,
+-        title=f"Average RV = {weighted_avg_rv:.2f} ± {weighted_stddev_rv:.2f} km/s",
++        showlegend=True,
++        legend=dict(x=0.02, y=0.98, bgcolor='rgba(255, 255, 255, 0.5)'),  # Adjust legend position and background color
++        title=f"{df['target_name'].iloc[0]}: Average RV = {weighted_avg_rv:.2f} ± {weighted_stddev_rv:.2f} km/s" if not np.isnan(weighted_avg_rv) else f"{df['target_name'].iloc[0]}: Average RV could not be calculated",
+         title_x=0.5,
+         title_y=0.98,
+         title_xanchor='center',
+@@ -294,8 +343,12 @@ def update_scatter_plot(selected_dataset, selectedData, relayoutData):
+ )
+ def update_image_and_table(clickData):
+     if not clickData:
+-        return "", []
+-    
++        return dash.no_update
++
++    # If clickData is provided, check for customdata to ensure it’s not a red cross
++    if clickData is not None and 'customdata' not in clickData['points'][0]:
++        return dash.no_update
++        
+     clicked_id = clickData['points'][0]['customdata']
+ 
+     engine = create_engine(connection_string)
+@@ -338,6 +391,7 @@ def update_image_and_table(clickData):
+     row_data = connection.execute(query_row).fetchone()
+ 
+     if row_data is None:
++        connection.close()
+         return "", []
+     
+     row_dict = {col: round(float(value), 2) if isinstance(value, decimal.Decimal) else value for col, value in row_data._mapping.items()}
+@@ -451,10 +505,20 @@ def update_image_and_table(clickData):
+     Input("mcmcrv-dataset-dropdown", "value")
+ )
+ def update_model_fit_images(selected_dataset):
++    #print('Triggered update_model_fit_images')
+     if not selected_dataset:
+-        return "", "", []
++        #print('Exiting because no data set selected')
++        return dash.no_update
++    #print('Date set selected:',selected_dataset)
+ 
+     target_name, template_name, pipeline_version = selected_dataset.split('|')
++    
++    specid = target_name.split('_')[1]
++
++    #print('specid: ', int(specid))
++    #print('target_name: ', target_name)
++    #print('template_name: ', template_name)
++    #print('pipeline_version: ', pipeline_version)
+ 
+     engine = create_engine(connection_string)
+     connection = engine.connect()
+@@ -530,14 +594,19 @@ def update_model_fit_images(selected_dataset):
+             data_model_grid_files,
+             calc_model_grid_fits.c.moca_mgridfileid == data_model_grid_files.c.moca_mgridfileid
+         )
+-    ).where(
+-        (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name
+-    ).limit(1)
++        ).where(
++            and_(
++                (calc_model_grid_fits.c.moca_mgridid + '_' + data_model_grid_files.c.file_name) == template_name,
++                calc_model_grid_fits.c.moca_specid == int(specid)
++            )
++        ).limit(1)
+ 
+     template_name_fsid = connection.execute(query_template_name).scalar()
+-
++    
++    #print('Template name fsid:',template_name_fsid)
+     if not template_name_fsid:
+         connection.close()
++        #print('Exiting because no template name fsid')
+         return "", "", dataset_info_output
+ 
+     mechanics_file_sets = Table('mechanics_file_sets', metadata, autoload_with=engine)
+@@ -561,7 +630,8 @@ def update_model_fit_images(selected_dataset):
+ 
+     chi2_url = connection.execute(query_chi2).scalar()
+     bestmodelfit_url = connection.execute(query_bestmodelfit).scalar()
+-
++    #print(chi2_url)
++    #print(bestmodelfit_url)
+     connection.close()
+ 
+     return (chi2_url + '/download' if chi2_url else "", 
