@@ -62,43 +62,68 @@ layout = html.Div([
     ),
 
     html.Div([
-        dcc.Checklist(
-            id="subtract-pm-checkbox",
-            options=[{'label': 'Subtract proper motion', 'value': 'subtract_pm'}],
-            value=[],
-            inline=True,
-            style={'margin-bottom': '10px', 'font-size': '16px'}
-        ),
-        dcc.Checklist(
-            id="subtract-plx-checkbox",
-            options=[{'label': 'Subtract parallax motion', 'value': 'subtract_plx'}],
-            value=[],
-            inline=True,
-            style={'margin-bottom': '10px', 'font-size': '16px'}
-        ),
-        dcc.Checklist(
-            id="phase-yr-checkbox",
-            options=[{'label': 'Phase yearly', 'value': 'phase'}],
-            value=[],
-            inline=True,
-            style={'margin-bottom': '10px', 'font-size': '16px'}
-        ),
-        dcc.Checklist(
-            id="adjust-reference-epoch-checkbox",
-            options=[{'label': 'Adjust reference epoch', 'value': 'adjust_ref'}],
-            value=[],
-            inline=True,
-            style={'margin-bottom': '10px', 'font-size': '16px'}
-        ),
+        # Column 1
+        html.Div([
+            dcc.Checklist(
+                id="subtract-pm-checkbox",
+                options=[{'label': 'Subtract proper motion', 'value': 'subtract_pm'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="subtract-plx-checkbox",
+                options=[{'label': 'Subtract parallax motion', 'value': 'subtract_plx'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="phase-yr-checkbox",
+                options=[{'label': 'Phase yearly', 'value': 'phase'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            )
+        ], style={'display': 'inline-block', 'vertical-align': 'top', 'width': '50%', 'padding-right': '10px'}),
+        
+        # Column 2
+        html.Div([
+            dcc.Checklist(
+                id="adjust-reference-epoch-checkbox",
+                options=[{'label': 'Adjust reference epoch', 'value': 'adjust_ref'}],
+                value=['adjust_ref'],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="only-use-recalibrated-checkbox",
+                options=[{'label': 'Only use recalibrated astrometry', 'value': 'only_recalibrated'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="revert-raw-checkbox",
+                options=[{'label': 'Revert all astrometry to pre-calibration', 'value': 'revert_raw'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            )
+            ], style={'display': 'inline-block', 'vertical-align': 'top', 'width': '50%', 'padding-left': '10px'})
+        ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
+
         html.Div([
             dcc.Graph(id="astrometry-plot-ra"),
         ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
+        
         html.Div([
             dcc.Graph(id="astrometry-plot-dec"),
         ], style={'width': '100%', 'display': 'inline-block'}),
-    ], style={'width': '65%', 'display': 'inline-block'}),
 
-], style={'padding-left': '15px'})
+    ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'}),
+
+#], style={'padding-left': '15px'})
 
 # Callback to populate the dropdown and initialize connection based on URL parameters
 @dash.callback(
@@ -210,11 +235,13 @@ def update_dropdown(href, url_search):
      Input("subtract-plx-checkbox", "value"),
      Input("phase-yr-checkbox", "value"),
      Input("adjust-reference-epoch-checkbox", "value"),
+     Input("only-use-recalibrated-checkbox", "value"),
+     Input("revert-raw-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -224,6 +251,8 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
     subtract_plx = 'subtract_plx' in plx_checkbox_values  # Check if the checkbox is selected
     phase_yearly = 'phase' in phase_checkbox_values  # Check if the checkbox is selected
     adjust_reference_epoch = 'adjust_ref' in adjust_ref_checkbox_values  # Check if the checkbox is selected
+    only_recalibrated = 'only_recalibrated' in only_recalibrated_checkbox_values  # Check if the checkbox is selected
+    revert_raw = 'revert_raw' in revert_raw_checkbox_values  # Check if the checkbox is selected
 
     triggered_prop = ctx.triggered[0]["prop_id"]
 
@@ -291,9 +320,26 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
     #Query all coordinates
     data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
 
+    # Conditionally construct the "ra" and "dec" columns
+    if revert_raw:
+        ra_column = (data_equatorial_coordinates.c.ra -
+                    func.ifnull(
+                        data_equatorial_coordinates.c.calibration_delta_ra_mas /
+                        (3600 * 1000 * func.cos(data_equatorial_coordinates.c.dec * func.pi() / 180)), 0)
+                    ).label('ra')
+        dec_column = (data_equatorial_coordinates.c.dec -
+                    func.ifnull(
+                        data_equatorial_coordinates.c.calibration_delta_dec_mas /
+                        (3600 * 1000), 0)
+                    ).label('dec')
+    else:
+        ra_column = data_equatorial_coordinates.c.ra.label('ra')
+        dec_column = data_equatorial_coordinates.c.dec.label('dec')
+
+
     query = select(data_equatorial_coordinates.c.id,
-                    data_equatorial_coordinates.c.ra,
-                    data_equatorial_coordinates.c.dec,
+                    ra_column,
+                    dec_column,
                     data_equatorial_coordinates.c.measurement_epoch_yr,
                     data_equatorial_coordinates.c.ra_unc_mas,
                     data_equatorial_coordinates.c.dec_unc_mas,
@@ -313,12 +359,37 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
                    data_equatorial_coordinates.c.airmass,
                    data_equatorial_coordinates.c.moca_psid,
                    ).where(
-        ((data_equatorial_coordinates.c.moca_oid == moca_oid) & 
-         (data_equatorial_coordinates.c.adopted == 1) &
-         (data_equatorial_coordinates.c.single_epoch == 1))
+                        and_(
+                                data_equatorial_coordinates.c.moca_oid == moca_oid,
+                                data_equatorial_coordinates.c.adopted == 1,
+                                data_equatorial_coordinates.c.single_epoch == 1,
+                                data_equatorial_coordinates.c.calibration_method.isnot(None) if only_recalibrated else True
+                            )
     )
     data_df = pd.read_sql(query, connection)
     connection.close()
+
+    # Check if data_df is empty
+    if data_df.empty:
+        #return dash.no_update, dash.no_update
+        # Return empty figures with a message
+        empty_figure = go.Figure()
+        empty_figure.update_layout(
+            title="No data available",
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False),
+            annotations=[
+                dict(
+                    x=0.5, y=0.5, xref="paper", yref="paper",
+                    text="No data available for the selected dataset",
+                    showarrow=False,
+                    font=dict(size=16)
+                )
+            ]
+        )
+        return empty_figure, empty_figure
 
     if adjust_reference_epoch:
         epochs = data_df["measurement_epoch_yr"].values
