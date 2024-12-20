@@ -496,6 +496,10 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                    data_equatorial_coordinates.c.comments,
                    data_equatorial_coordinates.c.airmass,
                    data_equatorial_coordinates.c.moca_psid,
+                   data_equatorial_coordinates.c.calibration_delta_ra_mas,
+                   data_equatorial_coordinates.c.calibration_delta_dec_mas,
+                   data_equatorial_coordinates.c.nstars_calibration,
+                   data_equatorial_coordinates.c.calibration_method,
                    ).where(
                         and_(
                                 data_equatorial_coordinates.c.moca_oid == moca_oid,
@@ -666,7 +670,10 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df['measurement_epoch_yr_str'] = data_df['measurement_epoch_yr'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
     data_df['id_str'] = data_df['id'].apply(lambda x: f"{int(x):d}" if pd.notna(x) else "N/A")
     data_df['airmass_str'] = data_df['airmass'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
-    
+    data_df['delta_ra_str'] = data_df['calibration_delta_ra_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+    data_df['delta_dec_str'] = data_df['calibration_delta_dec_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+    data_df['nstars_str'] = data_df['nstars_calibration'].apply(lambda x: f"{int(x):d}" if pd.notna(x) else "N/A")
+
     if bin_activated:
         binned_df['rel_ra_str'] = binned_df['rel_ra'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
         binned_df['rel_dec_str'] = binned_df['rel_dec'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
@@ -703,15 +710,19 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 lambda row: 
                     f"<b>ID:</b> {row['id_str']}<br>" \
                     f"<b>Mission:</b> {row['mission'] or 'N/A'}<br>" \
+                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>" \
+                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>" \
                     f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>" \
                     f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>" \
                     f"<b>RA:</b> {row['ra_str']} deg<br>" \
                     f"<b>DEC:</b> {row['dec_str']} deg<br>" \
-                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>" \
-                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>" \
                     f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>" \
                     f"<b>Airmass:</b> {row['airmass_str']}<br>" \
                     f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>" \
+                    f"<b>Calibration offset R.A.:</b> {row['delta_ra_str']} mas<br>" \
+                    f"<b>Calibration offset Decl.:</b> {row['delta_dec_str']} mas<br>" \
+                    f"<b>Calibration Nstars:</b> {row['nstars_str']}<br>" \
+                    f"<b>Calibration method:</b> {row['calibration_method'] or 'N/A'}<br>" \
                     f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}",
                 axis=1
             ),
