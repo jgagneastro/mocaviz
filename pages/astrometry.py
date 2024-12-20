@@ -5,7 +5,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String
+from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case
 import pandas as pd
 import os
 from utils.plx_motion import parallax_motion
@@ -51,7 +51,7 @@ layout = html.Div([
     
     dcc.Input(
         id="astrometry-dropdown-search",
-        placeholder="Filter dropdown menu by object name or MOCA OID",
+        placeholder="Filter dropdown menu by object name or MOCA OID then press Enter",
         type="text",
         debounce=True,
         style={
@@ -68,6 +68,18 @@ layout = html.Div([
         style={
         "width": "100%",  # Full width
         "fontSize": "16px"  # Ensure font size matches input
+        }
+    ),
+
+    dcc.Dropdown(
+        id="mission-toggle-dropdown",
+        options=[],  # Will be dynamically populated
+        multi=True,
+        placeholder="Select missions to display",
+        style={
+            "width": "100%",
+            "fontSize": "16px",
+            "marginTop": "10px"
         }
     ),
 
@@ -188,17 +200,17 @@ def update_dropdown(href, search_value, url_search):
 
     # Reflect the moca_objects table
     moca_objects = Table('moca_objects', metadata, autoload_with=engine)
+    mechanics_all_designations = Table('mechanics_all_designations', metadata, autoload_with=engine)
 
     # Determine the query logic based on inputs
-    #import pdb; pdb.set_trace()
     if search_value:  # If a search term is provided
         search_query = f"%{search_value}%"
         query = (
-            select([moca_objects.c.moca_oid, moca_objects.c.designation])
+            select([mechanics_all_designations.c.moca_oid, mechanics_all_designations.c.designation])
             .where(
                 or_(
-                    moca_objects.c.designation.ilike(search_query),
-                    cast(moca_objects.c.moca_oid, String).ilike(search_query)
+                    mechanics_all_designations.c.designation.ilike(search_query),
+                    cast(mechanics_all_designations.c.moca_oid, String).ilike(search_query)
                 )
             )
             .limit(25)  # Limit to a reasonable number of results
@@ -231,13 +243,59 @@ def update_dropdown(href, search_value, url_search):
     connection.close()
     return dataset_options, default_value
 
-    #return [{"label": f"{row['designation']} ({row['moca_oid']})", "value": row['moca_oid']} for _, row in results.iterrows()]
+@dash.callback(
+    Output("mission-toggle-dropdown", "options"),
+    Output("mission-toggle-dropdown", "value"),
+    Input("astrometry-filtered-dropdown", "value"),
+    prevent_initial_call=True
+)
+def update_mission_dropdown(selected_dataset):
+    if not selected_dataset:
+        return [], []
+    
+    moca_oid = selected_dataset
+    engine = create_engine(connection_string)
+    connection = engine.connect()
+    metadata = MetaData()
+
+    # Reflect the relevant table and fetch unique missions
+    data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    query = select(
+            func.coalesce(
+                case(
+                    # Check if the concatenated mission name is empty after trimming spaces
+                    [
+                        (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
+                    ],
+                    else_=func.coalesce(
+                        func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
+                        data_equatorial_coordinates.c.moca_pid
+                    )
+                ),
+                'No mission'  # Fallback if all other options are NULL
+            ).label('mission')
+        ).distinct().where(
+        and_(
+            data_equatorial_coordinates.c.moca_oid == moca_oid,
+            data_equatorial_coordinates.c.adopted == 1,
+            data_equatorial_coordinates.c.single_epoch == 1
+            )
+    )
+
+    missions_df = pd.read_sql(query, connection)
+    connection.close()
+
+    # Generate options for the dropdown
+    mission_options = [{"label": mission, "value": mission} for mission in missions_df['mission']]
+    return mission_options, [option["value"] for option in mission_options]  # Select all by default
+
 
 # Define the callback to update the scatter plot based on input
 @dash.callback(
     [Output("astrometry-plot-ra", "figure"),
      Output("astrometry-plot-dec", "figure")],
     [Input("astrometry-filtered-dropdown", "value"),
+     Input("mission-toggle-dropdown", "value"),  # New input for selected missions
      Input("subtract-pm-checkbox", "value"),
      Input("subtract-plx-checkbox", "value"),
      Input("phase-yr-checkbox", "value"),
@@ -248,7 +306,7 @@ def update_dropdown(href, search_value, url_search):
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -353,12 +411,17 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
                     data_equatorial_coordinates.c.dec_unc_mas,
                     func.coalesce(data_equatorial_coordinates.c.measurement_epoch_yr_unc, 0).label('measurement_epoch_yr_unc'),
                     func.coalesce(
-                        func.coalesce(
-                            func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
-                            data_equatorial_coordinates.c.moca_pid
-                        ),
-                        'other'
-                    ).label('mission'),
+                        case(
+                            # Check if the concatenated mission name is empty after trimming spaces
+                            [
+                                (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
+                            ],
+                            else_=func.coalesce(
+                                func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
+                                data_equatorial_coordinates.c.moca_pid
+                            )
+                        ),'No mission'  # Fallback if all other options are NULL
+                   ).label('mission'),
                    data_equatorial_coordinates.c.moca_pid,
                    data_equatorial_coordinates.c.mission_name,
                    data_equatorial_coordinates.c.data_release,
@@ -398,6 +461,9 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
             ]
         )
         return empty_figure, empty_figure
+
+    if selected_missions:
+        data_df = data_df[data_df["mission"].isin(selected_missions)]
 
     if adjust_reference_epoch:
         epochs = data_df["measurement_epoch_yr"].values
