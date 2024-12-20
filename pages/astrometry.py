@@ -16,6 +16,65 @@ dash.register_page(__name__)
 # Placeholder for the database connection string
 connection_string = None
 
+bin_size_days = 50
+bin_size_days_phased = 20
+
+# Group by binned time and calculate weighted averages
+def weighted_combination(group):
+    # Extract RA and Dec values and their uncertainties
+    x_ra = group["rel_ra"].values
+    ex_ra = group["ra_unc_mas"].values
+    x_dec = group["rel_dec"].values
+    ex_dec = group["dec_unc_mas"].values
+
+    # Filter out NaN values for RA
+    valid_ra_mask = ~np.isnan(x_ra) & ~np.isnan(ex_ra)
+    x_ra = x_ra[valid_ra_mask]
+    ex_ra = ex_ra[valid_ra_mask]
+
+    # Filter out NaN values for Dec
+    valid_dec_mask = ~np.isnan(x_dec) & ~np.isnan(ex_dec)
+    x_dec = x_dec[valid_dec_mask]
+    ex_dec = ex_dec[valid_dec_mask]
+
+    # Handle cases with no valid data
+    if len(x_ra) == 0:
+        combined_ra = np.nan
+        combined_ra_unc = np.nan
+    elif len(x_ra) == 1:
+        combined_ra = x_ra[0]
+        combined_ra_unc = ex_ra[0]
+    else:
+        weights_ra = 1 / np.maximum(ex_ra, 0.7 * np.median(ex_ra))**2
+        weights_ra /= weights_ra.sum()  # Normalize weights
+        combined_ra = np.sum(x_ra * weights_ra)
+        bias_ra = 1 - np.sum(weights_ra**2)
+        wstd_ra = np.sqrt(np.sum(weights_ra * (x_ra - combined_ra)**2) / bias_ra) if bias_ra > 0 else 0
+        combined_ra_unc = np.sqrt(wstd_ra**2)
+
+    if len(x_dec) == 0:
+        combined_dec = np.nan
+        combined_dec_unc = np.nan
+    elif len(x_dec) == 1:
+        combined_dec = x_dec[0]
+        combined_dec_unc = ex_dec[0]
+    else:
+        weights_dec = 1 / np.maximum(ex_dec, 0.7 * np.median(ex_dec))**2
+        weights_dec /= weights_dec.sum()  # Normalize weights
+        combined_dec = np.sum(x_dec * weights_dec)
+        bias_dec = 1 - np.sum(weights_dec**2)
+        wstd_dec = np.sqrt(np.sum(weights_dec * (x_dec - combined_dec)**2) / bias_dec) if bias_dec > 0 else 0
+        combined_dec_unc = np.sqrt(wstd_dec**2)
+
+    # Return combined results as a Series
+    return pd.Series({
+        "rel_ra": combined_ra,
+        "ra_unc_mas": combined_ra_unc,
+        "rel_dec": combined_dec,
+        "dec_unc_mas": combined_dec_unc,
+        "ndata":len(x_ra)
+    })
+
 def format_value_with_error(value, error, unit):
     """
     Formats a value with its error, displaying only one significant digit for the error.
@@ -106,7 +165,14 @@ layout = html.Div([
                 value=[],
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
-            )
+            ),
+            dcc.Checklist(
+                id="astrometry-bin-checkbox",
+                options=[{'label': 'Bin data by '+str(bin_size_days)+'-day intervals ('+str(bin_size_days_phased)+' days if phased yearly)', 'value': 'bin_checked'}],
+                value=['bin_checked'],  # Default is unchecked
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
         ], style={'display': 'inline-block', 'vertical-align': 'top', 'width': '50%', 'padding-right': '10px'}),
         
         # Column 2
@@ -302,11 +368,12 @@ def update_mission_dropdown(selected_dataset):
      Input("adjust-reference-epoch-checkbox", "value"),
      Input("only-use-recalibrated-checkbox", "value"),
      Input("revert-raw-checkbox", "value"),
+     Input("astrometry-bin-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -318,6 +385,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     adjust_reference_epoch = 'adjust_ref' in adjust_ref_checkbox_values  # Check if the checkbox is selected
     only_recalibrated = 'only_recalibrated' in only_recalibrated_checkbox_values  # Check if the checkbox is selected
     revert_raw = 'revert_raw' in revert_raw_checkbox_values  # Check if the checkbox is selected
+    bin_activated = 'bin_checked' in bin_checkbox_values
 
     triggered_prop = ctx.triggered[0]["prop_id"]
 
@@ -401,7 +469,6 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     else:
         ra_column = data_equatorial_coordinates.c.ra.label('ra')
         dec_column = data_equatorial_coordinates.c.dec.label('dec')
-
 
     query = select(data_equatorial_coordinates.c.id,
                     ra_column,
@@ -502,6 +569,18 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         data_df["rel_ra"] -= plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
         data_df["rel_dec"] -= plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
 
+    # If binning is enabled
+    if bin_activated:
+        
+        if phase_yearly:
+            # Handle phasing
+            data_df["binned_time"] = (data_df["measurement_epoch_yr"] % 1 // (bin_size_days_phased/365.25)) * (bin_size_days_phased/365.25)
+        else:
+            # Regular binning
+            data_df["binned_time"] = (data_df["measurement_epoch_yr"] * 365.25 // bin_size_days) * bin_size_days / 365.25
+        
+        binned_df = data_df.groupby("binned_time").apply(weighted_combination).dropna().reset_index()
+
     # Assign a unique color to each mission
     unique_missions = data_df['mission'].unique()
     mission_color_map = {mission: i for i, mission in enumerate(unique_missions)}
@@ -588,8 +667,17 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df['id_str'] = data_df['id'].apply(lambda x: f"{int(x):d}" if pd.notna(x) else "N/A")
     data_df['airmass_str'] = data_df['airmass'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
     
+    if bin_activated:
+        binned_df['rel_ra_str'] = binned_df['rel_ra'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+        binned_df['rel_dec_str'] = binned_df['rel_dec'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+        binned_df['ra_unc_mas_str'] = binned_df['ra_unc_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+        binned_df['dec_unc_mas_str'] = binned_df['dec_unc_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+
     for mission in unique_missions:
+        
         mission_data = data_df[data_df["mission"] == mission]
+        opacity = 0.3 if bin_activated else 1.0  # Semi-transparent if binning is active
+
         fig_ra.add_trace(go.Scatter(
             x=mission_data["x_values"],
             y=mission_data["rel_ra"],
@@ -606,6 +694,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 color=mission_color_map[mission],  # Use the assigned color for this mission
                 size=8,
                 symbol='circle',
+                opacity=opacity,
                 line=dict(width=2, color='black')
             ),
             name=mission,  # This will appear in the legend
@@ -629,11 +718,45 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             hoverinfo='text'
         ))
 
+    # Plot binned data points (black)
+    if bin_activated:
+        fig_ra.add_trace(go.Scatter(
+            x=binned_df["binned_time"],
+            y=binned_df["rel_ra"],
+            error_y=dict(
+                type='data',
+                array=binned_df['ra_unc_mas'],
+                visible=True,
+                color='rgba(0, 0, 0, 0.2)',  
+                thickness=1.5,               
+                width=2                  
+            ),
+            mode="markers",
+            marker=dict(
+                size=10,
+                color="white",
+                symbol="circle",
+                line=dict(width=3, color='black')
+            ),
+            name="Binned Data",
+            hoverinfo="text",
+            text=binned_df.apply(
+                lambda row: 
+                    f"<b>Epoch:</b> {row['binned_time']} yr<br>" \
+                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>" \
+                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>" \
+                    f"<b>N Data:</b> {int(row['ndata'])}<br>" \
+                    ,
+                axis=1
+            ),
+        ))
+
     # Update layout for better legend positioning
     fig_ra.update_layout(
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="RA Offset (mas)",
         xaxis=dict(
+            range=xaxis_range,  # Use the manually defined range
             gridcolor='rgba(211, 211, 211, 0.6)',
             zerolinecolor='lightgray',
             showline=True,
@@ -679,7 +802,10 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     )
 
     for mission in unique_missions:
+        
         mission_data = data_df[data_df["mission"] == mission]
+        opacity = 0.3 if bin_activated else 1.0  # Semi-transparent if binning is active
+
         fig_dec.add_trace(go.Scatter(
             x=mission_data["x_values"],
             y=mission_data["rel_dec"],
@@ -696,6 +822,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 color=mission_color_map[mission],  # Use the assigned color for this mission
                 size=8,
                 symbol='circle',
+                opacity=opacity,
                 line=dict(width=2, color='black')
             ),
             name=mission,  # This will appear in the legend
@@ -719,11 +846,44 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             hoverinfo='text'
         ))
 
+    if bin_activated:
+        fig_dec.add_trace(go.Scatter(
+            x=binned_df["binned_time"],
+            y=binned_df["rel_dec"],
+            error_y=dict(
+                type='data',
+                array=binned_df['ra_unc_mas'],
+                visible=True,
+                color='rgba(0, 0, 0, 0.2)',  
+                thickness=1.5,               
+                width=2                  
+            ),
+            mode="markers",
+            marker=dict(
+                size=10,
+                color="white",
+                symbol="circle",
+                line=dict(width=3, color='black')
+            ),
+            name="Binned Data",
+            hoverinfo="text",
+            text=binned_df.apply(
+                lambda row: 
+                    f"<b>Epoch:</b> {row['binned_time']} yr<br>" \
+                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>" \
+                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>" \
+                    f"<b>N Data:</b> {int(row['ndata'])}<br>" \
+                    ,
+                axis=1
+            ),
+        ))
+    
     # Update layout for better legend positioning
     fig_dec.update_layout(
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="DEC Offset (mas)",
         xaxis=dict(
+            range=xaxis_range,  # Use the manually defined range
             gridcolor='rgba(211, 211, 211, 0.6)',
             zerolinecolor='lightgray',
             showline=True,
