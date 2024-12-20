@@ -5,7 +5,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, func, and_, cast, String
+from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String
 import pandas as pd
 import os
 from utils.plx_motion import parallax_motion
@@ -49,17 +49,39 @@ layout = html.Div([
                ),
     ], style={'width': '100%', 'display': 'inline-block'}),
     
-    dcc.Dropdown(
-        id="astrometry-dataset-dropdown",
-        options=[],  # Initially empty, will be populated via callback
-        placeholder="Select a MOCA Object",
+    dcc.Input(
+        id="dropdown-search",
+        placeholder="Filter dropdown menu by object name or MOCA OID",
+        type="text",
+        debounce=True,
         style={
-            'color': 'white !important',
-            'width': '100%',
-            'minWidth': '300px',
-            'fontSize': '16px'
-        },
+            "width": "100%",  # Full width
+            "padding": "0.5rem",  # Optional padding for better alignment
+            "fontSize": "16px"  # Match the dropdown font size
+        }
     ),
+    dcc.Dropdown(
+        id="filtered-dropdown",
+        options=[],  # Will be populated dynamically
+        placeholder="Specify an object name or moca_oid above",
+        searchable=True,
+        style={
+        "width": "100%",  # Full width
+        "fontSize": "16px"  # Ensure font size matches input
+        }
+    ),
+
+    #dcc.Dropdown(
+    #    id="astrometry-dataset-dropdown",
+    #    options=[],  # Initially empty, will be populated via callback
+    #    placeholder="Select a MOCA Object",
+    #    style={
+    #        'color': 'white !important',
+    #        'width': '100%',
+    #        'minWidth': '300px',
+    #        'fontSize': '16px'
+    #    },
+    #),
 
     html.Div([
         # Column 1
@@ -121,12 +143,12 @@ layout = html.Div([
             dcc.Graph(id="astrometry-plot-dec"),
         ], style={'width': '100%', 'display': 'inline-block'}),
 
-    ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'}),
+    ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
 
 #], style={'padding-left': '15px'})
 
 # Callback to populate the dropdown and initialize connection based on URL parameters
-@dash.callback(
+"""@dash.callback(
     output=[
         Output("astrometry-dataset-dropdown", "options"),
         Output("astrometry-dataset-dropdown", "value"),
@@ -190,10 +212,13 @@ def update_dropdown(href, url_search):
             )
         )
         .where(
-            and_(
-                cdata_spectral_types.c.adopted == 1,
-                cdata_spectral_types.c.spectral_type_number >= 10,
-                cdata_spectral_types.c.photometric_estimate == 0
+            or_(
+                and_(
+                    cdata_spectral_types.c.adopted == 1,
+                    cdata_spectral_types.c.spectral_type_number >= 10#,
+                    #cdata_spectral_types.c.photometric_estimate == 0
+                ),
+                moca_objects.c.moca_oid.in_([574182])
             )
         )
     )
@@ -224,13 +249,116 @@ def update_dropdown(href, url_search):
             dataset_options[0] if dataset_options else None
         )
 
-    return [{"label": dataset, "value": dataset} for dataset in dataset_options], default_value#, url_search
+    return [{"label": dataset, "value": dataset} for dataset in dataset_options], default_value#, url_search"""
+
+@dash.callback(
+    output=[
+        Output("filtered-dropdown", "options"),
+        Output("filtered-dropdown", "value"),
+    ],
+    inputs=[
+        Input("url", "href"),
+        Input("dropdown-search", "value"),  # Search input from the dropdown search box
+    ],
+    state=[State("url", "search")]
+)
+def update_dropdown(href, search_value, url_search):
+    #if not search_value:
+    #    return []
+
+    # Parse URL parameters
+    parsed_url = urlparse(url_search)
+    parsed_url_data = parse_qs(parsed_url.query)
+    
+    # Check for moca_oid in the URL query parameters
+    moca_oid_param = parsed_url_data.get('moca_oid', [None])[0]
+
+    env_username = parsed_url_data.get('user', [None])[0]
+    env_password = parsed_url_data.get('pwd', [None])[0]
+    env_dbname = parsed_url_data.get('dbase', [None])[0]
+
+    default_host = '104.248.106.21'
+    default_username = 'public'
+    default_password = 'z@nUg_2h7_%?31y88'
+    default_dbname = 'mocadb'
+    default_moca_oid = 602  # Default MOCA OID when no input is provided
+    
+    if env_username is None:
+        env_username = os.environ.get('MOCA_USERNAME', default_username)
+    if env_password is None:
+        env_password = os.environ.get('MOCA_PASSWORD', default_password)
+    if env_dbname is None:
+        env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
+    env_host = os.environ.get('MOCA_HOST', default_host)
+
+    if env_username is None:
+        return dash.no_update
+    if env_password is None:
+        return dash.no_update
+    if env_dbname is None:
+        return dash.no_update
+
+    global connection_string
+    connection_string = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
+
+    # Establish connection to the database
+    engine = create_engine(connection_string)
+    connection = engine.connect()
+    metadata = MetaData()
+
+    # Reflect the moca_objects table
+    moca_objects = Table('moca_objects', metadata, autoload_with=engine)
+
+    # Determine the query logic based on inputs
+    #import pdb; pdb.set_trace()
+    if search_value:  # If a search term is provided
+        search_query = f"%{search_value}%"
+        query = (
+            select([moca_objects.c.moca_oid, moca_objects.c.designation])
+            .where(
+                or_(
+                    moca_objects.c.designation.ilike(search_query),
+                    cast(moca_objects.c.moca_oid, String).ilike(search_query)
+                )
+            )
+            .limit(10)  # Limit to a reasonable number of results
+        )
+    elif moca_oid_param:  # If a specific moca_oid is provided in the URL
+        query = (
+            select([moca_objects.c.moca_oid, moca_objects.c.designation])
+            .where(moca_objects.c.moca_oid == int(moca_oid_param))
+        )
+    else:  # Default to the row with moca_oid=602
+        query = (
+            select([moca_objects.c.moca_oid, moca_objects.c.designation])
+            .where(moca_objects.c.moca_oid == default_moca_oid)
+        )
+    
+    result_df = pd.read_sql(query, connection)
+
+    # Format dropdown options by concatenating in Python
+    dataset_options = [
+        {"label": f"{row['moca_oid']}|{row['designation']}", "value": str(row['moca_oid'])}
+        for _, row in result_df.iterrows()
+    ]
+
+    # Determine the default value
+    if moca_oid_param and moca_oid_param in result_df['moca_oid'].astype(str).tolist():
+        default_value = str(moca_oid_param)
+    else:
+        default_value = str(default_moca_oid)
+
+    connection.close()
+    return dataset_options, default_value
+
+    #return [{"label": f"{row['designation']} ({row['moca_oid']})", "value": row['moca_oid']} for _, row in results.iterrows()]
 
 # Define the callback to update the scatter plot based on input
 @dash.callback(
     [Output("astrometry-plot-ra", "figure"),
      Output("astrometry-plot-dec", "figure")],
-    [Input("astrometry-dataset-dropdown", "value"),
+    #[Input("astrometry-dataset-dropdown", "value"),
+    [Input("filtered-dropdown", "value"),
      Input("subtract-pm-checkbox", "value"),
      Input("subtract-plx-checkbox", "value"),
      Input("phase-yr-checkbox", "value"),
@@ -262,7 +390,8 @@ def update_scatter_plot(selected_dataset, pm_checkbox_values, plx_checkbox_value
         return dash.no_update, dash.no_update
     
     try:
-        moca_oid, designation = selected_dataset.split('|')
+        moca_oid = selected_dataset
+        #moca_oid, designation = selected_dataset.split('|')
     except ValueError:
         return dash.no_update, dash.no_update
 
