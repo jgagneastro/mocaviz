@@ -9,6 +9,8 @@ from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, 
 import pandas as pd
 import os
 from utils.plx_motion import parallax_motion
+from scipy.optimize import curve_fit
+from astropy.time import Time
 
 # Register the page in the Dash app
 dash.register_page(__name__)
@@ -18,6 +20,212 @@ connection_string = None
 
 bin_size_days = 50
 bin_size_days_phased = 20
+
+from PyAstronomy.pyasl import sunpos
+from astropy.time import Time
+
+def robust_error_weighted_plxfit_with_rejection(
+    measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
+    sigma_threshold=10, max_iterations=5
+):
+    """
+    Perform a robust error-weighted fit for parallax, proper motion, and positions with iterative outlier rejection.
+
+    Parameters:
+    - measurement_epoch_yr (array-like): The time values (years).
+    - rel_ra (array-like): The relative RA offsets (mas).
+    - rel_dec (array-like): The relative Dec offsets (mas).
+    - ra_unc_mas (array-like): The uncertainties in relative RA (mas).
+    - dec_unc_mas (array-like): The uncertainties in relative Dec (mas).
+    - ref_ra (float): Reference RA in degrees.
+    - ref_dec (float): Reference Dec in degrees.
+    - sigma_threshold (float): Number of standard deviations for outlier rejection.
+    - max_iterations (int): Maximum number of iterations for outlier rejection.
+
+    Returns:
+    - plx (float): Best-fit parallax (mas).
+    - pmra (float): Best-fit proper motion in RA (mas/yr).
+    - pmdec (float): Best-fit proper motion in Dec (mas/yr).
+    - eplx (float): Uncertainty in the parallax.
+    - epmra (float): Uncertainty in the proper motion in RA.
+    - epmdec (float): Uncertainty in the proper motion in Dec.
+    - inlier_mask (array): Boolean mask indicating inliers used in the final fit.
+    """
+    # Convert inputs to numpy arrays and ensure consistent dimensions
+    epoch_yr = np.array(measurement_epoch_yr)
+    rel_ra = np.array(rel_ra)
+    rel_dec = np.array(rel_dec)
+    ra_unc = np.array(ra_unc_mas)
+    dec_unc = np.array(dec_unc_mas)
+
+    if not (len(epoch_yr) == len(rel_ra) == len(rel_dec) == len(ra_unc) == len(dec_unc)):
+        raise ValueError(
+            "All input arrays must have the same length. "
+            f"Lengths: measurement_epoch_yr={len(epoch_yr)}, rel_ra={len(rel_ra)}, "
+            f"rel_dec={len(rel_dec)}, ra_unc_mas={len(ra_unc)}, dec_unc_mas={len(dec_unc)}"
+        )
+
+    # Convert year epochs to MJD using Astropy
+    time_obj = Time(epoch_yr, format='jyear', scale='utc')
+    mjd_vec = time_obj.mjd
+
+    # Convert reference RA/Dec to radians
+    ref_ra_rad = np.radians(ref_ra)
+    ref_dec_rad = np.radians(ref_dec)
+
+    # Compute parallax motion terms using reference RA/Dec
+    (void1, void2, void3, sun_elong, sun_obl) = sunpos(mjd_vec + 2400000.5, full_output=True)
+    sun_elong = sun_elong[0]
+    sun_obl = sun_obl[0]
+
+    sin_sun_elong = np.sin(np.radians(sun_elong))
+    cos_sun_elong = np.cos(np.radians(sun_elong))
+    sin_sun_obl = np.sin(np.radians(sun_obl))
+    cos_sun_obl = np.cos(np.radians(sun_obl))
+
+    cos_ref_ra = np.cos(ref_ra_rad)
+    sin_ref_ra = np.sin(ref_ra_rad)
+    cos_ref_dec = np.cos(ref_dec_rad)
+    sin_ref_dec = np.sin(ref_dec_rad)
+
+    plx_motion_ra = cos_ref_ra * cos_sun_obl * sin_sun_elong - sin_ref_ra * cos_sun_elong
+    plx_motion_dec = (
+        cos_ref_dec * sin_sun_obl * sin_sun_elong
+        - cos_ref_ra * sin_ref_dec * cos_sun_elong
+        - sin_ref_ra * sin_ref_dec * cos_sun_obl * sin_sun_elong
+    )
+
+    # Duplicate plx_motion_ra and plx_motion_dec for RA and Dec
+    #plx_motion_ra = np.tile(plx_motion_ra, 2)  # Repeat for RA and Dec
+    #plx_motion_dec = np.tile(plx_motion_dec, 2)  # Repeat for RA and Dec
+
+    # Initial mask (all points are considered inliers)
+    inlier_mask = ~np.isnan(epoch_yr) & ~np.isnan(rel_ra) & ~np.isnan(rel_dec) & \
+                  ~np.isnan(ra_unc) & ~np.isnan(dec_unc)
+
+    if len(inlier_mask) != len(epoch_yr):
+        raise ValueError(
+            f"Inlier mask dimension mismatch: inlier_mask={len(inlier_mask)}, epoch_yr={len(epoch_yr)}"
+        )
+
+    # Define the model for fitting: y = pm * t + plx * plx_motion + pos
+    def plx_pm_model(xdata, pmra, pmdec, plx, pos_ra, pos_dec):
+        ra_model = pmra * xdata[0] + plx * xdata[1] + pos_ra
+        dec_model = pmdec * xdata[0] + plx * xdata[2] + pos_dec
+        return np.concatenate([ra_model, dec_model])  # Combine RA and Dec models into a single 1D array
+
+    for iteration in range(max_iterations):
+        # Perform the fit using inliers
+        xdata = np.vstack([
+            epoch_yr[inlier_mask],
+            plx_motion_ra[inlier_mask],
+            plx_motion_dec[inlier_mask]
+        ])
+
+        ydata = np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]])  # Combine observed RA and Dec offsets
+        sigma = np.concatenate([ra_unc[inlier_mask], dec_unc[inlier_mask]])  # Combine uncertainties for RA and Dec
+
+        # Perform the fit using combined RA and Dec model
+        popt, pcov = curve_fit(
+            plx_pm_model,  # The model function
+            xdata,         # Independent variable: epoch_yr repeated for RA and Dec
+            ydata,         # Dependent variable: observed RA and Dec offsets
+            sigma=sigma,   # Combined uncertainties
+            absolute_sigma=True
+        )
+
+        # Extract residuals for RA and Dec from the concatenated model output
+        xdata = np.vstack([
+            epoch_yr,
+            plx_motion_ra,
+            plx_motion_dec
+        ])
+        model_output = plx_pm_model(xdata, *popt)  # Model output is concatenated for RA and Dec
+        ra_model = model_output[:len(rel_ra)]  # Extract RA model part
+        dec_model = model_output[len(rel_ra):]  # Extract Dec model part
+
+        # Calculate residuals for RA and Dec
+        ra_residuals = rel_ra - ra_model
+        dec_residuals = rel_dec - dec_model
+
+        # Calculate standardized residuals for RA and Dec
+        ra_standardized_residuals = np.abs(ra_residuals / ra_unc)
+        dec_standardized_residuals = np.abs(dec_residuals / dec_unc)
+
+        # Update inlier mask by combining RA and Dec criteria
+        new_inlier_mask = (ra_standardized_residuals < sigma_threshold) & (dec_standardized_residuals < sigma_threshold)
+
+        # Stop if no changes in the mask
+        if np.array_equal(inlier_mask, new_inlier_mask):
+            break
+
+        inlier_mask = new_inlier_mask
+
+    # Extract results
+    pmra, pmdec, plx, pos_ra, pos_dec = popt
+    e_pmra, e_pmdec, e_plx, e_pos_ra, e_pos_dec = np.sqrt(np.diag(pcov))
+
+    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask
+
+#Robust error-weighted fit
+def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5):
+    """
+    Perform a robust error-weighted fit with iterative outlier rejection.
+    
+    Parameters:
+    - measurement_epoch_yr (array-like): The time values (years).
+    - rel_ra (array-like): The relative RA offsets (mas).
+    - ra_unc_mas (array-like): The uncertainties in relative RA (mas).
+    - sigma_threshold (float): Number of standard deviations for outlier rejection.
+    - max_iterations (int): Maximum number of iterations for outlier rejection.
+    
+    Returns:
+    - slope (float): Best-fit slope (proper motion in mas/yr).
+    - slope_error (float): Uncertainty in the slope.
+    - inlier_mask (array): Boolean mask indicating inliers used in the final fit.
+    """
+    # Define a linear model: y = m * x + b
+    def linear_model(x, m, b):
+        return m * x + b
+
+    # Convert inputs to numpy arrays
+    x = np.array(measurement_epoch_yr)
+    y = np.array(rel_ra)
+    sigma = np.array(ra_unc_mas)
+
+    # Initial mask (all points are considered inliers)
+    inlier_mask = ~np.isnan(x) & ~np.isnan(y) & ~np.isnan(sigma)
+
+    for iteration in range(max_iterations):
+        # Perform the fit using inliers
+        popt, pcov = curve_fit(
+            linear_model,
+            x[inlier_mask],
+            y[inlier_mask],
+            sigma=sigma[inlier_mask],
+            absolute_sigma=True
+        )
+        
+        # Calculate residuals
+        residuals = y - linear_model(x, *popt)
+
+        # Calculate standardized residuals (z-scores)
+        standardized_residuals = np.abs(residuals / sigma)
+
+        # Update inlier mask
+        new_inlier_mask = standardized_residuals < sigma_threshold
+
+        # Stop if no changes in the mask
+        if np.array_equal(inlier_mask, new_inlier_mask):
+            break
+
+        inlier_mask = new_inlier_mask
+
+    # Final slope and error
+    slope = popt[0]
+    slope_error = np.sqrt(pcov[0, 0])
+
+    return slope, slope_error, inlier_mask
 
 # Group by binned time and calculate weighted averages
 def weighted_combination(group):
@@ -181,6 +389,20 @@ layout = html.Div([
                 id="adjust-reference-epoch-checkbox",
                 options=[{'label': 'Adjust reference epoch', 'value': 'adjust_ref'}],
                 value=['adjust_ref'],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="fit-proper-motion-checkbox",
+                options=[{'label': 'Fit proper motion', 'value': 'fit_pm'}],
+                value=['adjust_ref'],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
+                id="fit-parallax-checkbox",
+                options=[{'label': 'Fit parallax', 'value': 'fit_plx'}],
+                value=[],
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
@@ -369,11 +591,13 @@ def update_mission_dropdown(selected_dataset):
      Input("only-use-recalibrated-checkbox", "value"),
      Input("revert-raw-checkbox", "value"),
      Input("astrometry-bin-checkbox", "value"),
+     Input("fit-proper-motion-checkbox", "value"),
+     Input("fit-parallax-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -386,6 +610,8 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     only_recalibrated = 'only_recalibrated' in only_recalibrated_checkbox_values  # Check if the checkbox is selected
     revert_raw = 'revert_raw' in revert_raw_checkbox_values  # Check if the checkbox is selected
     bin_activated = 'bin_checked' in bin_checkbox_values
+    fit_pm = 'fit_pm' in fit_pm_values
+    fit_plx = 'fit_plx' in fit_plx_values
 
     triggered_prop = ctx.triggered[0]["prop_id"]
 
@@ -437,19 +663,6 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         (data_parallaxes.c.moca_oid == moca_oid)
     ).limit(1)
     plx_df = pd.read_sql(query, connection)
-
-    # Extract proper motion and parallax values
-    # Extract proper motion and parallax values with errors
-    if len(pm_df) != 0:
-        pmra_display = format_value_with_error(pm_df.iloc[0]["pmra_masyr"], pm_df.iloc[0]["pmra_masyr_unc"], "mas/yr")
-        pmdec_display = format_value_with_error(pm_df.iloc[0]["pmdec_masyr"], pm_df.iloc[0]["pmdec_masyr_unc"], "mas/yr")
-    else:
-        pmra_display, pmdec_display = "N/A", "N/A"
-
-    if len(plx_df) != 0:
-        parallax_display = format_value_with_error(plx_df.iloc[0]["parallax_mas"], plx_df.iloc[0]["parallax_mas_unc"], "mas")
-    else:
-        parallax_display = "N/A"
 
     #Query all coordinates
     data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
@@ -536,6 +749,50 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     if selected_missions:
         data_df = data_df[data_df["mission"].isin(selected_missions)]
 
+    # Calculate relative offsets
+    data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
+    data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
+
+    if fit_plx:
+        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask = robust_error_weighted_plxfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'], data_df['ra_unc_mas'], data_df['dec_unc_mas'], ra_ref, dec_ref)
+        # Rebuild plx_df and pm_df
+        plx_df = pd.DataFrame({
+            "parallax_mas": [plx],
+            "parallax_mas_unc": [eplx]
+        })
+        # Rebuild pm_df
+        pm_df = pd.DataFrame({
+            "pmra_masyr": [pmra],
+            "pmdec_masyr": [pmdec],
+            "pmra_masyr_unc": [epmra],
+            "pmdec_masyr_unc": [epmdec]
+        })
+
+    if fit_pm and not fit_plx:
+        #import pdb; pdb.set_trace()
+        pmra, epmra, pmra_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'])
+        pmdec, epmdec, pmdec_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'])
+        # Rebuild pm_df
+        pm_df = pd.DataFrame({
+            "pmra_masyr": [pmra],
+            "pmdec_masyr": [pmdec],
+            "pmra_masyr_unc": [epmra],
+            "pmdec_masyr_unc": [epmdec]
+        })
+
+    # Extract proper motion and parallax values
+    # Extract proper motion and parallax values with errors
+    if len(pm_df) != 0:
+        pmra_display = format_value_with_error(pm_df.iloc[0]["pmra_masyr"], pm_df.iloc[0]["pmra_masyr_unc"], "mas/yr")
+        pmdec_display = format_value_with_error(pm_df.iloc[0]["pmdec_masyr"], pm_df.iloc[0]["pmdec_masyr_unc"], "mas/yr")
+    else:
+        pmra_display, pmdec_display = "N/A", "N/A"
+
+    if len(plx_df) != 0:
+        parallax_display = format_value_with_error(plx_df.iloc[0]["parallax_mas"], plx_df.iloc[0]["parallax_mas_unc"], "mas")
+    else:
+        parallax_display = "N/A"
+    
     if adjust_reference_epoch:
         epochs = data_df["measurement_epoch_yr"].values
         epoch_ref = np.nanmean(epochs)
@@ -553,10 +810,10 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         
         ra_ref = np.nanmedian(rel_ra_observed/(np.cos(np.radians(data_df["dec"])) * 3600 * 1000))
         dec_ref = np.nanmedian(rel_dec_observed/(3600 * 1000))
-    
-    # Calculate relative offsets
-    data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
-    data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
+
+        # Recalculate relative offsets
+        data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
+        data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
 
     # Subtract proper motion if checkbox is checked
     if subtract_pm and len(pm_df) != 0:
