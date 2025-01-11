@@ -95,10 +95,6 @@ def robust_error_weighted_plxfit_with_rejection(
         - sin_ref_ra * sin_ref_dec * cos_sun_obl * sin_sun_elong
     )
 
-    # Duplicate plx_motion_ra and plx_motion_dec for RA and Dec
-    #plx_motion_ra = np.tile(plx_motion_ra, 2)  # Repeat for RA and Dec
-    #plx_motion_dec = np.tile(plx_motion_dec, 2)  # Repeat for RA and Dec
-
     # Initial mask (all points are considered inliers)
     inlier_mask = ~np.isnan(epoch_yr) & ~np.isnan(rel_ra) & ~np.isnan(rel_dec) & \
                   ~np.isnan(ra_unc) & ~np.isnan(dec_unc)
@@ -283,9 +279,9 @@ def weighted_combination(group):
         "ndata":len(x_ra)
     })
 
-def format_value_with_error(value, error, unit):
+def format_value_with_error(value, error, unit=""):
     """
-    Formats a value with its error, displaying only one significant digit for the error.
+    Formats a value with its error, ensuring clean rounding and no floating-point artifacts.
     If the value or error is None, it returns "N/A".
     """
     if pd.isna(value) or pd.isna(error) or value == "N/A" or error == "N/A":
@@ -294,10 +290,17 @@ def format_value_with_error(value, error, unit):
     # Calculate the significant digit for the error
     error_magnitude = 10 ** floor(log10(abs(error)))
     rounded_error = round(error / error_magnitude) * error_magnitude
-    rounded_value = round(value, -int(floor(log10(abs(rounded_error)))))
 
-    # Format the result with ± symbol and unit
-    return f"{rounded_value} ± {rounded_error}" + (f" {unit}" if rounded_value else "")
+    # Ensure the value is rounded to the same number of significant digits as the error
+    significant_digits = -int(floor(log10(abs(rounded_error))))
+    rounded_value = round(value, max(0, significant_digits))
+
+    # Format the result to remove floating-point artifacts
+    rounded_value_str = f"{rounded_value:.{significant_digits}f}".rstrip('0').rstrip('.')
+    rounded_error_str = f"{rounded_error:.{significant_digits}f}".rstrip('0').rstrip('.')
+
+    # Return formatted string with ± symbol and unit
+    return f"{rounded_value_str} ± {rounded_error_str}" + (f" {unit}" if unit else "")
 
 def wrap_text(text, width=50):
     """Wraps text with line breaks every 'width' characters."""
