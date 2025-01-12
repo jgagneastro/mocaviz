@@ -163,6 +163,7 @@ layout = (
                 id='moca-ids-input',
                 type='text',
                 placeholder="Insert MOCA object IDs separated by commas",
+                value=None,  # Dynamically set this value via a callback
                 style={'width': '100%'}
             )
         ], style={'marginTop': '1rem'}),
@@ -1093,3 +1094,26 @@ def export_table_to_csv(n_clicks, merged_data_store, selectedData):
 
     # Export to CSV
     return dcc.send_data_frame(selected_rows.to_csv, "moca_colors_dataset.csv", index=False)
+
+@dash.callback(
+    [
+        Output('moca-ids-input', 'value'),
+        Output('moca-ids-input', 'n_submit')
+    ],
+    Input('url', 'href')
+)
+def update_moca_ids_input(url):
+    """
+    Parse `moca_oid` from the URL and set it as the value of the input field.
+    Trigger a submit if `moca_oid` exists in the URL.
+    """
+    url_params = parse_url_params(url)
+    moca_oid = url_params.get('moca_oid', [None])[0]
+    
+    if moca_oid:
+        # Split and validate IDs
+        moca_ids = [oid.strip() for oid in moca_oid.split(',') if oid.strip().isdigit()]
+        if moca_ids:
+            return ','.join(moca_ids), 1  # Set value and trigger a submit once
+    
+    return None, dash.no_update  # No default value or submission
