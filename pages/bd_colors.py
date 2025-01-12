@@ -1,4 +1,3 @@
-#TODO: Add the reading of moca_oids from URL
 #TODO: in hovertext, change the x-axis color ref to the actual color measurement + ref. Same for absmag.
 #TODO: Add a checkbox to hide binaries (enabled by default)
 #TODO: Add a checkbox that selects only the best photometry (checked by default). This controls whether the table used is cdata_photometry or mechanics_best
@@ -205,17 +204,41 @@ def parse_url_params(url):
     parsed_url = urlparse(url)
     return parse_qs(parsed_url.query)
 
-def get_connection_string():
+def get_connection_string(url):
     """Build connection string from environment variables or defaults."""
-    env_username = os.environ.get('MOCA_USERNAME', default_username)
-    env_password = os.environ.get('MOCA_PASSWORD', default_password)
-    env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
-    env_host = os.environ.get('MOCA_HOST', default_host)
-    return f'mysql+pymysql://{urlquote(env_username)}:{urlquote(env_password)}@{env_host}/{env_dbname}'
+    
+    # Parse URL parameters
+    parsed_url = urlparse(url)
+    parsed_url_data = parse_qs(parsed_url.query)
+    
+    # Check for moca_oid in the URL query parameters
+    moca_oid_param = parsed_url_data.get('moca_oid', [None])[0]
 
-def fetch_moca_photometry_systems():
+    env_username = parsed_url_data.get('user', [None])[0]
+    env_password = parsed_url_data.get('pwd', [None])[0]
+    env_dbname = parsed_url_data.get('dbase', [None])[0]
+
+    default_host = '104.248.106.21'
+    default_username = 'public'
+    default_password = 'z@nUg_2h7_%?31y88'
+    default_dbname = 'mocadb'
+    default_moca_oid = 602  # Default MOCA OID when no input is provided
+    
+    if env_username is None:
+        env_username = os.environ.get('MOCA_USERNAME', default_username)
+    if env_password is None:
+        env_password = os.environ.get('MOCA_PASSWORD', default_password)
+    if env_dbname is None:
+        env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
+    env_host = os.environ.get('MOCA_HOST', default_host)
+
+    connection_string = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
+    
+    return connection_string
+
+def fetch_moca_photometry_systems(url):
     """Fetch moca_psid and related data from moca_photometry_systems."""
-    connection_string = get_connection_string()
+    connection_string = get_connection_string(url)
     engine = create_engine(connection_string)
     with engine.connect() as connection:
         metadata = MetaData()
@@ -235,7 +258,7 @@ def update_x_axis_first_band(axis_type, url):
         default_value = url_params.get('xaxis_value_1', [None])[0]
 
         # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems()
+        photometry_systems = fetch_moca_photometry_systems(url)
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
@@ -264,7 +287,7 @@ def update_x_axis_second_band(axis_type, url):
         default_value = url_params.get('xaxis_value_2', [None])[0]
 
         # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems()
+        photometry_systems = fetch_moca_photometry_systems(url)
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
@@ -293,7 +316,7 @@ def update_y_axis_first_band(axis_type, url):
         default_value = url_params.get('yaxis_value_1', [None])[0]
 
         # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems()
+        photometry_systems = fetch_moca_photometry_systems(url)
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
@@ -322,7 +345,7 @@ def update_y_axis_second_band(axis_type, url):
         default_value = url_params.get('yaxis_value_2', [None])[0]
 
         # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems()
+        photometry_systems = fetch_moca_photometry_systems(url)
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
@@ -424,7 +447,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         # Extract the values in the correct order
         y_band_values = [value for _, value in sorted_band_values]
     
-    connection_string = get_connection_string()
+    connection_string = get_connection_string(url)
 
     # Establish connection
     engine = create_engine(connection_string)
@@ -900,8 +923,8 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     merged_data['hovertext'] = merged_data.apply(construct_hovertext, axis=1)
 
     # Separate merged_data by highlighted or regular data sets
-    highlighted_data = merged_data[merged_data['moca_oid'].isin(moca_ids_array)]
-    regular_data = merged_data[~merged_data['moca_oid'].isin(moca_ids_array)]
+    highlighted_data = merged_data[merged_data['moca_oid'].isin(moca_ids_array)].copy()
+    regular_data = merged_data[~merged_data['moca_oid'].isin(moca_ids_array)].copy()
 
     # Define color mapping for spectral classes
     spectral_class_colors = {

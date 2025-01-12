@@ -158,7 +158,7 @@ def selection_helper(selections):
     processed_data = None
     selected_data = None
 
-    print(" Triggered by "+prop_id)
+    #print(" Triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
         # Deal with circular callbacks that tend to reset selection
@@ -753,7 +753,7 @@ def update_aid_select_uvwpage(
     aid_select, mtid_select, oid_select, url_search
 ):
     
-    print("DBQUERY callback-uvwpage")
+    #print("DBQUERY callback-uvwpage")
     
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
@@ -855,8 +855,8 @@ def update_aid_select_uvwpage(
         #dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
     df_asso_centers = moca.query("CALL list_association_labels();")
-    print("Downloaded "+str(len(df))+" rows of general data from DB")
-    print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
+    #print("Downloaded "+str(len(df))+" rows of general data from DB")
+    #print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
 
     return (
         df.to_json(date_format='iso', orient='split'),
@@ -882,7 +882,7 @@ def update_uvw_map_uvwpage(
     , aid_select, self_figure
 ):
     
-    print("UVW callback-uvwpage")
+    #print("UVW callback-uvwpage")
     #zoom_out_level = zoom_out - zoom_in
 
     processed_data, prop_id = selection_helper(selections)

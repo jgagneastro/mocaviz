@@ -123,7 +123,7 @@ def selection_helper(selections):
     processed_data = None
     selected_data = None
 
-    print(" Triggered by "+prop_id)
+    #print(" Triggered by "+prop_id)
     if prop_id in selections.keys():
         selected_data = selections[prop_id]
         # Deal with circular callbacks that tend to reset selection
@@ -312,7 +312,7 @@ def generate_rvts(dfrvts):
 
     fig = go.Figure(data=data,layout=layout)
 
-    print("RVTS FIGURE DRAWN")
+    #print("RVTS FIGURE DRAWN")
     
     return fig
 
@@ -337,7 +337,7 @@ def generate_spectrum_moca_explorer(dfspe):
 
     fig.update_layout(yaxis_range=[0,3])
     fig.update_layout(xaxis_range=[dfspe["wv"].min(),dfspe["wv"].max()])
-    print("SP FIGURE DRAWN")
+    #print("SP FIGURE DRAWN")
 
     fig.add_annotation(
         x=1,
@@ -2051,7 +2051,7 @@ def update_table(
     selections, jsonified_db_data, xymap_view, aid_select, self_data, self_selrows, self_style
 ):
     
-    print("TABLE callback")
+    #print("TABLE callback")
     processed_data, prop_id = selection_helper(selections)
     
     if prop_id is None:
@@ -2116,7 +2116,7 @@ def update_aid_select(
     aid_select, mtid_select, oid_select, url_search
 ):
     
-    print("DBQUERY callback")
+    #print("DBQUERY callback")
     
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
@@ -2215,8 +2215,8 @@ def update_aid_select(
         dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
         dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
-    print("Downloaded "+str(len(df))+" rows of general data from DB")
-    print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
+    #print("Downloaded "+str(len(df))+" rows of general data from DB")
+    #print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
 
     df_cmd_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr'")
     df_cmd_field = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr_fieldscatter'")
@@ -2336,7 +2336,7 @@ def update_prot_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
-    print("PROT callback")
+    #print("PROT callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id == "prot-color":
         return self_figure
@@ -2362,7 +2362,7 @@ def update_gaia_act_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
-    print("GAIAACT callback")
+    #print("GAIAACT callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2388,7 +2388,7 @@ def update_ewli_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
-    print("EWLI callback")
+    #print("EWLI callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2414,7 +2414,7 @@ def update_ewha_color(
     selections, jsonified_db_data, layer_select, hover_select, aid_select, self_figure
 ):
     
-    print("EWHA callback")
+    #print("EWHA callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2442,7 +2442,7 @@ def update_xyz_map(
     selections, jsonified_db_data, xymap_view, hover_select, zoom_out, zoom_in, aid_select, self_figure
 ):
     
-    print("XYZ callback")
+    #print("XYZ callback")
     zoom_out_level = zoom_out - zoom_in
 
     processed_data, prop_id = selection_helper(selections)
@@ -2474,7 +2474,7 @@ def update_uvw_map(
     selections, jsonified_db_data, xymap_view, hover_select, zoom_out, zoom_in, aid_select, self_figure
 ):
     
-    print("UVW callback")
+    #print("UVW callback")
     zoom_out_level = zoom_out - zoom_in
 
     processed_data, prop_id = selection_helper(selections)
@@ -2503,7 +2503,7 @@ def update_uv_map(
     selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
-    print("UV callback")
+    #print("UV callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2529,7 +2529,7 @@ def update_uw_map(
     selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
-    print("UW callback")
+    #print("UW callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2555,7 +2555,7 @@ def update_xy_map(
     selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
-    print("XY callback")
+    #print("XY callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2581,7 +2581,7 @@ def update_yz_map(
     selections, jsonified_db_data, xymap_view, hover_select, aid_select, self_figure
 ):
     
-    print("YZ callback")
+    #print("YZ callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure
@@ -2607,7 +2607,7 @@ def update_gaiadr3_cmd(
     selections, jsonified_db_data, cmd_layer_select, hover_select, aid_select, self_figure
 ):
 
-    print("CMD callback")
+    #print("CMD callback")
     processed_data, prop_id = selection_helper(selections)
     if prop_id is None:
        return self_figure

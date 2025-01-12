@@ -38,7 +38,7 @@ def generate_gh_sunburst(df, aid_select):
 
     if aid_select is None:
         aid_select = 'ALL'
-    print(aid_select)
+    #print(aid_select)
 
     text_list = list(
         map(
@@ -197,7 +197,7 @@ def gh_callback(clickdata, url_search, self_figure):
 )
 def update_gh_figure(dummy, url_search):
     
-    print("GH callback")
+    #print("GH callback")
     aid_select = 'ALL'
     user = None
     pwd = None
