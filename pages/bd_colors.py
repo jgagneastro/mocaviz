@@ -167,6 +167,43 @@ layout = (
             )
         ], style={'marginTop': '1rem'}),
 
+        # Checkboxes in a 2x2 Grid
+        html.Div([
+            html.Div([
+                dcc.Checklist(
+                    options=[{'label': 'Display best photometry only', 'value': 'best_photometry'}],
+                    id='checkbox-best-photometry',
+                )
+            ], style={'gridArea': '1 / 1'}),
+
+            html.Div([
+                dcc.Checklist(
+                    options=[{'label': 'Include photometric distance estimates', 'value': 'photometric_distances'}],
+                    id='checkbox-photometric-distances',
+                )
+            ], style={'gridArea': '1 / 2'}),
+
+            html.Div([
+                dcc.Checklist(
+                    options=[{'label': 'Display binary systems', 'value': 'binaries'}],
+                    id='checkbox-binaries',
+                )
+            ], style={'gridArea': '2 / 1'}),
+
+            html.Div([
+                dcc.Checklist(
+                    options=[{'label': 'Include photometric spectral type estimates', 'value': 'spectral_type_estimates'}],
+                    id='checkbox-spectral-type-estimates',
+                )
+            ], style={'gridArea': '2 / 2'}),
+        ], style={
+            "display": "grid",
+            "gridTemplateColumns": "1fr 1fr",
+            "gridTemplateRows": "auto auto",
+            "gap": "1rem",
+            "marginTop": "1rem",
+        }),
+
         # Scatter Plot
         dcc.Graph(id='scatter-plot'),
         
@@ -401,10 +438,14 @@ def update_dropdowns_from_url(url):
         Input({'type': 'dynamic-dropdown', 'axis': 'y', 'band': ALL}, 'value'),
         Input('moca-ids-input', 'value'),
         Input('moca-ids-input', 'n_submit'),  # Trigger on Enter
+        Input('checkbox-best-photometry', 'value'),
+        Input('checkbox-photometric-distances', 'value'),
+        Input('checkbox-binaries', 'value'),
+        Input('checkbox-spectral-type-estimates', 'value')
     ],
     State('url', 'href')
 )
-def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids, n_submit, url):
+def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, url):
     
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
@@ -464,13 +505,44 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         cdata_distances = Table('cdata_distances', metadata, autoload_with=engine)
         moca_publications = Table('moca_publications', metadata, autoload_with=engine)
         data_parallaxes = Table('data_parallaxes', metadata, autoload_with=engine)
+        mechanics_object_properties_combined = Table('mechanics_object_properties_combined', metadata, autoload_with=engine)
         spt_publications = moca_publications.alias('spt_publications')
         distance_publications = moca_publications.alias('distance_publications')
         parallax_publications = moca_publications.alias('parallax_publications')
+        
+        # Define the distance join condition based on checkbox
+        if 'photometric_distances' not in photometric_distances_value:
+            distance_join_condition = (
+                (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                (cdata_distances.c.adopted == 1) &
+                ((cdata_distances.c.photometric_estimate == 0) | (cdata_distances.c.photometric_estimate.is_(None)))
+            )
+        else:
+            distance_join_condition = (
+                (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                (cdata_distances.c.adopted == 1)
+            )
+
+        # Add a filter for binary systems if the checkbox is off
+        binary_filter = None
+        if 'binaries' not in binaries_value:
+            binary_filter = ~(
+                mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:C%') |
+                mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:Y%')
+            ) | (mechanics_object_properties_combined.c.all_prop_confidences.is_(None))
+
+        # Add filter for photometric spectral type estimates
+        if 'spectral_type_estimates' not in spectral_type_estimates_value:
+            spectral_type_filter = (cdata_spectral_types.c.photometric_estimate == 0)
+        else:
+            spectral_type_filter = True  # No filter applied
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude' or x_axis_type == 'color' or y_axis_type == 'color':
-            photometry = Table('cdata_photometry', metadata, autoload_with=engine)
-            #photometry = Table('mechanics_best_photometry_by_band', metadata, autoload_with=engine)
+            # Determine which photometry table to use
+            if 'best_photometry' in best_photometry_value:
+                photometry = Table('mechanics_best_photometry_by_band', metadata, autoload_with=engine)
+            else:
+                photometry = Table('cdata_photometry', metadata, autoload_with=engine)
             photsys = Table('moca_photometry_systems', metadata, autoload_with=engine)
             photometry_publications = moca_publications.alias('photometry_publications')
 
@@ -537,11 +609,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 .select_from(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
-                    .outerjoin(
-                        cdata_distances,
-                        (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (cdata_distances.c.adopted == 1)
-                    )
+                    .outerjoin(cdata_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
                         (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
@@ -558,15 +626,25 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                         parallax_publications,
                         (parallax_publications.c.moca_pid == data_parallaxes.c.moca_pid)
                     )
+                    .outerjoin(
+                        mechanics_object_properties_combined,
+                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    )
                 )
                 .where(
                     ((cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6) &
-                    (cdata_spectral_types.c.photometric_estimate == 0)) |
+                    (cdata_spectral_types.c.spectral_type_number >= 6)) |
                     (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
+            
+            # Add the binary filter to the query dynamically
+            if binary_filter is not None:
+                spt_query = spt_query.where(binary_filter)
+            
+            # Add the photspt filter to the query dynamically
+            spt_query = spt_query.where(spectral_type_filter)
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude':
             absmag_query = (
@@ -630,11 +708,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 .select_from(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
-                    .join(
-                        cdata_distances,
-                        (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (cdata_distances.c.adopted == 1)
-                    )
+                    .join(cdata_distances, distance_join_condition)
                     .join(
                         photometry,
                         (photometry.c.moca_oid == cdata_spectral_types.c.moca_oid) &
@@ -664,14 +738,24 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                         photometry_publications,
                         (photometry_publications.c.moca_pid == photometry.c.moca_pid)
                     )
+                    .outerjoin(
+                        mechanics_object_properties_combined,
+                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    )
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6) &
-                    (cdata_spectral_types.c.photometric_estimate == 0)
+                    (cdata_spectral_types.c.spectral_type_number >= 6)
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
+        
+            # Add the binary filter to the query dynamically
+            if binary_filter is not None:
+                absmag_query = absmag_query.where(binary_filter)
+
+            # Add the photspt filter to the query dynamically
+            absmag_query = absmag_query.where(spectral_type_filter)
         
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
@@ -740,11 +824,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .join(
-                        cdata_distances,
-                        (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (cdata_distances.c.adopted == 1)
-                    )
-                    .join(
                         phot1,
                         (phot1.c.moca_oid == cdata_spectral_types.c.moca_oid) &
                         (phot1.c.adopted == 1)
@@ -762,6 +841,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                         photsys2,
                         (photsys2.c.moca_psid == phot2.c.moca_psid)
                     )
+                    .outerjoin(cdata_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
                         (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
@@ -786,14 +866,24 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                         photometry_publications2,
                         (photometry_publications2.c.moca_pid == phot2.c.moca_pid)
                     )
+                    .outerjoin(
+                        mechanics_object_properties_combined,
+                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    )
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6) &
-                    (cdata_spectral_types.c.photometric_estimate == 0)
+                    (cdata_spectral_types.c.spectral_type_number >= 6)
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
+        
+            # Add the binary filter to the query dynamically
+            if binary_filter is not None:
+                color_query = color_query.where(binary_filter)
+
+            # Add the photspt filter to the query dynamically
+            color_query = color_query.where(spectral_type_filter)
 
         if x_axis_type == 'spectral_type':
 
@@ -1140,3 +1230,32 @@ def update_moca_ids_input(url):
             return ','.join(moca_ids), 1  # Set value and trigger a submit once
     
     return None, dash.no_update  # No default value or submission
+
+@dash.callback(
+    [
+        Output('checkbox-best-photometry', 'value'),
+        Output('checkbox-photometric-distances', 'value'),
+        Output('checkbox-binaries', 'value'),
+        Output('checkbox-spectral-type-estimates', 'value'),
+    ],
+    Input('url', 'href')
+)
+def update_checkboxes_from_url(url):
+    """
+    Update checkbox states based on URL parameters.
+    """
+    url_params = parse_url_params(url)
+
+    # Parse each checkbox's corresponding URL parameter
+    bestphot = url_params.get('bestphot', ['true'])[0].lower() == 'true'
+    photdist = url_params.get('photdist', ['false'])[0].lower() == 'true'
+    binaries = url_params.get('binaries', ['false'])[0].lower() == 'true'
+    photspt = url_params.get('photspt', ['false'])[0].lower() == 'true'
+
+    # Return values for each checkbox
+    return (
+        ['best_photometry'] if bestphot else [],
+        ['photometric_distances'] if photdist else [],
+        ['binaries'] if binaries else [],
+        ['spectral_type_estimates'] if photspt else [],
+    )
