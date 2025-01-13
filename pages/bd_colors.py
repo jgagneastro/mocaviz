@@ -1,8 +1,6 @@
+#TESTING CMD http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
+#TESTING SPT VS MK
 #TODO: in hovertext, change the x-axis color ref to the actual color measurement + ref. Same for absmag.
-#TODO: Add a checkbox to hide binaries (enabled by default)
-#TODO: Add a checkbox that selects only the best photometry (checked by default). This controls whether the table used is cdata_photometry or mechanics_best
-#TODO: Add a checkbox for photometric distance estimates (by default is turned off)
-#TODO: Add a checkbox for candidate BDs (by default is turned off)
 #TODO: Add spectral indices
 #TODO: Add noise to SPT
 #TODO: Rename all DIV elements for a page-specific name
