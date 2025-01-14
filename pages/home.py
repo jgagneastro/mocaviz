@@ -10,14 +10,14 @@ default_text = \
 " You can also access the Python codes used to run these visualizations" + \
 " [on my GitHub](https://github.com/jgagneastro/mocaviz) and run them locally.\n\n" + \
 " Please choose one of the following tools:\n" + \
-" * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer#args#).\n" + \
-" * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz#args#).\n" + \
-" * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA kinematic explorer](/uvw#args#).\n" + \
-" * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy#args#).\n" + \
-" * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra#args#).\n" + \
-" * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs#args#).\n" + \
-" * Visualize astrometry in MOCAdb with the [Astrometric Explorer](/astrometry#args#).\n" + \
-" * Visualize color-color or color-magnitude plots in MOCAdb with the [Substellar Photometry Explorer](/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag#args#).\n" + \
+" * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer?#args#).\n" + \
+" * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz?#args#).\n" + \
+" * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA kinematic explorer](/uvw?#args#).\n" + \
+" * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
+" * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra?#args#).\n" + \
+" * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs?#args#).\n" + \
+" * Visualize astrometry in MOCAdb with the [Astrometric Explorer](/astrometry?#args#).\n" + \
+" * Visualize color-color or color-magnitude plots in MOCAdb with the [Substellar Photometry Explorer](/bd-colors?#args#&xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag).\n" + \
 " * Return to the [MOCAdb website](https://mocadb.ca).\n"
 
 layout = html.Div(
@@ -44,5 +44,10 @@ layout = html.Div(
     ),
 )
 def display_page(search):
-    return default_text.replace("#args#",search)
-    #return f"The current pathname is: {pathname}"
+    
+    resulting_url = default_text.replace("#args#",search.replace('?','&'))
+
+    if resulting_url:
+        resulting_url = resulting_url.replace('?&', '?')
+
+    return resulting_url
