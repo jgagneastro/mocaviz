@@ -1,6 +1,7 @@
 #TESTING CMD: http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
 #TESTING SPT VS MK: http://127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602
-#TODO: in hovertext, change the x-axis color ref to the actual color measurement + ref. Same for absmag.
+#TODO: reformat spectral type axis
+#TODO: Add spectral type range
 #TODO: Add spectral indices
 #TODO: Rename all DIV elements for a page-specific name
 
@@ -26,6 +27,69 @@ default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
 
+def generate_spectral_type_label(value):
+    """
+    Generate the spectral type label for a given numeric value based on the OBAFGKMLTY scheme.
+    The zero point (0) corresponds to M0, and the mapping extends symmetrically for negative values.
+    """
+    # Define the spectral classes
+    classes = ['O', 'B', 'A', 'F', 'G', 'K', 'M', 'L', 'T', 'Y']
+
+    # Offset the zero point to M0
+    adjusted_value = value + 60  # 60 ensures 0 -> M0
+
+    # Determine the spectral class and subclass
+    class_index = int(adjusted_value // 10)  # Integer division for the class
+    subclass = adjusted_value % 10          # Remainder for the subclass
+
+    # Ensure the class index is within bounds
+    if 0 <= class_index < len(classes):
+        return f"{classes[class_index]}{subclass:.1f}".rstrip('0').rstrip('.')
+    
+    # Fallback for out-of-range values
+    return f"{value}"
+
+def compute_ticks(data_range, axis_length_pixels=400, min_tick_spacing=50):
+    """
+    Compute aesthetically pleasing ticks similar to Plotly.
+
+    Parameters:
+    - data_range (tuple): The (min, max) range of data values for the axis.
+    - axis_length_pixels (int): The estimated axis length in pixels (default 400 pixels).
+    - min_tick_spacing (int): The minimum spacing between ticks in pixels (default 50 pixels).
+
+    Returns:
+    - numpy.ndarray: The computed tick positions.
+    """
+    import numpy as np
+    from math import floor, ceil, log10
+
+    # Calculate ideal number of ticks based on axis length and minimum spacing
+    num_ticks = axis_length_pixels // min_tick_spacing
+
+    # Unpack the range
+    data_min, data_max = data_range
+    raw_range = data_max - data_min
+    if raw_range <= 0:
+        raise ValueError("Invalid data range for tick computation.")
+
+    # Calculate rough step size
+    rough_step = raw_range / num_ticks
+
+    # "Nice" step size adjustment to nearest 1, 2, 5 multiple
+    magnitude = 10 ** floor(log10(rough_step))  # Base scale
+    fractions = [1, 2, 5, 10]
+    nice_step = min(fractions, key=lambda f: abs(f * magnitude - rough_step)) * magnitude
+
+    # Align ticks to the "nice" step
+    tick_start = ceil(data_min / nice_step) * nice_step
+    tick_end = floor(data_max / nice_step) * nice_step
+
+    # Generate ticks
+    ticks = np.arange(tick_start, tick_end + nice_step, nice_step)
+
+    return ticks
+    
 # Add Gaussian noise for the spt axis
 def add_gaussian_noise(data, stddev=0.1, max_amplitude=0.4):
     """
@@ -1114,8 +1178,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         merged_data['distance_ref'] = merged_data['distance_ref'].fillna('N/A').str.replace(r'[()]', '', regex=True)
     
     # Format numbers with significant digits
-    print(merged_data['distance'])
-    print(merged_data['distance_unc'])
     merged_data = format_dataframe_with_error(merged_data, "distance", "distance_unc", unit="pc", output_col="distance_display")
     merged_data = format_dataframe_with_error(merged_data, "x_data", "ex_data", unit="", output_col="x_data_display")
     merged_data = format_dataframe_with_error(merged_data, "y_data", "ey_data", unit="", output_col="y_data_display")
@@ -1248,6 +1310,40 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         height=800,  # Increase the height (default is usually ~450-500)
         yaxis=dict(range=y_range)  # Apply the flipped range for absolute magnitudes
     )
+
+    # Update x-axis tick labels if spectral type is selected
+    if x_axis_type == 'spectral_type':
+        
+        # Determine x-axis range mimicking Plotly's auto behavior
+        x_min = merged_data['x_data'].min()
+        x_max = merged_data['x_data'].max()
+
+        # Add a small padding to the range for visual spacing
+        x_padding = 0.05 * (x_max - x_min)
+        x_range = [x_min - x_padding, x_max + x_padding]
+
+        x_tickvals = compute_ticks(x_range)
+
+        if x_tickvals.any():
+            fig.layout.xaxis.tickvals = x_tickvals
+            fig.layout.xaxis.ticktext = [generate_spectral_type_label(val) for val in x_tickvals]
+
+    # Update y-axis tick labels if spectral type is selected
+    if y_axis_type == 'spectral_type':
+        
+        # Determine y-axis range mimicking Plotly's auto behavior
+        y_min = merged_data['y_data'].min()
+        y_max = merged_data['y_data'].max()
+
+        # Add a small padding to the range for visual spacing
+        y_padding = 0.05 * (y_max - y_min)
+        y_range = [y_min - y_padding, y_max + y_padding]
+
+        y_tickvals = compute_ticks(y_range)
+
+        if y_tickvals.any():
+            fig.layout.yaxis.tickvals = y_tickvals
+            fig.layout.yaxis.ticktext = [generate_spectral_type_label(val) for val in y_tickvals]
 
     return fig, dcc.Markdown(missing_ids_message) if missing_ids_message else None, merged_data.to_dict('records')  # Save `merged_data` as a JSON serializable dictionary
 
