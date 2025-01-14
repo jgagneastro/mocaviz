@@ -52,11 +52,11 @@ def construct_hovertext(row):
     # Add optional keys dynamically
     optional_keys = {
         'x_ref': "",
-        'y_ref': "Y-axis absolute mag reference: ",
-        'x_ref_1': "X-axis color reference 1: ",
-        'x_ref_2': "X-axis color reference 2: ",
-        'y_ref_1': "Y-axis color reference 1: ",
-        'y_ref_2': "Y-axis color reference 2: ",
+        'y_ref': "",
+        'x_ref_1': "",
+        'x_ref_2': "",
+        'y_ref_1': "",
+        'y_ref_2': "",
     }
     for key, label in optional_keys.items():
         if key in row and not pd.isna(row[key]):
@@ -515,6 +515,21 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             ]
         )
 
+    empty_figure_noresults = go.Figure()
+    empty_figure_noresults.update_layout(
+        title="No data available",
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False),
+        annotations=[
+            dict(
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                text="No valid data points were returned for this combination of observables",
+                showarrow=False,
+                font=dict(size=16)
+                )
+            ]
+        )
+
     # Check if all dropdowns are correctly filled
     if x_axis_type == 'absolute_magnitude':
         if len(x_band_values) < 1 or any(v is None for v in x_band_values):
@@ -946,7 +961,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
             # Check if some data was returned
             if x_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
 
             x_data['x_data'] = add_gaussian_noise(x_data['spectral_type_number'])
             x_data['ex_data'] = x_data['spectral_type_unc']
@@ -961,16 +976,14 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             
             # Check if some data was returned
             if x_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
             
+            # Add mag-related info
+            x_data_reformatted = format_dataframe_with_error(x_data, "magnitude", "magnitude_unc", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            x_data['x_ref'] = x_data['magnitude_name']+" ("+x_photometry_band+") : "+x_data_reformatted['magnitude_display']+" ("+x_data['photometry_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
             # Calculate absolute magnitude and uncertainty using dmod
             x_data['x_data'] = x_data['magnitude'] - x_data['dmod']
-            
-            #x_data['magnitude_name_1'].iloc[0]+' ('+x_photometry_band_1+') - '+x_data['magnitude_name_2'].iloc[0]+' ('+x_photometry_band_2+') color'
-
-            x_data_reformatted = format_dataframe_with_error(x_data, "magnitude", "magnitude_unc", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
-            
-            x_data['x_ref'] = x_data['magnitude_name']+" ("+x_photometry_band+") : "+x_data['magnitude_display']+" ("+x_data['photometry_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
             x_data['ex_data'] = np.sqrt(
                 (x_data['magnitude_unc'])**2 + (x_data['dmod_unc'])**2
             )
@@ -986,12 +999,16 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             
             # Check if some data was returned
             if x_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
             
+            # Add mag-related info
+            x_data_reformatted_1 = format_dataframe_with_error(x_data, "magnitude_1", "magnitude_unc_1", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            x_data_reformatted_2 = format_dataframe_with_error(x_data, "magnitude_2", "magnitude_unc_2", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            x_data['x_ref_1'] = x_data['magnitude_name_1']+" ("+x_photometry_band_1+") : "+x_data_reformatted_1['magnitude_display']+" ("+x_data['photometry_ref_1'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+            x_data['x_ref_2'] = x_data['magnitude_name_2']+" ("+x_photometry_band_2+") : "+x_data_reformatted_2['magnitude_display']+" ("+x_data['photometry_ref_2'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
             # Calculate absolute magnitude and uncertainty using dmod
             x_data['x_data'] = x_data['magnitude_1'] - x_data['magnitude_2']
-            x_data['x_ref_1'] = x_data['photometry_ref_1']
-            x_data['x_ref_2'] = x_data['photometry_ref_2']
             x_data['ex_data'] = np.sqrt(
                 (x_data['magnitude_unc_1'])**2 + (x_data['magnitude_unc_2'])**2
             )
@@ -1004,7 +1021,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
             # Check if some data was returned
             if y_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
             
             y_data['y_data'] = y_data['spectral_type_number']
             y_data['ey_data'] = y_data['spectral_type_unc']
@@ -1015,16 +1032,11 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             
             y_query = absmag_query.where(photometry.c.moca_psid == y_photometry_band)
 
-            y_data = pd.read_sql(y_query, connection)
-            
-
-            # Check if some data was returned
-            if y_data.empty:
-                return empty_figure, None, None
+            y_data = pd.read_sql(y_query, connection)            
             
             # Check if some data was returned
             if y_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
             
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude'] - y_data['dmod']
@@ -1044,7 +1056,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             
             # Check if some data was returned
             if y_data.empty:
-                return empty_figure, None, None
+                return empty_figure_noresults, None, None
             
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude_1'] - y_data['magnitude_2']
@@ -1058,7 +1070,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Check if both axes are selected
     if x_data.empty or y_data.empty:
-        return empty_figure, None, None
+        return empty_figure_noresults, None, None
     
     # Identify overlapping columns except for the merge key
     overlapping_columns = set(x_data.columns).intersection(set(y_data.columns)) - {'moca_oid'}
@@ -1068,6 +1080,9 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Merge the x and y data on moca_oid
     merged_data = pd.merge(x_data, y_data, on='moca_oid', how='inner')
+    
+    if merged_data.empty:
+        return empty_figure_noresults, None, None
 
     # Handle missing distance and uncertainty
     merged_data['distance'] = merged_data['distance_pc'].fillna('N/A')
@@ -1080,6 +1095,8 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         merged_data['distance_ref'] = merged_data['distance_ref'].fillna('N/A').str.replace(r'[()]', '', regex=True)
     
     # Format numbers with significant digits
+    print(merged_data['distance'])
+    print(merged_data['distance_unc'])
     merged_data = format_dataframe_with_error(merged_data, "distance", "distance_unc", unit="pc", output_col="distance_display")
     merged_data = format_dataframe_with_error(merged_data, "x_data", "ex_data", unit="", output_col="x_data_display")
     merged_data = format_dataframe_with_error(merged_data, "y_data", "ey_data", unit="", output_col="y_data_display")
