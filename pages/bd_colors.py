@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, MetaData, Table, select, case
 from sqlalchemy.sql import func
 import pandas as pd
 from math import log10, floor
-from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
+from urllib.parse import quote_plus as urlquote, urlparse, parse_qs, unquote
 import os
 import numpy as np
 import plotly.graph_objs as go
@@ -26,6 +26,27 @@ default_host = '104.248.106.21'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
+default_spt_range = 'M6-Y2'
+default_spt_range_val = [6,32]
+
+def parse_spt_label(label):
+        """Reverse `generate_spectral_type_label` to map a spectral type to a number."""
+        classes = ['O', 'B', 'A', 'F', 'G', 'K', 'M', 'L', 'T', 'Y']
+        class_map = {cls: idx for idx, cls in enumerate(classes)}
+
+        if not label or len(label) < 2:
+            return None
+
+        spt_class = label[0]
+        subclass = label[1:]
+
+        if spt_class in class_map:
+            try:
+                subclass_num = float(subclass)
+                return class_map[spt_class] * 10 + subclass_num - 60
+            except ValueError:
+                return None
+        return None
 
 def generate_spectral_type_label(value):
     """
@@ -197,6 +218,25 @@ layout = (
         # Title and Description
         html.H1("Substellar Photometry Explorer"),
         html.P("This page allows you to display the spectral type, absolute magnitudes, or colors of substellar objects in the MOCA database."),
+
+        # SPT range
+        html.Div([
+            html.Label("Spectral type range"),
+            dcc.Input(
+                id='spt-range-input',
+                type='text',
+                value=None,
+                placeholder="Enter range (e.g., '"+default_spt_range+"')",
+                debounce=True,  # Trigger only when Enter is pressed
+                style={'width': '50%'}
+            ),
+            html.Div(
+                id='spt-range-error',  # To display validation errors
+                style={'color': 'red', 'marginTop': '0.5rem'}
+            )
+        ], style={'marginBottom': '1rem'}),
+
+        dcc.Store(id='spt-range-store', data={'min': default_spt_range_val[0], 'max': default_spt_range_val[1]}),
 
         # Grid for dropdowns
         html.Div([
@@ -528,12 +568,13 @@ def update_dropdowns_from_url(url):
         Input('checkbox-best-photometry', 'value'),
         Input('checkbox-photometric-distances', 'value'),
         Input('checkbox-binaries', 'value'),
-        Input('checkbox-spectral-type-estimates', 'value')
+        Input('checkbox-spectral-type-estimates', 'value'),
+        Input('spt-range-store', 'data'), 
     ],
     State('url', 'href')
 )
-def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, url):
-    
+def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
+
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
     moca_ids_array = []
@@ -688,8 +729,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             photometry_publications1 = moca_publications.alias('photometry_publications1')
             photometry_publications2 = moca_publications.alias('photometry_publications2')
         
-        
-
         if x_axis_type == 'spectral_type' or y_axis_type == 'spectral_type':
             spt_query = (
                 select([
@@ -768,24 +807,18 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 )
                 .where(
                     ((cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6)) |
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
                     (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
             
-            
-
             # Add the binary filter to the query dynamically
             if binary_filter is not None:
                 spt_query = spt_query.where(binary_filter)
             
-            
-
             # Add the photspt filter to the query dynamically
             spt_query = spt_query.where(spectral_type_filter)
-
-            
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude':
             absmag_query = (
@@ -887,7 +920,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6)
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1017,7 +1050,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= 6)
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1191,8 +1224,14 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Define color mapping for spectral classes
     spectral_class_colors = {
+        'O': 'darkblue',
+        'B': 'blue',
+        'A': 'lightblue',
+        'F': 'white',
+        'G': 'yellow',
+        'K': 'orange',
         'M': 'red',
-        'L': 'orange',
+        'L': 'darkorange',
         'T': 'blue',
         'Y': 'purple',
     }
@@ -1481,3 +1520,56 @@ def update_checkboxes_from_url(url):
         ['binaries'] if binaries else [],
         ['spectral_type_estimates'] if photspt else [],
     )
+
+@dash.callback(
+    [
+        Output('spt-range-error', 'children'),
+        Output('spt-range-input', 'value'),
+        Output('spt-range-store', 'data'),
+    ],
+    Input('spt-range-input', 'value'),
+    State('url', 'href')
+)
+def validate_spt_range(spt_range, url):
+
+    default_range = default_spt_range
+    default_store = {'min': default_spt_range_val[0], 'max': default_spt_range_val[1]}
+    error_message = None
+
+    # Parse the URL state only if spt_range is not provided
+    if not spt_range:
+        url_params = parse_url_params(url)
+        spt_range_param = url_params.get('spt_range', [None])[0]
+
+        if spt_range_param:
+            try:
+                spt_range = unquote(spt_range_param)
+                if '-' in spt_range:
+                    start, end = spt_range.split('-')
+                    start_value = parse_spt_label(start.strip())
+                    end_value = parse_spt_label(end.strip())
+
+                    if start_value is not None and end_value is not None:
+                        return error_message, f"{start}-{end}", {'min': start_value, 'max': end_value}
+            except Exception:
+                pass  # Fall through to default handling if URL value is invalid
+
+        # Default to valid range if invalid
+        return error_message, default_range, default_store
+
+    # Validate the manually entered range
+    if not spt_range or '-' not in spt_range:
+        return "Invalid format. Use '"+default_spt_range+"'.", default_range, default_store
+
+    try:
+        spt_min_label, spt_max_label = spt_range.split('-')
+        spt_min = parse_spt_label(spt_min_label)
+        spt_max = parse_spt_label(spt_max_label)
+
+        if spt_min is None or spt_max is None or spt_min > spt_max:
+            raise ValueError("Invalid range.")
+    except Exception:
+        return "Invalid range or spectral types.", default_range, default_store
+
+    # Valid input
+    return error_message, spt_range, {'min': spt_min, 'max': spt_max}
