@@ -1,8 +1,7 @@
-#TESTING CMD http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
-#TESTING SPT VS MK
+#TESTING CMD: http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
+#TESTING SPT VS MK: http://127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602
 #TODO: in hovertext, change the x-axis color ref to the actual color measurement + ref. Same for absmag.
 #TODO: Add spectral indices
-#TODO: Add noise to SPT
 #TODO: Rename all DIV elements for a page-specific name
 
 import dash
@@ -27,6 +26,20 @@ default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
 
+# Add Gaussian noise for the spt axis
+def add_gaussian_noise(data, stddev=0.1, max_amplitude=0.4):
+    """
+    Add Gaussian noise to the data with the given standard deviation and limit.
+    If noise falls outside the range [-max_amplitude, max_amplitude], it is re-generated
+    to ensure that all values respect the Gaussian distribution.
+    """
+    noise = np.random.normal(loc=0, scale=stddev, size=len(data))
+    while np.any((noise < -max_amplitude) | (noise > max_amplitude)):
+        # Regenerate noise for the out-of-bounds values
+        out_of_bounds = (noise < -max_amplitude) | (noise > max_amplitude)
+        noise[out_of_bounds] = np.random.normal(loc=0, scale=stddev, size=np.sum(out_of_bounds))
+    return data + noise
+
 # Define hovertext lines for each row
 def construct_hovertext(row):
     hovertext = [
@@ -38,7 +51,7 @@ def construct_hovertext(row):
     
     # Add optional keys dynamically
     optional_keys = {
-        'x_ref': "X-axis absolute mag reference: ",
+        'x_ref': "",
         'y_ref': "Y-axis absolute mag reference: ",
         'x_ref_1': "X-axis color reference 1: ",
         'x_ref_2': "X-axis color reference 2: ",
@@ -98,7 +111,7 @@ def format_dataframe_with_error(df, value_col, error_col, unit="", output_col="f
         return color_format_value_with_error(row[value_col], row[error_col], unit)
     
     df[output_col] = df.apply(apply_format, axis=1)
-    return df
+    return df.copy()
 
 # Layout for the page
 layout = (
@@ -486,6 +499,36 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         # Extract the values in the correct order
         y_band_values = [value for _, value in sorted_band_values]
     
+    # Define empty figure in case no data is returned
+    empty_figure = go.Figure()
+    empty_figure.update_layout(
+        title="No data available",
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False),
+        annotations=[
+            dict(
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                text="Select X and Y axes to be displayed",
+                showarrow=False,
+                font=dict(size=16)
+                )
+            ]
+        )
+
+    # Check if all dropdowns are correctly filled
+    if x_axis_type == 'absolute_magnitude':
+        if len(x_band_values) < 1 or any(v is None for v in x_band_values):
+            return empty_figure, None, None
+    if y_axis_type == 'absolute_magnitude':
+        if len(y_band_values) < 1 or any(v is None for v in y_band_values):
+            return empty_figure, None, None
+    if x_axis_type == 'color':
+        if len(x_band_values) < 2 or any(v is None for v in x_band_values):
+            return empty_figure, None, None
+    if y_axis_type == 'color':
+        if len(y_band_values) < 2 or any(v is None for v in y_band_values):
+            return empty_figure, None, None
+
     connection_string = get_connection_string(url)
 
     # Establish connection
@@ -509,6 +552,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         parallax_publications = moca_publications.alias('parallax_publications')
         
         # Define the distance join condition based on checkbox
+        
         if 'photometric_distances' not in photometric_distances_value:
             distance_join_condition = (
                 (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
@@ -552,6 +596,8 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             photsys2 = photsys.alias('photsys2')
             photometry_publications1 = moca_publications.alias('photometry_publications1')
             photometry_publications2 = moca_publications.alias('photometry_publications2')
+        
+        
 
         if x_axis_type == 'spectral_type' or y_axis_type == 'spectral_type':
             spt_query = (
@@ -637,12 +683,18 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
             
+            
+
             # Add the binary filter to the query dynamically
             if binary_filter is not None:
                 spt_query = spt_query.where(binary_filter)
             
+            
+
             # Add the photspt filter to the query dynamically
             spt_query = spt_query.where(spectral_type_filter)
+
+            
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude':
             absmag_query = (
@@ -662,6 +714,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     func.min(photometry.c.magnitude).label('magnitude'),
                     func.min(photometry.c.magnitude_unc).label('magnitude_unc'),
                     func.min(photsys.c.name).label('magnitude_name'),
+                    #func.min(photsys.c.moca_psid).label('moca_psid'),
                     func.min(
                             func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
                         ).label('spt_ref'),
@@ -754,7 +807,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
             # Add the photspt filter to the query dynamically
             absmag_query = absmag_query.where(spectral_type_filter)
-        
+
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
                 select([
@@ -774,6 +827,8 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     func.min(phot2.c.magnitude_unc).label('magnitude_unc_2'),
                     func.min(photsys1.c.name).label('magnitude_name_1'),
                     func.min(photsys2.c.name).label('magnitude_name_2'),
+                    #func.min(photsys1.c.moca_psid).label('moca_psid_1'),
+                    #func.min(photsys2.c.moca_psid).label('moca_psid_2'),
                     func.min(
                             func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
                         ).label('spt_ref'),
@@ -884,10 +939,16 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             color_query = color_query.where(spectral_type_filter)
 
         if x_axis_type == 'spectral_type':
-
+            
+            
             x_data = pd.read_sql(spt_query, connection)
+            
 
-            x_data['x_data'] = x_data['spectral_type_number']
+            # Check if some data was returned
+            if x_data.empty:
+                return empty_figure, None, None
+
+            x_data['x_data'] = add_gaussian_noise(x_data['spectral_type_number'])
             x_data['ex_data'] = x_data['spectral_type_unc']
             x_axis_label = 'Spectral Type'
         
@@ -898,9 +959,18 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
             x_data = pd.read_sql(x_query, connection)
             
+            # Check if some data was returned
+            if x_data.empty:
+                return empty_figure, None, None
+            
             # Calculate absolute magnitude and uncertainty using dmod
             x_data['x_data'] = x_data['magnitude'] - x_data['dmod']
-            x_data['x_ref'] = x_data['photometry_ref']
+            
+            #x_data['magnitude_name_1'].iloc[0]+' ('+x_photometry_band_1+') - '+x_data['magnitude_name_2'].iloc[0]+' ('+x_photometry_band_2+') color'
+
+            x_data_reformatted = format_dataframe_with_error(x_data, "magnitude", "magnitude_unc", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            
+            x_data['x_ref'] = x_data['magnitude_name']+" ("+x_photometry_band+") : "+x_data['magnitude_display']+" ("+x_data['photometry_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
             x_data['ex_data'] = np.sqrt(
                 (x_data['magnitude_unc'])**2 + (x_data['dmod_unc'])**2
             )
@@ -913,6 +983,10 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             x_query = color_query.where((phot1.c.moca_psid == x_photometry_band_1) & (phot2.c.moca_psid == x_photometry_band_2))
 
             x_data = pd.read_sql(x_query, connection)
+            
+            # Check if some data was returned
+            if x_data.empty:
+                return empty_figure, None, None
             
             # Calculate absolute magnitude and uncertainty using dmod
             x_data['x_data'] = x_data['magnitude_1'] - x_data['magnitude_2']
@@ -928,6 +1002,10 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             
             y_data = pd.read_sql(spt_query, connection)
 
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure, None, None
+            
             y_data['y_data'] = y_data['spectral_type_number']
             y_data['ey_data'] = y_data['spectral_type_unc']
             y_axis_label = 'Spectral Type'
@@ -938,6 +1016,15 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             y_query = absmag_query.where(photometry.c.moca_psid == y_photometry_band)
 
             y_data = pd.read_sql(y_query, connection)
+            
+
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure, None, None
+            
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure, None, None
             
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude'] - y_data['dmod']
@@ -955,6 +1042,10 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
             y_data = pd.read_sql(y_query, connection)
             
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure, None, None
+            
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude_1'] - y_data['magnitude_2']
             y_data['y_ref_1'] = y_data['photometry_ref_1']
@@ -967,20 +1058,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Check if both axes are selected
     if x_data.empty or y_data.empty:
-        empty_figure = go.Figure()
-        empty_figure.update_layout(
-            title="No data available",
-            xaxis=dict(showgrid=False, zeroline=False),
-            yaxis=dict(showgrid=False, zeroline=False),
-            annotations=[
-                dict(
-                    x=0.5, y=0.5, xref="paper", yref="paper",
-                    text="Select X and Y axes to be displayed",
-                    showarrow=False,
-                    font=dict(size=16)
-                )
-            ]
-        )
         return empty_figure, None, None
     
     # Identify overlapping columns except for the merge key
@@ -1146,30 +1223,45 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     ]
 )
 def update_table(selectedData, merged_data_records):
+    
+    no_data_element = html.Div("No points selected.")
+
+    if merged_data_records == None:
+        return no_data_element
+
     # Convert the stored `merged_data` back to a DataFrame
     merged_data = pd.DataFrame(merged_data_records)
 
+    if merged_data.empty:
+        return no_data_element
+    
     # Extract selected points
     selected_data = []
     if selectedData and 'points' in selectedData:
         selected_data = [point['customdata'] for point in selectedData['points'] if 'customdata' in point]
 
+    if len(selected_data) == 0:
+        return no_data_element
+    
+    
     selected_rows = merged_data[merged_data['moca_oid'].isin(selected_data)]
+
+    if selected_rows.empty:
+        return no_data_element
     
     # Drop the hovertext column from the table
     if 'hovertext' in selected_rows.columns:
         selected_rows = selected_rows.drop(columns=['hovertext'])
-
-    # Generate table
-    if not selected_rows.empty:
-        return dash.dash_table.DataTable(
-            columns=[{"name": col, "id": col} for col in selected_rows.columns],
-            data=selected_rows.to_dict('records'),
-            style_table={'overflowX': 'auto'},
-            style_cell={'textAlign': 'left', 'padding': '5px'},
-            style_header={'fontWeight': 'bold'}
-        )
-    return html.Div("No points selected.")
+    
+    # Generate table    
+    return dash.dash_table.DataTable(
+        columns=[{"name": col, "id": col} for col in selected_rows.columns],
+        data=selected_rows.to_dict('records'),
+        style_table={'overflowX': 'auto'},
+        style_cell={'textAlign': 'left', 'padding': '5px'},
+        style_header={'fontWeight': 'bold'}
+    )
+    
 
 @dash.callback(
     Output("export-dataframe-csv", "data"),
