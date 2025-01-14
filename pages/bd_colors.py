@@ -14,7 +14,6 @@ import os
 import numpy as np
 import plotly.graph_objs as go
 
-
 # Register the page
 dash.register_page(__name__, path='/bd-colors')
 
@@ -25,6 +24,15 @@ default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
 default_spt_range = 'M6-Y2'
 default_spt_range_val = [6,32]
+
+figure_export_config = {
+  'toImageButtonOptions': {
+    'format': 'png', # one of png, svg, jpeg, webp
+    'height': 500*2,
+    'width': 700*2,
+    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
+  }
+}
 
 def parse_spt_label(label):
         """Reverse `generate_spectral_type_label` to map a spectral type to a number."""
@@ -340,7 +348,7 @@ layout = (
         }),
 
         # Scatter Plot
-        dcc.Graph(id='bdphot-scatter-plot'),
+        dcc.Graph(id='bdphot-scatter-plot',config=figure_export_config),
         
         # Missing MOCA IDs display
         html.Div(id='bdphot-missing-moca-ids', style={'color': 'red', 'marginTop': '1rem'}),
