@@ -1,6 +1,6 @@
 #TESTING CMD: http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
 #TESTING SPT VS MK: http://127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602
-#TODO: Add spectral indices
+#TESTING SPECTRAL INDEX: 127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&moca_oid=602&yaxis_type=spectral_index&yaxis_value_1=h2o_j
 #TODO: Rename all DIV elements for a page-specific name
 
 import dash
@@ -166,11 +166,17 @@ def construct_hovertext(row):
 def color_format_value_with_error(value, error, unit=""):
     """
     Formats a value with its error, aligning the value's decimal precision with the error.
-    If the value or error is None, it returns "N/A".
+    If the error is None, zero, or negative, only the value is formatted.
+    If the value or error is invalid (e.g., None or 'N/A'), it returns "N/A".
     """
-    if pd.isna(value) or pd.isna(error) or value == "N/A" or error == "N/A":
+    # Handle invalid value or error
+    if pd.isna(value) or value == "N/A":
         return "N/A"
     
+    # If the error is invalid (None, zero, or negative), return only the value
+    if pd.isna(error) or error <= 0 or error == "N/A":
+        return f"{value:.2f}" + (f" {unit}" if unit else "")
+
     # Calculate the significant digit for the error
     error_magnitude = 10 ** floor(log10(abs(error)))  # Scale of the error
     rounded_error = round(error / error_magnitude) * error_magnitude  # Round error to 1 significant digit
@@ -221,7 +227,7 @@ layout = (
         html.Div([
             html.Label("Spectral type range"),
             dcc.Input(
-                id='spt-range-input',
+                id='bdphot-spt-range-input',
                 type='text',
                 value=None,
                 placeholder="Enter range (e.g., '"+default_spt_range+"')",
@@ -229,12 +235,12 @@ layout = (
                 style={'width': '50%'}
             ),
             html.Div(
-                id='spt-range-error',  # To display validation errors
+                id='bdphot-spt-range-error',  # To display validation errors
                 style={'color': 'red', 'marginTop': '0.5rem'}
             )
         ], style={'marginBottom': '1rem'}),
 
-        dcc.Store(id='spt-range-store', data={'min': default_spt_range_val[0], 'max': default_spt_range_val[1]}),
+        dcc.Store(id='bdphot-spt-range-store', data={'min': default_spt_range_val[0], 'max': default_spt_range_val[1]}),
 
         # Grid for dropdowns
         html.Div([
@@ -242,36 +248,38 @@ layout = (
             html.Div([
                 html.Label("X-axis type:"),
                 dcc.Dropdown(
-                    id='bdcolors-x-axis-type-dropdown',
+                    id='bdphot-x-axis-type-dropdown',
                     options=[
                         {'label': 'Spectral Type', 'value': 'spectral_type'},
                         {'label': 'Color', 'value': 'color'},
-                        {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'}
+                        {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'},
+                        {'label': 'Spectral Index', 'value': 'spectral_index'}
                     ],
                     placeholder='Select x-axis type',
                 )
-            ], id='cell-1', style={"gridArea": "1 / 1"}),
+            ], id='bdphot-cell-1', style={"gridArea": "1 / 1"}),
 
             html.Div([
                 html.Label("Y-axis type:"),
                 dcc.Dropdown(
-                    id='bdcolors-y-axis-type-dropdown',
+                    id='bdphot-y-axis-type-dropdown',
                     options=[
                         {'label': 'Spectral Type', 'value': 'spectral_type'},
                         {'label': 'Color', 'value': 'color'},
-                        {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'}
+                        {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'},
+                        {'label': 'Spectral Index', 'value': 'spectral_index'}
                     ],
                     placeholder='Select y-axis type',
                 )
-            ], id='cell-2', style={"gridArea": "1 / 2"}),
+            ], id='bdphot-cell-2', style={"gridArea": "1 / 2"}),
 
             # Row 2
-            html.Div(id='bdcolors-x-axis-first-band', style={"gridArea": "2 / 1"}),  # Cell 3
-            html.Div(id='bdcolors-y-axis-first-band', style={"gridArea": "2 / 2"}),  # Cell 4
+            html.Div(id='bdphot-x-axis-first-band', style={"gridArea": "2 / 1"}),  # Cell 3
+            html.Div(id='bdphot-y-axis-first-band', style={"gridArea": "2 / 2"}),  # Cell 4
 
             # Row 3
-            html.Div(id='bdcolors-x-axis-second-band', style={"gridArea": "3 / 1"}),  # Cell 5
-            html.Div(id='bdcolors-y-axis-second-band', style={"gridArea": "3 / 2"}),  # Cell 6
+            html.Div(id='bdphot-x-axis-second-band', style={"gridArea": "3 / 1"}),  # Cell 5
+            html.Div(id='bdphot-y-axis-second-band', style={"gridArea": "3 / 2"}),  # Cell 6
         ], style={
             "display": "grid",
             "gridTemplateColumns": "1fr 1fr",
@@ -284,7 +292,7 @@ layout = (
         html.Div([
             html.Label("Highlight Specific Objects (MOCA IDs):"),
             dcc.Input(
-                id='moca-ids-input',
+                id='bdphot-moca-ids-input',
                 type='text',
                 placeholder="Insert MOCA object IDs separated by commas",
                 value=None,  # Dynamically set this value via a callback
@@ -297,28 +305,28 @@ layout = (
             html.Div([
                 dcc.Checklist(
                     options=[{'label': 'Display best photometry only', 'value': 'best_photometry'}],
-                    id='checkbox-best-photometry',
+                    id='bdphot-checkbox-best-photometry',
                 )
             ], style={'gridArea': '1 / 1'}),
 
             html.Div([
                 dcc.Checklist(
                     options=[{'label': 'Include photometric distance estimates', 'value': 'photometric_distances'}],
-                    id='checkbox-photometric-distances',
+                    id='bdphot-checkbox-photometric-distances',
                 )
             ], style={'gridArea': '1 / 2'}),
 
             html.Div([
                 dcc.Checklist(
                     options=[{'label': 'Display binary systems', 'value': 'binaries'}],
-                    id='checkbox-binaries',
+                    id='bdphot-checkbox-binaries',
                 )
             ], style={'gridArea': '2 / 1'}),
 
             html.Div([
                 dcc.Checklist(
                     options=[{'label': 'Include photometric spectral type estimates', 'value': 'spectral_type_estimates'}],
-                    id='checkbox-spectral-type-estimates',
+                    id='bdphot-checkbox-spectral-type-estimates',
                 )
             ], style={'gridArea': '2 / 2'}),
         ], style={
@@ -330,26 +338,25 @@ layout = (
         }),
 
         # Scatter Plot
-        dcc.Graph(id='scatter-plot'),
+        dcc.Graph(id='bdphot-scatter-plot'),
         
         # Missing MOCA IDs display
-        html.Div(id='missing-moca-ids', style={'color': 'red', 'marginTop': '1rem'}),
+        html.Div(id='bdphot-missing-moca-ids', style={'color': 'red', 'marginTop': '1rem'}),
 
         # Component that stores merged_data
-        dcc.Store(id='merged-data-store'),  # Add a Store component
+        dcc.Store(id='bdphot-merged-data-store'),  # Add a Store component
         
-
     ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'}), 
 
     # Export button and download component
     html.Div([
-        html.Button("Export Table to CSV", id="export-button", n_clicks=0),
-        dcc.Download(id="export-dataframe-csv"),  # Component for download
+        html.Button("Export Table to CSV", id="bdphot-export-button", n_clicks=0),
+        dcc.Download(id="bdphot-export-dataframe-csv"),  # Component for download
     ], style={'marginTop': '1rem', 'textAlign': 'left', 'padding-left': '15px'}),
 
     # Add the table as a separate full-width section    
     html.Div(
-        id='selected-data-table',
+        id='bdphot-selected-data-table',
         style={
             'marginTop': '1rem',
             'width': '100%',  # Ensure full window width
@@ -408,38 +415,71 @@ def fetch_moca_photometry_systems(url):
         photometry_query = select([moca_photometry_systems])
         return pd.read_sql(photometry_query, connection)
 
+def fetch_moca_spectral_indices(url):
+    """Fetch moca_psid and related data from moca_photometry_systems."""
+    connection_string = get_connection_string(url)
+    engine = create_engine(connection_string)
+    with engine.connect() as connection:
+        metadata = MetaData()
+        moca_spectral_indices = Table('moca_spectral_indices', metadata, autoload_with=engine)
+        spti_query = select([moca_spectral_indices])
+        return pd.read_sql(spti_query, connection)
+
 @dash.callback(
-    Output('bdcolors-x-axis-first-band', 'children'),
-    [Input('bdcolors-x-axis-type-dropdown', 'value')],
+    Output('bdphot-x-axis-first-band', 'children'),
+    [Input('bdphot-x-axis-type-dropdown', 'value')],
     State('url', 'href')
 )
 def update_x_axis_first_band(axis_type, url):
-    if axis_type in ['color', 'absolute_magnitude']:
+    
+    if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
         # Parse URL parameters
         url_params = parse_url_params(url)
         default_value = url_params.get('xaxis_value_1', [None])[0]
 
-        # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems(url)
-        options = [
-            {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
-            for _, row in photometry_systems.iterrows()
-        ]
+        if axis_type in ['color', 'absolute_magnitude']:
+            
+            # Fetch photometry systems for dropdown options
+            photometry_systems = fetch_moca_photometry_systems(url)
+            options = [
+                {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
+                for _, row in photometry_systems.iterrows()
+            ]
 
-        return html.Div([
-            html.Label("Select first band for x-axis:"),
-            dcc.Dropdown(
-                id={'type': 'dynamic-dropdown', 'axis': 'x', 'band': 'first'},
-                options=options,
-                value=default_value,  # Set default value from URL
-                placeholder="Select first band",
-            )
-        ])
+            return html.Div([
+                html.Label("Select first band for x-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select first band",
+                )
+            ])
+        
+        if axis_type in ['spectral_index']:
+
+            # Fetch valid spectral indices for dropdown options
+            spectral_indices = fetch_moca_spectral_indices(url)
+            options = [
+                {'label': f"{row['description']} ({row['moca_siid']})", 'value': row['moca_siid']}
+                for _, row in spectral_indices.iterrows()
+            ]
+
+            return html.Div([
+                html.Label("Select spectral index for x-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select spectral index",
+                )
+            ])
+
     return None
 
 @dash.callback(
-    Output('bdcolors-x-axis-second-band', 'children'),
-    [Input('bdcolors-x-axis-type-dropdown', 'value')],
+    Output('bdphot-x-axis-second-band', 'children'),
+    [Input('bdphot-x-axis-type-dropdown', 'value')],
     State('url', 'href')
 )
 def update_x_axis_second_band(axis_type, url):
@@ -458,7 +498,7 @@ def update_x_axis_second_band(axis_type, url):
         return html.Div([
             html.Label("Select second band for x-axis:"),
             dcc.Dropdown(
-                id={'type': 'dynamic-dropdown', 'axis': 'x', 'band': 'second'},
+                id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'second'},
                 options=options,
                 value=default_value,  # Set default value from URL
                 placeholder="Select second band",
@@ -467,37 +507,60 @@ def update_x_axis_second_band(axis_type, url):
     return None
 
 @dash.callback(
-    Output('bdcolors-y-axis-first-band', 'children'),
-    [Input('bdcolors-y-axis-type-dropdown', 'value')],
+    Output('bdphot-y-axis-first-band', 'children'),
+    [Input('bdphot-y-axis-type-dropdown', 'value')],
     State('url', 'href')
 )
 def update_y_axis_first_band(axis_type, url):
-    if axis_type in ['color', 'absolute_magnitude']:
+    
+    if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
         # Parse URL parameters
         url_params = parse_url_params(url)
         default_value = url_params.get('yaxis_value_1', [None])[0]
 
-        # Fetch photometry systems for dropdown options
-        photometry_systems = fetch_moca_photometry_systems(url)
-        options = [
-            {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
-            for _, row in photometry_systems.iterrows()
-        ]
+        if axis_type in ['color', 'absolute_magnitude']:
+            
+            # Fetch photometry systems for dropdown options
+            photometry_systems = fetch_moca_photometry_systems(url)
+            options = [
+                {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
+                for _, row in photometry_systems.iterrows()
+            ]
 
-        return html.Div([
-            html.Label("Select first band for y-axis:"),
-            dcc.Dropdown(
-                id={'type': 'dynamic-dropdown', 'axis': 'y', 'band': 'first'},
-                options=options,
-                value=default_value,  # Set default value from URL
-                placeholder="Select first band",
-            )
-        ])
+            return html.Div([
+                html.Label("Select first band for y-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select first band",
+                )
+            ])
+
+        if axis_type in ['spectral_index']:
+
+            # Fetch valid spectral indices for dropdown options
+            spectral_indices = fetch_moca_spectral_indices(url)
+            options = [
+                {'label': f"{row['description']} ({row['moca_siid']})", 'value': row['moca_siid']}
+                for _, row in spectral_indices.iterrows()
+            ]
+
+            return html.Div([
+                html.Label("Select spectral index for y-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select spectral index",
+                )
+            ])
+    
     return None
 
 @dash.callback(
-    Output('bdcolors-y-axis-second-band', 'children'),
-    [Input('bdcolors-y-axis-type-dropdown', 'value')],
+    Output('bdphot-y-axis-second-band', 'children'),
+    [Input('bdphot-y-axis-type-dropdown', 'value')],
     State('url', 'href')
 )
 def update_y_axis_second_band(axis_type, url):
@@ -516,7 +579,7 @@ def update_y_axis_second_band(axis_type, url):
         return html.Div([
             html.Label("Select second band for y-axis:"),
             dcc.Dropdown(
-                id={'type': 'dynamic-dropdown', 'axis': 'y', 'band': 'second'},
+                id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'second'},
                 options=options,
                 value=default_value,  # Set default value from URL
                 placeholder="Select second band",
@@ -526,8 +589,8 @@ def update_y_axis_second_band(axis_type, url):
 
 @dash.callback(
     [
-        Output('bdcolors-x-axis-type-dropdown', 'value'),
-        Output('bdcolors-y-axis-type-dropdown', 'value'),
+        Output('bdphot-x-axis-type-dropdown', 'value'),
+        Output('bdphot-y-axis-type-dropdown', 'value'),
     ],
     Input('url', 'href')
 )
@@ -540,11 +603,11 @@ def update_dropdowns_from_url(url):
     yaxis_type = url_params.get('yaxis_type', [None])[0]
 
     # Validate x-axis type
-    if xaxis_type not in ['spectral_type', 'absolute_magnitude', 'color']:
+    if xaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index']:
         xaxis_type = None  # Default value
 
     # Validate y-axis type
-    if yaxis_type not in ['spectral_type', 'absolute_magnitude', 'color']:
+    if yaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index']:
         yaxis_type = None  # Default value
 
     # Return the validated or default values
@@ -552,22 +615,22 @@ def update_dropdowns_from_url(url):
 
 @dash.callback(
     [
-        Output('scatter-plot', 'figure'),
-        Output('missing-moca-ids', 'children'),  # For missing MOCA IDs
-        Output('merged-data-store', 'data')  # Save `merged_data` to the Store
+        Output('bdphot-scatter-plot', 'figure'),
+        Output('bdphot-missing-moca-ids', 'children'),  # For missing MOCA IDs
+        Output('bdphot-merged-data-store', 'data')  # Save `merged_data` to the Store
     ],
     [
-        Input('bdcolors-x-axis-type-dropdown', 'value'),
-        Input('bdcolors-y-axis-type-dropdown', 'value'),
-        Input({'type': 'dynamic-dropdown', 'axis': 'x', 'band': ALL}, 'value'),
-        Input({'type': 'dynamic-dropdown', 'axis': 'y', 'band': ALL}, 'value'),
-        Input('moca-ids-input', 'value'),
-        Input('moca-ids-input', 'n_submit'),  # Trigger on Enter
-        Input('checkbox-best-photometry', 'value'),
-        Input('checkbox-photometric-distances', 'value'),
-        Input('checkbox-binaries', 'value'),
-        Input('checkbox-spectral-type-estimates', 'value'),
-        Input('spt-range-store', 'data'), 
+        Input('bdphot-x-axis-type-dropdown', 'value'),
+        Input('bdphot-y-axis-type-dropdown', 'value'),
+        Input({'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': ALL}, 'value'),
+        Input({'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': ALL}, 'value'),
+        Input('bdphot-moca-ids-input', 'value'),
+        Input('bdphot-moca-ids-input', 'n_submit'),  # Trigger on Enter
+        Input('bdphot-checkbox-best-photometry', 'value'),
+        Input('bdphot-checkbox-photometric-distances', 'value'),
+        Input('bdphot-checkbox-binaries', 'value'),
+        Input('bdphot-checkbox-spectral-type-estimates', 'value'),
+        Input('bdphot-spt-range-store', 'data'), 
     ],
     State('url', 'href')
 )
@@ -709,6 +772,11 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         else:
             spectral_type_filter = True  # No filter applied
 
+        if x_axis_type == 'spectral_index' or y_axis_type == 'spectral_index':
+            moca_spectral_indices = Table('moca_spectral_indices', metadata, autoload_with=engine)
+            cdata_spectral_indices = Table('cdata_spectral_indices', metadata, autoload_with=engine)
+            spectral_index_publications = moca_publications.alias('spectral_index_publications')
+
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude' or x_axis_type == 'color' or y_axis_type == 'color':
             # Determine which photometry table to use
             if 'best_photometry' in best_photometry_value:
@@ -836,7 +904,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     func.min(photometry.c.magnitude).label('magnitude'),
                     func.min(photometry.c.magnitude_unc).label('magnitude_unc'),
                     func.min(photsys.c.name).label('magnitude_name'),
-                    #func.min(photsys.c.moca_psid).label('moca_psid'),
                     func.min(
                             func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
                         ).label('spt_ref'),
@@ -930,6 +997,117 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             # Add the photspt filter to the query dynamically
             absmag_query = absmag_query.where(spectral_type_filter)
 
+        if x_axis_type == 'spectral_index' or y_axis_type == 'spectral_index':
+            spti_query = (
+                select([
+                    cdata_spectral_types.c.moca_oid,
+                    func.min(moca_objects.c.designation).label('designation'),
+                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
+                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
+                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(cdata_distances.c.dmod).label('dmod'),
+                    func.min(cdata_distances.c.dmod_unc).label('dmod_unc'),
+                    func.min(cdata_spectral_indices.c.index_value).label('index_value'),
+                    func.min(cdata_spectral_indices.c.index_value_unc).label('index_value_unc'),
+                    func.min(moca_spectral_indices.c.description).label('spectral_index_description'),
+                    func.min(
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                        ).label('spt_ref'),
+                    func.min(
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                        ).label('distance_ref'),
+                    func.min(
+                            func.concat(func.coalesce(func.coalesce(func.coalesce(spectral_index_publications.c.name, spectral_index_publications.c.moca_pid),cdata_spectral_indices.c.origin),cdata_spectral_indices.c.calculation_method),func.coalesce(func.concat(', ',func.concat(cdata_spectral_indices.c.mission_name,func.coalesce(func.concat(' ',cdata_spectral_indices.c.data_release),''))),''))
+                        ).label('spectral_index_ref'),
+                    case(
+                        [
+                            # Young brown dwarfs condition
+                            (
+                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (cdata_spectral_types.c.suffix.like('%red%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                'young'
+                            ),
+                            # Subdwarfs condition
+                            (
+                                (cdata_spectral_types.c.suffix.like('sd%')) |
+                                (cdata_spectral_types.c.suffix.like('esd%')) |
+                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
+                                (cdata_spectral_types.c.suffix.like('%blue%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                'old'
+                            ),
+                        ],
+                        else_='field'  # Default to 'field'
+                    ).label('age_sample')
+                ])
+                .select_from(
+                    cdata_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    .join(cdata_distances, distance_join_condition)
+                    .join(
+                        cdata_spectral_indices,
+                        (cdata_spectral_indices.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                        (cdata_spectral_indices.c.adopted == 1)
+                    )
+                    .join(
+                        moca_spectral_indices,
+                        (cdata_spectral_indices.c.moca_siid == moca_spectral_indices.c.moca_siid)
+                    )
+                    .outerjoin(
+                        spt_publications,
+                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                    )
+                    .outerjoin(
+                        distance_publications,
+                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                    )
+                    .outerjoin(
+                        data_parallaxes,
+                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                    )
+                    .outerjoin(
+                        parallax_publications,
+                        (parallax_publications.c.moca_pid == data_parallaxes.c.moca_pid)
+                    )
+                    .outerjoin(
+                        spectral_index_publications,
+                        (spectral_index_publications.c.moca_pid == cdata_spectral_indices.c.moca_pid)
+                    )
+                    .outerjoin(
+                        mechanics_object_properties_combined,
+                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    )
+                )
+                .where(
+                    (cdata_spectral_types.c.adopted == 1) &
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
+                )
+                .group_by(cdata_spectral_types.c.moca_oid)
+            )
+        
+            # Add the binary filter to the query dynamically
+            if binary_filter is not None:
+                spti_query = spti_query.where(binary_filter)
+
+            # Add the photspt filter to the query dynamically
+            spti_query = spti_query.where(spectral_type_filter)
+
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
                 select([
@@ -949,8 +1127,6 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     func.min(phot2.c.magnitude_unc).label('magnitude_unc_2'),
                     func.min(photsys1.c.name).label('magnitude_name_1'),
                     func.min(photsys2.c.name).label('magnitude_name_2'),
-                    #func.min(photsys1.c.moca_psid).label('moca_psid_1'),
-                    #func.min(photsys2.c.moca_psid).label('moca_psid_2'),
                     func.min(
                             func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
                         ).label('spt_ref'),
@@ -1074,6 +1250,27 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             x_data['ex_data'] = x_data['spectral_type_unc']
             x_axis_label = 'Spectral Type'
         
+        if x_axis_type == 'spectral_index' and x_band_values and any(v for v in x_band_values if v is not None):
+            x_spectral_index = x_band_values[0]
+            
+            x_query = spti_query.where(cdata_spectral_indices.c.moca_siid == x_spectral_index)
+
+            x_data = pd.read_sql(x_query, connection)
+            
+            # Check if some data was returned
+            if x_data.empty:
+                return empty_figure_noresults, None, None
+            
+            # Add index-related info
+            x_data_reformatted = format_dataframe_with_error(x_data, "index_value", "index_value_unc", unit="", output_col="index_display").loc[:, ["index_display"]]
+            x_data['x_ref'] = x_data['spectral_index_description']+" : "+x_data_reformatted['index_display']+" ("+x_data['spectral_index_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
+            # Calculate absolute magnitude and uncertainty using dmod
+            x_data['x_data'] = x_data['index_value']
+            x_data['ex_data'] = x_data['index_value_unc']
+            
+            x_axis_label = x_data['spectral_index_description'].iloc[0]
+
         if x_axis_type == 'absolute_magnitude' and x_band_values and any(v for v in x_band_values if v is not None):
             x_photometry_band = x_band_values[0]  # Extract the selected bandpass (e.g., 'mko_jmag')
             
@@ -1134,6 +1331,27 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             y_data['ey_data'] = y_data['spectral_type_unc']
             y_axis_label = 'Spectral Type'
 
+        if y_axis_type == 'spectral_index' and y_band_values and any(v for v in y_band_values if v is not None):
+            y_spectral_index = y_band_values[0]
+            
+            y_query = spti_query.where(cdata_spectral_indices.c.moca_siid == y_spectral_index)
+
+            y_data = pd.read_sql(y_query, connection)
+            
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure_noresults, None, None
+            
+            # Add index-related info
+            y_data_reformatted = format_dataframe_with_error(y_data, "index_value", "index_value_unc", unit="", output_col="index_display").loc[:, ["index_display"]]
+            y_data['y_ref'] = y_data['spectral_index_description']+" : "+y_data_reformatted['index_display']+" ("+y_data['spectral_index_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
+            # Calculate absolute magnitude and uncertainty using dmod
+            y_data['y_data'] = y_data['index_value']
+            y_data['ey_data'] = y_data['index_value_unc']
+            
+            y_axis_label = y_data['spectral_index_description'].iloc[0]
+        
         if y_axis_type == 'absolute_magnitude' and y_band_values and any(v for v in y_band_values if v is not None):
             y_photometry_band = y_band_values[0]  # Extract the selected bandpass (e.g., 'mko_jmag')
             
@@ -1387,10 +1605,10 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     return fig, dcc.Markdown(missing_ids_message) if missing_ids_message else None, merged_data.to_dict('records')  # Save `merged_data` as a JSON serializable dictionary
 
 @dash.callback(
-    Output('selected-data-table', 'children'),
+    Output('bdphot-selected-data-table', 'children'),
     [
-        Input('scatter-plot', 'selectedData'),
-        Input('merged-data-store', 'data')  # Access `merged_data` from the Store
+        Input('bdphot-scatter-plot', 'selectedData'),
+        Input('bdphot-merged-data-store', 'data')  # Access `merged_data` from the Store
     ]
 )
 def update_table(selectedData, merged_data_records):
@@ -1435,11 +1653,11 @@ def update_table(selectedData, merged_data_records):
     
 
 @dash.callback(
-    Output("export-dataframe-csv", "data"),
-    Input("export-button", "n_clicks"),
+    Output("bdphot-export-dataframe-csv", "data"),
+    Input("bdphot-export-button", "n_clicks"),
     [
-        State("merged-data-store", "data"),  # Use the stored `merged_data`
-        State("scatter-plot", "selectedData")  # Use the selection data from the plot
+        State("bdphot-merged-data-store", "data"),  # Use the stored `merged_data`
+        State("bdphot-scatter-plot", "selectedData")  # Use the selection data from the plot
     ],
     prevent_initial_call=True
 )
@@ -1471,8 +1689,8 @@ def export_table_to_csv(n_clicks, merged_data_store, selectedData):
 
 @dash.callback(
     [
-        Output('moca-ids-input', 'value'),
-        Output('moca-ids-input', 'n_submit')
+        Output('bdphot-moca-ids-input', 'value'),
+        Output('bdphot-moca-ids-input', 'n_submit')
     ],
     Input('url', 'href')
 )
@@ -1494,10 +1712,10 @@ def update_moca_ids_input(url):
 
 @dash.callback(
     [
-        Output('checkbox-best-photometry', 'value'),
-        Output('checkbox-photometric-distances', 'value'),
-        Output('checkbox-binaries', 'value'),
-        Output('checkbox-spectral-type-estimates', 'value'),
+        Output('bdphot-checkbox-best-photometry', 'value'),
+        Output('bdphot-checkbox-photometric-distances', 'value'),
+        Output('bdphot-checkbox-binaries', 'value'),
+        Output('bdphot-checkbox-spectral-type-estimates', 'value'),
     ],
     Input('url', 'href')
 )
@@ -1523,11 +1741,11 @@ def update_checkboxes_from_url(url):
 
 @dash.callback(
     [
-        Output('spt-range-error', 'children'),
-        Output('spt-range-input', 'value'),
-        Output('spt-range-store', 'data'),
+        Output('bdphot-spt-range-error', 'children'),
+        Output('bdphot-spt-range-input', 'value'),
+        Output('bdphot-spt-range-store', 'data'),
     ],
-    Input('spt-range-input', 'value'),
+    Input('bdphot-spt-range-input', 'value'),
     State('url', 'href')
 )
 def validate_spt_range(spt_range, url):
