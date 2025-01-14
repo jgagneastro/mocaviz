@@ -1,7 +1,6 @@
 #TESTING CMD: http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
 #TESTING SPT VS MK: http://127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602
 #TESTING SPECTRAL INDEX: 127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&moca_oid=602&yaxis_type=spectral_index&yaxis_value_1=h2o_j
-#TODO: Rename all DIV elements for a page-specific name
 
 import dash
 from dash import dcc, html, Input, Output, State
@@ -221,7 +220,10 @@ layout = (
 
         # Title and Description
         html.H1("Substellar Photometry Explorer"),
-        html.P("This page allows you to display the spectral type, absolute magnitudes, or colors of substellar objects in the MOCA database."),
+        html.P(["This page allows you to display the spectral types, absolute magnitudes, colors or spectral indices of substellar objects in the MOCA database.",html.Br(),
+                "While this page is intended for use with brown dwarfs, it can be extended to earlier spectral types too.",html.Br(),
+                "You can use the plotly selection tool to obtain a table with the selected objects below the scatter plot, which is downloadable as a CSV file.",html.Br(),
+                "You can also list unique MOCA identifiers to highlight them in the figure.",html.Br()]),
 
         # SPT range
         html.Div([
