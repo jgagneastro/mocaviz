@@ -1573,9 +1573,12 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     # Update x-axis tick labels if spectral type is selected
     if x_axis_type == 'spectral_type':
         
-        # Determine x-axis range mimicking Plotly's auto behavior
-        x_min = merged_data['x_data'].min()
-        x_max = merged_data['x_data'].max()
+        # Filter merged_data to include only rows where y_data is finite
+        filtered_data = merged_data[np.isfinite(merged_data['y_data'])]
+
+        # Calculate x_min and x_max based on the filtered data
+        x_min = filtered_data['x_data'].min()
+        x_max = filtered_data['x_data'].max()
 
         # Add a small padding to the range for visual spacing
         x_padding = 0.05 * (x_max - x_min)
