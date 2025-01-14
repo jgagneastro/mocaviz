@@ -11,6 +11,7 @@ import os
 from utils.plx_motion import parallax_motion
 from scipy.optimize import curve_fit
 from astropy.time import Time
+from PyAstronomy.pyasl import sunpos
 
 # Register the page in the Dash app
 dash.register_page(__name__)
@@ -21,8 +22,14 @@ connection_string = None
 bin_size_days = 50
 bin_size_days_phased = 20
 
-from PyAstronomy.pyasl import sunpos
-from astropy.time import Time
+figure_export_config = {
+  'toImageButtonOptions': {
+    'format': 'png', # one of png, svg, jpeg, webp
+    'height': 500*2,
+    'width': 700*2,
+    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
+  }
+}
 
 def robust_error_weighted_plxfit_with_rejection(
     measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
@@ -427,11 +434,11 @@ layout = html.Div([
         ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
 
         html.Div([
-            dcc.Graph(id="astrometry-plot-ra"),
+            dcc.Graph(id="astrometry-plot-ra",config=figure_export_config),
         ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
         
         html.Div([
-            dcc.Graph(id="astrometry-plot-dec"),
+            dcc.Graph(id="astrometry-plot-dec",config=figure_export_config),
         ], style={'width': '100%', 'display': 'inline-block'}),
 
     ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
