@@ -320,7 +320,7 @@ def wrap_text(text, width=50):
 layout = html.Div([
     dcc.Location(id="url", refresh=False),
     html.Div([
-        html.H1("Astrometric explorer"),
+        html.H1("Astrometric Explorer"),
         html.P("This page allows to compare the individual-epoch astrometry of MOCAdb entries "
                " with their best-available proper motion and parallax solutions."
                ),
@@ -654,24 +654,45 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
 
     #Query PM
     data_proper_motions = Table('data_proper_motions', metadata, autoload_with=engine)
+    moca_publications = Table('moca_publications', metadata, autoload_with=engine)
+    pm_publications = moca_publications.alias('pm_publications')
 
-    query = select(data_proper_motions.c.pmra_masyr,
+    query = (select([data_proper_motions.c.pmra_masyr,
                    data_proper_motions.c.pmdec_masyr,
                    data_proper_motions.c.pmra_masyr_unc,
                    data_proper_motions.c.pmdec_masyr_unc,
-                   ).where(
-        (data_proper_motions.c.moca_oid == moca_oid)
-    ).limit(1)
+                   func.concat(func.coalesce(func.coalesce(pm_publications.c.name, pm_publications.c.moca_pid), data_proper_motions.c.origin),func.coalesce(func.concat(', ',data_proper_motions.c.mission_name,func.coalesce(func.concat(' ',data_proper_motions.c.data_release),'')),'')).label('pm_ref')
+                ])
+                .select_from(data_proper_motions
+                            .outerjoin(
+                                pm_publications,
+                                (pm_publications.c.moca_pid == data_proper_motions.c.moca_pid)
+                            )
+                    )
+                .where(
+                    (data_proper_motions.c.moca_oid == moca_oid)
+                ).limit(1))
+    
     pm_df = pd.read_sql(query, connection)
     
     #Query PLX
     data_parallaxes = Table('data_parallaxes', metadata, autoload_with=engine)
+    plx_publications = moca_publications.alias('plx_publications')
 
-    query = select(data_parallaxes.c.parallax_mas,
+    query = (select([data_parallaxes.c.parallax_mas,
                    data_parallaxes.c.parallax_mas_unc,
-                   ).where(
-        (data_parallaxes.c.moca_oid == moca_oid)
-    ).limit(1)
+                   func.concat(func.coalesce(func.coalesce(plx_publications.c.name, plx_publications.c.moca_pid), data_parallaxes.c.origin),func.coalesce(func.concat(', ',data_parallaxes.c.mission_name,func.coalesce(func.concat(' ',data_parallaxes.c.data_release),'')),'')).label('plx_ref')
+                ])
+                .select_from(data_parallaxes
+                            .outerjoin(
+                                plx_publications,
+                                (plx_publications.c.moca_pid == data_parallaxes.c.moca_pid)
+                            )
+                    )
+                .where(
+                    (data_parallaxes.c.moca_oid == moca_oid)
+                ).limit(1))
+
     plx_df = pd.read_sql(query, connection)
 
     #Query all coordinates
@@ -768,14 +789,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         # Rebuild plx_df and pm_df
         plx_df = pd.DataFrame({
             "parallax_mas": [plx],
-            "parallax_mas_unc": [eplx]
+            "parallax_mas_unc": [eplx],
+            "plx_ref": ["fitted in Astrometric Explorer"]
         })
         # Rebuild pm_df
         pm_df = pd.DataFrame({
             "pmra_masyr": [pmra],
             "pmdec_masyr": [pmdec],
             "pmra_masyr_unc": [epmra],
-            "pmdec_masyr_unc": [epmdec]
+            "pmdec_masyr_unc": [epmdec],
+            "pm_ref": ["fitted in Astrometric Explorer"]
         })
 
     if fit_pm and not fit_plx:
@@ -787,19 +810,20 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             "pmra_masyr": [pmra],
             "pmdec_masyr": [pmdec],
             "pmra_masyr_unc": [epmra],
-            "pmdec_masyr_unc": [epmdec]
+            "pmdec_masyr_unc": [epmdec],
+            "pm_ref": ["fitted in Astrometric Explorer"]
         })
 
     # Extract proper motion and parallax values
     # Extract proper motion and parallax values with errors
     if len(pm_df) != 0:
         pmra_display = format_value_with_error(pm_df.iloc[0]["pmra_masyr"], pm_df.iloc[0]["pmra_masyr_unc"], "mas/yr")
-        pmdec_display = format_value_with_error(pm_df.iloc[0]["pmdec_masyr"], pm_df.iloc[0]["pmdec_masyr_unc"], "mas/yr")
+        pmdec_display = format_value_with_error(pm_df.iloc[0]["pmdec_masyr"], pm_df.iloc[0]["pmdec_masyr_unc"], "mas/yr")+" ("+pm_df["pm_ref"].fillna('No reference').str.replace(r'[()]', '', regex=True).iloc[0]+")"
     else:
         pmra_display, pmdec_display = "N/A", "N/A"
 
     if len(plx_df) != 0:
-        parallax_display = format_value_with_error(plx_df.iloc[0]["parallax_mas"], plx_df.iloc[0]["parallax_mas_unc"], "mas")
+        parallax_display = format_value_with_error(plx_df.iloc[0]["parallax_mas"], plx_df.iloc[0]["parallax_mas_unc"], "mas")+" ("+plx_df["plx_ref"].fillna('No reference').str.replace(r'[()]', '', regex=True).iloc[0]+")"
     else:
         parallax_display = "N/A"
     
