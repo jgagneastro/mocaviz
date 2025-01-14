@@ -43,10 +43,12 @@ def add_gaussian_noise(data, stddev=0.1, max_amplitude=0.4):
 # Define hovertext lines for each row
 def construct_hovertext(row):
     hovertext = [
+        f"",
         f"MOCA OID: {row['moca_oid']}",
         f"Main designation: {row['designation']}",
         f"Spectral type: {row['complete_spectral_type']} ({row['spt_ref']})",
-        f"Distance: {row['distance_display']} ({row['distance_ref']})"
+        f"Distance: {row['distance_display']} ({row['distance_ref']})",
+        f""
     ]
     
     # Add optional keys dynamically
@@ -63,10 +65,20 @@ def construct_hovertext(row):
             hovertext.append(f"{label}{row[key]}")
 
     # Add X and Y axis values
+    hovertext.append(f"")
     hovertext.append(f"X-axis value: {row['x_data_display']}")
     hovertext.append(f"Y-axis value: {row['y_data_display']}")
+
+    # Remove duplicate lines while maintaining order, but allow duplicated empty strings
+    seen = set()
+    unique_hovertext = []
+    for line in hovertext:
+        if line == "" or line not in seen:  # Allow empty strings but deduplicate others
+            unique_hovertext.append(line)
+            if line != "":  # Only track non-empty strings
+                seen.add(line)
     
-    return "<br>".join(hovertext)
+    return "<br>".join(unique_hovertext)
 
 def color_format_value_with_error(value, error, unit=""):
     """
@@ -1038,9 +1050,12 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             if y_data.empty:
                 return empty_figure_noresults, None, None
             
+            # Add mag-related info
+            y_data_reformatted = format_dataframe_with_error(y_data, "magnitude", "magnitude_unc", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            y_data['y_ref'] = y_data['magnitude_name']+" ("+y_photometry_band+") : "+y_data_reformatted['magnitude_display']+" ("+y_data['photometry_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude'] - y_data['dmod']
-            y_data['y_ref'] = y_data['photometry_ref']
             y_data['ey_data'] = np.sqrt(
                 (y_data['magnitude_unc'])**2 + (y_data['dmod_unc'])**2
             )
@@ -1058,10 +1073,14 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             if y_data.empty:
                 return empty_figure_noresults, None, None
             
+            # Add mag-related info
+            y_data_reformatted_1 = format_dataframe_with_error(y_data, "magnitude_1", "magnitude_unc_1", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            y_data_reformatted_2 = format_dataframe_with_error(y_data, "magnitude_2", "magnitude_unc_2", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            y_data['y_ref_1'] = y_data['magnitude_name_1']+" ("+y_photometry_band_1+") : "+y_data_reformatted_1['magnitude_display']+" ("+y_data['photometry_ref_1'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+            y_data['y_ref_2'] = y_data['magnitude_name_2']+" ("+y_photometry_band_2+") : "+y_data_reformatted_2['magnitude_display']+" ("+y_data['photometry_ref_2'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['magnitude_1'] - y_data['magnitude_2']
-            y_data['y_ref_1'] = y_data['photometry_ref_1']
-            y_data['y_ref_2'] = y_data['photometry_ref_2']
             y_data['ey_data'] = np.sqrt(
                 (y_data['magnitude_unc_1'])**2 + (y_data['magnitude_unc_2'])**2
             )
