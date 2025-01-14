@@ -1,7 +1,5 @@
 #TESTING CMD: http://127.0.0.1:8050/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true
 #TESTING SPT VS MK: http://127.0.0.1:8050/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602
-#TODO: reformat spectral type axis
-#TODO: Add spectral type range
 #TODO: Add spectral indices
 #TODO: Rename all DIV elements for a page-specific name
 
@@ -1229,9 +1227,9 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         'A': 'lightblue',
         'F': 'white',
         'G': 'yellow',
-        'K': 'orange',
+        'K': 'darkgreen',
         'M': 'red',
-        'L': 'darkorange',
+        'L': 'orange',
         'T': 'blue',
         'Y': 'purple',
     }
@@ -1285,22 +1283,24 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Add invisible traces to create the spectral class legend
     for spectral_class, color in spectral_class_colors.items():
+        if spectral_class in regular_data['spectral_class'].unique():
+            fig.add_trace(go.Scatter(
+                x=[None],  # No data for the trace
+                y=[None],  # No data for the trace
+                mode='markers',
+                marker=dict(size=10, color=color),
+                name=f"{spectral_class} class"  # Legend entry
+            ))
+
+    # Add an invisible trace for unknown classes if needed
+    if (regular_data['spectral_class'].isnull().any() or not regular_data['spectral_class'].isin(spectral_class_colors.keys()).all()):
         fig.add_trace(go.Scatter(
             x=[None],  # No data for the trace
             y=[None],  # No data for the trace
             mode='markers',
-            marker=dict(size=10, color=color),
-            name=f"{spectral_class} class"  # Legend entry
+            marker=dict(size=10, color=default_color),
+            name="Other classes"
         ))
-
-    # Add an invisible trace for unknown classes if needed
-    fig.add_trace(go.Scatter(
-        x=[None],  # No data for the trace
-        y=[None],  # No data for the trace
-        mode='markers',
-        marker=dict(size=10, color=default_color),
-        name="Other classes"
-    ))
 
     # Add invisible traces for the age_sample legend
     for age_sample, symbol in age_sample_symbols.items():
