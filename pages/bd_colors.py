@@ -437,19 +437,32 @@ def update_x_axis_first_band(axis_type, url):
     if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
         # Parse URL parameters
         url_params = parse_url_params(url)
-        default_value = url_params.get('xaxis_value_1', [None])[0]
+        url_default_value = url_params.get('xaxis_value_1', [None])[0]
 
         if axis_type in ['color', 'absolute_magnitude']:
             
             # Fetch photometry systems for dropdown options
             photometry_systems = fetch_moca_photometry_systems(url)
+            if photometry_systems.empty:
+                return html.Div([
+                    html.Label("Select first band for the x-axis:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No photometry systems available",
+                    )
+                ])
+
             options = [
                 {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
                 for _, row in photometry_systems.iterrows()
             ]
 
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in photometry_systems['moca_psid'].tolist() else None
+
             return html.Div([
-                html.Label("Select first band for x-axis:"),
+                html.Label("Select first band for the x-axis:"),
                 dcc.Dropdown(
                     id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
                     options=options,
@@ -462,13 +475,26 @@ def update_x_axis_first_band(axis_type, url):
 
             # Fetch valid spectral indices for dropdown options
             spectral_indices = fetch_moca_spectral_indices(url)
+            if spectral_indices.empty:
+                return html.Div([
+                    html.Label("Select spectral index for the x-axis:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No spectral index available",
+                    )
+                ])
+        
             options = [
                 {'label': f"{row['description']} ({row['moca_siid']})", 'value': row['moca_siid']}
                 for _, row in spectral_indices.iterrows()
             ]
 
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in spectral_indices['moca_siid'].tolist() else None
+            
             return html.Div([
-                html.Label("Select spectral index for x-axis:"),
+                html.Label("Select spectral index for the x-axis:"),
                 dcc.Dropdown(
                     id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
                     options=options,
@@ -477,7 +503,7 @@ def update_x_axis_first_band(axis_type, url):
                 )
             ])
 
-    return None
+    return html.Div()
 
 @dash.callback(
     Output('bdphot-x-axis-second-band', 'children'),
@@ -488,17 +514,30 @@ def update_x_axis_second_band(axis_type, url):
     if axis_type == 'color':
         # Parse URL parameters
         url_params = parse_url_params(url)
-        default_value = url_params.get('xaxis_value_2', [None])[0]
+        url_default_value = url_params.get('xaxis_value_2', [None])[0]
 
         # Fetch photometry systems for dropdown options
         photometry_systems = fetch_moca_photometry_systems(url)
+        if photometry_systems.empty:
+            return html.Div([
+                html.Label("Select second band for the x-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'second'},
+                    options=[],  # No options available
+                    placeholder="No photometry systems available",
+                )
+            ])
+        
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
         ]
 
+        # Ensure the default value is valid for this axis type
+        default_value = url_default_value if url_default_value in photometry_systems['moca_psid'].tolist() else None
+            
         return html.Div([
-            html.Label("Select second band for x-axis:"),
+            html.Label("Select second band for the x-axis:"),
             dcc.Dropdown(
                 id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'second'},
                 options=options,
@@ -506,7 +545,7 @@ def update_x_axis_second_band(axis_type, url):
                 placeholder="Select second band",
             )
         ])
-    return None
+    return html.Div()
 
 @dash.callback(
     Output('bdphot-y-axis-first-band', 'children'),
@@ -515,22 +554,39 @@ def update_x_axis_second_band(axis_type, url):
 )
 def update_y_axis_first_band(axis_type, url):
     
+    # Reset logic
+    if axis_type not in ['color', 'absolute_magnitude', 'spectral_index']:
+        return None  # Clear the dropdown if the type doesn't match
+    
     if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
         # Parse URL parameters
         url_params = parse_url_params(url)
-        default_value = url_params.get('yaxis_value_1', [None])[0]
+        url_default_value = url_params.get('yaxis_value_1', [None])[0]
 
         if axis_type in ['color', 'absolute_magnitude']:
             
             # Fetch photometry systems for dropdown options
             photometry_systems = fetch_moca_photometry_systems(url)
+            if photometry_systems.empty:
+                return html.Div([
+                    html.Label("Select second band for the x-axis:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No photometry systems available",
+                    )
+                ])
+        
             options = [
                 {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
                 for _, row in photometry_systems.iterrows()
             ]
 
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in photometry_systems['moca_psid'].tolist() else None
+
             return html.Div([
-                html.Label("Select first band for y-axis:"),
+                html.Label("Select first band for the y-axis:"),
                 dcc.Dropdown(
                     id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
                     options=options,
@@ -543,13 +599,26 @@ def update_y_axis_first_band(axis_type, url):
 
             # Fetch valid spectral indices for dropdown options
             spectral_indices = fetch_moca_spectral_indices(url)
+            if spectral_indices.empty:
+                return html.Div([
+                    html.Label("Select spectral index for the y-axis:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No spectral index available",
+                    )
+                ])
+            
             options = [
                 {'label': f"{row['description']} ({row['moca_siid']})", 'value': row['moca_siid']}
                 for _, row in spectral_indices.iterrows()
             ]
 
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in spectral_indices['moca_siid'].tolist() else None
+
             return html.Div([
-                html.Label("Select spectral index for y-axis:"),
+                html.Label("Select spectral index for the y-axis:"),
                 dcc.Dropdown(
                     id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
                     options=options,
@@ -558,7 +627,7 @@ def update_y_axis_first_band(axis_type, url):
                 )
             ])
     
-    return None
+    return html.Div()
 
 @dash.callback(
     Output('bdphot-y-axis-second-band', 'children'),
@@ -569,17 +638,28 @@ def update_y_axis_second_band(axis_type, url):
     if axis_type == 'color':
         # Parse URL parameters
         url_params = parse_url_params(url)
-        default_value = url_params.get('yaxis_value_2', [None])[0]
+        url_default_value = url_params.get('yaxis_value_2', [None])[0]
 
         # Fetch photometry systems for dropdown options
         photometry_systems = fetch_moca_photometry_systems(url)
+        if photometry_systems.empty:
+            return html.Div([
+                html.Label("Select second band for the y-axis:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'second'},
+                    options=[],  # No options available
+                    placeholder="No photometry systems available",
+                )
+            ])
+        
         options = [
             {'label': f"{row['name']} ({row['moca_psid']})", 'value': row['moca_psid']}
             for _, row in photometry_systems.iterrows()
         ]
-
+        default_value = url_default_value if url_default_value in photometry_systems['moca_psid'].tolist() else None
+        
         return html.Div([
-            html.Label("Select second band for y-axis:"),
+            html.Label("Select second band for the y-axis:"),
             dcc.Dropdown(
                 id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'second'},
                 options=options,
@@ -587,7 +667,7 @@ def update_y_axis_second_band(axis_type, url):
                 placeholder="Select second band",
             )
         ])
-    return None
+    return html.Div()
 
 @dash.callback(
     [
@@ -1415,6 +1495,12 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     # Merge the x and y data on moca_oid
     merged_data = pd.merge(x_data, y_data, on='moca_oid', how='inner')
     
+    # Remove rows with missing or invalid data in x_data or y_data
+    merged_data = merged_data.dropna(subset=['x_data', 'y_data'])
+
+    # Remove rows with non-finite (infinite or NaN) values in x_data or y_data
+    merged_data = merged_data[(merged_data['x_data'].apply(np.isfinite)) & (merged_data['y_data'].apply(np.isfinite))]
+
     if merged_data.empty:
         return empty_figure_noresults, None, None
 
@@ -1564,10 +1650,28 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
     fig.update_layout(
         xaxis_title=x_axis_label,
         yaxis_title=y_axis_label,
+        xaxis=dict(
+            gridcolor='rgba(211, 211, 211, 0.6)',
+            showline=True,
+            linewidth=2,
+            linecolor='black',
+            mirror=True,
+            ticks='outside',
+            tickwidth=2,
+        ),
+        yaxis=dict(
+            gridcolor='rgba(211, 211, 211, 0.6)',
+            showline=True,
+            linewidth=2,
+            linecolor='black',
+            mirror=True,
+            ticks='outside',
+            tickwidth=2,
+            range=y_range,
+        ),
         template="plotly_white",
         legend_title="Spectral Class",
         height=800,  # Increase the height (default is usually ~450-500)
-        yaxis=dict(range=y_range)  # Apply the flipped range for absolute magnitudes
     )
 
     # Update x-axis tick labels if spectral type is selected
