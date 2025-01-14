@@ -657,7 +657,7 @@ def update_y_axis_second_band(axis_type, url):
             for _, row in photometry_systems.iterrows()
         ]
         default_value = url_default_value if url_default_value in photometry_systems['moca_psid'].tolist() else None
-        
+
         return html.Div([
             html.Label("Select second band for the y-axis:"),
             dcc.Dropdown(
@@ -1549,7 +1549,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
 
     # Define legend names for age_sample categories
     age_sample_legend_names = {
-        'field': 'Field',
+        'field': 'No spectral flags',
         'young': 'Young or red',
         'old': 'Subdwarf or blue',
     }
@@ -1670,7 +1670,16 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             range=y_range,
         ),
         template="plotly_white",
-        legend_title="Spectral Class",
+        #legend_title="Spectral Class",
+        legend=dict(
+             title=dict(
+                text="<b> Legend</b>",  # Make the title bold
+                font=dict(size=14)  # Optional: adjust font size
+            ),
+            bgcolor='rgba(255, 255, 255, 0.5)',  # Optional: semi-transparent background
+            bordercolor='black',
+            borderwidth=2
+        ),
         height=800,  # Increase the height (default is usually ~450-500)
     )
 

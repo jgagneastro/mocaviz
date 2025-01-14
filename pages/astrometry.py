@@ -1058,7 +1058,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             #x=0.02, y=0.98,  # Adjust legend position as needed
             bgcolor='rgba(255, 255, 255, 0.5)',  # Optional: semi-transparent background
             bordercolor='black',
-            borderwidth=1
+            borderwidth=2
         ),
         annotations=[
             dict(
