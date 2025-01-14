@@ -704,6 +704,8 @@ def update_dropdowns_from_url(url):
     [
         Input('bdphot-x-axis-type-dropdown', 'value'),
         Input('bdphot-y-axis-type-dropdown', 'value'),
+        Input('bdphot-x-axis-type-dropdown', 'options'),  # Access options of x-axis dropdown
+        Input('bdphot-y-axis-type-dropdown', 'options'),  # Access options of y-axis dropdown
         Input({'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': ALL}, 'value'),
         Input({'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': ALL}, 'value'),
         Input('bdphot-moca-ids-input', 'value'),
@@ -716,7 +718,7 @@ def update_dropdowns_from_url(url):
     ],
     State('url', 'href')
 )
-def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
+def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
 
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
@@ -727,11 +729,15 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         except ValueError:
             moca_ids_array = []
 
+    # Extract labels for the selected axis types
+    x_axis_type_label = next((opt['label'] for opt in x_axis_options if opt['value'] == x_axis_type), None)
+    y_axis_type_label = next((opt['label'] for opt in y_axis_options if opt['value'] == y_axis_type), None)
+
     if x_band_values:
         # Get the input IDs and associated values from callback context
         input_ids_and_values = [
             (item['id'], value) 
-            for item, value in zip(dash.callback_context.inputs_list[2], x_band_values)
+            for item, value in zip(dash.callback_context.inputs_list[4], x_band_values)
         ]
 
         # Sort based on the 'band' key in the ID
@@ -747,7 +753,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         # Get the input IDs and associated values from callback context
         input_ids_and_values = [
             (item['id'], value) 
-            for item, value in zip(dash.callback_context.inputs_list[3], y_band_values)
+            for item, value in zip(dash.callback_context.inputs_list[5], y_band_values)
         ]
 
         # Sort based on the 'band' key in the ID
@@ -1671,6 +1677,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
         ),
         template="plotly_white",
         #legend_title="Spectral Class",
+        margin=dict(l=40, r=40, t=40, b=40),
         legend=dict(
              title=dict(
                 text="<b> Legend</b>",  # Make the title bold
@@ -1680,6 +1687,17 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
             bordercolor='black',
             borderwidth=2
         ),
+        title=None,
+        annotations=[
+            dict(
+                xref="paper", yref="paper",
+                x=0.5, y=1.05,  # Position above the graph
+                text=f"<b> {y_axis_type_label} versus {x_axis_type_label} for spectral types {generate_spectral_type_label(spt_range['min'])}-{generate_spectral_type_label(spt_range['max'])} </b>",
+                showarrow=False,
+                font=dict(size=14, color="black"),
+                align="center"
+            )
+        ],
         height=800,  # Increase the height (default is usually ~450-500)
     )
 
