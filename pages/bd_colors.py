@@ -778,7 +778,7 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     .join(
                         photometry,
                         (photometry.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (photometry.c.adopted == 1)
+                        (photometry.c.adopted == 1) & (photometry.c.magnitude_unc.isnot(None))
                     )
                     .join(
                         photsys,
@@ -894,12 +894,12 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                     .join(
                         phot1,
                         (phot1.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (phot1.c.adopted == 1)
+                        (phot1.c.adopted == 1) & (phot1.c.magnitude_unc.isnot(None))
                     )
                     .join(
                         phot2,
                         (phot2.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (phot2.c.adopted == 1)
+                        (phot2.c.adopted == 1) & (phot2.c.magnitude_unc.isnot(None))
                     )
                     .join(
                         photsys1,
@@ -1002,8 +1002,8 @@ def update_plot(x_axis_type, y_axis_type, x_band_values, y_band_values, moca_ids
                 return empty_figure_noresults, None, None
             
             # Add mag-related info
-            x_data_reformatted_1 = format_dataframe_with_error(x_data, "magnitude_1", "magnitude_unc_1", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
-            x_data_reformatted_2 = format_dataframe_with_error(x_data, "magnitude_2", "magnitude_unc_2", unit="mag", output_col="magnitude_display").loc[:, ["magnitude_display"]]
+            x_data_reformatted_1 = format_dataframe_with_error(x_data, "magnitude_1", "magnitude_unc_1", unit="mag", output_col="magnitude_display_1").loc[:, ["magnitude_display_1"]]
+            x_data_reformatted_2 = format_dataframe_with_error(x_data, "magnitude_2", "magnitude_unc_2", unit="mag", output_col="magnitude_display_2").loc[:, ["magnitude_display_2"]]
             x_data['x_ref_1'] = x_data['magnitude_name_1']+" ("+x_photometry_band_1+") : "+x_data_reformatted_1['magnitude_display']+" ("+x_data['photometry_ref_1'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
             x_data['x_ref_2'] = x_data['magnitude_name_2']+" ("+x_photometry_band_2+") : "+x_data_reformatted_2['magnitude_display']+" ("+x_data['photometry_ref_2'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
 
