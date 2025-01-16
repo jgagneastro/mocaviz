@@ -863,14 +863,14 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         # Add a filter for binary systems if the checkbox is off
         binary_filter = None
         if 'binaries' not in binaries_value:
-            binary_filter = ~(
+            binary_filter = (~(
                 mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:C%') |
                 mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:Y%')
-            ) | (mechanics_object_properties_combined.c.all_prop_confidences.is_(None))
+            ) | (mechanics_object_properties_combined.c.all_prop_confidences.is_(None))) | (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
 
         # Add filter for photometric spectral type estimates
         if 'spectral_type_estimates' not in spectral_type_estimates_value:
-            spectral_type_filter = (cdata_spectral_types.c.photometric_estimate == 0)
+            spectral_type_filter = (cdata_spectral_types.c.photometric_estimate == 0) | (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
         else:
             spectral_type_filter = True  # No filter applied
 
@@ -1087,7 +1087,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1198,7 +1199,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1326,7 +1328,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])
+                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
