@@ -117,7 +117,7 @@ def compute_ticks(data_range, axis_length_pixels=400, min_tick_spacing=50):
     return ticks
     
 # Add Gaussian noise for the spt axis
-def add_gaussian_noise(data, stddev=0.1, max_amplitude=0.4):
+def add_gaussian_noise(data, stddev=0.25, max_amplitude=0.5):
     """
     Add Gaussian noise to the data with the given standard deviation and limit.
     If noise falls outside the range [-max_amplitude, max_amplitude], it is re-generated
