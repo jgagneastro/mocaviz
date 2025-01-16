@@ -802,7 +802,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         })
 
     if fit_pm and not fit_plx:
-        #import pdb; pdb.set_trace()
+        
         pmra, epmra, pmra_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'])
         pmdec, epmdec, pmdec_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'])
         # Rebuild pm_df

@@ -348,8 +348,14 @@ layout = (
         }),
 
         # Scatter Plot
-        dcc.Graph(id='bdphot-scatter-plot',config=figure_export_config),
+        dcc.Graph(id='bdphot-scatter-plot', config=figure_export_config, clickData=None),
         
+        # Clicked moca_oid store
+        dcc.Store(id='bdphot-clicked-moca-oid'),
+
+        # Dummy output used by the click-window open architecture
+        html.Div(id="bdphot-dummy-output", style={"display": "none"}),
+
         # Missing MOCA IDs display
         html.Div(id='bdphot-missing-moca-ids', style={'color': 'red', 'marginTop': '1rem'}),
 
@@ -1685,7 +1691,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         ),
         template="plotly_white",
         #legend_title="Spectral Class",
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=70, b=40),
         legend=dict(
              title=dict(
                 text="<b> Legend</b>",  # Make the title bold
@@ -1699,8 +1705,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         annotations=[
             dict(
                 xref="paper", yref="paper",
-                x=0.5, y=1.05,  # Position above the graph
-                text=f"<b> {y_axis_type_label} versus {x_axis_type_label} for spectral types {generate_spectral_type_label(spt_range['min'])}-{generate_spectral_type_label(spt_range['max'])} </b>",
+                x=0.5, y=1.075,  # Position above the graph
+                text=f"<b> {y_axis_type_label} versus {x_axis_type_label} for spectral types {generate_spectral_type_label(spt_range['min'])}-{generate_spectral_type_label(spt_range['max'])} </b><br>Click any data point to open its MOCA report",
                 showarrow=False,
                 font=dict(size=14, color="black"),
                 align="center"
@@ -1935,3 +1941,25 @@ def validate_spt_range(spt_range, url):
 
     # Valid input
     return error_message, spt_range, {'min': spt_min, 'max': spt_max}
+
+@dash.callback(
+    Output('bdphot-clicked-moca-oid', 'data'),
+    Input('bdphot-scatter-plot', 'clickData')
+)
+def store_clicked_moca_oid(clickData):
+    if clickData and 'points' in clickData:
+        return clickData['points'][0]['customdata']  # Extract `moca_oid`
+    return dash.no_update
+
+dash.clientside_callback(
+    """
+    function(moca_oid) {
+        if (moca_oid) {
+            window.open('https://mocadb.ca/search/results?search-query=oid%28' + moca_oid + '%29&search-type=star', '_blank');
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('bdphot-dummy-output', 'children'),  # Use a dummy output to avoid conflicts
+    Input('bdphot-clicked-moca-oid', 'data')
+)
