@@ -1161,7 +1161,6 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 .select_from(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
-                    .join(cdata_distances, distance_join_condition)
                     .join(
                         cdata_spectral_indices,
                         (cdata_spectral_indices.c.moca_oid == cdata_spectral_types.c.moca_oid) &
@@ -1171,6 +1170,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         moca_spectral_indices,
                         (cdata_spectral_indices.c.moca_siid == moca_spectral_indices.c.moca_siid)
                     )
+                    .outerjoin(cdata_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
                         (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
