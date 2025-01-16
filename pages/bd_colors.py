@@ -975,8 +975,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     ((cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1087,8 +1087,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1199,8 +1199,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1328,8 +1328,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
-                    (cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max']) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
                 .group_by(cdata_spectral_types.c.moca_oid)
             )
@@ -1517,7 +1517,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
     # Merge the x and y data on moca_oid
     merged_data = pd.merge(x_data, y_data, on='moca_oid', how='inner')
-    
+
     # Remove rows with missing or invalid data in x_data or y_data
     merged_data = merged_data.dropna(subset=['x_data', 'y_data'])
 
