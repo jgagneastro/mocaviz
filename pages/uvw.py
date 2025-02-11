@@ -4,7 +4,7 @@ from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
 
-from mocaviz import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title
+from mocaviz import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title, build_gmm_density_3d
 
 dash.register_page(__name__)
 
@@ -384,6 +384,9 @@ def generate_uvw_map_uvwpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
         if models_visible:
             dfm_aid = dfm[dfm["moca_aid"] == association]
 
+            # Initialize the components list
+            components = []
+
             for index, dfm_row in dfm_aid.iterrows():
 
                 # Rebuild covariance matrix and offset from the models dataframe
@@ -394,10 +397,25 @@ def generate_uvw_map_uvwpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
                     [dfm_row[xvar_orig+zvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar'],dfm_row[zvar_orig+zvar_orig+'_covar']]
                     ])
 
-                ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
-
-                for elli in ellipses:
-                    data.append(elli)
+                # Extract amplitude (weight), defaulting to 1.0 if None
+                weight = dfm_row["coeff_amplitude"]
+                if pd.isna(weight):  # Handle None or NaN values
+                    weight = 1.0
+                
+                # Append to components list
+                components.append({
+                    "weight": weight,
+                    "mean": offset,
+                    "cov": covar_matrix
+                })
+            
+            # Plot the GMM model
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.99, opacity=0.07, mesh=False)
+            data.extend(model)
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.95, opacity=0.15, mesh=False)
+            data.extend(model)
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.68, opacity=0.3, mesh=False)
+            data.extend(model)
     
     if len(dfo) != 0:
         
