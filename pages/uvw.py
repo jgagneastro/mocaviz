@@ -4,7 +4,7 @@ from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
 
-from mocaviz import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title, build_gmm_density_3d
+from utils.plot_banyan_model_helpers import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title, build_gmm_density_3d
 
 dash.register_page(__name__)
 
