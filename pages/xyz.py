@@ -3,7 +3,7 @@ from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
 
-from mocaviz import build_ellipsoid_3d
+from mocaviz import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title, build_gmm_density_3d
 
 dash.register_page(__name__)
 
@@ -234,47 +234,6 @@ def build_hover_dfo(dff):
     )
 
 # Eventually move this to a subroutine
-def build_graph_title(title):
-    return html.P(className="graph-title", children=title)
-
-def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opacity=0.2, npoints=500):
-    
-    #Build 3D grid
-    phi = np.linspace(0, 2*np.pi,num=npoints)
-    radii = (np.linspace(0,radius,num=nlines+1))[1:]
-    phim, radiim = np.meshgrid(phi, radii)
-
-    x = np.cos(phim) * radiim
-    y = np.sin(phim) * radiim
-    z = phim * 0
-
-    # Create the plot
-    thick = 3
-    lines = []
-    line_marker = dict(color=trace_color, width=thick)
-
-    # First layer of grid lines
-    for i, j, k in zip(x, y, z):
-        lines.append(go.Scatter3d(x=i, y=j, z=k, mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
-
-    #Add 500 pc blue line
-
-    opacity=0.5
-    maxrad = 500
-    thick = 5
-    linvec = np.linspace(0,maxrad,num=npoints)
-    zeros = np.zeros(npoints)
-
-    lines.append(go.Scatter3d(x=zeros, y=zeros, z=linvec, mode='lines', line=dict(color='blue', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=linvec, y=zeros, z=zeros, mode='lines', line=dict(color='red', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=linvec, z=zeros, mode='lines', line=dict(color='green', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=zeros, z=-linvec, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=-linvec, y=zeros, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=-linvec, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-
-    return lines
-
-# Eventually move this to a subroutine
 def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure):
 
     # Read hover property
@@ -423,6 +382,9 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
         if models_visible:
             dfm_aid = dfm[dfm["moca_aid"] == association]
             
+            # Initialize the components list
+            components = []
+            
             for index, dfm_row in dfm_aid.iterrows():
 
                 # Rebuild covariance matrix and offset from the models dataframe
@@ -433,10 +395,27 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
                     [dfm_row[xvar_orig+zvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar'],dfm_row[zvar_orig+zvar_orig+'_covar']]
                     ])
 
-                ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
+                # Extract amplitude (weight), defaulting to 1.0 if None
+                weight = dfm_row["coeff_amplitude"]
+                if pd.isna(weight):  # Handle None or NaN values
+                    weight = 1.0
+                
+                # Append to components list
+                components.append({
+                    "weight": weight,
+                    "mean": offset,
+                    "cov": covar_matrix
+                })
 
-                for elli in ellipses:
-                    data.append(elli)
+                #ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
+
+                #for elli in ellipses:
+                #    data.append(elli)
+            
+            # Plot the GMM model
+            model = build_gmm_density_3d(components, colormap[association])
+            #data.append(model)                
+            data.extend(model)
     
     if len(dfo) != 0:
         

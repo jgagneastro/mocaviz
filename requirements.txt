@@ -28,3 +28,5 @@ typing-extensions==4.4.0
 uuid==1.30
 Werkzeug==2.2.2
 zipp==3.13.0
+scikit-image==0.21.0
+scipy==1.10.1
