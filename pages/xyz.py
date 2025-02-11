@@ -407,14 +407,12 @@ def generate_xyz_map_xyzpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
                     "cov": covar_matrix
                 })
 
-                #ellipses = build_ellipsoid_3d(offset, covar_matrix, colormap[association])
-
-                #for elli in ellipses:
-                #    data.append(elli)
-            
             # Plot the GMM model
-            model = build_gmm_density_3d(components, colormap[association])
-            #data.append(model)                
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.99, opacity=0.07, mesh=False)
+            data.extend(model)
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.95, opacity=0.15, mesh=False)
+            data.extend(model)
+            model = build_gmm_density_3d(components, colormap[association], contour_level=0.68, opacity=0.3, mesh=False)
             data.extend(model)
     
     if len(dfo) != 0:
