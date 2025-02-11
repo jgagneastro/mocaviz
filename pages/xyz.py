@@ -3,6 +3,8 @@ from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
 
+from mocaviz import build_ellipsoid_3d
+
 dash.register_page(__name__)
 
 import pathlib, os
@@ -234,47 +236,6 @@ def build_hover_dfo(dff):
 # Eventually move this to a subroutine
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
-
-# Eventually move this to a subroutine
-# Build 3D ellipsoids to show BANYAN models
-def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.5):
-    
-    #Build rotation matrix with singular value decomposition
-    u, s, vh = np.linalg.svd(covar_matrix)
-    rotmat = u
-    
-    #3D version of 68% volume inclusion requires a factor 1.557
-    #inverf((erf(1d0/sqrt(2d0)))^(1d0/3))*sqrt(2d0)
-    a, b, c = np.sqrt(s)*1.557
-
-    #Build 3D grid
-    phi = np.linspace(0, 2*np.pi,num=20)
-    theta = np.linspace(-np.pi/2, np.pi/2,num=20)
-    phi, theta=np.meshgrid(phi, theta)
-
-    x = np.cos(theta) * np.sin(phi) * a
-    y = np.cos(theta) * np.cos(phi) * b
-    z = np.sin(theta) * c
-
-    xf = x
-    yf = z*b/c
-    zf = y*c/b
-
-    # Create the plot
-    lines = []
-    line_marker = dict(color=trace_color, width=2)
-    
-    # First layer of grid lines
-    for i, j, k in zip(x, y, z):
-        ir, jr, kr = rotmat@[i,j,k]
-        lines.append(go.Scatter3d(x=ir+offset[0], y=jr+offset[1], z=kr+offset[2], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
-    
-    # Second layer of grid lines rotated by 90 degrees
-    for i, j, k in zip(xf, yf, zf):
-        ir, jr, kr = rotmat@[i,j,k]
-        lines.append(go.Scatter3d(x=ir+offset[0], y=jr+offset[1], z=kr+offset[2], mode='lines', line=line_marker, hoverinfo='skip', opacity=opacity, showlegend=False))
-
-    return lines
 
 def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opacity=0.2, npoints=500):
     
