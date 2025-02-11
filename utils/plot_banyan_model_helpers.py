@@ -114,7 +114,7 @@ def build_gmm_density_3d(components, trace_color, opacity=0.5, contour_level=0.9
     
     # Define dynamic grid limits based on GMM parameters
     x_min, x_max, y_min, y_max, z_min, z_max = compute_grid_limits(components, sigma_scale=5)
-    num_points = 50
+    num_points = 100
 
     # Create a 3D grid
     x = np.linspace(x_min, x_max, num_points)
