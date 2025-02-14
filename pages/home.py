@@ -13,6 +13,7 @@ default_text = \
 " * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer?#args#).\n" + \
 " * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz?#args#).\n" + \
 " * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA kinematic explorer](/uvw?#args#).\n" + \
+" * Explore the 3D XYZUVW spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyzuvw?#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
 " * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra?#args#).\n" + \
 " * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs?#args#).\n" + \

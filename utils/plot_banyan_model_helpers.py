@@ -110,7 +110,7 @@ def compute_grid_limits(components, sigma_scale=10):
 
     return min_bounds[0], max_bounds[0], min_bounds[1], max_bounds[1], min_bounds[2], max_bounds[2]
 
-def build_gmm_density_3d(components, trace_color, opacity=0.5, contour_level=0.9, mesh=True):
+def build_gmm_density_3d(components, trace_color, opacity=0.5, contour_level=0.9, mesh=True, legendname='GMM models', showlegend=False, legendgroup='GMM models'):
     
     # Define dynamic grid limits based on GMM parameters
     x_min, x_max, y_min, y_max, z_min, z_max = compute_grid_limits(components, sigma_scale=5)
@@ -160,6 +160,7 @@ def build_gmm_density_3d(components, trace_color, opacity=0.5, contour_level=0.9
             x=verts_real[:, 0], y=verts_real[:, 1], z=verts_real[:, 2],
             i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
             color=trace_color, opacity=opacity,
+            showlegend=showlegend,legendgroup=legendgroup, name=legendname
         )]
         return lines
 
@@ -211,18 +212,18 @@ def build_gmm_density_3d(components, trace_color, opacity=0.5, contour_level=0.9
     lines.append(go.Scatter3d(
         x=edge_x_xy, y=edge_y_xy, z=edge_z_xy, 
         mode='lines', line=line_marker, hoverinfo='skip',
-        opacity=opacity, showlegend=False))
+        opacity=opacity, showlegend=showlegend, legendgroup=legendgroup, name=legendname))
     
     # Add XZ-plane aligned grid (vertical mesh)
     lines.append(go.Scatter3d(
         x=edge_x_xz, y=edge_y_xz, z=edge_z_xz,
         mode='lines', line=line_marker, hoverinfo='skip',
-        opacity=opacity, showlegend=False))
+        opacity=opacity, showlegend=showlegend, legendgroup=legendgroup, name=legendname))
     
     # Add YZ-plane aligned grid (side mesh)
     lines.append(go.Scatter3d(
         x=edge_x_yz, y=edge_y_yz, z=edge_z_yz,
         mode='lines', line=line_marker, hoverinfo='skip',
-        opacity=opacity, showlegend=False))
+        opacity=opacity, showlegend=showlegend, legendgroup=legendgroup, name=legendname))
     
     return lines
