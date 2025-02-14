@@ -53,14 +53,29 @@ query_e = f"""
     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
     FROM mechanics_memberships_vetted mv
+    JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1 AND ya_prob >= 90) cbs USING(moca_oid, moca_aid)
     LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
     LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
     LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
-    LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
+
+# query_e = f"""
+#     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
+#     {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w, 
+#     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
+#     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
+#     FROM mechanics_memberships_vetted mv
+#     LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
+#     LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
+#     LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+#     LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
+#     LEFT JOIN calc_xyz xyz USING(moca_oid)
+#     LEFT JOIN moca_objects mo USING(moca_oid)
+#     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
+# """
 query_oe = f"""
     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
     {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w,
@@ -915,6 +930,10 @@ layout = html.Div(
                                             "label": "Enable Hover Properties",
                                             "value": "hover",
                                         },
+                                        {
+                                            "label": "Only Display Likely Members",
+                                            "value": "likely",
+                                        },
                                     ],
                                     value=["BANYAN Models"],
                                 ),
@@ -967,6 +986,33 @@ layout = html.Div(
         #         ),
         #     ],
         # ),
+    html.Div(
+        className="row",
+        id="url-help-section-xupage",
+        children=[
+            html.Hr(),
+            html.H3("Using URL Parameters"),
+            dcc.Markdown(
+                """
+                You can customize the visualization by adding parameters to the URL.  
+                Use `?param=value` format and separate multiple parameters with `&`.
+
+                **Available URL parameters:**
+                - `axes=xuw` → Sets the displayed axes to **X, U, W**.
+                - `asso=THA,COL` → Selects the **THA** and **COL** associations.
+                - `mtid=BF,HM,CM` → Filters by membership types **BF, HM, CM**.
+                - `oid=12345,67890` → Highlights individual objects by MOCA OID.
+
+                **Example URLs:**
+                - `https://dataviz.mocadb.ca/xyzuvw?axes=xuw&asso=THA,COL`
+                - `https://dataviz.mocadb.ca/xyzuvw?mtid=BF,HM&oid=12345,67890`
+                """
+            ),
+        ],
+        style={"padding": "20px", "backgroundColor": "#f9f9f9"}
+    ),
+    dcc.Store(id='clicked-moca-oid-xupage'),  # Stores clicked MOCA OID
+    html.Div(id='dummy-output-xupage'),  # Needed for the client-side callback
     ]
 )
 
@@ -1076,13 +1122,22 @@ def update_axes_from_url_xupage(url_search):
         Input("aid-select-xupage", "value"),
         Input("mtid-select-xupage", "value"),
         Input("oid-select-xupage", "value"),
+        Input("xymap-view-selector-xupage", "value"),
     ],
     state=[State("url","search")]
 )
 def update_aid_select_xupage(
-    aid_select, mtid_select, oid_select, url_search
+    aid_select, mtid_select, oid_select, xymap_view, url_search
 ):
     
+    # Determine if the "Only Display Likely Members" checkbox is checked
+    if "likely" in xymap_view:
+        query_e_modified = query_e.replace("LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)",
+                                           "JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1 AND ya_prob >= 90) cbs USING(moca_oid, moca_aid)")
+    else:
+        query_e_modified = query_e  # Use the default query
+
+
     #print("DBQUERY callback-xupage")
     
     # Read default associations from URL if none are selected
@@ -1154,7 +1209,7 @@ def update_aid_select_xupage(
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["mv.moca_aid='"+stri+"'" for stri in aid_select])
         mtid_query = " OR ".join(["mv.moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query(query_e+" WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df = moca.query(query_e_modified+" WHERE ("+mtid_query+") AND ("+aid_query+")")
         #df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
         #df['gr'] = df['gmag']-df['rmag']
         #df['br'] = df['bmag']-df['rmag']
@@ -1373,3 +1428,25 @@ def equatorial_UVW(ra,dec,pmra,pmdec,rv,dist,pmra_error=None,pmdec_error=None,rv
 	
 	#Return measurements and error bars
 	return (U, V, W, EU, EV, EW)
+
+@dash.callback(
+    Output('clicked-moca-oid-xupage', 'data'),
+    Input('xyz-map-xupage', 'clickData')
+)
+def store_clicked_moca_oid_xupage(clickData):
+    if clickData and 'points' in clickData:
+        return clickData['points'][0]['customdata']  # Extract `moca_oid`
+    return dash.no_update
+
+dash.clientside_callback(
+    """
+    function(moca_oid) {
+        if (moca_oid) {
+            window.open('https://mocadb.ca/search/results?search-query=oid%28' + moca_oid + '%29&search-type=star', '_blank');
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('dummy-output-xupage', 'children'),  # Dummy output (not used)
+    Input('clicked-moca-oid-xupage', 'data')
+)
