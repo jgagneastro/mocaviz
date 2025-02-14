@@ -811,7 +811,6 @@ layout = html.Div(
                                         dcc.Dropdown(
                                             id="axis-1-dropdown-xupage",
                                             options=[{"label": i, "value": i} for i in ["X", "Y", "Z", "U", "V", "W"]],
-                                            value="X",
                                             clearable=False,
                                             style={"width": "100%"}
                                         )
@@ -823,7 +822,6 @@ layout = html.Div(
                                         dcc.Dropdown(
                                             id="axis-2-dropdown-xupage",
                                             options=[{"label": i, "value": i} for i in ["X", "Y", "Z", "U", "V", "W"]],
-                                            value="Y",
                                             clearable=False,
                                             style={"width": "100%"}
                                         )
@@ -835,7 +833,6 @@ layout = html.Div(
                                         dcc.Dropdown(
                                             id="axis-3-dropdown-xupage",
                                             options=[{"label": i, "value": i} for i in ["X", "Y", "Z", "U", "V", "W"]],
-                                            value="Z",
                                             clearable=False,
                                             style={"width": "100%"}
                                         )
@@ -1043,6 +1040,27 @@ selections = {
 
 #     return df_out.to_dict('records'), selected_index, table_data_style_conditional
 
+@dash.callback(
+    output=[
+        Output("axis-1-dropdown-xupage", "value"),
+        Output("axis-2-dropdown-xupage", "value"),
+        Output("axis-3-dropdown-xupage", "value"),
+    ],
+    inputs=[Input("url", "search")]
+)
+def update_axes_from_url_xupage(url_search):
+    """Extract axis selections from the URL and update dropdown values."""
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+
+        if 'axes' in parsed_url_data:
+            axes = list(parsed_url_data['axes'][0])  # Convert "xuw" into ["x", "u", "w"]
+            if len(axes) == 3:
+                return axes[0].upper(), axes[1].upper(), axes[2].upper()
+
+    # Default values if no valid URL parameter
+    return "X", "Y", "Z"
 
 # Eventually move this to a subroutine if possible
 # Update AID- and MTID-select
@@ -1061,7 +1079,7 @@ selections = {
     ],
     state=[State("url","search")]
 )
-def update_aid_select_xyzpage(
+def update_aid_select_xupage(
     aid_select, mtid_select, oid_select, url_search
 ):
     
@@ -1193,14 +1211,10 @@ def get_axis_unit(axis):
         axis_1=Input("axis-1-dropdown-xupage", "value"),
         axis_2=Input("axis-2-dropdown-xupage", "value"),
         axis_3=Input("axis-3-dropdown-xupage", "value"),
-        #hover_select=Input("hover-select-xupage", "value"),
-        #recenter=Input("xyz-recenter-in-xupage", "n_clicks"),
-        #zoom_out=Input("xyz-zoom-out-xupage", "n_clicks"),
-        #zoom_in=Input("xyz-zoom-in-xupage", "n_clicks"),
     ),
     state=dict(aid_select=State("aid-select-xupage", "value"), self_figure=State("xyz-map-xupage", "figure")),
 )
-def update_xyz_map_xyzpage(
+def update_map_xupage(
     #selections, 
     jsonified_db_data, xymap_view,
     axis_1, axis_2, axis_3,
@@ -1242,37 +1256,6 @@ def update_xyz_map_xyzpage(
     df_asso_centers = pd.read_json(jsonified_db_data[3], orient='split')
 
     return generate_xyzuvw_map(df, dfm, dfo, df_asso_centers, aid_select, axis_1.lower(), axis_2.lower(), axis_3.lower(), axis_1.upper(), axis_2.upper(), axis_3.upper(), f'{axis_1}{axis_2}{axis_3} Galactic coordinates', processed_data, xymap_view, self_figure)
-
-# # Update UVW Map
-# @dash.callback(
-#     output=Output("uvw-map-xupage", "figure"),
-#     inputs=dict(
-#         #selections=selections,
-#         jsonified_db_data=Input("db-data-xupage", "data"),
-#         xymap_view=Input("xymap-view-selector-xupage", "value"),
-#         #hover_select=Input("hover-select-xupage", "value"),
-#         #zoom_out=Input("uvw-zoom-out-xupage", "n_clicks"),
-#         #zoom_in=Input("uvw-zoom-in-xupage", "n_clicks"),
-#     ),
-#     state=dict(aid_select=State("aid-select-xupage", "value"), self_figure=State("uvw-map-xupage", "figure")),
-# )
-# def update_uvw_map_xyzpage(
-#     #selections, 
-#     jsonified_db_data, xymap_view, aid_select, self_figure
-# ):
-#     return None
-    # print("UVW callback-xupage")
-    # zoom_out_level = zoom_out - zoom_in
-
-    # processed_data, prop_id = selection_helper(selections)
-    # if prop_id is None:
-    #    return self_figure
-    # if prop_id == "uvw-map-xupage":
-    #     return self_figure
-    # df = pd.read_json(jsonified_db_data[0], orient='split')
-    # dfm = pd.read_json(jsonified_db_data[1], orient='split')
-    # dfo = pd.read_json(jsonified_db_data[2], orient='split')
-    # return generate_xyz_map_xyzpage(df, dfm, dfo, aid_select, 'u', 'v', 'w', 'U (km/s)', 'V (km/s)', 'W (km/s)', 'UVW Galactic space velocities', processed_data, xymap_view, self_figure)
 
 #Initiate some global constants
 #1 AU/yr to km/s divided by 1000
