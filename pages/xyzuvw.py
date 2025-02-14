@@ -308,9 +308,9 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
 
     # Check if the range exceeds max_pc_range
     if (
-        dff[xvar].abs().max() > max_pc_range or
-        dff[yvar].abs().max() > max_pc_range or
-        dff[zvar].abs().max() > max_pc_range
+        median_x > max_pc_range/3 or
+        median_y > max_pc_range/3 or
+        median_z > max_pc_range/3
     ):
         # Recenter the plot on the median position
         center_x, center_y, center_z = median_x, median_y, median_z
