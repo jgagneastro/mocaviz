@@ -53,29 +53,14 @@ query_e = f"""
     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
     FROM mechanics_memberships_vetted mv
-    JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1 AND ya_prob >= 90) cbs USING(moca_oid, moca_aid)
     LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
     LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+    LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
     LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
-
-# query_e = f"""
-#     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
-#     {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w, 
-#     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
-#     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
-#     FROM mechanics_memberships_vetted mv
-#     LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
-#     LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
-#     LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
-#     LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
-#     LEFT JOIN calc_xyz xyz USING(moca_oid)
-#     LEFT JOIN moca_objects mo USING(moca_oid)
-#     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
-# """
 query_oe = f"""
     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
     {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w,
@@ -316,9 +301,41 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     max_pc_range = 2e3
     #max_pc_range = 100
 
-    dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan
-    dff.loc[dff[yvar].abs()>=max_pc_range, yvar] = np.nan
-    dff.loc[dff[zvar].abs()>=max_pc_range, zvar] = np.nan
+    # Compute median position of all stars
+    median_x = np.nan_to_num(np.nanmedian(dff[xvar].values), nan=0.0)
+    median_y = np.nan_to_num(np.nanmedian(dff[yvar].values), nan=0.0)
+    median_z = np.nan_to_num(np.nanmedian(dff[zvar].values), nan=0.0)
+
+    # Check if the range exceeds max_pc_range
+    if (
+        dff[xvar].abs().max() > max_pc_range or
+        dff[yvar].abs().max() > max_pc_range or
+        dff[zvar].abs().max() > max_pc_range
+    ):
+        # Recenter the plot on the median position
+        center_x, center_y, center_z = median_x, median_y, median_z
+        title = f"Centered on ({center_x:.1f}, {center_y:.1f}, {center_z:.1f})"
+    else:
+        # Keep the Sun at the center
+        center_x, center_y, center_z = 0, 0, 0
+        title = "Centered on the Sun"
+
+    # Adjust axis ranges based on new center
+    max_extent = max(
+        abs(dff[xvar] - center_x).max(),
+        abs(dff[yvar] - center_y).max(),
+        abs(dff[zvar] - center_z).max(),
+        max_pc_range
+    )
+
+    #dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan
+    #dff.loc[dff[yvar].abs()>=max_pc_range, yvar] = np.nan
+    #dff.loc[dff[zvar].abs()>=max_pc_range, zvar] = np.nan
+
+    # Mask stars outside the determined plotting range
+    dff.loc[(dff[xvar] < center_x - max_extent) | (dff[xvar] > center_x + max_extent), xvar] = np.nan
+    dff.loc[(dff[yvar] < center_y - max_extent) | (dff[yvar] > center_y + max_extent), yvar] = np.nan
+    dff.loc[(dff[zvar] < center_z - max_extent) | (dff[zvar] > center_z + max_extent), zvar] = np.nan
 
     xvar_orig = xvar
     yvar_orig = yvar
@@ -587,7 +604,7 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     # data.append(new_trace)
 
     # Plot the Solar neighborhood reference
-    sn = build_solar_neighborhood_3d()
+    sn = build_solar_neighborhood_3d(center=(center_x, center_y, center_z))
     for sni in sn:
         data.append(sni)
 
@@ -639,21 +656,28 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     #else:
     fig = go.Figure(data=data,layout=layout)
 
-    if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
-        #fig.update_scenes(xaxis={'range':[-1e4,3e4]})
-        fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
-    if (yvar_orig=='x' or yvar_orig=='y' or yvar_orig=='z'):
-        #fig.update_scenes(yaxis={'range':[-3e4,3e4]})
-        fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
-    if (zvar_orig=='x' or zvar_orig=='y' or zvar_orig=='z'):
-        #fig.update_scenes(zaxis={'range':[-1e4,1e4]})
-        fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
-    if (xvar_orig=='u' or xvar_orig=='v' or xvar_orig=='w'):
-        fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
-    if (yvar_orig=='u' or yvar_orig=='v' or yvar_orig=='w'):
-        fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
-    if (zvar_orig=='u' or zvar_orig=='v' or zvar_orig=='w'):
-        fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
+    # Apply the same range to all axes for a 1:1:1 aspect ratio
+    fig.update_scenes(
+        xaxis={"range": [center_x - max_extent, center_x + max_extent], "title": xtitle},
+        yaxis={"range": [center_y - max_extent, center_y + max_extent], "title": ytitle},
+        zaxis={"range": [center_z - max_extent, center_z + max_extent], "title": ztitle},
+    )
+
+    # if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
+    #     #fig.update_scenes(xaxis={'range':[-1e4,3e4]})
+    #     fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
+    # if (yvar_orig=='x' or yvar_orig=='y' or yvar_orig=='z'):
+    #     #fig.update_scenes(yaxis={'range':[-3e4,3e4]})
+    #     fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
+    # if (zvar_orig=='x' or zvar_orig=='y' or zvar_orig=='z'):
+    #     #fig.update_scenes(zaxis={'range':[-1e4,1e4]})
+    #     fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
+    # if (xvar_orig=='u' or xvar_orig=='v' or xvar_orig=='w'):
+    #     fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
+    # if (yvar_orig=='u' or yvar_orig=='v' or yvar_orig=='w'):
+    #     fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
+    # if (zvar_orig=='u' or zvar_orig=='v' or zvar_orig=='w'):
+    #     fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
 
     # Try to force aspect ratio (does not always work)
     fig.update_scenes(aspectmode='data')
@@ -674,32 +698,51 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     # fig.update_scenes(yaxis={'range':[yc-dy_zoom/2,yc+dy_zoom/2]})
     # fig.update_scenes(zaxis={'range':[zc-dz_zoom/2,zc+dz_zoom/2]})
 
-    #Adjust camera position
-    dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
-    dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
-    dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
-    xc = (fig['layout']['scene']['xaxis']['range'][1] + fig['layout']['scene']['xaxis']['range'][0])/2
-    yc = (fig['layout']['scene']['yaxis']['range'][1] + fig['layout']['scene']['yaxis']['range'][0])/2
-    zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
+    # #Adjust camera position
+    # dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
+    # dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
+    # dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
+    # xc = (fig['layout']['scene']['xaxis']['range'][1] + fig['layout']['scene']['xaxis']['range'][0])/2
+    # yc = (fig['layout']['scene']['yaxis']['range'][1] + fig['layout']['scene']['yaxis']['range'][0])/2
+    # zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
 
-    #eye_pos_xyz = [100.,100.,100.]
-    eye_pos_xyz = [-500.,-500.,500.]
-    eye_pos_xrel = (eye_pos_xyz[0] - xc)/dx*2
-    eye_pos_yrel = (eye_pos_xyz[1] - yc)/dy*2
-    eye_pos_zrel = (eye_pos_xyz[2] - zc)/dz*2
+    # #eye_pos_xyz = [100.,100.,100.]
+    # eye_pos_xyz = [-500.,-500.,500.]
+    # eye_pos_xrel = (eye_pos_xyz[0] - xc)/dx*2
+    # eye_pos_yrel = (eye_pos_xyz[1] - yc)/dy*2
+    # eye_pos_zrel = (eye_pos_xyz[2] - zc)/dz*2
 
-    cen_pos_xyz = [0.,0.,0.]
-    cen_pos_xrel = (cen_pos_xyz[0] - xc)/dx*2
-    cen_pos_yrel = (cen_pos_xyz[1] - yc)/dy*2
-    cen_pos_zrel = (cen_pos_xyz[2] - zc)/dz*2
+    # cen_pos_xyz = [0.,0.,0.]
+    # cen_pos_xrel = (cen_pos_xyz[0] - xc)/dx*2
+    # cen_pos_yrel = (cen_pos_xyz[1] - yc)/dy*2
+    # cen_pos_zrel = (cen_pos_xyz[2] - zc)/dz*2
 
+    # camera = dict(
+    #     up=dict(x=0, y=0, z=1),
+    #     center=dict(x=cen_pos_xrel, y=cen_pos_yrel, z=cen_pos_zrel),
+    #     eye=dict(x=eye_pos_xrel, y=eye_pos_yrel, z=eye_pos_zrel),
+    #     #projection=dict(type='orthographic'),
+    # )
+
+    # Define new center for camera rotation
+    camera_center = dict(x=center_x, y=center_y, z=center_z)
+
+    # Adjust the camera eye position relative to the new center
+    eye_pos_xyz = [center_x + 500, center_y + 500, center_z + 500]  # Adjust as needed
+
+    # Calculate relative eye position for consistent aspect ratio
+    eye_pos_xrel = (eye_pos_xyz[0] - center_x) / max_extent * 2
+    eye_pos_yrel = (eye_pos_xyz[1] - center_y) / max_extent * 2
+    eye_pos_zrel = (eye_pos_xyz[2] - center_z) / max_extent * 2
+
+    # Update camera dictionary
     camera = dict(
         up=dict(x=0, y=0, z=1),
-        center=dict(x=cen_pos_xrel, y=cen_pos_yrel, z=cen_pos_zrel),
+        center=dict(x=0, y=0, z=0),  # Keep relative to the figure
         eye=dict(x=eye_pos_xrel, y=eye_pos_yrel, z=eye_pos_zrel),
-        #projection=dict(type='orthographic'),
     )
 
+    # Apply new camera settings
     fig.update_layout(scene_camera=camera)
 
     #Remove axes
@@ -734,6 +777,23 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         text="MOCAdb",
         showarrow=False,
         align="left",
+        valign="top",
+        opacity=0.8,
+        font=dict(
+            family="Courier New, monospace",
+            size=16,
+            color="rgb(192,198,206)",
+            ),
+        )
+    
+    fig.add_annotation(
+        x=1,
+        y=1,
+        xref="x domain",
+        yref="y domain",
+        text=title,
+        showarrow=False,
+        align="right",
         valign="top",
         opacity=0.8,
         font=dict(
@@ -1435,8 +1495,10 @@ def equatorial_UVW(ra,dec,pmra,pmdec,rv,dist,pmra_error=None,pmdec_error=None,rv
 )
 def store_clicked_moca_oid_xupage(clickData):
     if clickData and 'points' in clickData:
-        return clickData['points'][0]['customdata']  # Extract `moca_oid`
-    return dash.no_update
+        point = clickData['points'][0]  # First clicked point
+        if 'customdata' in point:
+            return point['customdata']  # Extract `moca_oid`
+    return dash.no_update  # Do nothing if no valid data is found
 
 dash.clientside_callback(
     """

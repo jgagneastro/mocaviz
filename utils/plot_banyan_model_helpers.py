@@ -49,16 +49,19 @@ def build_ellipsoid_3d(offset, covar_matrix, trace_color, opacity=0.5):
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
 
-def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opacity=0.2, npoints=500):
+def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opacity=0.2, npoints=500, center=(0, 0, 0)):
     
+    # Shift circles and axes to be centered at `center`
+    center_x, center_y, center_z = center
+
     #Build 3D grid
     phi = np.linspace(0, 2*np.pi,num=npoints)
     radii = (np.linspace(0,radius,num=nlines+1))[1:]
     phim, radiim = np.meshgrid(phi, radii)
 
-    x = np.cos(phim) * radiim
-    y = np.sin(phim) * radiim
-    z = phim * 0
+    x = np.cos(phim) * radiim + center_x
+    y = np.sin(phim) * radiim + center_y
+    z = phim * 0 + center_z
 
     # Create the plot
     thick = 3
@@ -77,12 +80,12 @@ def build_solar_neighborhood_3d(radius=50, nlines=10, trace_color='black', opaci
     linvec = np.linspace(0,maxrad,num=npoints)
     zeros = np.zeros(npoints)
 
-    lines.append(go.Scatter3d(x=zeros, y=zeros, z=linvec, mode='lines', line=dict(color='blue', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=linvec, y=zeros, z=zeros, mode='lines', line=dict(color='red', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=linvec, z=zeros, mode='lines', line=dict(color='green', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=zeros, z=-linvec, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=-linvec, y=zeros, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
-    lines.append(go.Scatter3d(x=zeros, y=-linvec, z=zeros, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=[center_x]*npoints, y=[center_y]*npoints, z=linvec + center_z, mode='lines', line=dict(color='blue', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=linvec + center_x, y=[center_y]*npoints, z=[center_z]*npoints, mode='lines', line=dict(color='red', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=[center_x]*npoints, y=linvec + center_y, z=[center_z]*npoints, mode='lines', line=dict(color='green', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=[center_x]*npoints, y=[center_y]*npoints, z=-linvec + center_z, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=-linvec + center_x, y=[center_y]*npoints, z=[center_z]*npoints, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
+    lines.append(go.Scatter3d(x=[center_x]*npoints, y=-linvec + center_y, z=[center_z]*npoints, mode='lines', line=dict(color='black', width=thick), hoverinfo='skip', opacity=opacity, showlegend=False))
 
     return lines
 
