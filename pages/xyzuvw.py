@@ -298,13 +298,15 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         center_x, center_y, center_z = 0, 0, 0
         title = "Centered on the Sun"
 
-    # Adjust axis ranges based on new center
+    # Compute max range across all axes to enforce 1:1:1 aspect ratio
     max_extent = max(
         abs(dff[xvar] - center_x).max(),
         abs(dff[yvar] - center_y).max(),
-        abs(dff[zvar] - center_z).max(),
-        max_pc_range
+        abs(dff[zvar] - center_z).max()
     )
+
+    # Ensure max_extent does not exceed max_pc_range
+    max_extent = min(max_extent, max_pc_range)
 
     # Mask stars outside the determined plotting range
     dff.loc[(dff[xvar] < center_x - max_extent) | (dff[xvar] > center_x + max_extent), xvar] = np.nan
