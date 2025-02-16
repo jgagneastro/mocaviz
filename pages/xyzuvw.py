@@ -41,10 +41,6 @@ rv_range = np.linspace(-50, 50, 50)  # Define 50 radial velocity values from -50
 # Load data
 moca_vanilla = MocaEngine()
 
-#Query an empty row to obtain the structure for the table
-#df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
-#df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
-
 c_value = 8.0
 
 query_e = f"""
@@ -85,28 +81,15 @@ query_oe = f"""
 
 dfe = moca_vanilla.query(query_e+" LIMIT 0")
 dfoe = moca_vanilla.query(query_oe+" LIMIT 0")
-
-#dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
-#dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
-#dfoe = dfe.copy(deep=True)
 dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
 unselected_opacity = 0.1
 selected_opacity = 1
-#selected_opacity = 0.3
-#selected_opacity = 1
 
 # Load a list of all associations for the Dropdown menu
-#df_aids = moca.query("SELECT moca_aid FROM moca_associations")
-#df_oids = moca.query("SELECT designation FROM mechanics_all_designations") #This is way too large
 df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
-
-#print("Downloaded "+str(len(df_aids))+" rows of data for associations information")
-
-#df_asso_centers = moca.query("SELECT dbsm.moca_aid, AVG(dbsm.x_cen) x, AVG(dbsm.y_cen) y, AVG(dbsm.z_cen) z, AVG(dbsm.u_cen) u, AVG(dbsm.v_cen) v, AVG(dbsm.w_cen) w FROM data_banyan_sigma_models dbsm JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted=1 AND dbsm.moca_aid != 'FIELD' GROUP BY dbsm.moca_aid")
-#df_asso_centers = moca.query("CALL list_association_labels();")
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -222,9 +205,7 @@ def get_style_data_conditional(selected_rows: list = []) -> list:
 def build_banner():
     return html.Div(
         id="banner",
-        #className="banner",
         children=[
-            #html.Img(src=get_asset_url("dash-logo.png")),
             html.H2("MOCA SPATIAL-KINEMATIC EXPLORER"),
         ],
         style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
@@ -284,14 +265,6 @@ def scale_covar(axis1, axis2, value):
 # Eventually move this to a subroutine
 def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure, plot_errors=False):
 
-    # Read hover property
-    # hover = False
-    # try:
-    #     if hover_select[0] == 'Enable Hover Properties':
-    #         hover = "closest"
-    # except:
-    #     void = 1
-
     # Read layer properties
     models_visible = assume_membership = show_asso_centers = True
     hover = "closest"
@@ -304,9 +277,7 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     if "hover" not in style:
         hover = False
     
-    #max_pc_range = 1e5
     max_pc_range = 2e3
-    #max_pc_range = 100
 
     # Compute median position of all stars
     median_x = np.nan_to_num(np.nanmedian(dff[xvar].values), nan=0.0)
@@ -335,10 +306,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         max_pc_range
     )
 
-    #dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan
-    #dff.loc[dff[yvar].abs()>=max_pc_range, yvar] = np.nan
-    #dff.loc[dff[zvar].abs()>=max_pc_range, zvar] = np.nan
-
     # Mask stars outside the determined plotting range
     dff.loc[(dff[xvar] < center_x - max_extent) | (dff[xvar] > center_x + max_extent), xvar] = np.nan
     dff.loc[(dff[yvar] < center_y - max_extent) | (dff[yvar] > center_y + max_extent), yvar] = np.nan
@@ -354,25 +321,12 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
 
     layout = go.Layout(
         height=850,
-        #width=1200,
-        #uirevision="constant",
         uirevision=1, #Prevent the resetting of user-defined zoom level etc.
-        #dragmode="lasso",
-        #xaxis={'title':xtitle,'uirevision':'fixed'},
-        #yaxis={'title':ytitle,'uirevision':'fixed'},
-        #zaxis={'title':ztitle,'uirevision':'fixed'},
-        #showlegend=True,
         hovermode=hover,
         paper_bgcolor=bcg_color,#
         plot_bgcolor=bcg_color,
         margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
-            #orientation="h",
-            #orientation="",
-            #orientation="h",
-            #x=0,
-            #y=0.,
-            #yanchor="bottom",
             orientation = 'h', xanchor = "right", x = 1, y = 0, yanchor="bottom",
         ),
     )
@@ -425,23 +379,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
             dff_deselect = dff_aid[~df_select_index]
             dff_select = dff_aid[df_select_index]
 
-        # # Plot the *DE*selected data points
-        # if dff_deselect is not None:
-        #     dff_plot = dff_deselect
-        #     new_trace = go.Scatter3d(
-        #         x=dff_plot[xvar],#This is the x in the MOCA column
-        #         y=dff_plot[yvar],#This is the y in the MOCA column
-        #         z=dff_plot[zvar],#This is the y in the MOCA column
-        #         opacity=unselected_opacity,
-        #         mode="markers",
-        #         showlegend=False,
-        #         marker={"color": colormap[association], "size": 3},
-        #         text=dff_plot["text_list"],
-        #         name=association,
-        #         customdata=dff_plot["moca_oid"],
-        #     )
-        #     data.append(new_trace)
-
         # Lists to store valid points and errors
         error_x, error_y, error_z = [], [], []
 
@@ -464,47 +401,20 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
                 if np.isnan(covar_matrix).any():
                     continue
 
-                # Step 2: Perform Singular Value Decomposition (SVD)
-                #import pdb; pdb.set_trace()
-                #U, S, Vt = np.linalg.svd(covar_matrix)  # U: rotation matrix, S: singular values (variances)
-                # Step 3: Compute Eigenvalues & Eigenvectors (More Stable Than SVD)
+                # Compute Eigenvalues & Eigenvectors (More Stable Than SVD)
                 try:
                     eigvals, eigvecs = np.linalg.eigh(covar_matrix)  # eigvecs = rotation matrix, eigvals = variances
                 except np.linalg.LinAlgError:
-                    #print("Warning: Covariance matrix decomposition failed. Skipping error bars for this star.")
                     continue  # Skip this star if decomposition fails
 
-                # Step 3: Generate Unit Vectors for Principal Directions
-                #unit_vectors = np.eye(3)  # Identity matrix = unit vectors along X, Y, Z
-
-                # Step 4: Generate Scaled Principal Axes
+                # Generate Scaled Principal Axes
                 principal_axes = eigvecs @ (np.sqrt(np.abs(eigvals)) * np.eye(3))
 
-                # Store error bars (each axis separately)
                 # Store error bars (each axis separately, using NaN as a separator)
                 for i in range(3):
                     error_x.extend([x - principal_axes[0, i], x + principal_axes[0, i], np.nan])
                     error_y.extend([y - principal_axes[1, i], y + principal_axes[1, i], np.nan])
                     error_z.extend([z - principal_axes[2, i], z + principal_axes[2, i], np.nan])
-
-                    #error_colors.append(colormap[association])  # Keep colors consistent
-
-
-                # Step 4: Rotate Unit Vectors Using U and Scale by Standard Deviations
-                #principal_axes = U @ (np.sqrt(S) * unit_vectors)  # Rotate and scale
-
-                # Store points
-                #x_points.append(x)
-                #y_points.append(y)
-                #z_points.append(z)
-
-                # Store errors along each principal axis
-                #x_errs.append(np.max(np.abs(principal_axes[0, :])))
-                #y_errs.append(np.max(np.abs(principal_axes[1, :])))
-                #z_errs.append(np.max(np.abs(principal_axes[2, :])))
-
-                #text_list.append(row["text_list"])
-                #custom_data.append(row["moca_oid"])
             
             # Single trace for all error bars
             error_trace = go.Scatter3d(
@@ -517,37 +427,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
                 showlegend=False,
             )
             data.append(error_trace)
-
-            # # Create a single Scatter3D trace with error bars
-            # new_trace = go.Scatter3d(
-            #     x=x_points, y=y_points, z=z_points,
-            #     mode="markers",
-            #     marker={"color": colormap[association], "size": 3, "opacity": selected_opacity},
-            #     text=text_list,
-            #     name=association,
-            #     customdata=custom_data,
-            #     error_x=dict(type="data", array=x_errs, visible=True),
-            #     error_y=dict(type="data", array=y_errs, visible=True),
-            #     error_z=dict(type="data", array=z_errs, visible=True),
-            # )
-
-            # # Append the trace to the figure
-            # data.append(new_trace)
-
-        #         # Step 5: Plot Error Bars for Each Principal Axis
-        #         for i in range(3):
-        #             x_err = [x - principal_axes[0, i], x + principal_axes[0, i]]
-        #             y_err = [y - principal_axes[1, i], y + principal_axes[1, i]]
-        #             z_err = [z - principal_axes[2, i], z + principal_axes[2, i]]
-
-        #             # Add 3D error bars as lines
-        #             data.append(go.Scatter3d(
-        #                 x=x_err, y=y_err, z=z_err,
-        #                 mode='lines', line=dict(color=colormap[association], width=1),
-        #                 #opacity=0.3,
-        #                 showlegend=False
-        #             ))
-        # # END: Plot error bars
 
         # Plot the selected data points
         if dff_select is not None:
@@ -574,8 +453,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
             
             for index, dfm_row in dfm_aid.iterrows():
 
-                # Rebuild covariance matrix and offset from the models dataframe
-                #offset = np.array([dfm_row[xvar_orig+'_cen'],dfm_row[yvar_orig+'_cen'],dfm_row[zvar_orig+'_cen']])
                 # Apply scaling selectively
                 offset = np.array([
                     scale_offset(xvar_orig, dfm_row[xvar_orig + "_cen"]),
@@ -600,16 +477,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
                         scale_covar(zvar_orig, zvar_orig, dfm_row[get_covar_name(zvar_orig, zvar_orig)])
                     ]
                 ])
-                #covar_matrix = np.array([
-                #    [dfm_row[get_covar_name(xvar_orig, xvar_orig)], dfm_row[get_covar_name(xvar_orig, yvar_orig)], dfm_row[get_covar_name(xvar_orig, zvar_orig)]],
-                #    [dfm_row[get_covar_name(yvar_orig, xvar_orig)], dfm_row[get_covar_name(yvar_orig, yvar_orig)], dfm_row[get_covar_name(yvar_orig, zvar_orig)]],
-                #    [dfm_row[get_covar_name(zvar_orig, xvar_orig)], dfm_row[get_covar_name(zvar_orig, yvar_orig)], dfm_row[get_covar_name(zvar_orig, zvar_orig)]]
-                #])
-                #covar_matrix = np.array([
-                #    [dfm_row[xvar_orig+xvar_orig+'_covar'],dfm_row[xvar_orig+yvar_orig+'_covar'],dfm_row[xvar_orig+zvar_orig+'_covar']],
-                #    [dfm_row[xvar_orig+yvar_orig+'_covar'],dfm_row[yvar_orig+yvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar']],
-                #    [dfm_row[xvar_orig+zvar_orig+'_covar'],dfm_row[yvar_orig+zvar_orig+'_covar'],dfm_row[zvar_orig+zvar_orig+'_covar']]
-                #    ])
 
                 # Extract amplitude (weight), defaulting to 1.0 if None
                 weight = dfm_row["coeff_amplitude"]
@@ -691,68 +558,10 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
                     )
                 )
 
-        #Use xvar_orig, yvar_orig, zvar_orig because moca_oid displays cannot assume membership
-        # new_trace = go.Scatter3d(
-        #     x=dfo[xvar_orig],#This is the x in the MOCA column
-        #     y=dfo[yvar_orig],#This is the y in the MOCA column
-        #     z=dfo[zvar_orig],#This is the z in the MOCA column
-        #     #opacity=1,
-        #     mode="markers",
-        #     marker={"color": obj_color, "size": 8, "symbol":"diamond"},
-        #     text=text_list,
-        #     name="Individual Objects",
-        # )
-        # data.append(new_trace)
-
-    # new_trace = go.Scatter3d(
-    #         x=[0],
-    #         y=[0],
-    #         z=[0],
-    #         opacity=1,
-    #         mode="markers",
-    #         marker_symbol="cross",
-    #         marker={"color": "#000000", "size": 5},#, "symbol":"circle-dot"
-    #         text="Sun",
-    #         name="Sun",
-    #     )
-    # data.append(new_trace)
-
     # Plot the Solar neighborhood reference
     sn = build_solar_neighborhood_3d(center=(center_x, center_y, center_z))
     for sni in sn:
         data.append(sni)
-
-    # # Define the color mapping for the 3D axes (Red, Green, Blue)
-    # axis_colors = ["red", "green", "blue"]  # X → Red, Y → Green, Z → Blue
-
-    # # Store selected axis labels with their corresponding colors
-    # axis_labels = [
-    #     (xvar.upper(), axis_colors[0]),  # Red Axis
-    #     (yvar.upper(), axis_colors[1]),  # Green Axis
-    #     (zvar.upper(), axis_colors[2])   # Blue Axis
-    # ]
-
-    # # Define text label positions (slightly offset for better visibility)
-    # text_positions = [
-    #     (500, 0, 0),  # X-axis (Red)
-    #     (0, 500, 0),  # Y-axis (Green)
-    #     (0, 0, 500)   # Z-axis (Blue)
-    # ]
-
-    # # Add text annotations for each axis
-    # for (label, color), (x_pos, y_pos, z_pos) in zip(axis_labels, text_positions):
-    #     data.append(
-    #         go.Scatter3d(
-    #             x=[x_pos],
-    #             y=[y_pos],
-    #             z=[z_pos],
-    #             mode="text",
-    #             text=label,
-    #             textfont=dict(color=color, size=12, family="Arial"),
-    #             showlegend=False,
-    #             opacity=0.5
-    #         )
-    #     )
 
     # Add invisible points because plotly is too much of an idiot to correctly enforce even aspect ratio
     new_trace = go.Scatter3d(
@@ -765,9 +574,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         )
     data.append(new_trace)
 
-    #if self_figure is not None:
-    #    fig = go.Figure(data=data,layout=self_figure['layout'])
-    #else:
     fig = go.Figure(data=data,layout=layout)
 
     # Apply the same range to all axes for a 1:1:1 aspect ratio
@@ -777,66 +583,8 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         zaxis={"range": [center_z - max_extent, center_z + max_extent], "title": ztitle},
     )
 
-    # if (xvar_orig=='x' or xvar_orig=='y' or xvar_orig=='z'):
-    #     #fig.update_scenes(xaxis={'range':[-1e4,3e4]})
-    #     fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
-    # if (yvar_orig=='x' or yvar_orig=='y' or yvar_orig=='z'):
-    #     #fig.update_scenes(yaxis={'range':[-3e4,3e4]})
-    #     fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
-    # if (zvar_orig=='x' or zvar_orig=='y' or zvar_orig=='z'):
-    #     #fig.update_scenes(zaxis={'range':[-1e4,1e4]})
-    #     fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
-    # if (xvar_orig=='u' or xvar_orig=='v' or xvar_orig=='w'):
-    #     fig.update_scenes(xaxis={'range':[-pc_range,pc_range]})
-    # if (yvar_orig=='u' or yvar_orig=='v' or yvar_orig=='w'):
-    #     fig.update_scenes(yaxis={'range':[-pc_range,pc_range]})
-    # if (zvar_orig=='u' or zvar_orig=='v' or zvar_orig=='w'):
-    #     fig.update_scenes(zaxis={'range':[-pc_range,pc_range]})
-
     # Try to force aspect ratio (does not always work)
     fig.update_scenes(aspectmode='data')
-
-    # dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
-    # dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
-    # dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
-    # xc = (fig['layout']['scene']['xaxis']['range'][1] + fig['layout']['scene']['xaxis']['range'][0])/2
-    # yc = (fig['layout']['scene']['yaxis']['range'][1] + fig['layout']['scene']['yaxis']['range'][0])/2
-    # zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
-    
-    # dx_zoom = dx*2**zoom_out_level
-    # dy_zoom = dy*2**zoom_out_level
-    # dz_zoom = dz*2**zoom_out_level
-
-    # #Update zoom level
-    # fig.update_scenes(xaxis={'range':[xc-dx_zoom/2,xc+dx_zoom/2]})
-    # fig.update_scenes(yaxis={'range':[yc-dy_zoom/2,yc+dy_zoom/2]})
-    # fig.update_scenes(zaxis={'range':[zc-dz_zoom/2,zc+dz_zoom/2]})
-
-    # #Adjust camera position
-    # dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
-    # dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
-    # dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])
-    # xc = (fig['layout']['scene']['xaxis']['range'][1] + fig['layout']['scene']['xaxis']['range'][0])/2
-    # yc = (fig['layout']['scene']['yaxis']['range'][1] + fig['layout']['scene']['yaxis']['range'][0])/2
-    # zc = (fig['layout']['scene']['zaxis']['range'][1] + fig['layout']['scene']['zaxis']['range'][0])/2
-
-    # #eye_pos_xyz = [100.,100.,100.]
-    # eye_pos_xyz = [-500.,-500.,500.]
-    # eye_pos_xrel = (eye_pos_xyz[0] - xc)/dx*2
-    # eye_pos_yrel = (eye_pos_xyz[1] - yc)/dy*2
-    # eye_pos_zrel = (eye_pos_xyz[2] - zc)/dz*2
-
-    # cen_pos_xyz = [0.,0.,0.]
-    # cen_pos_xrel = (cen_pos_xyz[0] - xc)/dx*2
-    # cen_pos_yrel = (cen_pos_xyz[1] - yc)/dy*2
-    # cen_pos_zrel = (cen_pos_xyz[2] - zc)/dz*2
-
-    # camera = dict(
-    #     up=dict(x=0, y=0, z=1),
-    #     center=dict(x=cen_pos_xrel, y=cen_pos_yrel, z=cen_pos_zrel),
-    #     eye=dict(x=eye_pos_xrel, y=eye_pos_yrel, z=eye_pos_zrel),
-    #     #projection=dict(type='orthographic'),
-    # )
 
     # Define new center for camera rotation
     camera_center = dict(x=center_x, y=center_y, z=center_z)
@@ -872,17 +620,8 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     )
     
     #Fix axis names and MOCAdb watermark
-    #fig.update_scenes(xaxis={'title':''},yaxis={'title':''},zaxis={'title':''})
     fig.update_scenes(xaxis={'title':xtitle},yaxis={'title':ytitle},zaxis={'title':ztitle})
 
-    # fig.update_layout(
-    #     scene=dict(
-    #         xaxis=dict(title=axis_titles["x"]),
-    #         yaxis=dict(title=axis_titles["y"]),
-    #         zaxis=dict(title=axis_titles["z"]),
-    #     )
-    # )
-    
     fig.add_annotation(
         x=0,
         y=1,
@@ -917,48 +656,6 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
             ),
         )
 
-    #from PIL import Image
-    #eight_bit_img = Image.open("/Users/jonathan/Documents/Postdoc/Digital_Universe/nyadb_xyz/data/Models/eso9845d-processed.pbm")
-    #im_x, im_y = eight_bit_img.size
-    # orig_img = Image.open("/Users/jonathan/Documents/Postdoc/Digital_Universe/nyadb_xyz/data/Models/eso9845d-processed.pbm")
-    # im_x, im_y = orig_img.size
-    # im = np.asarray(orig_img)
-    # eight_bit_img = Image.fromarray(im).convert('P', palette='WEB', dither=None)
-    # dum_img = Image.fromarray(np.ones((3,3,3), dtype='uint8')).convert('P', palette='WEB')
-    # idx_to_color = np.array(dum_img.getpalette()).reshape((-1, 3))
-    # colorscale=[[i/255.0, "rgb({}, {}, {})".format(*rgb)] for i, rgb in enumerate(idx_to_color)]
-    # x = np.linspace(0,im_x, im_x)
-    # y = np.linspace(0, im_y, im_y)
-    # z = np.zeros((im_x,im_y))
-
-    # contours = dict(x = dict(highlight=False),
-    #             y = dict(highlight=False),
-    #             z = dict(highlight=False))
-
-    # fig.add_trace(go.Surface(x=x, y=y, z=z,
-    #     surfacecolor=eight_bit_img, 
-    #     contours=contours,
-    #     cmin=0, 
-    #     cmax=255,
-    #     colorscale=colorscale,
-    #     showscale=False,
-    #     lighting_diffuse=1,
-    #     lighting_ambient=1,
-    #     lighting_fresnel=1,
-    #     lighting_roughness=1,
-    #     lighting_specular=0.5,
-    #     opacity=1,
-    # ))
-
-    #zoom_out_level
-
-    #fig.update_layout(uirevision='constant')
-
-    #layout = go.Layout(
-    #    uirevision='constant',  # Prevent reloading plot on zooming/panning
-    #    hovermode='closest'
-    #)
-
     return fig
 
 layout = html.Div(
@@ -975,7 +672,6 @@ layout = html.Div(
                             id="header-container-xupage",
                             children=[
                                 build_banner(),
-                                #dcc.Markdown(children=["MOCA Spatial-Kinematic Explorer"]),
                             ],
                         ),
                         dcc.Store(id='db-data-xupage'),
@@ -984,9 +680,7 @@ layout = html.Div(
             ],
         ),
         html.Div(
-            #className="flex-grow-1",
             className="row",
-            #style={"height": "1200pix"},#, "backgroundColor":"blue"
             id="first-data-row-xupage",
             children=[
                 html.Div(className="two columns",
@@ -1034,7 +728,6 @@ layout = html.Div(
                                 ),
                             ],
                             style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
-                            #style={"display": "flex", "padding": "10px"}
                         ),
                         html.Br(),
                         dcc.Markdown(children=["Select stellar associations"]),
@@ -1066,22 +759,6 @@ layout = html.Div(
                     id="xyz-container-xupage",
                     className="eight columns",
                     children=[
-                        #html.Br(),
-                        #build_graph_title("Galactic X, Y, Z coordinates"),
-                        # dcc.Checklist(
-                        #             id="hover-select-xupage",
-                        #             options=[
-                        #                 {
-                        #                     "label": " Enable Hover Properties",
-                        #                     "value": "Enable Hover Properties",
-                        #                 },
-                        #             ],
-                        #             value=[],
-                        #             #labelStyle={'color': 'white'}
-                        #         ),
-                        
-                        #html.Button('Zoom In', id='xyz-zoom-in-xupage', n_clicks=0),
-                        #html.Button('Zoom Out', id='xyz-zoom-out-xupage', n_clicks=0),
                         dcc.Graph(id="xyz-map-xupage",config=figure_export_config),
                     ],
                 ),
@@ -1120,55 +797,10 @@ layout = html.Div(
                                     ],
                                     value=["BANYAN Models", "errors"],
                                 ),
-                        #html.Br(),
-                        #html.Button('Recenter', id='xyz-recenter-in-xupage', n_clicks=0),
                     ],
                 ),
-                # html.Div(className="one column"),
-                # # UVW
-                # html.Div(
-                #     id="uvw-container-xupage",
-                #     className="twelve columns",
-                #     children=[
-                #         html.Br(),
-                #         build_graph_title("Galactic U, V, W space velocities"),
-                #         html.Br(),html.Br(),#html.Br(),
-                #         #html.Button('Zoom In', id='uvw-zoom-in-xupage', n_clicks=0),
-                #         #html.Button('Zoom Out', id='uvw-zoom-out-xupage', n_clicks=0),
-                #         dcc.Graph(id="uvw-map-xupage",config=figure_export_config),
-                #     ],
-                # ),
-                # html.Div(className="one column"),
             ],
         ),
-        # html.Div(
-        #     className="row",
-        #     id="table-row",
-        #     children=[
-        #         #Table
-        #         html.Div(
-        #             id="table-container",
-        #             className="twelve columns",
-        #             children=[
-        #                 html.Br(),
-        #                 build_graph_title("MOCA summary table"),
-        #                 html.P("Rows are shown in order of selection, association and membership type. Selected rows are highlighted in green."),
-        #                 dash_table.DataTable(
-        #                     id="df-table",
-        #                     columns=[{'id': x, 'name': x, 'presentation': 'markdown'} for x in dfe.columns],
-        #                     export_format='csv',
-        #                     style_header={
-        #                         'fontSize': 15,
-        #                         'fontWeight': 'bold',
-        #                         'textAlign': 'center',
-        #                     },
-        #                     selected_rows=[],
-        #                     style_data_conditional=get_style_data_conditional(),
-        #                 ),
-        #             ],
-        #         ),
-        #     ],
-        # ),
     html.Div(
         className="row",
         id="url-help-section-xupage",
@@ -1202,73 +834,6 @@ layout = html.Div(
 selections = {
         }
 
-# # Update table
-# @dash.callback(
-#     output=[
-#         Output("df-table","data"),
-#         Output("df-table","selected_rows"),
-#         Output("df-table","style_data_conditional"),
-#     ],
-#     inputs=dict(
-#         selections=selections,
-#         jsonified_db_data=Input("db-data", "data"),
-#         xymap_view=Input("xymap-view-selector", "value"),
-#     ),
-#     state=dict(
-#         aid_select=State("aid-select", "value"),
-#         self_data=State("df-table", "data"),
-#         self_selrows=State("df-table", "selected_rows"),
-#         self_style=State("df-table", "style_data_conditional")),
-# )
-# def update_table(
-#     selections, jsonified_db_data, xymap_view, aid_select, self_data, self_selrows, self_style
-# ):
-    
-#     print("TABLE callback")
-#     processed_data, prop_id = selection_helper(selections)
-    
-#     if prop_id is None:
-#         #selected_index = []
-#         return self_data, self_selrows, self_style
-
-#     # Read data from session memory
-#     df = pd.read_json(jsonified_db_data[0], orient='split')
-    
-#     #If no group is loaded then return empty dataframe
-#     if len(df) == 0:
-#         selected_index = []
-#         return dfe.to_dict('records'), selected_index, get_style_data_conditional(selected_index)
-
-#     #Add clickable links
-#     df['designation'] = '['+df['designation'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(np_f.replace(df['designation'].values.astype("U")," ","%20"),"+","%2B")+'&search-type=star)'
-#     df['moca_aid'] = '['+df['moca_aid'].values+'](https://mocadb.ca/search/results?search-query='+np_f.replace(df['moca_aid'].values.astype("U")," ","%20")+'&search-type=association)'
-
-#     df_sorted = df
-#     df_sorted['num_moca_mtid'] = df_sorted['moca_mtid']
-    
-#     #This could probably be done better with the moca_membership_types table
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"BF","1.BF")
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"HM","2.HM")
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"CM","3.CM")
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"LM","4.LM")
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"AM","5.AM")
-#     df_sorted['num_moca_mtid'] = np_f.replace(df_sorted['num_moca_mtid'].values.astype("U"),"R","6.R")
-#     df_sorted = df_sorted.sort_values(by=['moca_aid', 'num_moca_mtid', 'spt'])
-
-#     if processed_data is None:
-#         selected_index = []
-#         df_out = df_sorted
-#     else:
-#         df_selected_indices = df_sorted['moca_oid'].isin(processed_data)
-#         selected_index = np.where(df_selected_indices)[0]
-#         df_out = pd.concat([df_sorted[df_selected_indices],df_sorted[~df_selected_indices]])
-#         #If we sort the table the selected indices are the first ones
-#         selected_index = list(range(len(selected_index)))
-
-#     table_data_style_conditional = get_style_data_conditional(selected_index)
-
-#     return df_out.to_dict('records'), selected_index, table_data_style_conditional
-
 @dash.callback(
     output=[
         Output("axis-1-dropdown-xupage", "value"),
@@ -1291,7 +856,6 @@ def update_axes_from_url_xupage(url_search):
     # Default values if no valid URL parameter
     return "X", "Y", "Z"
 
-# Eventually move this to a subroutine if possible
 # Update AID- and MTID-select
 @dash.callback(
     output=[
@@ -1320,9 +884,6 @@ def update_aid_select_xupage(
     else:
         query_e_modified = query_e  # Use the default query
 
-
-    #print("DBQUERY callback-xupage")
-    
     # Read default associations from URL if none are selected
     # Example query type '?asso=THA,COL&mtid=BF,HM,CM'
     if aid_select is None:
@@ -1393,17 +954,9 @@ def update_aid_select_xupage(
         aid_query = " OR ".join(["mv.moca_aid='"+stri+"'" for stri in aid_select])
         mtid_query = " OR ".join(["mv.moca_mtid = '"+stri+"'" for stri in mtid_select])
         df = moca.query(query_e_modified+" WHERE ("+mtid_query+") AND ("+aid_query+")")
-        #df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
-        #df['gr'] = df['gmag']-df['rmag']
-        #df['br'] = df['bmag']-df['rmag']
-        #df['m_g'] = df['gmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
-        #df['m_r'] = df['rmag']-5.0*(np.log10(1000.0/df['plx'].values.astype('float64'))-1)
 
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
-        #dfm = moca.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 AND ("+aid_query+")")
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        # This was an attempt to make the query more flexible and only choose the latest model, but it introduced an error where only one ellipse in the multi-ellipse models to be displayed
-        #dfm = moca.query("SELECT*FROM(SELECT ROW_NUMBER()OVER(PARTITION BY moca_aid ORDER BY mbsm.adopted DESC,dbs.moca_bsmdid DESC)AS nn,dbs.*FROM data_banyan_sigma_models dbs LEFT JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid)WHERE ("+aid_query+"))inq WHERE nn=1")
         # This version is flexible AND preserves multi-ellipse models
         dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid FROM data_banyan_sigma_models dbs WHERE dbs.adopted=1 AND ("+aid_query+") GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)")
 
@@ -1419,15 +972,8 @@ def update_aid_select_xupage(
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         oid_query = " OR ".join(["mv.moca_oid='"+stri+"'" for stri in oid_select.split(',')])
         dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
-        #dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
-        #dfo['gr'] = dfo['gmag']-dfo['rmag']
-        #dfo['br'] = dfo['bmag']-dfo['rmag']
-        #dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
-        #dfo['m_r'] = dfo['rmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
 
     df_asso_centers = moca.query("CALL list_association_labels();")
-    #print("Downloaded "+str(len(df))+" rows of general data from DB")
-    #print("Downloaded "+str(len(dfo))+" rows of general object-based data from DB")
 
     return (
         df.to_json(date_format='iso', orient='split'),
@@ -1443,7 +989,6 @@ def get_axis_unit(axis):
 @dash.callback(
     output=Output("xyz-map-xupage", "figure"),
     inputs=dict(
-        #selections=selections,
         jsonified_db_data=Input("db-data-xupage", "data"),
         xymap_view=Input("xymap-view-selector-xupage", "value"),
         axis_1=Input("axis-1-dropdown-xupage", "value"),
@@ -1460,9 +1005,6 @@ def update_map_xupage(
     aid_select, self_figure
 ):
     
-    #print("XYZ callback-xupage")
-    #zoom_out_level = zoom_out - zoom_in
-
     # Check if axes are distinct
     if len(set([axis_1, axis_2, axis_3])) < 3:
         return go.Figure(
