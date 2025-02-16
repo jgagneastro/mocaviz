@@ -268,7 +268,7 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
     # Read layer properties
     models_visible = assume_membership = show_asso_centers = True
     hover = "closest"
-    if "BANYAN Models" not in style:
+    if "models" not in style:
         models_visible = False
     if "assmem" not in style:
         assume_membership = False
@@ -774,7 +774,7 @@ layout = html.Div(
                                     options=[
                                         {
                                             "label": "BANYAN Models",
-                                            "value": "BANYAN Models",
+                                            "value": "models",
                                         },
                                         {
                                             "label": "Show Object Errors",
@@ -797,7 +797,7 @@ layout = html.Div(
                                             "value": "asscen",
                                         },
                                     ],
-                                    value=["BANYAN Models", "errors"],
+                                    value=[]
                                 ),
                     ],
                 ),
@@ -808,21 +808,33 @@ layout = html.Div(
         id="url-help-section-xupage",
         children=[
             html.Hr(),
-            html.H3("Using URL Parameters"),
             dcc.Markdown(
                 """
+                ## Using URL Parameters
+
                 You can customize the visualization by adding parameters to the URL.  
                 Use `?param=value` format and separate multiple parameters with `&`.
 
-                **Available URL parameters:**
+                ### Available URL Parameters  
                 - `axes=xuw` → Sets the displayed axes to **X, U, W**.
                 - `asso=THA,COL` → Selects the **THA** and **COL** associations.
                 - `mtid=BF,HM,CM` → Filters by membership types **BF, HM, CM**.
                 - `oid=12345,67890` → Highlights individual objects by MOCA OID.
+                - `checkbox=models,errors,hover,assmem,likely,asscen` → Enables various display options.  
 
-                **Example URLs:**
+                ### Checkbox Options (`checkbox=` parameter)
+                - `models` → Displays **BANYAN models**.  
+                - `errors` → Shows **error bars for objects**.  
+                - `hover` → Enables **hover properties** (additional tooltips).  
+                - `assmem` → Uses **assumed membership positions** for objects.  
+                - `likely` → Filters to show **only likely members**.  
+                - `asscen` → Displays **all association labels** (may slow down loading). 
+
+                ### Example URLs  
                 - `https://dataviz.mocadb.ca/xyzuvw?axes=xuw&asso=THA,COL`
                 - `https://dataviz.mocadb.ca/xyzuvw?mtid=BF,HM&oid=12345,67890`
+                
+                Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
                 """
             ),
         ],
@@ -857,6 +869,24 @@ def update_axes_from_url_xupage(url_search):
 
     # Default values if no valid URL parameter
     return "X", "Y", "Z"
+
+# Update checkboxes from URL
+@dash.callback(
+    Output("xymap-view-selector-xupage", "value"),
+    Input("url", "search")
+)
+def update_checklist_from_url(url_search):
+    """Extract checkbox states from the URL and update the checklist component."""
+    default_checkboxes = ["models", "errors"]  # Default values
+
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+
+        if "checkbox" in parsed_url_data:
+            return parsed_url_data["checkbox"][0].split(",")  # Use URL values
+
+    return default_checkboxes  # Use defaults if no parameter is found
 
 # Update AID- and MTID-select
 @dash.callback(
