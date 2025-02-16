@@ -49,6 +49,13 @@ c_value = 8.0
 
 query_e = f"""
     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
+    xyz.xx_covar, xyz.yy_covar, xyz.zz_covar, 
+    xyz.xy_covar, xyz.xz_covar, xyz.yz_covar,
+    uvw.uu_covar, uvw.vv_covar, uvw.ww_covar,
+    uvw.uv_covar, uvw.uw_covar, uvw.vw_covar,
+    uvw.xu_covar, uvw.xv_covar, uvw.xw_covar,
+    uvw.yu_covar, uvw.yv_covar, uvw.yw_covar,
+    uvw.zu_covar, uvw.zv_covar, uvw.zw_covar,
     {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w, 
     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
@@ -275,7 +282,7 @@ def scale_covar(axis1, axis2, value):
         return value  # Both are spatial → no change
     
 # Eventually move this to a subroutine
-def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure):
+def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar, zvar, xtitle, ytitle, ztitle, title, selected_data, style, self_figure, plot_errors=False):
 
     # Read hover property
     # hover = False
@@ -434,6 +441,113 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
         #         customdata=dff_plot["moca_oid"],
         #     )
         #     data.append(new_trace)
+
+        # Lists to store valid points and errors
+        error_x, error_y, error_z = [], [], []
+
+        # Compute error bars
+        if dff_select is not None and plot_errors is True:
+            for _, row in dff_select.iterrows():
+                x, y, z = row[xvar], row[yvar], row[zvar]
+
+                # Skip if x, y, or z is NaN
+                if np.isnan(x) or np.isnan(y) or np.isnan(z):
+                    continue
+
+                covar_matrix = np.array([
+                    [row.get(f"{xvar}{xvar}_covar", 0), row.get(get_covar_name(xvar, yvar), 0), row.get(get_covar_name(xvar, zvar), 0)],
+                    [row.get(get_covar_name(yvar, xvar), 0), row.get(f"{yvar}{yvar}_covar", 0), row.get(get_covar_name(yvar, zvar), 0)],
+                    [row.get(get_covar_name(zvar, xvar), 0), row.get(get_covar_name(zvar, yvar), 0), row.get(f"{zvar}{zvar}_covar", 0)]
+                ])
+
+                # Skip iteration if any element in covar_matrix is NaN
+                if np.isnan(covar_matrix).any():
+                    continue
+
+                # Step 2: Perform Singular Value Decomposition (SVD)
+                #import pdb; pdb.set_trace()
+                #U, S, Vt = np.linalg.svd(covar_matrix)  # U: rotation matrix, S: singular values (variances)
+                # Step 3: Compute Eigenvalues & Eigenvectors (More Stable Than SVD)
+                try:
+                    eigvals, eigvecs = np.linalg.eigh(covar_matrix)  # eigvecs = rotation matrix, eigvals = variances
+                except np.linalg.LinAlgError:
+                    #print("Warning: Covariance matrix decomposition failed. Skipping error bars for this star.")
+                    continue  # Skip this star if decomposition fails
+
+                # Step 3: Generate Unit Vectors for Principal Directions
+                #unit_vectors = np.eye(3)  # Identity matrix = unit vectors along X, Y, Z
+
+                # Step 4: Generate Scaled Principal Axes
+                principal_axes = eigvecs @ (np.sqrt(np.abs(eigvals)) * np.eye(3))
+
+                # Store error bars (each axis separately)
+                # Store error bars (each axis separately, using NaN as a separator)
+                for i in range(3):
+                    error_x.extend([x - principal_axes[0, i], x + principal_axes[0, i], np.nan])
+                    error_y.extend([y - principal_axes[1, i], y + principal_axes[1, i], np.nan])
+                    error_z.extend([z - principal_axes[2, i], z + principal_axes[2, i], np.nan])
+
+                    #error_colors.append(colormap[association])  # Keep colors consistent
+
+
+                # Step 4: Rotate Unit Vectors Using U and Scale by Standard Deviations
+                #principal_axes = U @ (np.sqrt(S) * unit_vectors)  # Rotate and scale
+
+                # Store points
+                #x_points.append(x)
+                #y_points.append(y)
+                #z_points.append(z)
+
+                # Store errors along each principal axis
+                #x_errs.append(np.max(np.abs(principal_axes[0, :])))
+                #y_errs.append(np.max(np.abs(principal_axes[1, :])))
+                #z_errs.append(np.max(np.abs(principal_axes[2, :])))
+
+                #text_list.append(row["text_list"])
+                #custom_data.append(row["moca_oid"])
+            
+            # Single trace for all error bars
+            error_trace = go.Scatter3d(
+                x=error_x,
+                y=error_y,
+                z=error_z,
+                mode="lines",
+                line=dict(color=colormap[association], width=4),  # Slightly thicker lines
+                opacity=0.2,  # Keep error bars semi-transparent
+                showlegend=False,
+            )
+            data.append(error_trace)
+
+            # # Create a single Scatter3D trace with error bars
+            # new_trace = go.Scatter3d(
+            #     x=x_points, y=y_points, z=z_points,
+            #     mode="markers",
+            #     marker={"color": colormap[association], "size": 3, "opacity": selected_opacity},
+            #     text=text_list,
+            #     name=association,
+            #     customdata=custom_data,
+            #     error_x=dict(type="data", array=x_errs, visible=True),
+            #     error_y=dict(type="data", array=y_errs, visible=True),
+            #     error_z=dict(type="data", array=z_errs, visible=True),
+            # )
+
+            # # Append the trace to the figure
+            # data.append(new_trace)
+
+        #         # Step 5: Plot Error Bars for Each Principal Axis
+        #         for i in range(3):
+        #             x_err = [x - principal_axes[0, i], x + principal_axes[0, i]]
+        #             y_err = [y - principal_axes[1, i], y + principal_axes[1, i]]
+        #             z_err = [z - principal_axes[2, i], z + principal_axes[2, i]]
+
+        #             # Add 3D error bars as lines
+        #             data.append(go.Scatter3d(
+        #                 x=x_err, y=y_err, z=z_err,
+        #                 mode='lines', line=dict(color=colormap[association], width=1),
+        #                 #opacity=0.3,
+        #                 showlegend=False
+        #             ))
+        # # END: Plot error bars
 
         # Plot the selected data points
         if dff_select is not None:
@@ -840,6 +954,11 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
 
     #fig.update_layout(uirevision='constant')
 
+    #layout = go.Layout(
+    #    uirevision='constant',  # Prevent reloading plot on zooming/panning
+    #    hovermode='closest'
+    #)
+
     return fig
 
 layout = html.Div(
@@ -975,12 +1094,12 @@ layout = html.Div(
                                     id="xymap-view-selector-xupage",
                                     options=[
                                         {
-                                            "label": "All Labels (slow load)",
-                                            "value": "asscen",
-                                        },
-                                        {
                                             "label": "BANYAN Models",
                                             "value": "BANYAN Models",
+                                        },
+                                        {
+                                            "label": "Show Object Errors",
+                                            "value": "errors",
                                         },
                                         {
                                             "label": "Assume Membership",
@@ -994,8 +1113,12 @@ layout = html.Div(
                                             "label": "Only Display Likely Members",
                                             "value": "likely",
                                         },
+                                        {
+                                            "label": "All Labels (slow load)",
+                                            "value": "asscen",
+                                        },
                                     ],
-                                    value=["BANYAN Models"],
+                                    value=["BANYAN Models", "errors"],
                                 ),
                         #html.Br(),
                         #html.Button('Recenter', id='xyz-recenter-in-xupage', n_clicks=0),
@@ -1316,7 +1439,7 @@ def update_aid_select_xupage(
 def get_axis_unit(axis):
     return "km/s" if axis in ["U", "V", "W"] else "pc"
 
-# Update XYZ Map
+# Update XYZUVW Map
 @dash.callback(
     output=Output("xyz-map-xupage", "figure"),
     inputs=dict(
@@ -1370,7 +1493,9 @@ def update_map_xupage(
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
     df_asso_centers = pd.read_json(jsonified_db_data[3], orient='split')
 
-    return generate_xyzuvw_map(df, dfm, dfo, df_asso_centers, aid_select, axis_1.lower(), axis_2.lower(), axis_3.lower(), axis_1.upper(), axis_2.upper(), axis_3.upper(), f'{axis_1}{axis_2}{axis_3} Galactic coordinates', processed_data, xymap_view, self_figure)
+    plot_errors = "errors" in xymap_view
+
+    return generate_xyzuvw_map(df, dfm, dfo, df_asso_centers, aid_select, axis_1.lower(), axis_2.lower(), axis_3.lower(), axis_1.upper(), axis_2.upper(), axis_3.upper(), f'{axis_1}{axis_2}{axis_3} Galactic coordinates', processed_data, xymap_view, self_figure, plot_errors=plot_errors)
 
 #Initiate some global constants
 #1 AU/yr to km/s divided by 1000
