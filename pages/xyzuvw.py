@@ -931,6 +931,7 @@ def update_aid_select_xupage(
             else:
                 if aid_select is None:
                     aid_select = initial_aids
+            aid_select = list(set(aid_select))  # Remove duplicates
             if 'mtid' in parsed_url_data.keys():
                 mtid_select = parsed_url_data['mtid'][0].split(',')
             else:
@@ -978,7 +979,7 @@ def update_aid_select_xupage(
     ]
 
     #Prevent app from crashing if no associations are selected
-    if len(aid_select) == 0:
+    if len(aid_select) == 0 or not mtid_select:
         df = dfe
         dfm = dfme
     else: 
@@ -1067,9 +1068,47 @@ def update_map_xupage(
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
     df_asso_centers = pd.read_json(jsonified_db_data[3], orient='split')
 
+    # Validate associations
+    valid_aids = list(set(df["moca_aid"].unique()) | set(dfm["moca_aid"].unique()))
+    filtered_aid_select = [aid for aid in aid_select if aid in valid_aids]
+    invalid_aids = [aid for aid in aid_select if aid not in valid_aids]
+
+    # If all requested associations are invalid, return an error message
+    if not filtered_aid_select:
+        return go.Figure(
+            layout=go.Layout(
+                height=400,
+                annotations=[
+                    dict(
+                        text=f"No data to be displayed.",
+                        x=0.5, y=0.5,
+                        xref="paper", yref="paper",
+                        showarrow=False,
+                        font=dict(size=20, color="red")
+                    )
+                ]
+            )
+        )
+    
     plot_errors = "errors" in xymap_view
 
-    return generate_xyzuvw_map(df, dfm, dfo, df_asso_centers, aid_select, axis_1.lower(), axis_2.lower(), axis_3.lower(), axis_1.upper(), axis_2.upper(), axis_3.upper(), f'{axis_1}{axis_2}{axis_3} Galactic coordinates', processed_data, xymap_view, self_figure, plot_errors=plot_errors)
+    if df.empty and dfm.empty:
+        return go.Figure(
+            layout=go.Layout(
+                height=400,
+                annotations=[
+                    dict(
+                        text="No valid stars or models found for the selected criteria.",
+                        x=0.5, y=0.5,
+                        xref="paper", yref="paper",
+                        showarrow=False,
+                        font=dict(size=20, color="red")
+                    )
+                ]
+            )
+        )
+
+    return generate_xyzuvw_map(df, dfm, dfo, df_asso_centers, filtered_aid_select, axis_1.lower(), axis_2.lower(), axis_3.lower(), axis_1.upper(), axis_2.upper(), axis_3.upper(), f'{axis_1}{axis_2}{axis_3} Galactic coordinates', processed_data, xymap_view, self_figure, plot_errors=plot_errors)
 
 #Initiate some global constants
 #1 AU/yr to km/s divided by 1000
