@@ -131,12 +131,6 @@ layout = html.Div(
     inputs=dict(
         #selections=selections,
         clickdata=Input("gh-sunburst", "clickData"),
-        #n_clicks=Input("gh-div", "n_clicks"),
-        #xymap_view=Input("xymap-view-selector-xyzpage", "value"),
-        #hover_select=Input("hover-select-xyzpage", "value"),
-        #recenter=Input("xyz-recenter-in-xyzpage", "n_clicks"),
-        #zoom_out=Input("xyz-zoom-out-xyzpage", "n_clicks"),
-        #zoom_in=Input("xyz-zoom-in-xyzpage", "n_clicks"),
     ),
     state=dict(url_search=State("url", "search"),self_figure=State("gh-sunburst", "figure")),
 )
@@ -181,7 +175,7 @@ def gh_callback(clickdata, url_search, self_figure):
 
         label = clickdata['points'][0]['customdata']
         if label is not None:
-            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+child_aid+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
+            text = "You have clicked on the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n\n Click [here](https://dataviz.mocadb.ca/xyzuvw?axes=xyz&asso="+label+child_aid+"&mtid=BF,HM,CM"+url_add+") to open a 3D XYZ map of this branch.\n\n Click [here](https://mocadb.ca/query?query=SELECT+sam.*+FROM+summary_all_members+sam+LEFT+JOIN+moca_membership_types+mmt+ON(mmt.moca_mtid=sam.moca_mtid)+WHERE+moca_aid='"+label+"'+ORDER+BY+mmt.level+DESC,sam.sptn+ASC) to obtain a full list of members for this association.\n\n Use Command + click to open links in a new tab."
             return text
         #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
 
@@ -252,7 +246,7 @@ def update_gh_figure(dummy, url_search):
 #     if clickdata is not None:
 #         #import pdb; pdb.set_trace()
 #         label = clickdata['points'][0]['customdata']
-#         text = "You are now viewing the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n Click [here](https://dataviz.mocadb.ca/xyz?asso="+label+"&mtid=BF,HM,CM) to open a 3D XYZ map of this branch.\n\n Use Command + click to open links in a new tab."
+#         text = "You are now viewing the "+label+" branch.\n Click on the central node to go up a hiearchical level.\n\n Click [here](https://mocadb.ca/search/results?search-query="+label+"&search-type=association) to open a MOCA report for this association.\n Click [here](https://dataviz.mocadb.ca/xyzuvw?axes=xyz&asso="+label+"&mtid=BF,HM,CM) to open a 3D XYZ map of this branch.\n\n Use Command + click to open links in a new tab."
 #         return text
 #         #np.char.add("<a href=https://www.google.com>",np.char.add(df["original_aid"].to_numpy().astype("str"),"</a>"))
 
