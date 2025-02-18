@@ -11,8 +11,8 @@ default_text = \
 " [on my GitHub](https://github.com/jgagneastro/mocaviz) and run them locally.\n\n" + \
 " Please choose one of the following tools:\n" + \
 " * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer?#args#).\n" + \
-" * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz?#args#).\n" + \
-" * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA kinematic explorer](/uvw?#args#).\n" + \
+#" * Explore the 3D XYZ spatial positions of MOCAdb data with the [MOCA spatial explorer](/xyz?#args#).\n" + \
+#" * Explore the 3D UVW spatial positions of MOCAdb data with the [MOCA kinematic explorer](/uvw?#args#).\n" + \
 " * Explore the 3D XYZUVW spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyzuvw?#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
 " * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra?#args#).\n" + \
