@@ -493,13 +493,14 @@ def generate_xyzuvw_map(dff, dfm, dfo, df_asso_centers, associations, xvar, yvar
                 })
 
             # Plot the GMM model
-            modelname = association+" model"
-            model = build_gmm_density_3d(components, colormap[association], contour_level=0.99, opacity=0.07, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (99%)')
-            data.extend(model)
-            model = build_gmm_density_3d(components, colormap[association], contour_level=0.95, opacity=0.15, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (95%)')
-            data.extend(model)
-            model = build_gmm_density_3d(components, colormap[association], contour_level=0.68, opacity=0.3, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (68%)')
-            data.extend(model)
+            if len(components) != 0:
+                modelname = association+" model"
+                model = build_gmm_density_3d(components, colormap[association], contour_level=0.99, opacity=0.07, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (99%)')
+                data.extend(model)
+                model = build_gmm_density_3d(components, colormap[association], contour_level=0.95, opacity=0.15, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (95%)')
+                data.extend(model)
+                model = build_gmm_density_3d(components, colormap[association], contour_level=0.68, opacity=0.3, mesh=False, showlegend=True, legendgroup=modelname, legendname=modelname+' (68%)')
+                data.extend(model)
     
     if len(dfo) != 0:
         text_list = build_hover_dfo(dfo)
@@ -991,7 +992,7 @@ def update_aid_select_xupage(
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         # This version is flexible AND preserves multi-ellipse models
-        dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid FROM data_banyan_sigma_models dbs WHERE dbs.adopted=1 AND ("+aid_query+") GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)")
+        dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid FROM data_banyan_sigma_models dbs WHERE ("+aid_query+") GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)")
 
     #Object-based selections
     oid_set = False
