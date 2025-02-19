@@ -75,8 +75,8 @@ query_oe = f"""
     LEFT JOIN calc_radial_velocities_corrected crvc USING(moca_oid,moca_aid)
     LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
     LEFT JOIN summary_all_objects sao USING(moca_oid)
-    LEFT JOIN cdata_distances cdist ON(cdist.moca_oid=mv.moca_oid AND cdist.adopted=1)
-    LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mv.moca_oid AND dpm.adopted=1)
+    LEFT JOIN cdata_distances cdist ON(cdist.moca_oid=mo.moca_oid AND cdist.adopted=1)
+    LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mo.moca_oid AND dpm.adopted=1)
 """
 
 dfe = moca_vanilla.query(query_e+" LIMIT 0")
