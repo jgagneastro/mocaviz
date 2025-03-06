@@ -66,14 +66,13 @@ query_e = f"""
 """
 query_oe = f"""
     SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, COALESCE(mv.moca_mtid,'N/A') AS moca_mtid, sao.spt, sao.dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
-    {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w,
+    {c_value} * uvw.u_kms AS u, {c_value} * uvw.v_kms AS v, {c_value} * uvw.w_kms AS w,
     mo.ra, mo.`dec`,dpm.pmra_masyr,dpm.pmdec_masyr,cdist.distance_pc,crvc.radial_velocity_kms
     FROM moca_objects mo
     LEFT JOIN mechanics_best_memberships mv USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
-    LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+    LEFT JOIN calc_uvw_raw uvw USING(moca_oid)
     LEFT JOIN calc_radial_velocities_corrected crvc USING(moca_oid,moca_aid)
-    LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
     LEFT JOIN summary_all_objects sao USING(moca_oid)
     LEFT JOIN cdata_distances cdist ON(cdist.moca_oid=mo.moca_oid AND cdist.adopted=1)
     LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mo.moca_oid AND dpm.adopted=1)
