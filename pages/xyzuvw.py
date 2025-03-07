@@ -82,6 +82,9 @@ dfe = moca_vanilla.query(query_e+" LIMIT 0")
 dfoe = moca_vanilla.query(query_oe+" LIMIT 0")
 dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
+# Query available model versions
+df_model_versions = moca_vanilla.query("SELECT DISTINCT moca_bsmdid FROM data_banyan_sigma_models")
+
 unselected_opacity = 0.1
 selected_opacity = 1
 
@@ -754,6 +757,16 @@ layout = html.Div(
                         html.Br(),
                         dcc.Markdown(children=["Select individual stars"]),
                         dcc.Input(id="oid-select-xupage", type="text", placeholder="Insert MOCA object IDs separated by commas.", debounce=True, style={"width": "100%", "whiteSpace": "pre-wrap"}),
+                        html.Br(),
+                        html.Br(),
+                        dcc.Markdown(children=["Select BANYAN model version"]),
+                        dcc.Dropdown(
+                            id="banyan-model-version-xupage",
+                            options=[{"label": "Latest available", "value": "latest"}],  # Will be dynamically updated
+                            value="latest",
+                            style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor": "white"},
+                            ),
+                        html.Br(),
                         ],
                     ),
                 # XYZ
@@ -820,6 +833,7 @@ layout = html.Div(
                 - `asso=THA,COL` → Selects the **THA** and **COL** associations.
                 - `mtid=BF,HM,CM` → Filters by membership types **BF, HM, CM**.
                 - `oid=12345,67890` → Highlights individual objects by MOCA OID.
+                - `bsmdid=123` → Selects a specific **BANYAN Σ model version** by `moca_bsmdid`. Use `bsmdid=latest` to keep the default **latest available version**.
                 - `checkbox=models,errors,hover,assmem,likely,asscen` → Enables various display options.  
 
                 ### Checkbox Options (`checkbox=` parameter)
@@ -833,6 +847,8 @@ layout = html.Div(
                 ### Example URLs  
                 - `https://dataviz.mocadb.ca/xyzuvw?axes=xuw&asso=THA,COL`
                 - `https://dataviz.mocadb.ca/xyzuvw?mtid=BF,HM&oid=12345,67890`
+                - `https://dataviz.mocadb.ca/xyzuvw?bsmdid=456` → Uses **BANYAN Σ model version 456**.  
+                - `https://dataviz.mocadb.ca/xyzuvw?asso=THA,COL&bsmdid=latest` → Uses **latest model version** for selected associations.
                 
                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
                 """
@@ -888,6 +904,34 @@ def update_checklist_from_url(url_search):
 
     return default_checkboxes  # Use defaults if no parameter is found
 
+# Update BSMDID dropdown from URL
+@dash.callback(
+    [Output("banyan-model-version-xupage", "options"),
+     Output("banyan-model-version-xupage", "value")],
+    Input("url", "search"),
+)
+def update_banyan_version_dropdown(url_search):
+    
+    model_options = [{"label": "Latest available", "value": "latest"}] + [
+        {"label": str(i), "value": str(i)} for i in sorted(df_model_versions["moca_bsmdid"].tolist(), reverse=True)
+    ]
+
+    # Check if bsmdid is in the URL
+    selected_version = "latest"  # Default value
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+
+        if "bsmdid" in parsed_url_data:
+            url_bsmdid = parsed_url_data["bsmdid"][0]
+            available_versions = [opt["value"] for opt in model_options]
+
+            # Set the dropdown value to the version from URL if it's valid
+            if url_bsmdid in available_versions:
+                selected_version = url_bsmdid
+
+    return model_options, selected_version
+
 # Update AID- and MTID-select
 @dash.callback(
     output=[
@@ -902,11 +946,12 @@ def update_checklist_from_url(url_search):
         Input("mtid-select-xupage", "value"),
         Input("oid-select-xupage", "value"),
         Input("xymap-view-selector-xupage", "value"),
+        Input("banyan-model-version-xupage", "value"),
     ],
     state=[State("url","search")]
 )
 def update_aid_select_xupage(
-    aid_select, mtid_select, oid_select, xymap_view, url_search
+    aid_select, mtid_select, oid_select, xymap_view, banyan_version, url_search
 ):
     
     # Determine if the "Only Display Likely Members" checkbox is checked
@@ -945,7 +990,7 @@ def update_aid_select_xupage(
     user = None
     pwd = None
     dbase = None
-    if url_search != "":
+    if url_search:
         parsed_url = urlparse(url_search)
         parsed_url_data = parse_qs(parsed_url.query)
         if 'user' in parsed_url_data.keys():
@@ -990,8 +1035,26 @@ def update_aid_select_xupage(
 
         # Query the moca database to obtain a Pandas DataFrame of the appropriate BANYAN Sigma models
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
+        
+        
+        # BANYAN model query
+        if banyan_version == "latest":
+            # This version is flexible AND preserves multi-ellipse models when we need the latest version
+            dfm = moca.query(
+                "SELECT dbs2.* FROM data_banyan_sigma_models dbs2 "
+                "JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid "
+                "FROM data_banyan_sigma_models dbs WHERE (" + aid_query + ") "
+                "GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)"
+            )
+        else:
+            dfm = moca.query(
+                "SELECT dbs2.* FROM data_banyan_sigma_models dbs2 "
+                "WHERE (" + aid_query + ") AND moca_bsmdid=" + str(banyan_version)
+            )
+
         # This version is flexible AND preserves multi-ellipse models
-        dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid FROM data_banyan_sigma_models dbs WHERE ("+aid_query+") GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)")
+        #dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 JOIN (SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, moca_aid FROM data_banyan_sigma_models dbs WHERE ("+aid_query+") GROUP BY dbs.moca_aid) inq USING(moca_aid, moca_bsmdid)")
+        #dfm = moca.query("SELECT dbs2.* FROM  data_banyan_sigma_models dbs2 WHERE ("+aid_query+") AND moca_bsmdid="+str([insert the user-selected bsmdid here]))
 
     #Object-based selections
     oid_set = False
