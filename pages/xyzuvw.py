@@ -2,6 +2,7 @@ import dash
 from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
+from urllib.parse import quote_plus as urlquote
 
 from utils.plot_banyan_model_helpers import build_ellipsoid_3d, build_solar_neighborhood_3d, build_graph_title, build_gmm_density_3d
 
@@ -81,9 +82,6 @@ query_oe = f"""
 dfe = moca_vanilla.query(query_e+" LIMIT 0")
 dfoe = moca_vanilla.query(query_oe+" LIMIT 0")
 dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
-
-# Query available model versions
-df_model_versions = moca_vanilla.query("SELECT DISTINCT moca_bsmdid FROM data_banyan_sigma_models")
 
 unselected_opacity = 0.1
 selected_opacity = 1
@@ -904,31 +902,45 @@ def update_checklist_from_url(url_search):
 
     return default_checkboxes  # Use defaults if no parameter is found
 
-# Update BSMDID dropdown from URL
+# Update BSMDID dropdown from URL and read credentials
 @dash.callback(
     [Output("banyan-model-version-xupage", "options"),
      Output("banyan-model-version-xupage", "value")],
     Input("url", "search"),
 )
 def update_banyan_version_dropdown(url_search):
-    
+    # Initialize MOCA engine
+    moca = MocaEngine()
+
+    # Extract credentials from URL
+    user, pwd, dbase = None, None, None
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+        user = parsed_url_data.get("user", [None])[0]
+        pwd = parsed_url_data.get("pwd", [None])[0]
+        dbase = parsed_url_data.get("dbase", [None])[0]
+
+    # If credentials are provided, override connection
+    if user and pwd and dbase:
+        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@104.248.106.21/'+dbase)
+        moca.connection = engine.connect()
+
+    # Query available model versions
+    df_model_versions = moca.query("SELECT DISTINCT moca_bsmdid FROM data_banyan_sigma_models")
+
+    # Generate dropdown options
     model_options = [{"label": "Latest available", "value": "latest"}] + [
         {"label": str(i), "value": str(i)} for i in sorted(df_model_versions["moca_bsmdid"].tolist(), reverse=True)
     ]
 
-    # Check if bsmdid is in the URL
+    # Determine selected version from URL
     selected_version = "latest"  # Default value
-    if url_search:
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-
-        if "bsmdid" in parsed_url_data:
-            url_bsmdid = parsed_url_data["bsmdid"][0]
-            available_versions = [opt["value"] for opt in model_options]
-
-            # Set the dropdown value to the version from URL if it's valid
-            if url_bsmdid in available_versions:
-                selected_version = url_bsmdid
+    if url_search and "bsmdid" in parsed_url_data:
+        url_bsmdid = parsed_url_data["bsmdid"][0]
+        available_versions = [opt["value"] for opt in model_options]
+        if url_bsmdid in available_versions:
+            selected_version = url_bsmdid
 
     return model_options, selected_version
 
@@ -1005,7 +1017,7 @@ def update_aid_select_xupage(
 
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
-        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@104.248.106.21/'+dbase)
 
         # This is only required for CALL statements
         raw_con = engine.raw_connection()
