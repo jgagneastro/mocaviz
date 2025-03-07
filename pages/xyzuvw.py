@@ -831,7 +831,7 @@ layout = html.Div(
                 - `asso=THA,COL` → Selects the **THA** and **COL** associations.
                 - `mtid=BF,HM,CM` → Filters by membership types **BF, HM, CM**.
                 - `oid=12345,67890` → Highlights individual objects by MOCA OID.
-                - `bsmdid=123` → Selects a specific **BANYAN Σ model version** by `moca_bsmdid`. Use `bsmdid=latest` to keep the default **latest available version**.
+                - `bsmdid=16` → Selects a specific **BANYAN Σ model version** by `moca_bsmdid`. Use `bsmdid=latest` to keep the default **latest available version**.
                 - `checkbox=models,errors,hover,assmem,likely,asscen` → Enables various display options.  
 
                 ### Checkbox Options (`checkbox=` parameter)
@@ -845,7 +845,7 @@ layout = html.Div(
                 ### Example URLs  
                 - `https://dataviz.mocadb.ca/xyzuvw?axes=xuw&asso=THA,COL`
                 - `https://dataviz.mocadb.ca/xyzuvw?mtid=BF,HM&oid=12345,67890`
-                - `https://dataviz.mocadb.ca/xyzuvw?bsmdid=456` → Uses **BANYAN Σ model version 456**.  
+                - `https://dataviz.mocadb.ca/xyzuvw?bsmdid=16` → Uses **BANYAN Σ model version 16**.  
                 - `https://dataviz.mocadb.ca/xyzuvw?asso=THA,COL&bsmdid=latest` → Uses **latest model version** for selected associations.
                 
                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
