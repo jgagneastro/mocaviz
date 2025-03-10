@@ -25,6 +25,10 @@ default_dbname = 'mocadb'
 default_spt_range = 'M6-Y2'
 default_spt_range_val = [6,32]
 
+all_valid_axis_types = ['spectral_type', 'color', 'absolute_magnitude', 'spectral_index', 'equivalent_width']
+one_value_axis_types = ['absolute_magnitude', 'spectral_index', 'equivalent_width']
+two_values_axis_types = ['color']
+
 figure_export_config = {
   'toImageButtonOptions': {
     'format': 'png', # one of png, svg, jpeg, webp
@@ -228,7 +232,7 @@ layout = (
 
         # Title and Description
         html.H1("Substellar Photometry Explorer"),
-        html.P(["This page allows you to display the spectral types, absolute magnitudes, colors or spectral indices of substellar objects in the MOCA database.",html.Br(),
+        html.P(["This page allows you to display the spectral types, absolute magnitudes, colors, spectral indices or equivalent widths of substellar objects in the MOCA database.",html.Br(),
                 "While this page is intended for use with brown dwarfs, it can be extended to earlier spectral types too.",html.Br(),
                 "You can use the plotly selection tool to obtain a table with the selected objects below the scatter plot, which is downloadable as a CSV file.",html.Br(),
                 "You can also list unique MOCA identifiers to highlight them in the figure.",html.Br()]),
@@ -263,7 +267,8 @@ layout = (
                         {'label': 'Spectral Type', 'value': 'spectral_type'},
                         {'label': 'Color', 'value': 'color'},
                         {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'},
-                        {'label': 'Spectral Index', 'value': 'spectral_index'}
+                        {'label': 'Spectral Index', 'value': 'spectral_index'},
+                        {'label': 'Equivalent Width', 'value': 'equivalent_width'}
                     ],
                     placeholder='Select x-axis type',
                 )
@@ -277,7 +282,8 @@ layout = (
                         {'label': 'Spectral Type', 'value': 'spectral_type'},
                         {'label': 'Color', 'value': 'color'},
                         {'label': 'Absolute Magnitude', 'value': 'absolute_magnitude'},
-                        {'label': 'Spectral Index', 'value': 'spectral_index'}
+                        {'label': 'Spectral Index', 'value': 'spectral_index'},
+                        {'label': 'Equivalent Width', 'value': 'equivalent_width'}
                     ],
                     placeholder='Select y-axis type',
                 )
@@ -438,8 +444,18 @@ def fetch_moca_spectral_indices(url):
     with engine.connect() as connection:
         metadata = MetaData()
         moca_spectral_indices = Table('moca_spectral_indices', metadata, autoload_with=engine)
-        spti_query = select([moca_spectral_indices])
-        return pd.read_sql(spti_query, connection)
+        spi_query = select([moca_spectral_indices])
+        return pd.read_sql(spi_query, connection)
+    
+def fetch_moca_equivalent_widths(url):
+    """Fetch moca_psid and related data from moca_photometry_systems."""
+    connection_string = get_connection_string(url)
+    engine = create_engine(connection_string)
+    with engine.connect() as connection:
+        metadata = MetaData()
+        moca_chemical_species = Table('moca_chemical_species', metadata, autoload_with=engine)
+        csi_query = select([moca_chemical_species])
+        return pd.read_sql(csi_query, connection)
 
 @dash.callback(
     Output('bdphot-x-axis-first-band', 'children'),
@@ -448,7 +464,10 @@ def fetch_moca_spectral_indices(url):
 )
 def update_x_axis_first_band(axis_type, url):
     
-    if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
+    if axis_type not in one_value_axis_types and axis_type not in two_values_axis_types:
+        return None  # Clear the dropdown if the type doesn't match
+    
+    if (axis_type in one_value_axis_types) or (axis_type in two_values_axis_types):
         # Parse URL parameters
         url_params = parse_url_params(url)
         url_default_value = url_params.get('xaxis_value_1', [None])[0]
@@ -516,6 +535,38 @@ def update_x_axis_first_band(axis_type, url):
                     placeholder="Select spectral index",
                 )
             ])
+        
+        if axis_type in ['equivalent_width']:
+
+            # Fetch valid spectral indices for dropdown options
+            equivalent_widths = fetch_moca_equivalent_widths(url)
+            if equivalent_widths.empty:
+                return html.Div([
+                    html.Label("Select chemical species for the x-axis equivalent width:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No chemical species for equivalent width calculations are available",
+                    )
+                ])
+        
+            options = [
+                {'label': f"{row['description']} ({row['moca_spid']})", 'value': row['moca_spid']}
+                for _, row in equivalent_widths.iterrows()
+            ]
+
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in equivalent_widths['moca_spid'].tolist() else None
+            
+            return html.Div([
+                html.Label("Select chemical species for the x-axis equivalent width:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'x', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select chemical species",
+                )
+            ])
 
     return html.Div()
 
@@ -525,7 +576,8 @@ def update_x_axis_first_band(axis_type, url):
     State('url', 'href')
 )
 def update_x_axis_second_band(axis_type, url):
-    if axis_type == 'color':
+    
+    if axis_type in two_values_axis_types:
         # Parse URL parameters
         url_params = parse_url_params(url)
         url_default_value = url_params.get('xaxis_value_2', [None])[0]
@@ -569,10 +621,10 @@ def update_x_axis_second_band(axis_type, url):
 def update_y_axis_first_band(axis_type, url):
     
     # Reset logic
-    if axis_type not in ['color', 'absolute_magnitude', 'spectral_index']:
+    if axis_type not in one_value_axis_types and axis_type not in two_values_axis_types:
         return None  # Clear the dropdown if the type doesn't match
     
-    if axis_type in ['color', 'absolute_magnitude', 'spectral_index']:
+    if (axis_type in one_value_axis_types) or (axis_type in two_values_axis_types):
         # Parse URL parameters
         url_params = parse_url_params(url)
         url_default_value = url_params.get('yaxis_value_1', [None])[0]
@@ -640,6 +692,38 @@ def update_y_axis_first_band(axis_type, url):
                     placeholder="Select spectral index",
                 )
             ])
+        
+        if axis_type in ['equivalent_width']:
+
+            # Fetch valid spectral indices for dropdown options
+            equivalent_widths = fetch_moca_equivalent_widths(url)
+            if equivalent_widths.empty:
+                return html.Div([
+                    html.Label("Select chemical species for the y-axis equivalent width:"),
+                    dcc.Dropdown(
+                        id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                        options=[],  # No options available
+                        placeholder="No chemical species for equivalent width calculations are available",
+                    )
+                ])
+        
+            options = [
+                {'label': f"{row['description']} ({row['moca_spid']})", 'value': row['moca_spid']}
+                for _, row in equivalent_widths.iterrows()
+            ]
+
+            # Ensure the default value is valid for this axis type
+            default_value = url_default_value if url_default_value in equivalent_widths['moca_spid'].tolist() else None
+            
+            return html.Div([
+                html.Label("Select chemical species for the y-axis equivalent width:"),
+                dcc.Dropdown(
+                    id={'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': 'first'},
+                    options=options,
+                    value=default_value,  # Set default value from URL
+                    placeholder="Select chemical species",
+                )
+            ])
     
     return html.Div()
 
@@ -649,7 +733,8 @@ def update_y_axis_first_band(axis_type, url):
     State('url', 'href')
 )
 def update_y_axis_second_band(axis_type, url):
-    if axis_type == 'color':
+    
+    if axis_type in two_values_axis_types:
         # Parse URL parameters
         url_params = parse_url_params(url)
         url_default_value = url_params.get('yaxis_value_2', [None])[0]
@@ -699,11 +784,11 @@ def update_dropdowns_from_url(url):
     yaxis_type = url_params.get('yaxis_type', [None])[0]
 
     # Validate x-axis type
-    if xaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index']:
+    if xaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index', 'equivalent_width']:
         xaxis_type = None  # Default value
 
     # Validate y-axis type
-    if yaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index']:
+    if yaxis_type not in ['spectral_type', 'absolute_magnitude', 'color', 'spectral_index', 'equivalent_width']:
         yaxis_type = None  # Default value
 
     # Return the validated or default values
@@ -823,6 +908,18 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
     if y_axis_type == 'color':
         if len(y_band_values) < 2 or any(v is None for v in y_band_values):
             return empty_figure, None, None
+    if x_axis_type == 'spectral_index':
+        if len(x_band_values) < 1 or any(v is None for v in x_band_values):
+            return empty_figure, None, None
+    if y_axis_type == 'spectral_index':
+        if len(y_band_values) < 1 or any(v is None for v in y_band_values):
+            return empty_figure, None, None
+    if x_axis_type == 'equivalent_width':
+        if len(x_band_values) < 1 or any(v is None for v in x_band_values):
+            return empty_figure, None, None
+    if y_axis_type == 'equivalent_width':
+        if len(y_band_values) < 1 or any(v is None for v in y_band_values):
+            return empty_figure, None, None
 
     connection_string = get_connection_string(url)
 
@@ -878,6 +975,11 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             moca_spectral_indices = Table('moca_spectral_indices', metadata, autoload_with=engine)
             cdata_spectral_indices = Table('cdata_spectral_indices', metadata, autoload_with=engine)
             spectral_index_publications = moca_publications.alias('spectral_index_publications')
+
+        if x_axis_type == 'equivalent_width' or y_axis_type == 'equivalent_width':
+            moca_equivalent_widths = Table('moca_chemical_species', metadata, autoload_with=engine)
+            cdata_equivalent_widths = Table('cdata_equivalent_widths', metadata, autoload_with=engine)
+            equivalent_widths_publications = moca_publications.alias('equivalent_widths_publications')
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude' or x_axis_type == 'color' or y_axis_type == 'color':
             # Determine which photometry table to use
@@ -1212,6 +1314,118 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             # Add the photspt filter to the query dynamically
             spti_query = spti_query.where(spectral_type_filter)
 
+        if x_axis_type == 'equivalent_width' or y_axis_type == 'equivalent_width':
+            ew_query = (
+                select([
+                    cdata_spectral_types.c.moca_oid,
+                    func.min(moca_objects.c.designation).label('designation'),
+                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
+                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
+                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(cdata_distances.c.dmod).label('dmod'),
+                    func.min(cdata_distances.c.dmod_unc).label('dmod_unc'),
+                    func.min(cdata_equivalent_widths.c.ew_angstrom).label('ew_angstrom'),
+                    func.min(cdata_equivalent_widths.c.ew_angstrom_unc).label('ew_angstrom_unc'),
+                    func.min(moca_equivalent_widths.c.description).label('equivalent_width_description'),
+                    func.min(
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                        ).label('spt_ref'),
+                    func.min(
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                        ).label('distance_ref'),
+                    func.min(
+                            func.concat(func.coalesce(func.coalesce(func.coalesce(equivalent_widths_publications.c.name, equivalent_widths_publications.c.moca_pid),cdata_equivalent_widths.c.origin),cdata_equivalent_widths.c.calculation_method),func.coalesce(func.concat(', ',func.concat(cdata_equivalent_widths.c.mission_name,func.coalesce(func.concat(' ',cdata_equivalent_widths.c.data_release),''))),''))
+                        ).label('equivalent_width_ref'),
+                    case(
+                        [
+                            # Young brown dwarfs condition
+                            (
+                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (cdata_spectral_types.c.suffix.like('%red%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                'young'
+                            ),
+                            # Subdwarfs condition
+                            (
+                                (cdata_spectral_types.c.suffix.like('sd%')) |
+                                (cdata_spectral_types.c.suffix.like('esd%')) |
+                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
+                                (cdata_spectral_types.c.suffix.like('%blue%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                'old'
+                            ),
+                        ],
+                        else_='field'  # Default to 'field'
+                    ).label('age_sample')
+                ])
+                .select_from(
+                    cdata_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    .join(
+                        cdata_equivalent_widths,
+                        (cdata_equivalent_widths.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                        (cdata_equivalent_widths.c.adopted == 1)
+                    )
+                    .join(
+                        moca_equivalent_widths,
+                        (cdata_equivalent_widths.c.moca_spid == moca_equivalent_widths.c.moca_spid)
+                    )
+                    .outerjoin(cdata_distances, distance_join_condition)
+                    .outerjoin(
+                        spt_publications,
+                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                    )
+                    .outerjoin(
+                        distance_publications,
+                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                    )
+                    .outerjoin(
+                        data_parallaxes,
+                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                    )
+                    .outerjoin(
+                        parallax_publications,
+                        (parallax_publications.c.moca_pid == data_parallaxes.c.moca_pid)
+                    )
+                    .outerjoin(
+                        equivalent_widths_publications,
+                        (equivalent_widths_publications.c.moca_pid == cdata_equivalent_widths.c.moca_pid)
+                    )
+                    .outerjoin(
+                        mechanics_object_properties_combined,
+                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    )
+                )
+                .where(
+                    (cdata_spectral_types.c.adopted == 1) &
+                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
+                )
+                .group_by(cdata_spectral_types.c.moca_oid)
+            )
+        
+            # Add the binary filter to the query dynamically
+            if binary_filter is not None:
+                ew_query = ew_query.where(binary_filter)
+
+            # Add the photspt filter to the query dynamically
+            ew_query = ew_query.where(spectral_type_filter)
+
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
                 select([
@@ -1376,6 +1590,27 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             
             x_axis_label = x_data['spectral_index_description'].iloc[0]
 
+        if x_axis_type == 'equivalent_width' and x_band_values and any(v for v in x_band_values if v is not None):
+            x_equivalent_width = x_band_values[0]
+            
+            x_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == x_equivalent_width)
+
+            x_data = pd.read_sql(x_query, connection)
+            
+            # Check if some data was returned
+            if x_data.empty:
+                return empty_figure_noresults, None, None
+            
+            # Add index-related info
+            x_data_reformatted = format_dataframe_with_error(x_data, "ew_angstrom", "ew_angstrom_unc", unit="", output_col="ew_display").loc[:, ["ew_display"]]
+            x_data['x_ref'] = x_data['equivalent_width_description']+" : "+x_data_reformatted['ew_display']+" ("+x_data['equivalent_width_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
+            # Calculate absolute magnitude and uncertainty using dmod
+            x_data['x_data'] = x_data['ew_angstrom']
+            x_data['ex_data'] = x_data['ew_angstrom_unc']
+            
+            x_axis_label = x_data['equivalent_width_description'].iloc[0]
+
         if x_axis_type == 'absolute_magnitude' and x_band_values and any(v for v in x_band_values if v is not None):
             x_photometry_band = x_band_values[0]  # Extract the selected bandpass (e.g., 'mko_jmag')
             
@@ -1456,6 +1691,27 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             y_data['ey_data'] = y_data['index_value_unc']
             
             y_axis_label = y_data['spectral_index_description'].iloc[0]
+
+        if y_axis_type == 'equivalent_width' and y_band_values and any(v for v in y_band_values if v is not None):
+            y_equivalent_width = y_band_values[0]
+            
+            y_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == y_equivalent_width)
+
+            y_data = pd.read_sql(y_query, connection)
+            
+            # Check if some data was returned
+            if y_data.empty:
+                return empty_figure_noresults, None, None
+            
+            # Add index-related info
+            y_data_reformatted = format_dataframe_with_error(y_data, "ew_angstrom", "ew_angstrom_unc", unit="", output_col="ew_display").loc[:, ["ew_display"]]
+            y_data['y_ref'] = y_data['equivalent_width_description']+" : "+y_data_reformatted['ew_display']+" ("+y_data['equivalent_width_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
+
+            # Calculate absolute magnitude and uncertainty using dmod
+            y_data['y_data'] = y_data['ew_angstrom']
+            y_data['ey_data'] = y_data['ew_angstrom_unc']
+            
+            y_axis_label = y_data['equivalent_width_description'].iloc[0]
         
         if y_axis_type == 'absolute_magnitude' and y_band_values and any(v for v in y_band_values if v is not None):
             y_photometry_band = y_band_values[0]  # Extract the selected bandpass (e.g., 'mko_jmag')
@@ -1551,11 +1807,11 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
     # Define color mapping for spectral classes
     spectral_class_colors = {
-        'O': 'darkblue',
-        'B': 'blue',
-        'A': 'lightblue',
-        'F': 'white',
-        'G': 'yellow',
+        'O': 'purple',
+        'B': 'darkblue',
+        'A': 'blue',
+        'F': 'lightblue',
+        'G': 'greenyellow',
         'K': 'darkgreen',
         'M': 'red',
         'L': 'orange',
@@ -1915,6 +2171,7 @@ def validate_spt_range(spt_range, url):
         if spt_range_param:
             try:
                 spt_range = unquote(spt_range_param)
+                spt_range = spt_range.replace('_','-')
                 if '-' in spt_range:
                     start, end = spt_range.split('-')
                     start_value = parse_spt_label(start.strip())
