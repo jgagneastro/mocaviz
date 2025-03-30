@@ -75,6 +75,10 @@ def generate_gh_sunburst(df, aid_select):
     
     fig.add_trace(data)
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0),plot_bgcolor='rgba(0,0,0,0)')#,paper_bgcolor='rgba(0,0,0,0)'
+
+    #Useful for paper figures
+    fig.update_layout(uniformtext=dict(minsize=8))
+    
     #import pdb; pdb.set_trace()
 
     #fig = go.Figure(data=data, layout=layout)
@@ -87,7 +91,7 @@ figure_export_config = {
     'format': 'png', # one of png, svg, jpeg, webp
     'height': 500*2,
     'width': 700*2,
-    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
+    'scale': 6 # Multiply title/legend/axis/canvas sizes by this factor
   }
 }
 

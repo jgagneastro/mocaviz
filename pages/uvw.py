@@ -265,7 +265,6 @@ def generate_uvw_map_uvwpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
     dff.loc[dff[xvar].abs()>=max_pc_range, xvar] = np.nan
     dff.loc[dff[yvar].abs()>=max_pc_range, yvar] = np.nan
     dff.loc[dff[zvar].abs()>=max_pc_range, zvar] = np.nan
-    #import pdb; pdb.set_trace()
 
     xvar_orig = xvar
     yvar_orig = yvar
@@ -487,7 +486,6 @@ def generate_uvw_map_uvwpage(dff, dfm, dfo, df_asso_centers, associations, xvar,
     # Try to force aspect ratio (does not always work)
     fig.update_scenes(aspectmode='data')
 
-    #import pdb; pdb.set_trace()
     # dx = (fig['layout']['scene']['xaxis']['range'][1] - fig['layout']['scene']['xaxis']['range'][0])
     # dy = (fig['layout']['scene']['yaxis']['range'][1] - fig['layout']['scene']['yaxis']['range'][0])
     # dz = (fig['layout']['scene']['zaxis']['range'][1] - fig['layout']['scene']['zaxis']['range'][0])

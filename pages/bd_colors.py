@@ -367,7 +367,7 @@ layout = (
 
         # Component that stores merged_data
         dcc.Store(id='bdphot-merged-data-store'),  # Add a Store component
-        
+    
     ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'}), 
 
     # Export button and download component
@@ -387,7 +387,43 @@ layout = (
             'marginBottom': '2rem',
             'boxSizing': 'border-box',  # Include padding/border in the width calculation
         }
-    )
+    ),
+    html.Div(
+        className="row",
+        id="url-help-section-bdcolors",
+        children=[
+            html.Hr(),
+            dcc.Markdown(
+                """
+                ## Using URL Parameters
+
+                You can customize the visualization by adding parameters to the URL using the `?param=value` format and separating multiple parameters with `&`.
+
+                ### Available URL Parameters
+                - **xaxis_type** → Sets the observable for the X-axis. Valid values: **spectral_type**, **color**, **absolute_magnitude**, **spectral_index**, **equivalent_width**.
+                - **yaxis_type** → Sets the observable for the Y-axis. Valid values: **spectral_type**, **color**, **absolute_magnitude**, **spectral_index**, **equivalent_width**.
+                - **xaxis_value_1** → Specifies the first band or index for the X-axis (e.g., `mko_jmag`).
+                - **xaxis_value_2** → Specifies the second band for the X-axis when using some axis types that require it.
+                - **yaxis_value_1** → Specifies the first band or index for the Y-axis.
+                - **yaxis_value_2** → Specifies the second band for the Y-axis when using some axis types that require it.
+                - **moca_oid** → Highlights specific objects by their MOCA OID. You can list multiple OIDs separated by commas.
+                - **spt_range** → Sets the spectral type range. Use the format like `M6-Y2`.
+                - **bestphot** → Enables best photometry only. Set to `true` to activate or `false` to deactivate. Default is `true`.
+                - **photdist** → Includes photometric distance estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
+                - **binaries** → Displays binary systems. Set to `true` to activate or `false` to deactivate. Default is `false`.
+                - **photspt** → Includes photometric spectral type estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
+
+                ### Example URLs  
+                - `dataviz.mocadb.ca/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true`
+                - `dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602`
+                - `dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=spectral_index&yaxis_value_1=h2o_j&moca_oid=602`
+
+                Clicking on a data point in the plot will open its detailed MOCA report in a new tab.
+                """
+            ),
+        ],
+        style={"padding": "20px", "backgroundColor": "#f9f9f9"}
+    ),
 )
 
 def parse_url_params(url):
@@ -1841,6 +1877,9 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
     # Map symbols to age_sample in the merged_data DataFrame
     regular_data['symbol'] = regular_data['age_sample'].map(age_sample_symbols).fillna('circle')  # Default to circle for unknown age_sample
+    
+    # Filter regular_data to only include points with ey_data < 0.05
+    #regular_data = regular_data[regular_data['ey_data'] < 0.1]
 
     # Determine missing MOCA IDs
     missing_ids_message = None

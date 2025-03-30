@@ -300,6 +300,7 @@ def format_value_with_error(value, error, unit=""):
 
     # Ensure the value is rounded to the same number of significant digits as the error
     significant_digits = -int(floor(log10(abs(rounded_error))))
+    significant_digits = max(0, -int(floor(log10(abs(rounded_error)))))
     rounded_value = round(value, max(0, significant_digits))
 
     # Format the result to remove floating-point artifacts
@@ -753,6 +754,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                             )
     )
     data_df = pd.read_sql(query, connection)
+    #import pdb;pdb.set_trace()
     connection.close()
 
     # Check if data_df is empty
