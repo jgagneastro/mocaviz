@@ -1,6 +1,6 @@
 import dash
 from dash import html, dcc, dash_table, get_asset_url
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 from sqlalchemy import create_engine
 
 dash.register_page(__name__)
@@ -499,6 +499,19 @@ layout = html.Div(
                 ),
             ],
         ),
+        html.Div(
+            className="row",
+            id="download-row-spectrapage",
+            children=[
+                html.Div(
+                    className="twelve columns",
+                    children=[
+                        html.H4("Download Links"),
+                        html.Div(id="download-links-container")
+                    ]
+                )
+            ]
+        ),
     ]
 )
 
@@ -533,7 +546,7 @@ def update_specid_select_spectrapage(
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
             if 'moca_specid' in parsed_url_data.keys():
-                specid_select = parsed_url_data['moca_specid'][0].split(',')
+                specid_select = [int(x) for x in parsed_url_data['moca_specid'][0].split(',')]
             else:
                 if specid_select is None:
                     specid_select = initial_specids
@@ -620,3 +633,33 @@ def update_spectrum_spectrapage(
     df_aids = pd.read_json(jsonified_db_data[1], orient='split')
 
     return generate_spectrum(df, df_aids, processed_data, spectra_view, self_figure)
+
+@dash.callback(
+    Output("download-links-container", "children"),
+    Input("db-data-spectrapage", "data")
+)
+def update_download_links(json_data):
+    if json_data is None or len(json_data) == 0:
+        return []
+    # The first element in json_data is the main dataframe
+    df = pd.read_json(json_data[0], orient='split')
+    download_links = []
+    # Group the dataframe by moca_specid
+    for specid, group in df.groupby('moca_specid'):
+        # Select only the relevant columns and rename them
+        csv_df = group[['lam', 'sp', 'esp']].rename(
+            columns={'lam': 'wavelength_microns', 'sp': 'flux_flambda', 'esp': 'flux_error_flambda'}
+        )
+        csv_str = csv_df.to_csv(index=False)
+        # Encode CSV content for a data URI
+        href = "data:text/csv;charset=utf-8," + quote(csv_str)
+        # Create a download link (styled as a button if desired)
+        link = html.A(
+            f"Download moca_specid_{specid}.csv",
+            href=href,
+            download=f"moca_specid_{specid}.csv",
+            target="_blank",
+            style={'marginRight': '10px', 'padding': '5px 10px', 'border': '1px solid #ccc', 'borderRadius': '3px', 'textDecoration': 'none', 'color': 'black'}
+        )
+        download_links.append(link)
+    return download_links
