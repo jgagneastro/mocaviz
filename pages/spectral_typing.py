@@ -31,7 +31,7 @@ env_username = os.environ.get('MOCA_USERNAME', default_username)
 env_password = os.environ.get('MOCA_PASSWORD', default_password)
 env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
 
-def get_connection_string(url_search=None):
+def get_connection_string_sptype(url_search=None):
     # Use defaults as fallback
     username = env_username
     password = env_password
@@ -265,7 +265,7 @@ def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None,
     if bins_per_micron is None and common_wv is None:
         raise ValueError("Either bins_per_micron or common_wv must be specified.")
 
-    connection_string = get_connection_string(url_search=url_search)
+    connection_string = get_connection_string_sptype(url_search=url_search)
     engine = create_engine(connection_string)
     # Fetch spectrum details from SQL.
     query = f"""
@@ -589,7 +589,7 @@ def update_comparison_options(search):
     else:
         specid = None
     
-    connection_string = get_connection_string(url_search=search)
+    connection_string = get_connection_string_sptype(url_search=search)
     engine = create_engine(connection_string)
     query = """
         SELECT ms.moca_specid, CONCAT(
@@ -650,7 +650,7 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
         else:
             grid = None
 
-        connection_string = get_connection_string(url_search=url_search)
+        connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
         query = """
             SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,'\n(',dstg.short_object_designation,')') AS label
