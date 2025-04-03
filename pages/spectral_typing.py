@@ -46,6 +46,8 @@ def get_connection_string(url_search=None):
         password = qs.get("pwd", [password])[0]
         dbname   = qs.get("dbase", [dbname])[0]
         host     = qs.get("host", [host])[0]
+    print('SPTYPING GETCONNECTION_STRING')
+    print(username)
 
     return f'mysql+pymysql://{username}:{urlquote(password)}@{host}/{dbname}'
 
