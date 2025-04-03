@@ -508,7 +508,7 @@ layout = html.Div([
                   max=0,
                   step=1,
                   value=0,
-                  marks={0: ''}
+                  marks={0: ''},
              )
         ], style={'margin-top': '10px', 'padding-right': '80px'})
     ], style={'flex': '1'}),
@@ -651,7 +651,7 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
         connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
         query = """
-            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,'_N_(',dstg.short_object_designation,')') AS label
+            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,' (',dstg.short_object_designation,')') AS label
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             WHERE dstg.adopted=1 AND mstg.adopted=1
@@ -761,6 +761,8 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
     for _, row in grid_entries.iterrows():
         std_specid = row["moca_specid"]
         std_label = row["label"]
+        std_spt = row["spectral_type"]
+        std_designation = row["designation"]
         std_df = load_and_process_spectrum(std_specid, common_wv=common_wv, url_search=url_search)
         std_data_dered = None
 
@@ -922,6 +924,8 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
             'grid': row["grid"],
             'moca_specid': std_specid,
             'label': std_label,
+            'spectral_type': std_spt,
+            'designation': std_designation,
             'spectrum': std_data,
             'spectrum_dered': std_data_dered,
             'A_V': av_list,
@@ -1019,7 +1023,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     standard_color = custom_colors[new_index % len(custom_colors)]
 
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
-    standard_label = std_entry['label'].replace('\n', ' ')
+    standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
     if 'deredden' in (deredden_value or []):
         name = "Standard " + standard_label + ", original"
         opacity = 0.3
@@ -1164,7 +1168,12 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         font=dict(size=14)
     )
     slider_max = len(filtered_precomputed) - 1
-    slider_marks = {i: filtered_precomputed[i]['label'].split('\n')[0] for i in range(len(filtered_precomputed))}
+    slider_marks = {
+        i: {
+            'label': filtered_precomputed[i]['spectral_type'].replace(' ','\u00A0')
+        }
+        for i in range(len(filtered_precomputed))
+    }
     
     prev_disabled = (new_index == 0)
     next_disabled = (new_index == len(filtered_precomputed) - 1)
