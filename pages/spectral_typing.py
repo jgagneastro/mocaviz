@@ -401,7 +401,7 @@ def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None,
         # --- Debugging Block using Plotly ---
         import plotly.graph_objects as go
         import plotly.io as pio
-        import pdb
+        #import pdb
         # Set the default renderer to open in a browser window for debugging
         pio.renderers.default = "browser"
 
@@ -439,7 +439,7 @@ def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None,
         )
         fig_debug.show()
 
-        pdb.set_trace()
+        #pdb.set_trace()
         # --- End Debugging Block ---
 
     return df_processed
@@ -657,6 +657,7 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
             WHERE dstg.adopted=1 AND mstg.adopted=1
             ORDER BY mstg.display_order, dstg.grid_index
         """
+        #import pdb; pdb.set_trace()
         df = pd.read_sql(query, engine)
 
         options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
