@@ -658,6 +658,8 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
             ORDER BY mstg.display_order, dstg.grid_index
         """
         #import pdb; pdb.set_trace()
+        print('GRID QUERY ENGINE')
+        print(connection_string)
         df = pd.read_sql(query, engine)
 
         options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
