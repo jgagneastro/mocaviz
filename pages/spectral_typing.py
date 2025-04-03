@@ -637,7 +637,7 @@ def update_comparison_options(search):
     Input('sp-typing-grid-dropdown', 'value'),
     Input('sp-typing-chi2-graph', 'clickData'),
     State('sp-typing-grid-dropdown', 'options'),
-    prevent_initial_call=True
+    #prevent_initial_call=True
 )
 def merged_grid_callback(url_search, prev_click, next_click, slider_input, current_value, chi2_clickData, current_options):
     # If the dropdown options are empty (initial call) then run the update_spectral_grids logic.
