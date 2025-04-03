@@ -46,8 +46,6 @@ def get_connection_string_sptype(url_search=None):
         password = qs.get("pwd", [password])[0]
         dbname   = qs.get("dbase", [dbname])[0]
         host     = qs.get("host", [host])[0]
-    print('SPTYPING GETCONNECTION_STRING')
-    print(username)
 
     return f'mysql+pymysql://{username}:{urlquote(password)}@{host}/{dbname}'
 
@@ -659,9 +657,6 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
             WHERE dstg.adopted=1 AND mstg.adopted=1
             ORDER BY mstg.display_order, dstg.grid_index
         """
-        #import pdb; pdb.set_trace()
-        print('GRID QUERY ENGINE')
-        print(connection_string)
         df = pd.read_sql(query, engine)
 
         options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
@@ -755,9 +750,6 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
     # Load comparison spectrum
-    print('COMPARISON DWL')
-    print(url_search)
-    print(comparison_specid)
     comparison_df = load_and_process_spectrum(comparison_specid, bins_per_micron=bins, url_search=url_search)
     common_wv = np.sort(comparison_df['wv'].unique())
 
