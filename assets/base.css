@@ -400,3 +400,21 @@ there.
 
 /* Larger than Desktop HD */
 @media (min-width: 1200px) {}
+
+#sp-typing-vertical-slider .rc-slider-mark-text {
+    transform: rotate(90deg)  translateY(-12px) !important;
+    transform-origin: top left !important;
+    text-align: top !important;
+    white-space: nowrap;
+}
+
+#sp-typing-prev-button[disabled],
+#sp-typing-next-button[disabled],
+#sp-typing-prev-grid-button[disabled],
+#sp-typing-next-grid-button[disabled] {
+    background-color: #cccccc !important;
+    color: #666666 !important;
+    border: 3px solid #aaaaaa !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+}

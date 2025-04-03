@@ -14,6 +14,7 @@ default_text = \
 " * Explore the 3D XYZUVW spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyzuvw?#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
 " * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra?#args#).\n" + \
+" * Visually determine spectral types with empirical grid comparisons using the [Spectral Typing tool](/spectral-typing?#args#).\n" + \
 " * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs?#args#).\n" + \
 " * Visualize astrometry in MOCAdb with the [Astrometric Explorer](/astrometry?#args#).\n" + \
 " * Visualize color-color or color-magnitude plots in MOCAdb with the [Substellar Photometry Explorer](/bd-colors?#args#&xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag).\n" + \
