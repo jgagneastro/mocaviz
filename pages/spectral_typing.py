@@ -613,9 +613,9 @@ def update_comparison_options(search):
     designation_map = {row["moca_specid"]: row["spectrum_name"].split(': ')[1].split(' with ')[0] for index, row in df.iterrows()}
     
     valid_specids = [str(opt['value']) for opt in options]
-    default_value = specid if specid in valid_specids else (options[0]['value'] if options else None)
+    default_value = specid if specid in valid_specids else None
     
-    return options, int(default_value), designation_map, df.to_json(date_format='iso', orient='split')
+    return options, int(default_value) if default_value is not None else None, designation_map, df.to_json(date_format='iso', orient='split')
 
 # =============================================================================
 # Callback: Define spectral grids or update spt grids controls
