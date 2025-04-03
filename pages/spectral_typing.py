@@ -755,6 +755,8 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
     # Load comparison spectrum
+    print('COMPARISON DWL')
+    print(url_search)
     comparison_df = load_and_process_spectrum(comparison_specid, bins_per_micron=bins, url_search=url_search)
     common_wv = np.sort(comparison_df['wv'].unique())
 
