@@ -653,7 +653,7 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
         connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
         query = """
-            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,'\n(',dstg.short_object_designation,')') AS label
+            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,'_N_(',dstg.short_object_designation,')') AS label
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             WHERE dstg.adopted=1 AND mstg.adopted=1
