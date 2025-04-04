@@ -457,111 +457,226 @@ def darken_color(color, factor=0.7):
 # =============================================================================
 dash.register_page(__name__, path='/spectral-typing')
 
+# layout = html.Div([
+#     dcc.Location(id='sp-typing-url'),
+#     html.H1("MOCA Spectral Typing", id='sp-typing-header'),
+#     html.P("This dash app is used to assign spectral types visually; please be patient as the initial download of the spectral standards grid can take a minute or two.", style={"fontStyle": "italic", "marginBottom": "20px"}),
+#     html.Div([
+#          html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
+#          dcc.Dropdown(
+#              id='sp-typing-comparison-dropdown',
+#              options=[],  # Populated via callback
+#          )
+#     ], id='sp-typing-comparison-div', style={'margin-bottom': '15px'}),
+#     html.Div([
+#     # Left column with controls
+#     html.Div([
+#         # New container: Grid dropdown, Bins input and Grid navigation buttons
+#         html.Div([
+#              # Left part: Grid dropdown and Bins per Micron input stacked vertically
+#              html.Div([
+#                   html.Div([
+#                        html.Label("Select Spectral Grid:", style={"fontWeight": "bold"}),
+#                        dcc.Dropdown(id='sp-typing-grid-dropdown', options=[]),
+#                   ], id='sp-typing-grid-div', style={'margin-bottom': '15px'}),
+#                   html.Div([
+#                        html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
+#                        dcc.Input(id='sp-typing-bins-input', type='number', value=default_bins_per_micron),
+#                   ], id='sp-typing-bins-div', style={'margin-bottom': '15px'}),
+#              ], style={'flex': '1'}),
+             
+#              # Right part: Vertical stack of Grid navigation buttons
+#              html.Div([
+#                   html.Button("↑ Previous Grid", id='sp-typing-prev-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'margin-bottom': '10px', 'textAlign': 'left'}),
+#                   html.Button("↓ Next Grid", id='sp-typing-next-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'textAlign': 'left'})
+#              ], style={'display': 'flex', 'flexDirection': 'column', 'justifyContent': 'center', 'margin-left': '15px'})
+#         ], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
+        
+#         # The remaining controls below the grid navigation
+#         html.Div([
+#              dcc.Checklist(
+#                  options=[{'label': 'Apply Dereddening (slow)', 'value': 'deredden'}],
+#                  id='sp-typing-deredden-checklist',
+#              )
+#         ], id='sp-typing-deredden-div', style={'margin-bottom': '15px'}),
+#         html.Div([
+#              html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
+#              html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
+#         ], id='sp-typing-nav-div', style={'margin-bottom': '15px'}),
+#         html.Div([
+#              dcc.Slider(
+#                   id='sp-typing-index-slider',
+#                   min=0,
+#                   max=0,
+#                   step=1,
+#                   value=0,
+#                   marks={0: ''},
+#              )
+#         ], style={'margin-top': '10px', 'padding-right': '80px'})
+#     ], style={'flex': '1'}),
+#     # Right column with vertical slider
+#     html.Div([
+#         dcc.Slider(
+#             id='sp-typing-vertical-slider',
+#             min=0,
+#             max=10,
+#             step=1,
+#             value=0,
+#             disabled=True,
+#             marks={0: ''},
+#             updatemode='drag'
+#         )
+#     ], style={
+#         'flex': '0 0 auto',
+#         'alignItems': 'flex-start',
+#         'width': '300px',  # Ensure the container is wide enough
+#         'transform': 'rotate(-90deg) translateX(-200px) translateY(-10px)',
+#         'transform-origin': 'top left',
+#         'margin-left': '20px',
+#         'textAlign': 'left',
+#         'padding': '20px 0'  # Add vertical padding so labels have room
+#     })], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
+#     dcc.Graph(id='sp-typing-graph', config=figure_export_config, style={'height': '700px'}),
+#     dcc.Graph(id='sp-typing-chi2-graph'),
+#     html.Div(
+#         className="row",
+#         id="url-help-section-xupage",
+#         children=[
+#             dcc.Markdown(
+#                 """
+#                 ## Using URL Parameters
+
+#                 You can customize the app by appending parameters to the URL query string. The following parameters are supported:
+
+#                 - **specid**: Pre-select a comparison spectrum (e.g., `specid=1`).
+#                 - **grid**: Select the spectral grid (e.g., `grid=field`).
+#                 - **bins**: Set the number of bins per micron (e.g., `bins=20`).
+#                 - **deredden**: Apply dereddening if set to True (e.g., `deredden=True`).
+#                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
+
+#                 ### Example URL:  
+#                 - `http://your-domain/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
+                
+#                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
+#                 """
+#             ),
+#         ],
+#         style={"padding": "20px", "backgroundColor": "#f9f9f9"}
+#     ),
+#     dcc.Store(id='sp-typing-precomputed-store'),
+#     dcc.Store(id='sp-typing-current-index', data=0),
+#     dcc.Store(id='sp-typing-comparison-spectrum'),
+#     dcc.Store(id='sp-typing-comparison-designation'),
+#     dcc.Store(id='sp-typing-db-data'),
+#     dcc.Store(id='sp-typing-grid-data'),
+#     dcc.Store(id='sp-typing-grid-raw-spectra'),
+#     dcc.Store(id='sp-typing-comparison-raw-spectrum'),
+#     dcc.Store(id='sp-typing-current-sptnum'),
+# ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
+
 layout = html.Div([
     dcc.Location(id='sp-typing-url'),
-    html.H1("MOCA Spectral Typing", id='sp-typing-header'),
-    html.P("This dash app is used to assign spectral types visually; please be patient as the initial download of the spectral standards grid can take a minute or two.", style={"fontStyle": "italic", "marginBottom": "20px"}),
     html.Div([
-         html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
-         dcc.Dropdown(
-             id='sp-typing-comparison-dropdown',
-             options=[],  # Populated via callback
+         html.Div([
+              html.H1("MOCA Spectral Typing", id='sp-typing-header'),
+              html.P([
+                  "This dash app is used to assign spectral types visually.",
+                  html.Br(),
+                  "Please be patient as the initial download of the spectral standards grid can take a minute or two."
+              ], style={"fontStyle": "italic", "marginBottom": "20px"}),
+              html.Div([
+                   html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
+                   dcc.Dropdown(
+                       id='sp-typing-comparison-dropdown',
+                       options=[],  # Populated via callback
+                   )
+              ], id='sp-typing-comparison-div', style={'margin-bottom': '15px'}),
+              html.Div([
+                   html.Div([
+                        html.Div([
+                             html.Label("Select Spectral Grid:", style={"fontWeight": "bold"}),
+                             dcc.Dropdown(id='sp-typing-grid-dropdown', options=[]),
+                        ], id='sp-typing-grid-div', style={'margin-bottom': '15px'}),
+                        html.Div([
+                             html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
+                             dcc.Input(id='sp-typing-bins-input', type='number', value=default_bins_per_micron),
+                        ], id='sp-typing-bins-div', style={'margin-bottom': '15px'})
+                   ], style={'flex': '1'}),
+                   html.Div([
+                        html.Button("↑ Previous Grid", id='sp-typing-prev-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'margin-bottom': '10px', 'textAlign': 'left'}),
+                        html.Button("↓ Next Grid", id='sp-typing-next-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'textAlign': 'left'})
+                   ], style={'display': 'flex', 'flexDirection': 'column', 'justifyContent': 'center', 'margin-left': '15px'})
+              ], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
+              html.Div([
+                   dcc.Checklist(
+                       options=[{'label': 'Apply Dereddening (slow)', 'value': 'deredden'}],
+                       id='sp-typing-deredden-checklist',
+                   )
+              ], id='sp-typing-deredden-div', style={'margin-bottom': '15px'}),
+              html.Div([
+                   html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
+                   html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
+              ], id='sp-typing-nav-div', style={'margin-bottom': '15px'})
+         ], style={'flex': '1'}),
+         html.Div([
+            html.Div([
+                 dcc.Slider(
+                     id='sp-typing-vertical-slider',
+                     min=0,
+                     max=10,
+                     step=1,
+                     value=0,
+                     disabled=True,
+                     marks={0: ''},
+                     updatemode='drag'
+                 )
+            ], style={'width': '300px'})
+        ], style={
+            'alignItems': 'flex-start',
+            'width': '150px',
+            'transform': 'rotate(-90deg) translateX(-400px) translateY(-10px)',
+            'transform-origin': 'top left',
+            'margin-left': '20px',
+            'textAlign': 'left',
+            'padding': '20px 0'
+        })
+    ], style={'display': 'flex', 'margin-bottom': '15px'}),
+    html.Div([
+         dcc.Slider(
+              id='sp-typing-index-slider',
+              min=0,
+              max=0,
+              step=1,
+              value=0,
+              marks={0: ''}
          )
-    ], id='sp-typing-comparison-div', style={'margin-bottom': '15px'}),
-    html.Div([
-    # Left column with controls
-    html.Div([
-        # New container: Grid dropdown, Bins input and Grid navigation buttons
-        html.Div([
-             # Left part: Grid dropdown and Bins per Micron input stacked vertically
-             html.Div([
-                  html.Div([
-                       html.Label("Select Spectral Grid:", style={"fontWeight": "bold"}),
-                       dcc.Dropdown(id='sp-typing-grid-dropdown', options=[]),
-                  ], id='sp-typing-grid-div', style={'margin-bottom': '15px'}),
-                  html.Div([
-                       html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
-                       dcc.Input(id='sp-typing-bins-input', type='number', value=default_bins_per_micron),
-                  ], id='sp-typing-bins-div', style={'margin-bottom': '15px'}),
-             ], style={'flex': '1'}),
-             
-             # Right part: Vertical stack of Grid navigation buttons
-             html.Div([
-                  html.Button("↑ Previous Grid", id='sp-typing-prev-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'margin-bottom': '10px', 'textAlign': 'left'}),
-                  html.Button("↓ Next Grid", id='sp-typing-next-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'textAlign': 'left'})
-             ], style={'display': 'flex', 'flexDirection': 'column', 'justifyContent': 'center', 'margin-left': '15px'})
-        ], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
-        
-        # The remaining controls below the grid navigation
-        html.Div([
-             dcc.Checklist(
-                 options=[{'label': 'Apply Dereddening (slow)', 'value': 'deredden'}],
-                 id='sp-typing-deredden-checklist',
-             )
-        ], id='sp-typing-deredden-div', style={'margin-bottom': '15px'}),
-        html.Div([
-             html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
-             html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
-        ], id='sp-typing-nav-div', style={'margin-bottom': '15px'}),
-        html.Div([
-             dcc.Slider(
-                  id='sp-typing-index-slider',
-                  min=0,
-                  max=0,
-                  step=1,
-                  value=0,
-                  marks={0: ''},
-             )
-        ], style={'margin-top': '10px', 'padding-right': '80px'})
-    ], style={'flex': '1'}),
-    # Right column with vertical slider
-    html.Div([
-        dcc.Slider(
-            id='sp-typing-vertical-slider',
-            min=0,
-            max=10,
-            step=1,
-            value=0,
-            disabled=True,
-            marks={0: ''},
-            updatemode='drag'
-        )
-    ], style={
-        'flex': '0 0 auto',
-        'alignItems': 'flex-start',
-        'width': '300px',  # Ensure the container is wide enough
-        'transform': 'rotate(-90deg) translateX(-200px) translateY(-10px)',
-        'transform-origin': 'top left',
-        'margin-left': '20px',
-        'textAlign': 'left',
-        'padding': '20px 0'  # Add vertical padding so labels have room
-    })], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
+    ], style={'width': '100%', 'margin-bottom': '15px'}),
     dcc.Graph(id='sp-typing-graph', config=figure_export_config, style={'height': '700px'}),
     dcc.Graph(id='sp-typing-chi2-graph'),
     html.Div(
-        className="row",
-        id="url-help-section-xupage",
-        children=[
-            dcc.Markdown(
-                """
+         className="row",
+         id="url-help-section-xupage",
+         children=[
+              dcc.Markdown(
+                  """
                 ## Using URL Parameters
-
+                
                 You can customize the app by appending parameters to the URL query string. The following parameters are supported:
-
+                
                 - **specid**: Pre-select a comparison spectrum (e.g., `specid=1`).
                 - **grid**: Select the spectral grid (e.g., `grid=field`).
                 - **bins**: Set the number of bins per micron (e.g., `bins=20`).
                 - **deredden**: Apply dereddening if set to True (e.g., `deredden=True`).
                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
-
+                
                 ### Example URL:  
                 - `http://your-domain/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
                 
                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
-                """
-            ),
-        ],
-        style={"padding": "20px", "backgroundColor": "#f9f9f9"}
+                  """
+              ),
+         ],
+         style={"padding": "20px", "backgroundColor": "#f9f9f9"}
     ),
     dcc.Store(id='sp-typing-precomputed-store'),
     dcc.Store(id='sp-typing-current-index', data=0),
@@ -1232,10 +1347,14 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     elif 'sp-typing-comparison-spectrum' in triggered_ids:
         parsed = urlparse(url_search)
         qs = parse_qs(parsed.query)
-        try:
-            new_index = int(qs.get("grid_index", [0])[0])
-        except ValueError:
-            new_index = 0
+        grid_index_param = qs.get("grid_index", [None])[0]
+        if grid_index_param is None:
+             new_index = len(filtered_precomputed) // 2
+        else:
+             try:
+                 new_index = int(grid_index_param)
+             except ValueError:
+                 new_index = len(filtered_precomputed) // 2
     else:
         new_index = current_index
     
