@@ -9,6 +9,8 @@ from math import floor, ceil, log10
 import os
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
 
+debug_printing = False
+
 figure_export_config = {
   'toImageButtonOptions': {
     'format': 'png', # one of png, svg, jpeg, webp
@@ -631,10 +633,12 @@ def update_comparison_options(search):
     State('sp-typing-grid-raw-spectra', 'data'),
 )
 def grid_data_download(url_search, current_options, current_grid_data, current_grid_spectra):
-    print("Triggered grid data download callback")
+    if debug_printing:
+        print("Triggered grid data download callback")
     # If the dropdown options are empty (initial call) then run the update_spectral_grids logic.
     if not current_options or current_options == [] or not current_grid_data or not current_grid_spectra:
-        print("Downloading grid data")
+        if debug_printing:
+            print("Downloading grid data")
         connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
         # SQL Query to populate the dropdown options
@@ -647,7 +651,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
         """
         df_options = pd.read_sql(query_options, engine)
         if df_options.empty:
-            print("Encountered empty standard grid header")
+            if debug_printing:
+                print("Encountered empty standard grid header")
             return dash.no_update, dash.no_update, dash.no_update
         
         # SQL Query to download the standard grid of spectra
@@ -660,7 +665,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
-            print("Encountered empty standard grid spectra")
+            if debug_printing:
+                print("Encountered empty standard grid spectra")
             return dash.no_update, dash.no_update, dash.no_update
         
         # Normalize esp and sp by the median of sp, grouped by moca_specid
@@ -671,7 +677,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             df_std_data['sp'] = df_std_data['sp'] / df_std_data['sp_median']
             df_std_data.drop(columns='sp_median', inplace=True)
         
-        print ("Download of grid data completed")
+        if debug_printing:
+            print ("Download of grid data completed")
 
         options = [{'label': label, 'value': grid} for grid, label in df_options[['grid', 'grid']].drop_duplicates().values]
 
@@ -679,7 +686,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
         grid_data = df_options.to_json(date_format='iso', orient='split')
         grid_spectra = df_std_data.to_json(date_format='iso', orient='split')
     else:
-        print("Grid data already in store")
+        if debug_printing:
+            print("Grid data already in store")
         # Preserve grid_data as no change (or use dash.no_update)
         grid_data = dash.no_update
         grid_spectra = dash.no_update
@@ -714,17 +722,20 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
     prevent_initial_call=True
 )
 def grid_controls_callback(prev_click, next_click, slider_input, current_value, chi2_clickData, options, grid_data, url_search):
-    print("grid_controls_callback triggered")
+    if debug_printing:
+        print("grid_controls_callback triggered")
     # If the dropdown options are empty (initial call) then exit and wait for them to be populated
     if not options or options == [] or not grid_data:
-        print("grid_controls_callback: Skipping because data not ready")
+        if debug_printing:
+            print("grid_controls_callback: Skipping because data not ready")
         
         # Exit without changes
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
         #return current_value, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
 
     else:
-        print("grid_controls_callback: Updating the selected grid")
+        if debug_printing:
+            print("grid_controls_callback: Updating the selected grid")
         # Read necessary data
         #df_options = pd.read_json(grid_data, orient='split')
         #df_std_spectra = pd.read_json(grid_spectra, orient='split')
@@ -761,15 +772,18 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
         
         ctx = dash.callback_context
         new_index = current_index
-        print('Max index value on this grid', max_val)
+        if debug_printing:
+            print('Max index value on this grid', max_val)
         if ctx.triggered:
             trigger_prop = ctx.triggered[0]['prop_id']
             if 'sp-typing-prev-grid-button' in trigger_prop:
                 new_index = max(current_index - 1, 0)
-                print('New index will be', new_index)
+                if debug_printing:
+                    print('New index will be', new_index)
             elif 'sp-typing-next-grid-button' in trigger_prop:
                 new_index = min(current_index + 1, max_val)
-                print('New index will be', new_index)
+                if debug_printing:
+                    print('New index will be', new_index)
             elif 'sp-typing-vertical-slider' in trigger_prop:
                 new_index = num_options - 1 - slider_input
             #elif 'sp-typing-grid-dropdown' in trigger_prop:
@@ -827,10 +841,12 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
     prevent_initial_call = True
 )
 def download_comparison_spectrum(comparison_specid, url_search):
-    print('download_comparison_spectrum callback being triggered')
+    if debug_printing:
+        print('download_comparison_spectrum callback being triggered')
     if not comparison_specid:
         return dash.no_update
-    print('download_comparison_spectrum callback being executed')
+    if debug_printing:
+        print('download_comparison_spectrum callback being executed')
     
     # Download the comparison spectrum
     connection_string = get_connection_string_sptype(url_search=url_search)
@@ -851,8 +867,15 @@ def download_comparison_spectrum(comparison_specid, url_search):
     if comparison_df.empty:
         return dash.no_update
 
+    # Normalize esp and sp by the median of sp
+    # This steps seems required to store the data properly
+    if not comparison_df.empty and 'sp' in comparison_df.columns:
+        comparison_df['esp'] = comparison_df['esp'] / np.nanmedian(comparison_df['sp'])
+        comparison_df['sp'] = comparison_df['sp'] / np.nanmedian(comparison_df['sp'])
+
     comparison_data = comparison_df.to_json(date_format='iso', orient='split')
-    print('download_comparison_spectrum completed')
+    if debug_printing:
+        print('download_comparison_spectrum completed')
     return comparison_data
     
 # =============================================================================
@@ -872,10 +895,12 @@ def download_comparison_spectrum(comparison_specid, url_search):
     prevent_initial_call = True
 )
 def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, grid_data):
-    print('precompute_comparisons callback being triggered')
+    if debug_printing:
+        print('precompute_comparisons callback being triggered')
     if not comparison_raw_spectrum or not grid_raw_spectra:
         return dash.no_update, dash.no_update
-    print('precompute_comparisons callback being executed')
+    if debug_printing:
+        print('precompute_comparisons callback being executed')
     
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
@@ -884,7 +909,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     comparison_df_raw = pd.read_json(comparison_raw_spectrum, orient='split')
     grid_df_raw = pd.read_json(grid_raw_spectra, orient='split')
     if 'wv' not in comparison_df_raw.columns or 'wv' not in grid_df_raw.columns or 'sp' not in comparison_df_raw.columns or 'sp' not in grid_df_raw.columns:
-        print("precompute_comparisons: Exiting because encountered empty spectra")
+        if debug_printing:
+            print("precompute_comparisons: Exiting because encountered empty spectra")
         return dash.no_update, dash.no_update
 
     # Bin comparison spectrum
@@ -909,7 +935,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         std_spt = row['spectral_type']
         std_spt_number = row['spectral_type_number']
         std_designation = row['designation']
-        print(std_specid)
+        if debug_printing:
+            print(std_specid)
         
         # Select the current standard spectrum on the grid
         std_df_raw = grid_df_raw[grid_df_raw['moca_specid'] == std_specid]
@@ -919,9 +946,11 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
             continue
 
         # Rebin the standard spectrum on the common wavelength grid
-        print('Rebinning standard spectrum...')
+        if debug_printing:
+            print('Rebinning standard spectrum...')
         std_df = process_spectrum(std_df_raw, common_wv=common_wv)
-        print('Rebinning complete')
+        if debug_printing:
+            print('Rebinning complete')
         std_data_dered = None
         std_data = None
 
@@ -930,7 +959,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
             #import pdb; pdb.set_trace()
 
         # Normalize the standard spectrum using the median ratio (comparison / standard), per region.
-        print('Normalizing standard spectrum...')
+        if debug_printing:
+            print('Normalizing standard spectrum...')
         for (region_min, region_max) in norm_regions:
             std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
             comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
@@ -946,11 +976,13 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                     # Normalize the original standard spectrum
                     std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'spn'] *= ratio
                     std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'esp'] *= ratio
-        print('Normalizing complete')
+        if debug_printing:
+            print('Normalizing complete')
 
         if deredden and (not comparison_df.empty) and (not std_df.empty):
             try:
-                print("Optimizing dereddening values for " + std_label+" ...")
+                if debug_printing:
+                    print("Optimizing dereddening values for " + std_label+" ...")
                 av_list = []
                 rv_list = []
                 std_df_dered = std_df.copy()
@@ -979,10 +1011,12 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                     else:
                         av_list.append(np.nan)
                         rv_list.append(np.nan)
-                print('Optimizing complete')
+                if debug_printing:
+                    print('Optimizing complete')
                 
                 # Normalize the dereddened standard spectrum using the median ratio (comparison / standard), per region.
-                print('Normalizing dereddened standard spectrum...')
+                if debug_printing:
+                    print('Normalizing dereddened standard spectrum...')
                 for (region_min, region_max) in norm_regions:
                     std_seg_dered = std_df_dered[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)]
                     comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
@@ -998,7 +1032,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                             # Normalize the original standard spectrum
                             std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'spn'] *= ratio
                             std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'esp'] *= ratio
-                print('Normalizing complete...')
+                if debug_printing:
+                    print('Normalizing complete...')
 
                 # # --- Debugging Block: Plot original vs. dereddened segment ---
                 # import plotly.graph_objects as go
@@ -1025,12 +1060,14 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 
                 # import pdb; pdb.set_trace()
                 # # --- End Debugging Block ---
-                print("Encoding standard spectrum to dictionary")
+                if debug_printing:
+                    print("Encoding standard spectrum to dictionary")
                 std_data = std_df.to_dict('records')  # original spectrum data stored for reference
                 std_data_dered = std_df_dered.to_dict('records')  # de-reddened spectrum stored for use
                 std_df = std_df_dered  # use the de-reddened dataframe for chi2 calculations
             except Exception as e:
-                print("An exception has occurred while optimizing dereddening")
+                if debug_printing:
+                    print("An exception has occurred while optimizing dereddening")
                 av_list = [np.nan] * len(norm_regions)
                 rv_list = [np.nan] * len(norm_regions)
                 std_data = std_df.to_dict('records')
@@ -1090,7 +1127,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         
         # import pdb; pdb.set_trace()
         # # --- End Debugging Block ---
-        print("Storing standard spectrum")
+        if debug_printing:
+            print("Storing standard spectrum")
         results.append({
             'grid': row["grid"],
             'moca_specid': std_specid,
@@ -1134,10 +1172,12 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     State('sp-typing-url', 'search')
 )
 def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, previous_sptnum, current_index, precomputed, deredden_value, df_data, url_search):
-    print("Update graph was triggered with sptnum state value:", previous_sptnum)
+    if debug_printing:
+        print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
     if not precomputed or comparison_data is None:
-        print("Update graph encountered empty data frames")
+        if debug_printing:
+            print("Update graph encountered empty data frames")
         empty_fig = go.Figure()
         empty_fig.update_layout(
             xaxis={'visible': False},
@@ -1180,7 +1220,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     elif 'sp-typing-grid-dropdown' in triggered_ids and previous_sptnum is not None:
         # Try to find the closest spectral_type_number in the new grid
         #import pdb; pdb.set_trace()
-        print("Attempting to match grid index for spectral type number:", previous_sptnum)
+        if debug_printing:
+            print("Attempting to match grid index for spectral type number:", previous_sptnum)
         try:
             new_index = min(
                 range(len(filtered_precomputed)),
@@ -1402,7 +1443,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     prev_disabled = (new_index == 0)
     next_disabled = (new_index == len(filtered_precomputed) - 1)
     current_sptnum = std_entry.get('spectral_type_number')
-    print("Storing sptnum", current_sptnum)
+    if debug_printing:
+        print("Storing sptnum", current_sptnum)
     return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, prev_disabled, next_disabled
 
 # Add annotation for the standard name in the top-right corner
