@@ -1614,6 +1614,10 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
     #colors = ['#E41A1C', '#FF7F00', '#FFFF33', '#FFD700', '#984EA3', '#F781BF', '#A65628', '#999999']
     #colors = ['#D9D9D9', '#BFBFBF', '#A6A6A6', '#8C8C8C', '#737373', '#595959', '#404040', '#262626']
     colors = ['#8DD3C7', '#FFFFB3', '#BEBADA', '#FB8072', '#80B1D3', '#FDB462', '#B3DE69', '#FCCDE5']
+
+    # Replace zero reduced_chi2 values with 0.8 × minimum non-zero value
+    non_zero_min = df_merged.loc[df_merged['reduced_chi2'] > 0, 'reduced_chi2'].min()
+    df_merged.loc[df_merged['reduced_chi2'] == 0, 'reduced_chi2'] = non_zero_min * 0.8 if pd.notnull(non_zero_min) else min_chi2_val
     
     for i, g in enumerate(grids):
         df_g = df_merged[df_merged['grid'] == g].sort_values('spectral_type_number').reset_index(drop=True)
@@ -1623,7 +1627,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
         
         fig.add_trace(go.Scatter(
             x=df_g['spectral_type_number'],
-            y=np.maximum(df_g['reduced_chi2'].values, min_chi2_val),
+            y=df_g['reduced_chi2'].values,
             mode='lines+markers',
             name=str(g),
             text=df_g['label'],  # This assumes your merged dataframe has a 'label' column
@@ -1640,7 +1644,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
          highlight = df_sel.iloc[current_index]
          fig.add_trace(go.Scatter(
              x=[highlight['spectral_type_number']],
-             y=[max(highlight['reduced_chi2'], min_chi2_val)],
+             y=[highlight['reduced_chi2']],
              mode='markers',
              marker=dict(symbol='circle-open', size=20, color='black', line=dict(width=3)),
              name='displayed'
