@@ -1571,9 +1571,9 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     Output("sp-typing-bins-input", "value"),
     Output("sp-typing-deredden-checklist", "value"),
     Input("sp-typing-url", "href"),
-    prevent_initial_call='initial_duplicate'
+    #prevent_initial_call='initial_duplicate'
 )
-def set_defaults_from_url(href):
+def spt_set_defaults_from_url(href):
     if not href:
         raise dash.exceptions.PreventUpdate
     parsed = urlparse(href)
