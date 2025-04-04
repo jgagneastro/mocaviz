@@ -18,6 +18,8 @@ figure_export_config = {
   }
 }
 
+min_chi2_val = 0.8
+
 # =============================================================================
 # Database connection parameters
 # =============================================================================
@@ -258,26 +260,19 @@ def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
     #result = minimize(loss, initial_guess, bounds=bounds, method='Powell') #Too agressive sometimes
     return result.x  # Returns (A_V, R_V)
 
-def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None, debug=False, url_search=None):
+#def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None, debug=False, url_search=None):
+def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
     # Ensure that at least one of bins_per_micron or common_wv is provided.
     if bins_per_micron is None and common_wv is None:
         raise ValueError("Either bins_per_micron or common_wv must be specified.")
 
-    connection_string = get_connection_string_sptype(url_search=url_search)
-    engine = create_engine(connection_string)
-    # Fetch spectrum details from SQL.
-    query = f"""
-        SELECT ds.moca_specid,
-            ds.wavelength_angstrom * 1e-4 AS wv,
-            ds.flux_flambda AS sp,
-            ds.flux_flambda_unc AS esp
-        FROM moca_spectra ms
-        JOIN data_spectra ds ON (ds.moca_specid = ms.moca_specid AND ds.adopted = 1)
-        WHERE ds.moca_specid = {moca_specid}
-    """
-    df = pd.read_sql(query, engine)
     if df.empty:
         return df
+    
+    if 'wv' not in df.columns:
+        #import pdb; pdb.set_trace()
+        return pd.DataFrame()
+
     # Apply wavelength mask.
     df = apply_wavelength_mask(df, masked_regions)
     
@@ -295,6 +290,10 @@ def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None,
         region_df['spn'] = region_df['sp'] / norm_val
         df_processed = pd.concat([df_processed, region_df])
     
+    if 'wv' not in df_processed.columns:
+        #import pdb; pdb.set_trace()
+        return pd.DataFrame()
+
     df_processed = df_processed.dropna(subset=['wv', 'spn'])
     if debug:
         original_df = df_processed.copy() # For debugging
@@ -567,6 +566,8 @@ layout = html.Div([
     dcc.Store(id='sp-typing-comparison-designation'),
     dcc.Store(id='sp-typing-db-data'),
     dcc.Store(id='sp-typing-grid-data'),
+    dcc.Store(id='sp-typing-grid-raw-spectra'),
+    dcc.Store(id='sp-typing-comparison-raw-spectrum'),
 ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
 
 # =============================================================================
@@ -616,30 +617,117 @@ def update_comparison_options(search):
     return options, int(default_value) if default_value is not None else None, designation_map, df.to_json(date_format='iso', orient='split')
 
 # =============================================================================
-# Callback: Define spectral grids or update spt grids controls
+# Callback: Define spectral grid options and download grid spectra
 # =============================================================================
 @dash.callback(
     Output('sp-typing-grid-dropdown', 'options'),
-    Output('sp-typing-grid-dropdown', 'value'),
     Output('sp-typing-grid-data', 'data'),
+    Output('sp-typing-grid-raw-spectra', 'data'),
+    Input('sp-typing-url', 'search'),
+    State('sp-typing-grid-dropdown', 'options'),
+    State('sp-typing-grid-data', 'data'),
+    State('sp-typing-grid-raw-spectra', 'data'),
+)
+def grid_data_download(url_search, current_options, current_grid_data, current_grid_spectra):
+    print("Triggered grid data download callback")
+    # If the dropdown options are empty (initial call) then run the update_spectral_grids logic.
+    if not current_options or current_options == [] or not current_grid_data or not current_grid_spectra:
+        print("Downloading grid data")
+        connection_string = get_connection_string_sptype(url_search=url_search)
+        engine = create_engine(connection_string)
+        # SQL Query to populate the dropdown options
+        query_options = """
+            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,' (',dstg.short_object_designation,')') AS label
+            FROM data_spectral_typing_grids dstg
+            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL
+            ORDER BY mstg.display_order, dstg.grid_index
+        """
+        df_options = pd.read_sql(query_options, engine)
+        if df_options.empty:
+            print("Encountered empty standard grid header")
+            return dash.no_update, dash.no_update, dash.no_update
+        
+        # SQL Query to download the standard grid of spectra
+        query_std_data = """
+            SELECT ds.moca_specid, ds.wavelength_angstrom * 1e-4 AS wv, ds.flux_flambda sp, ds.flux_flambda_unc esp
+            FROM data_spectral_typing_grids dstg
+            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+            JOIN data_spectra ds USING(moca_specid)
+            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL AND ds.adopted=1 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
+        """
+        df_std_data = pd.read_sql(query_std_data, engine)
+        if df_std_data.empty:
+            print("Encountered empty standard grid spectra")
+            return dash.no_update, dash.no_update, dash.no_update
+        
+        # Normalize esp and sp by the median of sp, grouped by moca_specid
+        # This steps seems required to store the data properly
+        if not df_std_data.empty and 'moca_specid' in df_std_data.columns and 'sp' in df_std_data.columns:
+            df_std_data['sp_median'] = df_std_data.groupby('moca_specid')['sp'].transform('median')
+            df_std_data['esp'] = df_std_data['esp'] / df_std_data['sp_median']
+            df_std_data['sp'] = df_std_data['sp'] / df_std_data['sp_median']
+            df_std_data.drop(columns='sp_median', inplace=True)
+        
+        print ("Download of grid data completed")
+
+        options = [{'label': label, 'value': grid} for grid, label in df_options[['grid', 'grid']].drop_duplicates().values]
+
+        # Encode stored data
+        grid_data = df_options.to_json(date_format='iso', orient='split')
+        grid_spectra = df_std_data.to_json(date_format='iso', orient='split')
+    else:
+        print("Grid data already in store")
+        # Preserve grid_data as no change (or use dash.no_update)
+        grid_data = dash.no_update
+        grid_spectra = dash.no_update
+        options = current_options
+    
+    return options, grid_data, grid_spectra
+
+# =============================================================================
+# Callback: Update spt grids controls
+# =============================================================================
+@dash.callback(
+    #Output('sp-typing-grid-dropdown', 'options'),
+    Output('sp-typing-grid-dropdown', 'value'),
+    #Output('sp-typing-grid-data', 'data'),
     Output('sp-typing-vertical-slider', 'min'),
     Output('sp-typing-vertical-slider', 'max'),
     Output('sp-typing-vertical-slider', 'marks'),
     Output('sp-typing-vertical-slider', 'value'),
     Output('sp-typing-prev-grid-button', 'disabled'),
     Output('sp-typing-next-grid-button', 'disabled'),
-    Input('sp-typing-url', 'search'),
     Input('sp-typing-prev-grid-button', 'n_clicks'),
     Input('sp-typing-next-grid-button', 'n_clicks'),
     Input('sp-typing-vertical-slider', 'value'),
     Input('sp-typing-grid-dropdown', 'value'),
     Input('sp-typing-chi2-graph', 'clickData'),
-    State('sp-typing-grid-dropdown', 'options'),
-    #prevent_initial_call=True
+    Input('sp-typing-grid-dropdown', 'options'), # This is now an input on Friday morning to trigger the first occurrence
+    Input('sp-typing-grid-data', 'data'), # This is now an input on Friday morning to trigger the first occurrence
+    #Input('sp-typing-grid-raw-spectra', 'data'), # This is now an input on Friday morning to trigger the first occurrence
+    State('sp-typing-url', 'search'), #Changed to State on Friday
+    #State('sp-typing-grid-dropdown', 'options'),
+    # Putting this back on on Friday
+    prevent_initial_call=True
 )
-def merged_grid_callback(url_search, prev_click, next_click, slider_input, current_value, chi2_clickData, current_options):
-    # If the dropdown options are empty (initial call) then run the update_spectral_grids logic.
-    if not current_options or current_options == []:
+def grid_controls_callback(prev_click, next_click, slider_input, current_value, chi2_clickData, options, grid_data, url_search):
+    print("grid_controls_callback triggered")
+    # If the dropdown options are empty (initial call) then exit and wait for them to be populated
+    if not options or options == [] or not grid_data:
+        print("grid_controls_callback: Skipping because data not ready")
+        
+        # Exit without changes
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        #return current_value, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
+
+    else:
+        print("grid_controls_callback: Updating the selected grid")
+        # Read necessary data
+        #df_options = pd.read_json(grid_data, orient='split')
+        #df_std_spectra = pd.read_json(grid_spectra, orient='split')
+        #options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
+
         # Parse URL parameters for grid
         if url_search:
             parsed = urlparse(url_search)
@@ -647,23 +735,10 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
             grid = qs.get("grid", [None])[0]
         else:
             grid = None
-
-        connection_string = get_connection_string_sptype(url_search=url_search)
-        engine = create_engine(connection_string)
-        query = """
-            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,' (',dstg.short_object_designation,')') AS label
-            FROM data_spectral_typing_grids dstg
-            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            WHERE dstg.adopted=1 AND mstg.adopted=1
-            ORDER BY mstg.display_order, dstg.grid_index
-        """
-        df = pd.read_sql(query, engine)
-
-        options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
-
+        
         valid_grids = [str(opt['value']) for opt in options]
         default_value = grid if grid in valid_grids else (options[0]['value'] if options else 'very low gravity')
-        grid_data = df.to_json(date_format='iso', orient='split')
+        
         # Initialize slider outputs based on the options.
         num_options = len(options)
         min_val = 0
@@ -678,95 +753,159 @@ def merged_grid_callback(url_search, prev_click, next_click, slider_input, curre
         # Set button disabled states based on the current index.
         prev_disabled = (current_index == 0)
         next_disabled = (current_index == num_options - 1)
-        return options, default_value, grid_data, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
-    else:
-        # Otherwise, use the grid control inputs to update the selection.
-        options = current_options
-        num_options = len(options)
-        min_val = 0
-        max_val = num_options - 1
-        marks = {i: options[num_options - 1 - i]['label'] for i in range(num_options)}
-        # Determine current index from current_value
-        try:
-            current_index = next(i for i, opt in enumerate(options) if opt['value'] == current_value)
-        except StopIteration:
-            current_index = 0
         
-    ctx = dash.callback_context
-    if ctx.triggered:
-        trigger_prop = ctx.triggered[0]['prop_id']
-        if 'sp-typing-prev-grid-button' in trigger_prop:
-            new_index = max(current_index - 1, 0)
-        elif 'sp-typing-next-grid-button' in trigger_prop:
-            new_index = min(current_index + 1, max_val)
-        elif 'sp-typing-vertical-slider' in trigger_prop:
-            new_index = num_options - 1 - slider_input
-        elif 'sp-typing-grid-dropdown' in trigger_prop:
-            new_index = current_index
-        elif 'sp-typing-chi2-graph' in trigger_prop:
-            if chi2_clickData:
-                point = chi2_clickData.get('points', [{}])[0]
-                cd = point.get('customdata', None)
-                if cd and isinstance(cd, list) and len(cd) >= 2:
-                    # Update grid selection
-                    try:
-                        new_index = next(i for i, opt in enumerate(options) if opt['value'] == cd[0])
-                    except StopIteration:
-                        new_index = current_index
-                    #new_index = cd[1]
-                    #current_value = cd[0]
-                else:
-                    new_index = current_index
-            else:
-                new_index = current_index
-    else:
+        # RENDU ICI
+        ctx = dash.callback_context
         new_index = current_index
+        if ctx.triggered:
+            trigger_prop = ctx.triggered[0]['prop_id']
+            if 'sp-typing-prev-grid-button' in trigger_prop:
+                new_index = max(current_index - 1, 0)
+            elif 'sp-typing-next-grid-button' in trigger_prop:
+                new_index = min(current_index + 1, max_val)
+            elif 'sp-typing-vertical-slider' in trigger_prop:
+                new_index = num_options - 1 - slider_input
+            #elif 'sp-typing-grid-dropdown' in trigger_prop:
+            #    new_index = current_index
+            elif 'sp-typing-chi2-graph' in trigger_prop:
+                if chi2_clickData:
+                    point = chi2_clickData.get('points', [{}])[0]
+                    cd = point.get('customdata', None)
+                    if cd and isinstance(cd, list) and len(cd) >= 2:
+                        # Update grid selection
+                        try:
+                            new_index = next(i for i, opt in enumerate(options) if opt['value'] == cd[0])
+                        except StopIteration:
+                            new_index = current_index
+                    #else:
+                    #    new_index = current_index
+                #else:
+                #    new_index = current_index
+        #else:
+        #    new_index = current_index
 
-    new_value = options[new_index]['value']
-    slider_value = num_options - 1 - new_index
+        new_value = options[new_index]['value']
+        slider_value = num_options - 1 - new_index
 
-    # Preserve grid_data as no change (or use dash.no_update)
-    prev_disabled = (new_index == 0)
-    next_disabled = (new_index == num_options - 1)
-    grid_data = dash.no_update
-    return options, new_value, grid_data, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
+        # Update button disabling
+        prev_disabled = (new_index == 0)
+        next_disabled = (new_index == num_options - 1)
+        return new_value, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
 
+
+# =============================================================================
+# Callback: Download the raw comparison spectrum
+# =============================================================================
+@dash.callback(
+    Output('sp-typing-comparison-raw-spectrum', 'data'),
+    Input('sp-typing-comparison-dropdown', 'value'), # If the user selects a new comparison spectrum we re-download it
+    State('sp-typing-url', 'search'),
+    prevent_initial_call = True
+)
+def download_comparison_spectrum(comparison_specid, url_search):
+    print('download_comparison_spectrum callback being triggered')
+    if not comparison_specid:
+        return dash.no_update
+    print('download_comparison_spectrum callback being executed')
+    
+    # Download the comparison spectrum
+    connection_string = get_connection_string_sptype(url_search=url_search)
+    engine = create_engine(connection_string)
+    
+    # Fetch spectrum from MOCAdb
+    comparison_query = f"""
+        SELECT ds.moca_specid,
+            ds.wavelength_angstrom * 1e-4 AS wv,
+            ds.flux_flambda AS sp,
+            ds.flux_flambda_unc AS esp
+        FROM moca_spectra ms
+        JOIN data_spectra ds ON (ds.moca_specid = ms.moca_specid AND ds.adopted = 1)
+        WHERE ds.moca_specid = {comparison_specid}
+    """
+
+    comparison_df = pd.read_sql(comparison_query, engine)
+    if comparison_df.empty:
+        return dash.no_update
+
+    comparison_data = comparison_df.to_json(date_format='iso', orient='split')
+    print('download_comparison_spectrum completed')
+    return comparison_data
+    
 # =============================================================================
 # Callback: Precompute comparisons (all standards in grid)
 # =============================================================================
+# Friday: This now needs to be triggered only when a new comparison spectrum is selected, or the raw grid spectra are read
 @dash.callback(
     Output('sp-typing-precomputed-store', 'data'),
     Output('sp-typing-comparison-spectrum', 'data'),
-    State('sp-typing-grid-dropdown', 'value'),
-    Input('sp-typing-comparison-dropdown', 'value'),
-    Input('sp-typing-bins-input', 'value'),
-    Input('sp-typing-deredden-checklist', 'value'),
-    State('sp-typing-grid-data', 'data'),
-    State('sp-typing-url', 'search')
+    #State('sp-typing-grid-dropdown', 'value'),
+    Input('sp-typing-comparison-raw-spectrum', 'data'), # If a new comparison spectrum gets downloaded we re-bin all spectra
+    Input('sp-typing-bins-input', 'value'), # If the user selects a different binning we re-bin all spectra
+    Input('sp-typing-deredden-checklist', 'value'), # If the deredden option changes we re-bin all spectra
+    Input('sp-typing-grid-raw-spectra', 'data'), # If the grid raw spectra gets updated we also re-bin all spectra
+    State('sp-typing-grid-data', 'data'), # This encodes the list of standard spectra and their header properties
+    #State('sp-typing-url', 'search'),
+    prevent_initial_call = True
 )
-def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, deredden_value, grid_data, url_search):
-    if not comparison_specid:
+def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, grid_data):
+    print('precompute_comparisons callback being triggered')
+    if not comparison_raw_spectrum or not grid_raw_spectra:
         return dash.no_update, dash.no_update
+    print('precompute_comparisons callback being executed')
+    
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
-    # Load comparison spectrum
-    comparison_df = load_and_process_spectrum(comparison_specid, bins_per_micron=bins, url_search=url_search)
+    
+    # Read the comparison spectrum and the grid spectra
+    comparison_df_raw = pd.read_json(comparison_raw_spectrum, orient='split')
+    grid_df_raw = pd.read_json(grid_raw_spectra, orient='split')
+    if 'wv' not in comparison_df_raw.columns or 'wv' not in grid_df_raw.columns or 'sp' not in comparison_df_raw.columns or 'sp' not in grid_df_raw.columns:
+        print("precompute_comparisons: Exiting because encountered empty spectra")
+        return dash.no_update, dash.no_update
+
+    # Bin comparison spectrum
+    comparison_df = process_spectrum(comparison_df_raw, bins_per_micron=bins)
+    
+    # Define a wavelength grid on which to bin the standard spectral grid
     common_wv = np.sort(comparison_df['wv'].unique())
 
+    # Encore the processed comparison spectrum for DCC Store
     comparison_json = comparison_df.to_dict('records')
+
+    # grid_df is essentially the header of the standard spectra
     grid_df = pd.read_json(grid_data, orient='split')
 
+    # Bin and normalize the standard spectra
+    
     results = []
     grid_entries = grid_df
     for _, row in grid_entries.iterrows():
-        std_specid = row["moca_specid"]
-        std_label = row["label"]
-        std_spt = row["spectral_type"]
-        std_designation = row["designation"]
-        std_df = load_and_process_spectrum(std_specid, common_wv=common_wv, url_search=url_search)
+        std_specid = row['moca_specid']
+        std_label = row['label']
+        std_spt = row['spectral_type']
+        std_designation = row['designation']
+        print(std_specid)
+        
+        # Select the current standard spectrum on the grid
+        std_df_raw = grid_df_raw[grid_df_raw['moca_specid'] == std_specid]
+
+        if std_df_raw['sp'].sum() == 0:
+            print("Encountered an all-zero spectrum")
+            continue
+
+        # Rebin the standard spectrum on the common wavelength grid
+        print('Rebinning standard spectrum...')
+        std_df = process_spectrum(std_df_raw, common_wv=common_wv)
+        print('Rebinning complete')
         std_data_dered = None
+        std_data = None
+
+        if 'wv' not in std_df.columns:
+            continue
+            #import pdb; pdb.set_trace()
 
         # Normalize the standard spectrum using the median ratio (comparison / standard), per region.
+        print('Normalizing standard spectrum...')
         for (region_min, region_max) in norm_regions:
             std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
             comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
@@ -782,10 +921,11 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
                     # Normalize the original standard spectrum
                     std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'spn'] *= ratio
                     std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'esp'] *= ratio
+        print('Normalizing complete')
 
         if deredden and (not comparison_df.empty) and (not std_df.empty):
             try:
-                print("Optimizing " + std_label)
+                print("Optimizing dereddening values for " + std_label+" ...")
                 av_list = []
                 rv_list = []
                 std_df_dered = std_df.copy()
@@ -814,8 +954,10 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
                     else:
                         av_list.append(np.nan)
                         rv_list.append(np.nan)
+                print('Optimizing complete')
                 
                 # Normalize the dereddened standard spectrum using the median ratio (comparison / standard), per region.
+                print('Normalizing dereddened standard spectrum...')
                 for (region_min, region_max) in norm_regions:
                     std_seg_dered = std_df_dered[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)]
                     comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
@@ -831,6 +973,7 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
                             # Normalize the original standard spectrum
                             std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'spn'] *= ratio
                             std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'esp'] *= ratio
+                print('Normalizing complete...')
 
                 # # --- Debugging Block: Plot original vs. dereddened segment ---
                 # import plotly.graph_objects as go
@@ -857,10 +1000,12 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
                 
                 # import pdb; pdb.set_trace()
                 # # --- End Debugging Block ---
+                print("Encoding standard spectrum to dictionary")
                 std_data = std_df.to_dict('records')  # original spectrum data stored for reference
                 std_data_dered = std_df_dered.to_dict('records')  # de-reddened spectrum stored for use
                 std_df = std_df_dered  # use the de-reddened dataframe for chi2 calculations
             except Exception as e:
+                print("An exception has occurred while optimizing dereddening")
                 av_list = [np.nan] * len(norm_regions)
                 rv_list = [np.nan] * len(norm_regions)
                 std_data = std_df.to_dict('records')
@@ -920,6 +1065,7 @@ def precompute_comparisons(selected_grid, comparison_specid, bins_per_micron, de
         
         # import pdb; pdb.set_trace()
         # # --- End Debugging Block ---
+        print("Storing standard spectrum")
         results.append({
             'grid': row["grid"],
             'moca_specid': std_specid,
@@ -1239,7 +1385,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
         
         fig.add_trace(go.Scatter(
             x=df_g['spectral_type_number'],
-            y=df_g['reduced_chi2'],
+            y=np.maximum(df_g['reduced_chi2'].values, min_chi2_val),
             mode='lines+markers',
             name=str(g),
             text=df_g['label'],  # This assumes your merged dataframe has a 'label' column
@@ -1256,7 +1402,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
          highlight = df_sel.iloc[current_index]
          fig.add_trace(go.Scatter(
              x=[highlight['spectral_type_number']],
-             y=[highlight['reduced_chi2']],
+             y=[max(highlight['reduced_chi2'], min_chi2_val)],
              mode='markers',
              marker=dict(symbol='circle-open', size=20, color='black', line=dict(width=3)),
              name='displayed'
