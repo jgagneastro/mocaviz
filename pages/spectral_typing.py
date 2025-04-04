@@ -9,7 +9,7 @@ from math import floor, ceil, log10
 import os
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
 
-debug_printing = False
+debug_printing = True
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -1377,11 +1377,12 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
 
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
     standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
+    standard_short_label = std_entry['spectral_type']
     if 'deredden' in (deredden_value or []):
-        name = "Standard " + standard_label + ", original"
+        name = "Std. " + standard_short_label + ", original"
         opacity = 0.3
     else:
-        name = "Standard " + standard_label
+        name = "Std. " + standard_short_label
         opacity = 1.0
     for i, (region_min, region_max) in enumerate(norm_regions):
         std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
@@ -1435,7 +1436,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                     mode='lines',
                     line=dict(shape='hv', width=4, color=standard_color),
                     opacity=1.0,
-                    name="Standard " + standard_label + ", dereddened" if i == 0 else "",
+                    name="Std. " + standard_short_label + ", dereddened" if i == 0 else "",
                     showlegend=(i == 0),
                     legendgroup="standard-dereddened"
                 ))
@@ -1453,7 +1454,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 y=comp_seg['spn'],
                 mode='lines',
                 line=dict(shape='hv', width=4, color='black'),
-                name=("Comparison spectrum (" + comp_designation + ")") if i == 0 else "",
+                name=("Comparison") if i == 0 else "",
                 showlegend=(i == 0),
                 opacity=0.8,
                 legendgroup="comparison"
@@ -1565,15 +1566,6 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     if debug_printing:
         print("Storing sptnum", current_sptnum)
     return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, prev_disabled, next_disabled
-
-# Add annotation for the standard name in the top-right corner
-    fig.add_annotation(
-        x=0.95, y=0.95, xref='paper', yref='paper',
-        text=standard_label,
-        showarrow=False,
-        font=dict(color=standard_color, size=14),
-        xanchor='right', yanchor='top'
-    )
 
 @dash.callback(
     Output("sp-typing-bins-input", "value"),
