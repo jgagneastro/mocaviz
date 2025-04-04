@@ -569,6 +569,7 @@ layout = html.Div([
     dcc.Store(id='sp-typing-grid-data'),
     dcc.Store(id='sp-typing-grid-raw-spectra'),
     dcc.Store(id='sp-typing-comparison-raw-spectrum'),
+    dcc.Store(id='sp-typing-current-sptnum'),
 ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
 
 # =============================================================================
@@ -729,16 +730,19 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
         #df_std_spectra = pd.read_json(grid_spectra, orient='split')
         #options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
 
-        # Parse URL parameters for grid
-        if url_search:
-            parsed = urlparse(url_search)
-            qs = parse_qs(parsed.query)
-            grid = qs.get("grid", [None])[0]
-        else:
-            grid = None
-        
-        valid_grids = [str(opt['value']) for opt in options]
-        default_value = grid if grid in valid_grids else (options[0]['value'] if options else 'very low gravity')
+        # Set the default grid if none are set yet
+        if not current_value:
+            # Parse URL parameters for grid
+            if url_search:
+                parsed = urlparse(url_search)
+                qs = parse_qs(parsed.query)
+                grid = qs.get("grid", [None])[0]
+            else:
+                grid = None
+            
+            valid_grids = [str(opt['value']) for opt in options]
+            default_value = grid if grid in valid_grids else ('field')
+            current_value = default_value
         
         # Initialize slider outputs based on the options.
         num_options = len(options)
@@ -746,24 +750,26 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
         max_val = num_options - 1
         marks = {i: options[num_options - 1 - i]['label'] for i in range(num_options)}
         try:
-            current_index = next(i for i, opt in enumerate(options) if opt['value'] == default_value)
+            current_index = next(i for i, opt in enumerate(options) if opt['value'] == current_value)
         except StopIteration:
             current_index = 0
         slider_value = num_options - 1 - current_index
 
         # Set button disabled states based on the current index.
-        prev_disabled = (current_index == 0)
-        next_disabled = (current_index == num_options - 1)
+        #prev_disabled = (current_index == 0)
+        #next_disabled = (current_index == num_options - 1)
         
-        # RENDU ICI
         ctx = dash.callback_context
         new_index = current_index
+        print('Max index value on this grid', max_val)
         if ctx.triggered:
             trigger_prop = ctx.triggered[0]['prop_id']
             if 'sp-typing-prev-grid-button' in trigger_prop:
                 new_index = max(current_index - 1, 0)
+                print('New index will be', new_index)
             elif 'sp-typing-next-grid-button' in trigger_prop:
                 new_index = min(current_index + 1, max_val)
+                print('New index will be', new_index)
             elif 'sp-typing-vertical-slider' in trigger_prop:
                 new_index = num_options - 1 - slider_input
             #elif 'sp-typing-grid-dropdown' in trigger_prop:
@@ -785,6 +791,23 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
         #else:
         #    new_index = current_index
 
+            # # If the grid has changed, try to find the best matching index in the new grid based on spectral_type_number
+            # if 'sp-typing-chi2-graph' not in trigger_prop
+            #     if new_index != current_index:
+            #         try:
+            #             df_grid = pd.read_json(grid_data, orient='split')
+            #             current_grid = options[current_index]['value']
+            #             new_grid = options[new_index]['value']
+            #             current_grid_spts = df_grid[df_grid['grid'] == current_grid].reset_index(drop=True)
+            #             new_grid_spts = df_grid[df_grid['grid'] == new_grid].reset_index(drop=True)
+            #             if not current_grid_spts.empty and not new_grid_spts.empty:
+            #                 #These mix up the horizontal and vertical indexes
+            #                 #current_spt_num = current_grid_spts.iloc[current_index]['spectral_type_number']
+            #                 #best_index = (new_grid_spts['spectral_type_number'] - current_spt_num).abs().idxmin()
+            #                 #new_index = num_options - 1 - new_grid_spts.index.get_loc(best_index)
+            #         except Exception:
+            #             pass
+                        
         new_value = options[new_index]['value']
         slider_value = num_options - 1 - new_index
 
@@ -884,6 +907,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         std_specid = row['moca_specid']
         std_label = row['label']
         std_spt = row['spectral_type']
+        std_spt_number = row['spectral_type_number']
         std_designation = row['designation']
         print(std_specid)
         
@@ -1072,6 +1096,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
             'moca_specid': std_specid,
             'label': std_label,
             'spectral_type': std_spt,
+            'spectral_type_number': std_spt_number,
             'designation': std_designation,
             'spectrum': std_data,
             'spectrum_dered': std_data_dered,
@@ -1086,6 +1111,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
 # Callback: Navigation and graph update (using Prev/Next buttons)
 # =============================================================================
 @dash.callback(
+    Output('sp-typing-current-sptnum', 'data'),
     Output('sp-typing-current-index', 'data'),
     Output('sp-typing-index-slider', 'value'),
     Output('sp-typing-index-slider', 'max'),
@@ -1100,15 +1126,18 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Input('sp-typing-grid-dropdown', 'value'),
     Input('sp-typing-comparison-designation', 'data'),
     Input('sp-typing-chi2-graph', 'clickData'),
+    State('sp-typing-current-sptnum', 'data'),
     State('sp-typing-current-index', 'data'),
     State('sp-typing-precomputed-store', 'data'),
     State('sp-typing-deredden-checklist', 'value'),
     State('sp-typing-db-data', 'data'),
     State('sp-typing-url', 'search')
 )
-def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, current_index, precomputed, deredden_value, df_data, url_search):
+def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, previous_sptnum, current_index, precomputed, deredden_value, df_data, url_search):
+    print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
     if not precomputed or comparison_data is None:
+        print("Update graph encountered empty data frames")
         empty_fig = go.Figure()
         empty_fig.update_layout(
             xaxis={'visible': False},
@@ -1127,7 +1156,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         )
         prev_disabled = True
         next_disabled = True
-        return current_index, slider_value, 0, {0: ''}, empty_fig, prev_disabled, next_disabled
+        return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
 
@@ -1148,6 +1177,17 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         new_index = max(current_index - 1, 0)
     elif 'sp-typing-next-button' in triggered_ids:
         new_index = min(current_index + 1, len(filtered_precomputed) - 1)
+    elif 'sp-typing-grid-dropdown' in triggered_ids and previous_sptnum is not None:
+        # Try to find the closest spectral_type_number in the new grid
+        #import pdb; pdb.set_trace()
+        print("Attempting to match grid index for spectral type number:", previous_sptnum)
+        try:
+            new_index = min(
+                range(len(filtered_precomputed)),
+                key=lambda i: abs(filtered_precomputed[i].get('spectral_type_number', 0) - previous_sptnum)
+            )
+        except Exception:
+            new_index = current_index
     elif 'sp-typing-comparison-spectrum' in triggered_ids:
         parsed = urlparse(url_search)
         qs = parse_qs(parsed.query)
@@ -1158,6 +1198,12 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     else:
         new_index = current_index
     
+    # Make sure we are not falling out of range
+    if new_index >= len(filtered_precomputed):
+        new_index = len(filtered_precomputed) - 1
+    if new_index < 0:
+        new_index = 0
+
     # Convert stored spectra back to DataFrames
     std_entry = filtered_precomputed[new_index]
     std_df = pd.DataFrame(std_entry['spectrum'])
@@ -1318,7 +1364,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     )
 
     reduced_chi2 = std_entry.get("reduced_chi2", np.nan)
-    mad = std_entry.get("mad", np.nan)
+    #mad = std_entry.get("mad", np.nan)
     metrics_text = f"χ²: {reduced_chi2:.2f}"
     #metrics_text = f"χ²: {reduced_chi2:.2f}<br>MAD: {mad:.2f}"
     if 'deredden' in (deredden_value or []):
@@ -1355,7 +1401,9 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     
     prev_disabled = (new_index == 0)
     next_disabled = (new_index == len(filtered_precomputed) - 1)
-    return new_index, new_index, slider_max, slider_marks, fig, prev_disabled, next_disabled
+    current_sptnum = std_entry.get('spectral_type_number')
+    print("Storing sptnum", current_sptnum)
+    return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, prev_disabled, next_disabled
 
 # Add annotation for the standard name in the top-right corner
     fig.add_annotation(
@@ -1399,8 +1447,12 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
         return go.Figure()
     df_pre = pd.DataFrame(precomputed_data)
     df_grid = pd.read_json(grid_data, orient='split')
+    
     # Merge on moca_specid to get the spectral_type_number for each grid point
-    df_merged = pd.merge(df_pre, df_grid[['moca_specid', 'spectral_type_number']], on='moca_specid', how='left')
+    #df_merged = pd.merge(df_pre, df_grid[['moca_specid', 'spectral_type_number']], on='moca_specid', how='left')
+    df_pre_no_dup = df_pre.drop(columns=['spectral_type_number'], errors='ignore')
+    df_merged = pd.merge(df_pre_no_dup, df_grid[['moca_specid', 'spectral_type_number']], on='moca_specid', how='left')
+
     fig = go.Figure()
     grids = df_merged['grid'].unique()
     #colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00', '#FFFF33', '#A65628', '#F781BF']
@@ -1412,6 +1464,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
     
     for i, g in enumerate(grids):
         df_g = df_merged[df_merged['grid'] == g].sort_values('spectral_type_number').reset_index(drop=True)
+
         # Create a customdata list where each element is [grid, grid_point_index]
         customdata = df_g.apply(lambda row: [row['grid'], row.name], axis=1).tolist()
         
