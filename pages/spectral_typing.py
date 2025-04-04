@@ -458,6 +458,7 @@ dash.register_page(__name__, path='/spectral-typing')
 layout = html.Div([
     dcc.Location(id='sp-typing-url'),
     html.H1("MOCA Spectral Typing", id='sp-typing-header'),
+    html.P("This dash app is used to assign spectral types visually; please be patient as the initial download of the spectral standards grid can take a minute or two.", style={"fontStyle": "italic", "marginBottom": "20px"}),
     html.Div([
          html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
          dcc.Dropdown(
@@ -1253,25 +1254,56 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
             ))
 
     title_text = f"{comp_designation} vs {standard_label}, {selected_grid} grid"
-    # Compute global y-axis range from all standard grids
-    global_spn = []
+    
+    y_min_values = []
+    y_max_values = []
+    quantile_low = 0.2
+    quantile_high = 0.7
+    if precomputed:
+        for entry in precomputed:
+            df_entry = pd.DataFrame(entry['spectrum'])
+            if not df_entry.empty:
+                spn = df_entry['spn'].values.tolist()
+                y_min_values.append(np.nanquantile(spn,quantile_low))
+                y_max_values.append(np.nanquantile(spn,quantile_high))
+    y_min_values = [np.nanquantile(y_min_values, quantile_low)]
+    y_max_values = [np.nanquantile(y_max_values, quantile_high)]
+    
+    # Add currently displayed data
+    if not std_df.empty:
+        spn = std_df['spn'].values.tolist()
+        y_min_values.append(np.nanmin(spn))
+        y_max_values.append(np.nanmax(spn))
+    if not comparison_df.empty:
+        spn = comparison_df['spn'].values.tolist()
+        y_min_values.append(np.nanmin(spn))
+        y_max_values.append(np.nanmax(spn))
+    if 'deredden' in (deredden_value or []):
+        std_df_dered = pd.DataFrame(std_entry['spectrum_dered'])
+        if not std_df_dered.empty:
+            spn = std_df_dered['spn'].values.tolist()
+            y_min_values.append(np.nanmin(spn))
+            y_max_values.append(np.nanmax(spn))
+
+    if y_min_values:
+        y_min = np.nanmin(y_min_values)
+    else:
+        y_min = 0
+    
+    if y_max_values:
+        y_max = np.nanmax(y_max_values)
+    else:
+        y_max = 1
+
     global_wv = []
     for entry in precomputed:
         df_entry = pd.DataFrame(entry['spectrum'])
         if not df_entry.empty:
-            global_spn.extend(df_entry['spn'].values.tolist())
             global_wv.extend(df_entry['wv'].values.tolist())
     if not comparison_df.empty:
-        global_spn.extend(comparison_df['spn'].values.tolist())
         global_wv.extend(comparison_df['wv'].values.tolist())
-    if global_spn:
-        y_min = np.nanmin(global_spn)
-        y_max = np.nanmax(global_spn)
-        x_min = np.nanmin(global_wv)
-        x_max = np.nanmax(global_wv)
-    else:
-        y_min, y_max = 0, 1
-        x_min, x_max = 0.85, 2.4
+    x_min = np.nanmin(global_wv)
+    x_max = np.nanmax(global_wv)
     
     y_margin = 0.05 * (y_max - y_min)
     x_margin = 0.015 * (x_max - x_min)
