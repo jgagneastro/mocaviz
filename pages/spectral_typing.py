@@ -1429,7 +1429,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
 
         for i, (region_min, region_max) in enumerate(norm_regions):
             std_seg_dered = std_df_dered[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)]
-            if not std_seg.empty:
+            if not std_seg_dered.empty:
                 fig.add_trace(go.Scatter(
                     x=std_seg_dered['wv'],
                     y=std_seg_dered['spn'],
