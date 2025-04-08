@@ -86,8 +86,8 @@ norm_regions = [
     (np.mean(masked_regions[0]), np.mean(masked_regions[1])),
     (np.mean(masked_regions[1]), wv_max)
 ]
-pre_smoothing_min_bins_per_micron = 50
-default_bins_per_micron = 50
+pre_smoothing_min_bins_per_micron = 200
+default_bins_per_micron = 200
 
 # =============================================================================
 # Helper functions for spectral processing
