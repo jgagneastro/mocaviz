@@ -1,4 +1,5 @@
 import dash
+from datetime import datetime
 from dash import dcc, html, Input, Output, State, callback_context
 import pandas as pd
 import numpy as np
@@ -651,7 +652,7 @@ layout = html.Div([
               marks={0: ''}
          )
     ], style={'width': '100%', 'margin-bottom': '15px'}),
-    dcc.Graph(id='sp-typing-graph', config=figure_export_config, style={'height': '700px'}),
+    dcc.Graph(id='sp-typing-graph', style={'height': '700px'}),#sp-typing-chi2-graph
     dcc.Graph(id='sp-typing-chi2-graph'),
     html.Div(
          className="row",
@@ -1270,6 +1271,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Output('sp-typing-index-slider', 'max'),
     Output('sp-typing-index-slider', 'marks'),
     Output('sp-typing-graph', 'figure'),
+    Output('sp-typing-graph', 'config'),
     Output('sp-typing-prev-button', 'disabled'),
     Output('sp-typing-next-button', 'disabled'),
     Input('sp-typing-prev-button', 'n_clicks'),
@@ -1442,13 +1444,14 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 ))
     
     # For each normalization region, add a step trace for the Comparison Spectrum on top
+    comp_id = comparison_df['moca_specid'].iloc[0]
+    df_data_parsed = pd.read_json(df_data, orient='split')
+    comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
+    comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
+    comp_specid_tag = f" (specid={int(comp_id)})" if not comp_designation_row.empty else ""
     for i, (region_min, region_max) in enumerate(norm_regions):
         comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
         if not comp_seg.empty:
-            comp_id = comp_seg['moca_specid'].iloc[0]
-            df_data_parsed = pd.read_json(df_data, orient='split')
-            comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
-            comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
             fig.add_trace(go.Scatter(
                 x=comp_seg['wv'],
                 y=comp_seg['spn'],
@@ -1459,9 +1462,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 opacity=0.8,
                 legendgroup="comparison"
             ))
+    title_text = f"{comp_designation} {comp_specid_tag} vs {standard_label}, {selected_grid} grid"
 
-    title_text = f"{comp_designation} vs {standard_label}, {selected_grid} grid"
-    
     y_min_values = []
     y_max_values = []
     quantile_low = 0.2
@@ -1565,7 +1567,17 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     current_sptnum = std_entry.get('spectral_type_number')
     if debug_printing:
         print("Storing sptnum", current_sptnum)
-    return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, prev_disabled, next_disabled
+    
+    #Update export file name
+    der_tag = ""
+    if 'deredden' in (deredden_value or []):
+        der_tag = "_der"
+    date_str = datetime.now().strftime("%y%m%d")
+    updated_config = figure_export_config.copy()
+    updated_config['toImageButtonOptions'] = updated_config['toImageButtonOptions'].copy()
+    updated_config['toImageButtonOptions']['filename'] = f"sptype_specid_{int(comp_id)}_{std_entry['spectral_type']}_{selected_grid}{der_tag}_{date_str}"
+
+    return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, updated_config, prev_disabled, next_disabled
 
 @dash.callback(
     Output("sp-typing-bins-input", "value"),
@@ -1589,12 +1601,15 @@ def spt_set_defaults_from_url(href):
 
 @dash.callback(
     Output('sp-typing-chi2-graph', 'figure'),
+    Output('sp-typing-chi2-graph', 'config'),
     Input('sp-typing-precomputed-store', 'data'),
     Input('sp-typing-grid-data', 'data'),
     Input('sp-typing-grid-dropdown', 'value'),
-    Input('sp-typing-current-index', 'data')
+    Input('sp-typing-current-index', 'data'),
+    State('sp-typing-db-data', 'data'),
+    State('sp-typing-comparison-dropdown', 'value')
 )
-def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index):
+def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index, df_data, specid):
     
     if precomputed_data is None or grid_data is None:
         return go.Figure()
@@ -1660,8 +1675,14 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
          step = int(np.ceil((x_max_val - x_min_val) / 20))
          tickvals = np.arange(x_min_val, x_max_val + 1, step)
 
+    df_data_parsed = pd.read_json(df_data, orient='split')
+    comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == specid]
+    comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
+    comp_specid_tag = f" (specid={int(specid)})" if not specid is None else ""
+    title_text_chi2 = f"Global goodness of fit for {comp_designation} {comp_specid_tag}"
+
     fig.update_layout(
-        title='Global goodness of fit',
+        title=title_text_chi2,
         margin=dict(t=40),
         xaxis=dict(
             title='Spectral Type',
@@ -1672,6 +1693,13 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
         yaxis_title='χ²',
         #ticktext=[generate_spectral_type_label(x) for x in tickvals]
     )
+
+    #Update export file name
+    date_str = datetime.now().strftime("%y%m%d")
+    updated_config = figure_export_config.copy()
+    updated_config['toImageButtonOptions'] = updated_config['toImageButtonOptions'].copy()
+    updated_config['toImageButtonOptions']['filename'] = f"global_chi2_specid_{int(specid)}_{date_str}"
+
     #fig.update_yaxes(minor=dict(showgrid=False, tickcolor='rgba(0,0,0,0)', ticklen=0))
     #Didnt work
     #fig.update_layout(
@@ -1679,4 +1707,4 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index)
     #        minor=dict(ticks="", ticklen=0)
     #    )
     #)
-    return fig
+    return fig, updated_config
