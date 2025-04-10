@@ -671,7 +671,7 @@ layout = html.Div([
                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
                 
                 ### Example URL:  
-                - `http://your-domain/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
+                - `https://dataviz.mocadb.ca/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
                 
                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
                   """

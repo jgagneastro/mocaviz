@@ -512,6 +512,26 @@ layout = html.Div(
                 )
             ]
         ),
+        html.Div(
+            className="row",
+            id="url-help-section-spectrapage",
+            children=[
+                dcc.Markdown(
+                    """
+                    ## Using URL Parameters
+
+                    You can customize the Spectral Explorer by appending parameters to the URL query string. The following parameter is supported:
+
+                    - **moca_specid**: Pre-select a set of spectra to be displayed (e.g., `moca_specid=203,212`). Provide one or more values separated by commas. If not provided, a default set of spectra will be loaded.
+
+                    ### Example URL:
+                    - `https://dataviz.mocadb.ca/spectra?moca_specid=203,212`
+
+                    """
+                )
+            ],
+            style={"padding": "20px", "backgroundColor": "#f9f9f9"}
+        ),
     ]
 )
 
