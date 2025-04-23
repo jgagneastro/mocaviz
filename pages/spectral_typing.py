@@ -725,7 +725,7 @@ def update_comparison_options(search):
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
         LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)
-        WHERE ms.moca_specpackid != 1
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
     """
     df = pd.read_sql(query, engine)
     options = [{'label': row["spectrum_name"], 'value': row["moca_specid"]} for index, row in df.iterrows()]
@@ -1313,7 +1313,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         )
         prev_disabled = True
         next_disabled = True
-        return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, prev_disabled, next_disabled
+        return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
 
@@ -1612,7 +1612,7 @@ def spt_set_defaults_from_url(href):
 def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index, df_data, specid):
     
     if precomputed_data is None or grid_data is None:
-        return go.Figure()
+        return go.Figure(), figure_export_config
     df_pre = pd.DataFrame(precomputed_data)
     df_grid = pd.read_json(grid_data, orient='split')
     
