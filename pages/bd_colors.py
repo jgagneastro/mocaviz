@@ -318,12 +318,12 @@ layout = (
 
         # Checkboxes in a 2x2 Grid
         html.Div([
-            html.Div([
-                dcc.Checklist(
-                    options=[{'label': 'Display best photometry only', 'value': 'best_photometry'}],
-                    id='bdphot-checkbox-best-photometry',
-                )
-            ], style={'gridArea': '1 / 1'}),
+            #html.Div([
+            #    dcc.Checklist(
+            #        options=[{'label': 'Display best photometry only', 'value': 'best_photometry'}],
+            #        id='bdphot-checkbox-best-photometry',
+            #    )
+            #], style={'gridArea': '1 / 1'}),
 
             html.Div([
                 dcc.Checklist(
@@ -408,19 +408,18 @@ layout = (
                 - **yaxis_value_2** → Specifies the second band for the Y-axis when using some axis types that require it.
                 - **moca_oid** → Highlights specific objects by their MOCA OID. You can list multiple OIDs separated by commas.
                 - **spt_range** → Sets the spectral type range. Use the format like `M6-Y2`.
-                - **bestphot** → Enables best photometry only. Set to `true` to activate or `false` to deactivate. Default is `true`.
                 - **photdist** → Includes photometric distance estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **binaries** → Displays binary systems. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photspt** → Includes photometric spectral type estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
 
                 ### Example URLs  
-                - `dataviz.mocadb.ca/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true`
-                - `dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602`
-                - `dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=spectral_index&yaxis_value_1=h2o_j&moca_oid=602`
+                - `https://dataviz.mocadb.ca/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true`
+                - `https://dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&moca_oid=602`
+                - `https://dataviz.mocadb.ca/bd-colors?xaxis_type=spectral_type&yaxis_type=spectral_index&yaxis_value_1=h2o_j&moca_oid=602`
 
                 Clicking on a data point in the plot will open its detailed MOCA report in a new tab.
                 """
-            ),
+            ),#- **bestphot** → Enables best photometry only. Set to `true` to activate or `false` to deactivate. Default is `true`.
         ],
         style={"padding": "20px", "backgroundColor": "#f9f9f9"}
     ),
@@ -845,7 +844,7 @@ def update_dropdowns_from_url(url):
         Input({'type': 'bdphot-dynamic-dropdown', 'axis': 'y', 'band': ALL}, 'value'),
         Input('bdphot-moca-ids-input', 'value'),
         Input('bdphot-moca-ids-input', 'n_submit'),  # Trigger on Enter
-        Input('bdphot-checkbox-best-photometry', 'value'),
+        #Input('bdphot-checkbox-best-photometry', 'value'),
         Input('bdphot-checkbox-photometric-distances', 'value'),
         Input('bdphot-checkbox-binaries', 'value'),
         Input('bdphot-checkbox-spectral-type-estimates', 'value'),
@@ -853,7 +852,8 @@ def update_dropdowns_from_url(url):
     ],
     State('url', 'href')
 )
-def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, best_photometry_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
+#, best_photometry_value
+def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
 
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
@@ -1019,10 +1019,10 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude' or x_axis_type == 'color' or y_axis_type == 'color':
             # Determine which photometry table to use
-            if 'best_photometry' in best_photometry_value:
-                photometry = Table('mechanics_best_photometry_by_band', metadata, autoload_with=engine)
-            else:
-                photometry = Table('cdata_photometry', metadata, autoload_with=engine)
+            #if 'best_photometry' in best_photometry_value:
+            #    photometry = Table('mechanics_best_photometry_by_band', metadata, autoload_with=engine)
+            #else:
+            photometry = Table('cdata_photometry', metadata, autoload_with=engine)
             photsys = Table('moca_photometry_systems', metadata, autoload_with=engine)
             photometry_publications = moca_publications.alias('photometry_publications')
 
@@ -2160,7 +2160,7 @@ def update_moca_ids_input(url):
 
 @dash.callback(
     [
-        Output('bdphot-checkbox-best-photometry', 'value'),
+        #Output('bdphot-checkbox-best-photometry', 'value'),
         Output('bdphot-checkbox-photometric-distances', 'value'),
         Output('bdphot-checkbox-binaries', 'value'),
         Output('bdphot-checkbox-spectral-type-estimates', 'value'),
@@ -2174,14 +2174,14 @@ def update_checkboxes_from_url(url):
     url_params = parse_url_params(url)
 
     # Parse each checkbox's corresponding URL parameter
-    bestphot = url_params.get('bestphot', ['true'])[0].lower() == 'true'
+    #bestphot = url_params.get('bestphot', ['true'])[0].lower() == 'true'
     photdist = url_params.get('photdist', ['false'])[0].lower() == 'true'
     binaries = url_params.get('binaries', ['false'])[0].lower() == 'true'
     photspt = url_params.get('photspt', ['false'])[0].lower() == 'true'
 
     # Return values for each checkbox
     return (
-        ['best_photometry'] if bestphot else [],
+        #['best_photometry'] if bestphot else [],
         ['photometric_distances'] if photdist else [],
         ['binaries'] if binaries else [],
         ['spectral_type_estimates'] if photspt else [],
