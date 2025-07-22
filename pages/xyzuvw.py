@@ -45,7 +45,7 @@ moca_vanilla = MocaEngine()
 c_value = 8.0
 
 query_e = f"""
-    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, sao.spt, sao.dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
     xyz.xx_covar, xyz.yy_covar, xyz.zz_covar, 
     xyz.xy_covar, xyz.xz_covar, xyz.yz_covar,
     uvw.uu_covar, uvw.vv_covar, uvw.ww_covar,
@@ -57,16 +57,17 @@ query_e = f"""
     cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
     {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
     FROM mechanics_memberships_vetted mv
-    LEFT JOIN summary_all_objects sao USING(moca_oid,moca_aid)
     LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
-    LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)
-    LEFT JOIN (SELECT * FROM calc_uvw WHERE moca_aid IS NULL) uvwany USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
+    LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
+    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
+    LEFT JOIN calc_uvw uvwany ON(uvwany.moca_oid=mv.moca_oid AND uvwany.moca_aid IS NULL)
+    LEFT JOIN (SELECT cbs.id, cbs.moca_oid, cbs.max_observables, cbs.moca_bsmdid FROM calc_banyan_sigma cbs JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted = 1) cbs ON cbs.moca_oid = mv.moca_oid AND cbs.max_observables = 1
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
 query_oe = f"""
-    SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, COALESCE(mv.moca_mtid,'N/A') AS moca_mtid, sao.spt, sao.dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
+    SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, COALESCE(mv.moca_mtid,'N/A') AS moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
     {c_value} * uvw.u_kms AS u, {c_value} * uvw.v_kms AS v, {c_value} * uvw.w_kms AS w,
     mo.ra, mo.`dec`,dpm.pmra_masyr,dpm.pmdec_masyr,cdist.distance_pc,crvc.radial_velocity_kms
     FROM moca_objects mo
@@ -74,7 +75,8 @@ query_oe = f"""
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN calc_uvw_raw uvw USING(moca_oid)
     LEFT JOIN calc_radial_velocities_corrected crvc USING(moca_oid,moca_aid)
-    LEFT JOIN summary_all_objects sao USING(moca_oid)
+    LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
+    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
     LEFT JOIN cdata_distances cdist ON(cdist.moca_oid=mo.moca_oid AND cdist.adopted=1)
     LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mo.moca_oid AND dpm.adopted=1)
 """
