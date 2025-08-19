@@ -66,6 +66,30 @@ query_e = f"""
     LEFT JOIN (SELECT cbs.id, cbs.moca_oid, cbs.max_observables, cbs.moca_bsmdid FROM calc_banyan_sigma cbs JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted = 1) cbs ON cbs.moca_oid = mv.moca_oid AND cbs.max_observables = 1
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
+
+#This is just the same query but with a constraint YA_PROB >= 90
+query_e_most_likely_mode = f"""
+    SELECT mo.designation, mv.moca_aid, mv.moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
+    xyz.xx_covar, xyz.yy_covar, xyz.zz_covar, 
+    xyz.xy_covar, xyz.xz_covar, xyz.yz_covar,
+    uvw.uu_covar, uvw.vv_covar, uvw.ww_covar,
+    uvw.uv_covar, uvw.uw_covar, uvw.vw_covar,
+    uvw.xu_covar, uvw.xv_covar, uvw.xw_covar,
+    uvw.yu_covar, uvw.yv_covar, uvw.yw_covar,
+    uvw.zu_covar, uvw.zv_covar, uvw.zw_covar,
+    {c_value} * COALESCE(uvw.u_kms,uvwany.u_kms) AS u, {c_value} * COALESCE(uvw.v_kms,uvwany.v_kms) AS v, {c_value} * COALESCE(uvw.w_kms,uvwany.w_kms) AS w, 
+    cbsd.x_opt, cbsd.y_opt, cbsd.z_opt, 
+    {c_value} * cbsd.u_opt u_opt, {c_value} * cbsd.v_opt v_opt, {c_value} * cbsd.w_opt w_opt
+    FROM mechanics_memberships_vetted mv
+    LEFT JOIN calc_uvw uvw USING(moca_oid,moca_aid)
+    LEFT JOIN calc_xyz xyz USING(moca_oid)
+    LEFT JOIN moca_objects mo USING(moca_oid)
+    LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
+    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
+    LEFT JOIN calc_uvw uvwany ON(uvwany.moca_oid=mv.moca_oid AND uvwany.moca_aid IS NULL)
+    LEFT JOIN (SELECT cbs.id, cbs.moca_oid, cbs.max_observables, cbs.moca_bsmdid FROM calc_banyan_sigma cbs JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted = 1) cbs ON cbs.moca_oid = mv.moca_oid AND cbs.max_observables = 1 AND cbs.ya_prob >= 90
+    LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
+"""
 query_oe = f"""
     SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, COALESCE(mv.moca_mtid,'N/A') AS moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
     {c_value} * uvw.u_kms AS u, {c_value} * uvw.v_kms AS v, {c_value} * uvw.w_kms AS w,
@@ -970,8 +994,7 @@ def update_aid_select_xupage(
     
     # Determine if the "Only Display Likely Members" checkbox is checked
     if "likely" in xymap_view:
-        query_e_modified = query_e.replace("LEFT JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1) cbs USING(moca_oid)",
-                                           "JOIN (SELECT * FROM calc_banyan_sigma WHERE adopted=1 AND ya_prob >= 90) cbs USING(moca_oid, moca_aid)")
+        query_e_modified = query_e_most_likely_mode
     else:
         query_e_modified = query_e  # Use the default query
 

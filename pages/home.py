@@ -18,6 +18,8 @@ default_text = \
 " * Visualize radial velocities calculated in MOCAdb with the [RV Explorer](/mcmc-rvs?#args#).\n" + \
 " * Visualize astrometry in MOCAdb with the [Astrometric Explorer](/astrometry?#args#).\n" + \
 " * Visualize color-color or color-magnitude plots in MOCAdb with the [Substellar Photometry Explorer](/bd-colors?#args#&xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag).\n" + \
+" * Visualize the age probability density functions of an association with the [MOCA Association Age Explorer](/age-pdfs?#args#).\n" + \
+" * Visualize the age probability density functions of an object with the [MOCA Object Age Explorer](/oage-pdfs?#args#).\n" + \
 " * Return to the [MOCAdb website](https://mocadb.ca).\n"
 
 layout = html.Div(
