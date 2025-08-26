@@ -538,7 +538,7 @@ layout = html.Div([
             ),
             dcc.Checklist(
                 id="astrometry-bin-checkbox",
-                options=[{'label': 'Bin data by '+str(bin_size_days)+'-day intervals ('+str(bin_size_days_phased)+' days if phased yearly)', 'value': 'bin_checked'}],
+                options=[{'label': 'Bin data by '+str(bin_size_days)+'-day intervals ('+str(bin_size_days_phased)+' days if phased yearly) just for display', 'value': 'bin_checked'}],
                 value=['bin_checked'],  # Default is unchecked
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
