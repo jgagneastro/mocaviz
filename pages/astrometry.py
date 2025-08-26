@@ -1309,11 +1309,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             mode='markers',
             error_y=dict(
                 type='data',
-                array=data_df['ra_unc_mas'],
+                array=mission_data['ra_unc_mas'],
                 visible=True,
-                color='rgba(0, 0, 0, 0.2)',  
-                thickness=1.5,               
-                width=2                  
+                color='rgba(0, 0, 0, 0.2)',
+                thickness=1.5,
+                width=2
             ),
             marker=dict(
                 color=mission_color_map[mission],  # Use the assigned color for this mission
@@ -1324,27 +1324,28 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             ),
             name=(mission + (f"  (σ_add={s_add_ra_by_mission.get(mission, 0.0):.2f} mas)" if inflate_errors and s_add_ra_by_mission.get(mission, 0.0) > 0 else "")),
             customdata=mission_data['id'],
-            text=mission_data.apply(
-                lambda row: 
-                    f"<b>ID:</b> {row['id_str']}<br>" \
-                    f"<b>Mission:</b> {row['mission'] or 'N/A'}<br>" \
-                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>" \
-                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>" \
-                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>" \
-                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>" \
-                    f"<b>RA:</b> {row['ra_str']} deg<br>" \
-                    f"<b>DEC:</b> {row['dec_str']} deg<br>" \
-                    f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>" \
-                    f"<b>Airmass:</b> {row['airmass_str']}<br>" \
-                    f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>" \
-                    f"<b>Calibration offset R.A.:</b> {row['delta_ra_str']} mas<br>" \
-                    f"<b>Calibration offset Decl.:</b> {row['delta_dec_str']} mas<br>" \
-                    f"<b>Calibration Nstars:</b> {row['nstars_str']}<br>" \
-                    f"<b>Calibration method:</b> {row['calibration_method'] or 'N/A'}<br>" \
-                    ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_ra'] else "") + \
-                    f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}",
-                axis=1
-            ),
+            text=[
+                (
+                    f"<b>ID:</b> {row['id_str']}<br>"
+                    f"<b>Mission:</b> {row['mission'] or 'N/A'}<br>"
+                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>"
+                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>"
+                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>"
+                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>"
+                    f"<b>RA:</b> {row['ra_str']} deg<br>"
+                    f"<b>DEC:</b> {row['dec_str']} deg<br>"
+                    f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>"
+                    f"<b>Airmass:</b> {row['airmass_str']}<br>"
+                    f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>"
+                    f"<b>Calibration offset R.A.:</b> {row['delta_ra_str']} mas<br>"
+                    f"<b>Calibration offset Decl.:</b> {row['delta_dec_str']} mas<br>"
+                    f"<b>Calibration Nstars:</b> {row['nstars_str']}<br>"
+                    f"<b>Calibration method:</b> {row['calibration_method'] or 'N/A'}<br>"
+                    + ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_ra'] else "")
+                    + f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}"
+                )
+                for _, row in mission_data.iterrows()
+            ],
             hoverinfo='text'
         ))
 
@@ -1355,7 +1356,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 x=out_ra["x_values"],
                 y=out_ra["rel_ra"],
                 mode='markers',
-                marker=dict(symbol='x', size=14, color='red', line=dict(width=3, color='red')),
+                marker=dict(symbol='x', size=2, color='red', line=dict(width=3, color='red')),
                 showlegend=False,
                 hoverinfo='skip'
             ))
@@ -1454,11 +1455,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             mode='markers',
             error_y=dict(
                 type='data',
-                array=data_df['dec_unc_mas'],
+                array=mission_data['dec_unc_mas'],
                 visible=True,
-                color='rgba(0, 0, 0, 0.2)',  
-                thickness=1.5,               
-                width=2                  
+                color='rgba(0, 0, 0, 0.2)',
+                thickness=1.5,
+                width=2
             ),
             marker=dict(
                 color=mission_color_map[mission],  # Use the assigned color for this mission
@@ -1469,23 +1470,24 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             ),
             name=(mission + (f"  (σ_add={s_add_dec_by_mission.get(mission, 0.0):.2f} mas)" if inflate_errors and s_add_dec_by_mission.get(mission, 0.0) > 0 else "")),
             customdata=mission_data['id'],
-            text=mission_data.apply(
-                lambda row: 
-                    f"<b>ID:</b> {row['id_str']}<br>" \
-                    f"<b>Mission:</b> {row['mission'] or 'N/A'}<br>" \
-                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>" \
-                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>" \
-                    f"<b>RA:</b> {row['ra_str']} deg<br>" \
-                    f"<b>DEC:</b> {row['dec_str']} deg<br>" \
-                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>" \
-                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>" \
-                    f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>" \
-                    f"<b>Airmass:</b> {row['airmass_str']}<br>" \
-                    f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>" \
-                    ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_dec'] else "") + \
-                    f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}",
-                axis=1
-            ),
+            text=[
+                (
+                    f"<b>ID:</b> {row['id_str']}<br>"
+                    f"<b>Mission:</b> {row['mission'] or 'N/A'}<br>"
+                    f"<b>Relative R.A.:</b> {row['rel_ra_str']} ± {row['ra_unc_mas_str']} mas<br>"
+                    f"<b>Relative Decl.:</b> {row['rel_dec_str']} ± {row['dec_unc_mas_str']} mas<br>"
+                    f"<b>RA:</b> {row['ra_str']} deg<br>"
+                    f"<b>DEC:</b> {row['dec_str']} deg<br>"
+                    f"<b>Epoch:</b> {row['measurement_epoch_yr_str']} yr<br>"
+                    f"<b>Reference:</b> {row['moca_pid'] or 'N/A'}<br>"
+                    f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>"
+                    f"<b>Airmass:</b> {row['airmass_str']}<br>"
+                    f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>"
+                    + ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_dec'] else "")
+                    + f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}"
+                )
+                for _, row in mission_data.iterrows()
+            ],
             hoverinfo='text'
         ))
 
@@ -1496,7 +1498,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 x=out_dec["x_values"],
                 y=out_dec["rel_dec"],
                 mode='markers',
-                marker=dict(symbol='x', size=14, color='red', line=dict(width=3, color='red')),
+                marker=dict(symbol='x', size=2, color='red', line=dict(width=3, color='red')),
                 showlegend=False,
                 hoverinfo='skip'
             ))
