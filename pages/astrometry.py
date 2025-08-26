@@ -1087,6 +1087,39 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         expected_rel_ra += plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
         expected_rel_dec += plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
 
+    # === Compute 1-sigma model envelopes from parameter uncertainties ===
+    # Pull uncertainties (0 if missing)
+    pmra_unc = float(pm_df.iloc[0]["pmra_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr_unc"]) else 0.0
+    pmdec_unc = float(pm_df.iloc[0]["pmdec_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr_unc"]) else 0.0
+    plx_unc  = float(plx_df.iloc[0]["parallax_mas_unc"]) if len(plx_df) != 0 and pd.notna(plx_df.iloc[0]["parallax_mas_unc"]) else 0.0
+
+    # Time factor for PM contribution
+    if phase_yearly:
+        dt_vals = (time_values + np.round(np.mean(data_df["measurement_epoch_yr"])) - epoch_ref)
+    else:
+        dt_vals = (time_values - epoch_ref)
+
+    # Parallax motion terms for the envelope (zeroed if subtract_plx or no parallax)
+    if (not subtract_plx) and (len(plx_df) != 0):
+        if phase_yearly:
+            plxm_env = parallax_motion(ra_ref, dec_ref, time_values + np.round(np.mean(data_df["measurement_epoch_yr"])))
+        else:
+            plxm_env = parallax_motion(ra_ref, dec_ref, time_values)
+        plx_ra_term = plxm_env["plx_motion_racosdec"]
+        plx_dec_term = plxm_env["plx_motion_dec"]
+    else:
+        plx_ra_term = np.zeros_like(time_values)
+        plx_dec_term = np.zeros_like(time_values)
+
+    # 1-sigma envelopes (independent errors, no covariance)
+    sigma_model_ra = np.sqrt((dt_vals * pmra_unc)**2 + (plx_ra_term * plx_unc)**2)
+    sigma_model_dec = np.sqrt((dt_vals * pmdec_unc)**2 + (plx_dec_term * plx_unc)**2)
+
+    ra_envelope_upper = expected_rel_ra + sigma_model_ra
+    ra_envelope_lower = expected_rel_ra - sigma_model_ra
+    dec_envelope_upper = expected_rel_dec + sigma_model_dec
+    dec_envelope_lower = expected_rel_dec - sigma_model_dec
+
     # Add line to RA figure
     fig_ra.add_trace(go.Scatter(
         x=time_values,
@@ -1095,6 +1128,27 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         line=dict(color='rgba(100, 150, 250, 0.6)', width=4),  # Semi-transparent gray line
         name="MOCAdb solution",
         hoverinfo='skip'
+    ))
+    # Shaded 1-sigma band around RA model
+    fig_ra.add_trace(go.Scatter(
+        x=time_values,
+        y=ra_envelope_lower,
+        mode="lines",
+        line=dict(width=0),
+        hoverinfo='skip',
+        showlegend=False,
+        name="Model −1σ"
+    ))
+    fig_ra.add_trace(go.Scatter(
+        x=time_values,
+        y=ra_envelope_upper,
+        mode="lines",
+        line=dict(width=0),
+        fill='tonexty',
+        fillcolor='rgba(100, 150, 250, 0.15)',
+        hoverinfo='skip',
+        showlegend=True,
+        name="Model ±1σ"
     ))
 
     # Add line to DEC figure
@@ -1105,6 +1159,27 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         line=dict(color='rgba(100, 150, 250, 0.6)', width=4),  # Semi-transparent gray line
         name="MOCAdb solution",
         hoverinfo='skip'
+    ))
+    # Shaded 1-sigma band around DEC model
+    fig_dec.add_trace(go.Scatter(
+        x=time_values,
+        y=dec_envelope_lower,
+        mode="lines",
+        line=dict(width=0),
+        hoverinfo='skip',
+        showlegend=False,
+        name="Model −1σ"
+    ))
+    fig_dec.add_trace(go.Scatter(
+        x=time_values,
+        y=dec_envelope_upper,
+        mode="lines",
+        line=dict(width=0),
+        fill='tonexty',
+        fillcolor='rgba(100, 150, 250, 0.15)',
+        hoverinfo='skip',
+        showlegend=False,
+        name="Model ±1σ"
     ))
 
     data_df['rel_ra_str'] = data_df['rel_ra'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
