@@ -1088,6 +1088,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df['is_outlier_ra'] = ~inliers_ra
     data_df['is_outlier_dec'] = ~inliers_dec
 
+
     # Extract proper motion and parallax values
     # Extract proper motion and parallax values with errors
     if len(pm_df) != 0:
@@ -1138,17 +1139,28 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         data_df["rel_ra"] -= plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
         data_df["rel_dec"] -= plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
 
-    # If binning is enabled
+    # If binning is enabled, compute bin indices now (grouping happens after we know outliers)
     if bin_activated:
-        
         if phase_yearly:
-            # Handle phasing
             data_df["binned_time"] = (data_df["measurement_epoch_yr"] % 1 // (bin_size_days_phased/365.25)) * (bin_size_days_phased/365.25)
         else:
-            # Regular binning
             data_df["binned_time"] = (data_df["measurement_epoch_yr"] * 365.25 // bin_size_days) * bin_size_days / 365.25
-        
-        binned_df = data_df.groupby("binned_time").apply(weighted_combination).dropna().reset_index()
+
+    # Build binned_df from NON-outliers only, using transformed data
+    if bin_activated:
+        non_outlier_mask = ~(data_df['is_outlier_ra'] | data_df['is_outlier_dec'])
+        if 'binned_time' not in data_df.columns:
+            if phase_yearly:
+                data_df["binned_time"] = (data_df["measurement_epoch_yr"] % 1 // (bin_size_days_phased/365.25)) * (bin_size_days_phased/365.25)
+            else:
+                data_df["binned_time"] = (data_df["measurement_epoch_yr"] * 365.25 // bin_size_days) * bin_size_days / 365.25
+        binned_df = (
+            data_df[non_outlier_mask]
+            .groupby("binned_time")
+            .apply(weighted_combination)
+            .dropna()
+            .reset_index()
+        )
 
     # Assign a unique color to each mission
     unique_missions = data_df['mission'].unique()
@@ -1383,6 +1395,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 hoverinfo='skip'
             ))
 
+    # Add legend entry for outliers (RA) if any exist
+    if data_df['is_outlier_ra'].any():
+        fig_ra.add_trace(go.Scatter(
+            x=[np.nan], y=[np.nan],
+            mode='markers',
+            marker=dict(symbol='x-thin', size=14, color='red'),
+            name='Flagged outliers',
+            hoverinfo='skip'
+        ))
+    
     # Plot binned data points (black)
     if bin_activated:
         fig_ra.add_trace(go.Scatter(
@@ -1524,6 +1546,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 showlegend=False,
                 hoverinfo='skip'
             ))
+    
+    # Add legend entry for outliers (DEC) if any exist
+    if data_df['is_outlier_dec'].any():
+        fig_dec.add_trace(go.Scatter(
+            x=[np.nan], y=[np.nan],
+            mode='markers',
+            marker=dict(symbol='x-thin', size=14, color='red'),
+            name='Flagged outliers',
+            hoverinfo='skip'
+        ))
 
     if bin_activated:
         fig_dec.add_trace(go.Scatter(
