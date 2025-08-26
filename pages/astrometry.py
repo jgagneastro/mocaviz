@@ -33,7 +33,7 @@ figure_export_config = {
 
 def robust_error_weighted_plxfit_with_rejection(
     measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
-    sigma_threshold=10, max_iterations=5
+    sigma_threshold=10, max_iterations=5, inflate_errors=False
 ):
     """
     Perform a robust error-weighted fit for parallax, proper motion, and positions with iterative outlier rejection.
@@ -64,6 +64,9 @@ def robust_error_weighted_plxfit_with_rejection(
     rel_dec = np.array(rel_dec)
     ra_unc = np.array(ra_unc_mas)
     dec_unc = np.array(dec_unc_mas)
+    # Track per-axis additive error inflation (mas)
+    s_ra = 0.0
+    s_dec = 0.0
 
     if not (len(epoch_yr) == len(rel_ra) == len(rel_dec) == len(ra_unc) == len(dec_unc)):
         raise ValueError(
@@ -164,14 +167,80 @@ def robust_error_weighted_plxfit_with_rejection(
 
         inlier_mask = new_inlier_mask
 
+        # ========== Optional two-pass inflation of uncertainties ==========
+    if inflate_errors:
+        # Model for all rows
+        xdata_all = np.vstack([epoch_yr, plx_motion_ra, plx_motion_dec])
+        model_all = plx_pm_model(xdata_all, *popt)
+        ra_model_all = model_all[:len(rel_ra)]
+        dec_model_all = model_all[len(rel_ra):]
+
+        # Residuals for inliers
+        ra_resid_in = (rel_ra - ra_model_all)[inlier_mask]
+        dec_resid_in = (rel_dec - dec_model_all)[inlier_mask]
+        ra_sig_in = ra_unc[inlier_mask]
+        dec_sig_in = dec_unc[inlier_mask]
+
+        # DOF per coordinate equation (pm + plx + intercept)
+        dof_ra = max(1, ra_resid_in.size - 3)
+        dof_dec = max(1, dec_resid_in.size - 3)
+
+        s_ra = _solve_sigma_add(ra_resid_in, ra_sig_in, dof_ra)
+        s_dec = _solve_sigma_add(dec_resid_in, dec_sig_in, dof_dec)
+
+        # Refit with inflated uncertainties on inliers
+        popt, pcov = curve_fit(
+            plx_pm_model,
+            np.vstack([epoch_yr[inlier_mask], plx_motion_ra[inlier_mask], plx_motion_dec[inlier_mask]]),
+            np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]]),
+            sigma=np.sqrt(np.concatenate([ra_unc[inlier_mask]**2 + s_ra**2, dec_unc[inlier_mask]**2 + s_dec**2])),
+            absolute_sigma=True
+        )
+    
     # Extract results
     pmra, pmdec, plx, pos_ra, pos_dec = popt
     e_pmra, e_pmdec, e_plx, e_pos_ra, e_pos_dec = np.sqrt(np.diag(pcov))
 
-    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask
+    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask, s_ra, s_dec
+
+def _solve_sigma_add(residuals, sigma, dof):
+    """
+    Find non-negative s such that sum(resid^2/(sigma^2 + s^2)) == dof.
+    Monotonic bisection. Returns 0 if already not under-dispersed.
+    """
+    resid2 = np.asarray(residuals, float)**2
+    sig2 = np.asarray(sigma, float)**2
+    # Guard against zeros and NaNs
+    if not np.any(sig2 > 0):
+        sig2 = np.ones_like(resid2)
+    else:
+        safe = np.nanmedian(sig2[sig2 > 0])
+        sig2 = np.where(sig2 <= 0, safe if np.isfinite(safe) and safe > 0 else 1.0, sig2)
+
+    def f(s):
+        return np.nansum(resid2 / (sig2 + s*s)) - dof
+
+    if f(0.0) <= 0:
+        return 0.0
+
+    # Find upper bound
+    s_lo, s_hi = 0.0, np.sqrt(np.nanmedian(resid2)) if np.isfinite(np.nanmedian(resid2)) else 1.0
+    for _ in range(60):
+        if f(s_hi) < 0:
+            break
+        s_hi *= 2.0
+
+    # Bisection
+    for _ in range(60):
+        s_mid = 0.5*(s_lo + s_hi)
+        if f(s_mid) > 0:
+            s_lo = s_mid
+        else:
+            s_hi = s_mid
+    return s_hi
 
 #Robust error-weighted fit
-def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5):
+def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5, inflate_errors=False):
     """
     Perform a robust error-weighted fit with iterative outlier rejection.
     
@@ -195,6 +264,8 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
     x = np.array(measurement_epoch_yr)
     y = np.array(rel_ra)
     sigma = np.array(ra_unc_mas)
+    # Track additive error inflation (mas)
+    s_add = 0.0
 
     # Initial mask (all points are considered inliers)
     inlier_mask = ~np.isnan(x) & ~np.isnan(y) & ~np.isnan(sigma)
@@ -224,11 +295,25 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
 
         inlier_mask = new_inlier_mask
 
+    if inflate_errors:
+        residuals = y - linear_model(x, *popt)
+        in_inliers = inlier_mask
+        dof = max(1, in_inliers.sum() - 2)  # slope + intercept
+        s_add = _solve_sigma_add(residuals[in_inliers], sigma[in_inliers], dof)
+
+        popt, pcov = curve_fit(
+            linear_model,
+            x[in_inliers],
+            y[in_inliers],
+            sigma=np.sqrt(sigma[in_inliers]**2 + s_add**2),
+            absolute_sigma=True
+        )
+    
     # Final slope and error
     slope = popt[0]
     slope_error = np.sqrt(pcov[0, 0])
 
-    return slope, slope_error, inlier_mask
+    return slope, slope_error, inlier_mask, s_add
 
 # Group by binned time and calculate weighted averages
 def weighted_combination(group):
@@ -418,8 +503,15 @@ layout = html.Div([
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
             dcc.Checklist(
+                id="inflate-errors-checkbox",
+                options=[{'label': 'Back propagate residuals into measurement errors during fit', 'value': 'inflate'}],
+                value=['inflate'],  # default ON
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ),
+            dcc.Checklist(
                 id="only-use-recalibrated-checkbox",
-                options=[{'label': 'Only use recalibrated astrometry', 'value': 'only_recalibrated'}],
+                options=[{'label': 'Only use recalibrated astrometry when possible', 'value': 'only_recalibrated'}],
                 value=[],
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
@@ -434,15 +526,41 @@ layout = html.Div([
             ], style={'display': 'inline-block', 'vertical-align': 'top', 'width': '50%', 'padding-left': '10px'})
         ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
 
-        html.Div([
-            dcc.Graph(id="astrometry-plot-ra",config=figure_export_config),
-        ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
-        
-        html.Div([
-            dcc.Graph(id="astrometry-plot-dec",config=figure_export_config),
-        ], style={'width': '100%', 'display': 'inline-block'}),
+    html.Div([
+        dcc.Graph(id="astrometry-plot-ra",config=figure_export_config),
+    ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
+    
+    html.Div([
+        dcc.Graph(id="astrometry-plot-dec",config=figure_export_config),
+    ], style={'width': '100%', 'display': 'inline-block'}),
 
-    ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
+    html.Div([
+        html.Div("URL parameter: moca_oid", style={"fontWeight": "bold", "marginBottom": "6px"}),
+        html.P(
+            "You can deep‑link this page to a specific object by passing a moca_oid in the URL query string. "
+            "This selects the object in the dropdown on load and renders its astrometry. "
+            "No credentials parameters are required for this feature."),
+        html.Div("Examples:", style={"fontStyle": "italic", "marginTop": "4px"}),
+        html.Pre(
+            "?moca_oid=602\n"
+            "?moca_oid=156",
+            style={"backgroundColor": "#f7f7f7", "padding": "8px", "border": "1px solid #ddd", "overflowX": "auto", "marginTop": "4px"}
+        ),
+        html.Ul([
+            html.Li("If omitted, the page defaults to moca_oid=602."),
+            html.Li("If the id doesn’t exist or isn’t accessible, the dropdown will stay on the default."),
+        ], style={"marginTop": "4px"}),
+    ], style={
+        "border": "1px solid #ddd",
+        "backgroundColor": "#fcfcfc",
+        "padding": "10px 12px",
+        "borderRadius": "4px",
+        "marginTop": "14px",
+        "marginBottom": "6px",
+        "lineHeight": 1.5
+    }),
+
+], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
 
 @dash.callback(
     output=[
@@ -604,11 +722,12 @@ def update_mission_dropdown(selected_dataset):
      Input("astrometry-bin-checkbox", "value"),
      Input("fit-proper-motion-checkbox", "value"),
      Input("fit-parallax-checkbox", "value"),
+     Input("inflate-errors-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, inflate_err_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -623,6 +742,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     bin_activated = 'bin_checked' in bin_checkbox_values
     fit_pm = 'fit_pm' in fit_pm_values
     fit_plx = 'fit_plx' in fit_plx_values
+    inflate_errors = 'inflate' in inflate_err_values
 
     triggered_prop = ctx.triggered[0]["prop_id"]
 
@@ -698,6 +818,8 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
 
     #Query all coordinates
     data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    # Reflect missions table for recalibrated filter logic
+    moca_missions = Table('moca_missions', metadata, autoload_with=engine)
 
     # Conditionally construct the "ra" and "dec" columns
     if revert_raw:
@@ -715,43 +837,59 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         ra_column = data_equatorial_coordinates.c.ra.label('ra')
         dec_column = data_equatorial_coordinates.c.dec.label('dec')
 
-    query = select(data_equatorial_coordinates.c.id,
-                    ra_column,
-                    dec_column,
-                    data_equatorial_coordinates.c.measurement_epoch_yr,
-                    data_equatorial_coordinates.c.ra_unc_mas,
-                    data_equatorial_coordinates.c.dec_unc_mas,
-                    func.coalesce(data_equatorial_coordinates.c.measurement_epoch_yr_unc, 0).label('measurement_epoch_yr_unc'),
-                    func.coalesce(
-                        case(
-                            # Check if the concatenated mission name is empty after trimming spaces
-                            [
-                                (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
-                            ],
-                            else_=func.coalesce(
-                                func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
-                                data_equatorial_coordinates.c.moca_pid
-                            )
-                        ),'No mission'  # Fallback if all other options are NULL
-                   ).label('mission'),
-                   data_equatorial_coordinates.c.moca_pid,
-                   data_equatorial_coordinates.c.mission_name,
-                   data_equatorial_coordinates.c.data_release,
-                   data_equatorial_coordinates.c.origin,
-                   data_equatorial_coordinates.c.comments,
-                   data_equatorial_coordinates.c.airmass,
-                   data_equatorial_coordinates.c.moca_psid,
-                   data_equatorial_coordinates.c.calibration_delta_ra_mas,
-                   data_equatorial_coordinates.c.calibration_delta_dec_mas,
-                   data_equatorial_coordinates.c.nstars_calibration,
-                   data_equatorial_coordinates.c.calibration_method,
-                   ).where(
-                        and_(
-                                data_equatorial_coordinates.c.moca_oid == moca_oid,
-                                data_equatorial_coordinates.c.adopted == 1,
-                                data_equatorial_coordinates.c.single_epoch == 1,
-                                data_equatorial_coordinates.c.calibration_method.isnot(None) if only_recalibrated else True
-                            )
+    # Left join to missions to know whether a detections table exists for a mission
+    dec_base = data_equatorial_coordinates.outerjoin(
+        moca_missions,
+        and_(
+            moca_missions.c.mission_name == data_equatorial_coordinates.c.mission_name,
+            moca_missions.c.data_release == data_equatorial_coordinates.c.data_release,
+        )
+    )
+
+    # Build the recalibration condition: require calibrated OR mission explicitly allowed
+    # Note: with the outer join, rows without a matching mission will NOT pass this flag check
+    recalib_condition = or_(
+        data_equatorial_coordinates.c.calibration_method.isnot(None),
+        moca_missions.c.include_in_recalibrated_display == 1
+    )
+
+    query = select(
+        data_equatorial_coordinates.c.id,
+        ra_column,
+        dec_column,
+        data_equatorial_coordinates.c.measurement_epoch_yr,
+        data_equatorial_coordinates.c.ra_unc_mas,
+        data_equatorial_coordinates.c.dec_unc_mas,
+        func.coalesce(data_equatorial_coordinates.c.measurement_epoch_yr_unc, 0).label('measurement_epoch_yr_unc'),
+        func.coalesce(
+            case(
+                [
+                    (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
+                ],
+                else_=func.coalesce(
+                    func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
+                    data_equatorial_coordinates.c.moca_pid
+                )
+            ), 'No mission'
+        ).label('mission'),
+        data_equatorial_coordinates.c.moca_pid,
+        data_equatorial_coordinates.c.mission_name,
+        data_equatorial_coordinates.c.data_release,
+        data_equatorial_coordinates.c.origin,
+        data_equatorial_coordinates.c.comments,
+        data_equatorial_coordinates.c.airmass,
+        data_equatorial_coordinates.c.moca_psid,
+        data_equatorial_coordinates.c.calibration_delta_ra_mas,
+        data_equatorial_coordinates.c.calibration_delta_dec_mas,
+        data_equatorial_coordinates.c.nstars_calibration,
+        data_equatorial_coordinates.c.calibration_method,
+    ).select_from(dec_base).where(
+        and_(
+            data_equatorial_coordinates.c.moca_oid == moca_oid,
+            data_equatorial_coordinates.c.adopted == 1,
+            data_equatorial_coordinates.c.single_epoch == 1,
+            recalib_condition if only_recalibrated else True,
+        )
     )
     data_df = pd.read_sql(query, connection)
     #import pdb;pdb.set_trace()
@@ -787,7 +925,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
 
     if fit_plx:
-        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask = robust_error_weighted_plxfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'], data_df['ra_unc_mas'], data_df['dec_unc_mas'], ra_ref, dec_ref)
+        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask, s_add_ra, s_add_dec = robust_error_weighted_plxfit_with_rejection(
+            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+            data_df['ra_unc_mas'], data_df['dec_unc_mas'], ra_ref, dec_ref,
+            inflate_errors=inflate_errors
+        )
         # Rebuild plx_df and pm_df
         plx_df = pd.DataFrame({
             "parallax_mas": [plx],
@@ -804,9 +946,15 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         })
 
     if fit_pm and not fit_plx:
-        
-        pmra, epmra, pmra_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'])
-        pmdec, epmdec, pmdec_inlier_mask = robust_error_weighted_pmfit_with_rejection(data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'])
+        pmra, epmra, pmra_inlier_mask, s_add_ra = robust_error_weighted_pmfit_with_rejection(
+            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'],
+            inflate_errors=inflate_errors
+        )
+        pmdec, epmdec, pmdec_inlier_mask, s_add_dec = robust_error_weighted_pmfit_with_rejection(
+            data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'],
+            inflate_errors=inflate_errors
+        )
+
         # Rebuild pm_df
         pm_df = pd.DataFrame({
             "pmra_masyr": [pmra],
@@ -815,6 +963,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             "pmdec_masyr_unc": [epmdec],
             "pm_ref": ["fitted in Astrometric Explorer"]
         })
+    # Default additive error inflations (mas) if not set by fitting blocks
+    if 's_add_ra' not in locals():
+        s_add_ra = 0.0
+    if 's_add_dec' not in locals():
+        s_add_dec = 0.0
 
     # Extract proper motion and parallax values
     # Extract proper motion and parallax values with errors
@@ -1057,6 +1210,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
 
     # Update layout for better legend positioning
     fig_ra.update_layout(
+        title=(f"RA Offsets — added σ_add = {s_add_ra:.2f} mas" if inflate_errors and s_add_ra > 0 else "RA Offsets"),
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="RA Offset (mas)",
         xaxis=dict(
@@ -1080,7 +1234,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             ticks='outside',
             tickwidth=2,
         ),
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=60, b=40),
         paper_bgcolor='white',
         showlegend=True,
         legend=dict(
@@ -1097,7 +1251,8 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             dict(
                 xref="paper", yref="paper",
                 x=0.5, y=1.12,  # Position above the graph
-                text=f"<b>PMRA:</b> {pmra_display} | <b>PMDEC:</b> {pmdec_display} | <b>Parallax:</b> {parallax_display}",
+                text=(f"<b>PMRA:</b> {pmra_display} | <b>PMDEC:</b> {pmdec_display} | <b>Parallax:</b> {parallax_display}" +
+                      (f" | σ_add(RA)={s_add_ra:.2f} mas, σ_add(DEC)={s_add_dec:.2f} mas" if inflate_errors and (s_add_ra > 0 or s_add_dec > 0) else "")),
                 showarrow=False,
                 font=dict(size=14, color="black"),
                 align="center"
@@ -1184,6 +1339,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     
     # Update layout for better legend positioning
     fig_dec.update_layout(
+        title=(f"DEC Offsets — added σ_add = {s_add_dec:.2f} mas" if inflate_errors and s_add_dec > 0 else "DEC Offsets"),
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="DEC Offset (mas)",
         xaxis=dict(
@@ -1207,7 +1363,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             ticks='outside',
             tickwidth=2,
         ),
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=60, b=40),
         paper_bgcolor='white',
         showlegend=True,
         legend=dict(
