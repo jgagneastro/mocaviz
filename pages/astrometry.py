@@ -337,8 +337,10 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
             break
 
         inlier_mask = new_inlier_mask
-
+    
+    
     if inflate_errors and not per_mission_inflate:
+        import pdb; pdb.set_trace()
         residuals = y - linear_model(x, *popt)
         in_inliers = inlier_mask
         dof = max(1, in_inliers.sum() - 2)  # slope + intercept
@@ -539,7 +541,7 @@ layout = html.Div([
             dcc.Checklist(
                 id="astrometry-bin-checkbox",
                 options=[{'label': 'Bin data by '+str(bin_size_days)+'-day intervals ('+str(bin_size_days_phased)+' days if phased yearly) just for display', 'value': 'bin_checked'}],
-                value=['bin_checked'],  # Default is unchecked
+                value=[],  # Default is unchecked
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
