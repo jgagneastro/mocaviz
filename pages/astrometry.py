@@ -1356,7 +1356,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 x=out_ra["x_values"],
                 y=out_ra["rel_ra"],
                 mode='markers',
-                marker=dict(symbol='x', size=2, color='red', line=dict(width=3, color='red')),
+                marker=dict(symbol='x', size=14, color='red', line=dict(width=1, color='red')),
                 showlegend=False,
                 hoverinfo='skip'
             ))
@@ -1498,7 +1498,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 x=out_dec["x_values"],
                 y=out_dec["rel_dec"],
                 mode='markers',
-                marker=dict(symbol='x', size=2, color='red', line=dict(width=3, color='red')),
+                marker=dict(symbol='x', size=14, color='red', line=dict(width=1, color='red')),
                 showlegend=False,
                 hoverinfo='skip'
             ))
