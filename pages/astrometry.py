@@ -1391,19 +1391,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 y=out_ra["rel_ra"],
                 mode='markers',
                 marker=dict(symbol='x-thin', size=14, color='red', line=dict(width=1, color='red')),
-                showlegend=False,
+                showlegend=True,
+                name='Flagged outliers',
+                legendgroup='outliers',
                 hoverinfo='skip'
             ))
-
-    # Add legend entry for outliers (RA) if any exist
-    if data_df['is_outlier_ra'].any():
-        fig_ra.add_trace(go.Scatter(
-            x=[np.nan], y=[np.nan],
-            mode='markers',
-            marker=dict(symbol='x-thin', size=14, color='red'),
-            name='Flagged outliers',
-            hoverinfo='skip'
-        ))
     
     # Plot binned data points (black)
     if bin_activated:
@@ -1543,19 +1535,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 y=out_dec["rel_dec"],
                 mode='markers',
                 marker=dict(symbol='x-thin', size=14, color='red', line=dict(width=1, color='red')),
-                showlegend=False,
+                showlegend=True,
+                name='Flagged outliers',
+                legendgroup='outliers',
                 hoverinfo='skip'
             ))
-    
-    # Add legend entry for outliers (DEC) if any exist
-    if data_df['is_outlier_dec'].any():
-        fig_dec.add_trace(go.Scatter(
-            x=[np.nan], y=[np.nan],
-            mode='markers',
-            marker=dict(symbol='x-thin', size=14, color='red'),
-            name='Flagged outliers',
-            hoverinfo='skip'
-        ))
 
     if bin_activated:
         fig_dec.add_trace(go.Scatter(
