@@ -232,6 +232,7 @@ def robust_error_weighted_plxfit_with_rejection(
                     s_dec_by_mission[m] = 0.0
             # Refit using per-point inflated sigmas on inliers
             sigma_vec = np.sqrt(np.concatenate([ra_sig2[inlier_mask], dec_sig2[inlier_mask]]))
+            
             popt, pcov = curve_fit(
                 plx_pm_model,
                 np.vstack([epoch_yr[inlier_mask], plx_motion_ra[inlier_mask], plx_motion_dec[inlier_mask]]),
@@ -340,7 +341,6 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
     
     
     if inflate_errors and not per_mission_inflate:
-        import pdb; pdb.set_trace()
         residuals = y - linear_model(x, *popt)
         in_inliers = inlier_mask
         dof = max(1, in_inliers.sum() - 2)  # slope + intercept
@@ -439,6 +439,30 @@ def weighted_combination(group):
         "ndata":len(x_ra)
     })
 
+# def format_value_with_error(value, error, unit=""):
+#     """
+#     Formats a value with its error, ensuring clean rounding and no floating-point artifacts.
+#     If the value or error is None, it returns "N/A".
+#     """
+#     if pd.isna(value) or pd.isna(error) or value == "N/A" or error == "N/A":
+#         return "N/A"
+    
+#     # Calculate the significant digit for the error
+#     error_magnitude = 10 ** floor(log10(abs(error)))
+#     rounded_error = round(error / error_magnitude) * error_magnitude
+
+#     # Ensure the value is rounded to the same number of significant digits as the error
+#     significant_digits = -int(floor(log10(abs(rounded_error))))
+#     significant_digits = max(0, -int(floor(log10(abs(rounded_error)))))
+#     rounded_value = round(value, max(0, significant_digits))
+
+#     # Format the result to remove floating-point artifacts
+#     rounded_value_str = f"{rounded_value:.{significant_digits}f}".rstrip('0').rstrip('.')
+#     rounded_error_str = f"{rounded_error:.{significant_digits}f}".rstrip('0').rstrip('.')
+
+#     # Return formatted string with ± symbol and unit
+#     return f"{rounded_value_str} ± {rounded_error_str}" + (f" {unit}" if unit else "")
+
 def format_value_with_error(value, error, unit=""):
     """
     Formats a value with its error, ensuring clean rounding and no floating-point artifacts.
@@ -446,21 +470,18 @@ def format_value_with_error(value, error, unit=""):
     """
     if pd.isna(value) or pd.isna(error) or value == "N/A" or error == "N/A":
         return "N/A"
+
+    # Round the error to 1 significant digit
+    error_exp = floor(log10(abs(error)))
+    rounded_error = round(error, -error_exp)
     
-    # Calculate the significant digit for the error
-    error_magnitude = 10 ** floor(log10(abs(error)))
-    rounded_error = round(error / error_magnitude) * error_magnitude
+    # Round the value to the same decimal place
+    rounded_value = round(value, -error_exp)
 
-    # Ensure the value is rounded to the same number of significant digits as the error
-    significant_digits = -int(floor(log10(abs(rounded_error))))
-    significant_digits = max(0, -int(floor(log10(abs(rounded_error)))))
-    rounded_value = round(value, max(0, significant_digits))
+    # Format
+    rounded_value_str = str(int(rounded_value)) if error_exp >= 0 else f"{rounded_value:.{-error_exp}f}"
+    rounded_error_str = str(int(rounded_error)) if error_exp >= 0 else f"{rounded_error:.{-error_exp}f}"
 
-    # Format the result to remove floating-point artifacts
-    rounded_value_str = f"{rounded_value:.{significant_digits}f}".rstrip('0').rstrip('.')
-    rounded_error_str = f"{rounded_error:.{significant_digits}f}".rstrip('0').rstrip('.')
-
-    # Return formatted string with ± symbol and unit
     return f"{rounded_value_str} ± {rounded_error_str}" + (f" {unit}" if unit else "")
 
 def wrap_text(text, width=50):
@@ -960,7 +981,6 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         )
     )
     data_df = pd.read_sql(query, connection)
-    #import pdb;pdb.set_trace()
     connection.close()
 
     # Check if data_df is empty
