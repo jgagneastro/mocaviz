@@ -1045,6 +1045,27 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     if 's_add_dec_by_mission' not in locals():
         s_add_dec_by_mission = {}
 
+    # ---- Build inlier/outlier masks for display ----
+    n_points = len(data_df)
+    # Default masks: all inliers if not fitted
+    if 'plx_inlier_mask' in locals():
+        inliers_ra = np.array(plx_inlier_mask, dtype=bool)
+        inliers_dec = np.array(plx_inlier_mask, dtype=bool)
+    else:
+        # PM-only may have separate masks
+        if 'pmra_inlier_mask' in locals():
+            inliers_ra = np.array(pmra_inlier_mask, dtype=bool)
+        else:
+            inliers_ra = np.ones(n_points, dtype=bool)
+        if 'pmdec_inlier_mask' in locals():
+            inliers_dec = np.array(pmdec_inlier_mask, dtype=bool)
+        else:
+            inliers_dec = np.ones(n_points, dtype=bool)
+
+    # Attach flags to dataframe
+    data_df['is_outlier_ra'] = ~inliers_ra
+    data_df['is_outlier_dec'] = ~inliers_dec
+
     # Extract proper motion and parallax values
     # Extract proper motion and parallax values with errors
     if len(pm_df) != 0:
@@ -1320,11 +1341,24 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                     f"<b>Calibration offset Decl.:</b> {row['delta_dec_str']} mas<br>" \
                     f"<b>Calibration Nstars:</b> {row['nstars_str']}<br>" \
                     f"<b>Calibration method:</b> {row['calibration_method'] or 'N/A'}<br>" \
+                    ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_ra'] else "") + \
                     f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}",
                 axis=1
             ),
             hoverinfo='text'
         ))
+
+        # Overlay red X markers for RA outliers (non-inliers)
+        out_ra = mission_data[mission_data['is_outlier_ra']]
+        if not out_ra.empty:
+            fig_ra.add_trace(go.Scatter(
+                x=out_ra["x_values"],
+                y=out_ra["rel_ra"],
+                mode='markers',
+                marker=dict(symbol='x', size=14, color='red', line=dict(width=3, color='red')),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
 
     # Plot binned data points (black)
     if bin_activated:
@@ -1448,11 +1482,24 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                     f"<b>Origin:</b> {row['origin'] or 'N/A'}<br>" \
                     f"<b>Airmass:</b> {row['airmass_str']}<br>" \
                     f"<b>Bandpass:</b> {row['moca_psid'] or 'N/A'}<br>" \
+                    ("<b>Flagged:</b> Outlier<br>" if row['is_outlier_dec'] else "") + \
                     f"<b>Comments:</b> {wrap_text(row['comments'] or '', width=50)}",
                 axis=1
             ),
             hoverinfo='text'
         ))
+
+        # Overlay red X markers for DEC outliers (non-inliers)
+        out_dec = mission_data[mission_data['is_outlier_dec']]
+        if not out_dec.empty:
+            fig_dec.add_trace(go.Scatter(
+                x=out_dec["x_values"],
+                y=out_dec["rel_dec"],
+                mode='markers',
+                marker=dict(symbol='x', size=14, color='red', line=dict(width=3, color='red')),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
 
     if bin_activated:
         fig_dec.add_trace(go.Scatter(
