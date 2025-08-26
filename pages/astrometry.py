@@ -1361,7 +1361,6 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
 
     # Update layout for better legend positioning
     fig_ra.update_layout(
-        title=(f"RA Offsets — added σ_add = {s_add_ra:.2f} mas" if inflate_errors and s_add_ra > 0 else "RA Offsets"),
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="RA Offset (mas)",
         xaxis=dict(
@@ -1402,8 +1401,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             dict(
                 xref="paper", yref="paper",
                 x=0.5, y=1.12,  # Position above the graph
-                text=(f"<b>PMRA:</b> {pmra_display} | <b>PMDEC:</b> {pmdec_display} | <b>Parallax:</b> {parallax_display}" +
-                      (f" | σ_add(RA)={s_add_ra:.2f} mas, σ_add(DEC)={s_add_dec:.2f} mas" if inflate_errors and (s_add_ra > 0 or s_add_dec > 0) else "")),
+                text=(f"<b>PMRA:</b> {pmra_display} | <b>PMDEC:</b> {pmdec_display} | <b>Parallax:</b> {parallax_display}"),
                 showarrow=False,
                 font=dict(size=14, color="black"),
                 align="center"
@@ -1490,7 +1488,6 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     
     # Update layout for better legend positioning
     fig_dec.update_layout(
-        title=(f"DEC Offsets — added σ_add = {s_add_dec:.2f} mas" if inflate_errors and s_add_dec > 0 else "DEC Offsets"),
         plot_bgcolor='white',
         xaxis_title=xaxis_title, yaxis_title="DEC Offset (mas)",
         xaxis=dict(
