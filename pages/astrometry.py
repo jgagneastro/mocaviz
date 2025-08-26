@@ -33,7 +33,7 @@ figure_export_config = {
 
 def robust_error_weighted_plxfit_with_rejection(
     measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
-    sigma_threshold=10, max_iterations=5, inflate_errors=False
+    sigma_threshold=10, max_iterations=5, inflate_errors=False, mission_labels=None, per_mission_inflate=False
 ):
     """
     Perform a robust error-weighted fit for parallax, proper motion, and positions with iterative outlier rejection.
@@ -196,12 +196,55 @@ def robust_error_weighted_plxfit_with_rejection(
             sigma=np.sqrt(np.concatenate([ra_unc[inlier_mask]**2 + s_ra**2, dec_unc[inlier_mask]**2 + s_dec**2])),
             absolute_sigma=True
         )
+
+        # Per-mission inflation (optional): compute s_add per mission and refit with per-point sigmas
+        s_ra_by_mission = {}
+        s_dec_by_mission = {}
+        if inflate_errors and per_mission_inflate and mission_labels is not None:
+            missions_arr = np.asarray(mission_labels)
+            # Build model over ALL rows
+            xdata_all = np.vstack([epoch_yr, plx_motion_ra, plx_motion_dec])
+            model_all = plx_pm_model(xdata_all, *popt)
+            ra_model_all = model_all[:len(rel_ra)]
+            dec_model_all = model_all[len(rel_ra):]
+            # Initialize inflated sigma arrays with base
+            ra_sig2 = ra_unc**2
+            dec_sig2 = dec_unc**2
+            # Compute per-mission s_add on inliers only
+            for m in np.unique(missions_arr[inlier_mask]):
+                mask_m = (missions_arr == m) & inlier_mask
+                if mask_m.sum() >= 3:  # need DOF
+                    ra_resid_m = (rel_ra - ra_model_all)[mask_m]
+                    dec_resid_m = (rel_dec - dec_model_all)[mask_m]
+                    ra_sig_m = ra_unc[mask_m]
+                    dec_sig_m = dec_unc[mask_m]
+                    dof_ra_m = max(1, mask_m.sum() - 3)
+                    dof_dec_m = max(1, mask_m.sum() - 3)
+                    s_ra_m = _solve_sigma_add(ra_resid_m, ra_sig_m, dof_ra_m)
+                    s_dec_m = _solve_sigma_add(dec_resid_m, dec_sig_m, dof_dec_m)
+                    s_ra_by_mission[m] = float(s_ra_m)
+                    s_dec_by_mission[m] = float(s_dec_m)
+                    # Apply to ALL points of this mission (including outliers) during refit
+                    ra_sig2[missions_arr == m] = ra_unc[missions_arr == m]**2 + s_ra_m**2
+                    dec_sig2[missions_arr == m] = dec_unc[missions_arr == m]**2 + s_dec_m**2
+                else:
+                    s_ra_by_mission[m] = 0.0
+                    s_dec_by_mission[m] = 0.0
+            # Refit using per-point inflated sigmas on inliers
+            sigma_vec = np.sqrt(np.concatenate([ra_sig2[inlier_mask], dec_sig2[inlier_mask]]))
+            popt, pcov = curve_fit(
+                plx_pm_model,
+                np.vstack([epoch_yr[inlier_mask], plx_motion_ra[inlier_mask], plx_motion_dec[inlier_mask]]),
+                np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]]),
+                sigma=sigma_vec,
+                absolute_sigma=True
+            )
     
     # Extract results
     pmra, pmdec, plx, pos_ra, pos_dec = popt
     e_pmra, e_pmdec, e_plx, e_pos_ra, e_pos_dec = np.sqrt(np.diag(pcov))
 
-    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask, s_ra, s_dec
+    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask, s_ra, s_dec, s_ra_by_mission if ('s_ra_by_mission' in locals()) else {}, s_dec_by_mission if ('s_dec_by_mission' in locals()) else {}
 
 def _solve_sigma_add(residuals, sigma, dof):
     """
@@ -240,7 +283,7 @@ def _solve_sigma_add(residuals, sigma, dof):
     return s_hi
 
 #Robust error-weighted fit
-def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5, inflate_errors=False):
+def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5, inflate_errors=False, mission_labels=None, per_mission_inflate=False):
     """
     Perform a robust error-weighted fit with iterative outlier rejection.
     
@@ -295,12 +338,11 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
 
         inlier_mask = new_inlier_mask
 
-    if inflate_errors:
+    if inflate_errors and not per_mission_inflate:
         residuals = y - linear_model(x, *popt)
         in_inliers = inlier_mask
         dof = max(1, in_inliers.sum() - 2)  # slope + intercept
         s_add = _solve_sigma_add(residuals[in_inliers], sigma[in_inliers], dof)
-
         popt, pcov = curve_fit(
             linear_model,
             x[in_inliers],
@@ -308,12 +350,36 @@ def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_
             sigma=np.sqrt(sigma[in_inliers]**2 + s_add**2),
             absolute_sigma=True
         )
+    elif inflate_errors and per_mission_inflate and mission_labels is not None:
+        missions_arr = np.asarray(mission_labels)
+        # Compute residuals on all points with current fit
+        residuals_all = y - linear_model(x, *popt)
+        # Start with base sigmas
+        sig2 = sigma**2
+        s_add_by_mission = {}
+        for m in np.unique(missions_arr[inlier_mask]):
+            mask_m = (missions_arr == m) & inlier_mask
+            if mask_m.sum() >= 3:
+                dof_m = max(1, mask_m.sum() - 2)
+                s_m = _solve_sigma_add(residuals_all[mask_m], sigma[mask_m], dof_m)
+                s_add_by_mission[m] = float(s_m)
+                sig2[missions_arr == m] = sigma[missions_arr == m]**2 + s_m**2
+            else:
+                s_add_by_mission[m] = 0.0
+        # Refit with per-point inflated sigmas on inliers only
+        popt, pcov = curve_fit(
+            linear_model,
+            x[inlier_mask],
+            y[inlier_mask],
+            sigma=np.sqrt(sig2[inlier_mask]),
+            absolute_sigma=True
+        )
     
     # Final slope and error
     slope = popt[0]
     slope_error = np.sqrt(pcov[0, 0])
 
-    return slope, slope_error, inlier_mask, s_add
+    return slope, slope_error, inlier_mask, s_add, s_add_by_mission if ('s_add_by_mission' in locals()) else {}
 
 # Group by binned time and calculate weighted averages
 def weighted_combination(group):
@@ -925,10 +991,12 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
 
     if fit_plx:
-        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask, s_add_ra, s_add_dec = robust_error_weighted_plxfit_with_rejection(
+        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask, s_add_ra, s_add_dec, s_add_ra_by_mission, s_add_dec_by_mission = robust_error_weighted_plxfit_with_rejection(
             data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
             data_df['ra_unc_mas'], data_df['dec_unc_mas'], ra_ref, dec_ref,
-            inflate_errors=inflate_errors
+            inflate_errors=inflate_errors,
+            mission_labels=data_df['mission'],
+            per_mission_inflate=inflate_errors
         )
         # Rebuild plx_df and pm_df
         plx_df = pd.DataFrame({
@@ -946,13 +1014,17 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         })
 
     if fit_pm and not fit_plx:
-        pmra, epmra, pmra_inlier_mask, s_add_ra = robust_error_weighted_pmfit_with_rejection(
+        pmra, epmra, pmra_inlier_mask, s_add_ra, s_add_ra_by_mission = robust_error_weighted_pmfit_with_rejection(
             data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'],
-            inflate_errors=inflate_errors
+            inflate_errors=inflate_errors,
+            mission_labels=data_df['mission'],
+            per_mission_inflate=inflate_errors
         )
-        pmdec, epmdec, pmdec_inlier_mask, s_add_dec = robust_error_weighted_pmfit_with_rejection(
+        pmdec, epmdec, pmdec_inlier_mask, s_add_dec, s_add_dec_by_mission = robust_error_weighted_pmfit_with_rejection(
             data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'],
-            inflate_errors=inflate_errors
+            inflate_errors=inflate_errors,
+            mission_labels=data_df['mission'],
+            per_mission_inflate=inflate_errors
         )
 
         # Rebuild pm_df
@@ -968,6 +1040,10 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         s_add_ra = 0.0
     if 's_add_dec' not in locals():
         s_add_dec = 0.0
+    if 's_add_ra_by_mission' not in locals():
+        s_add_ra_by_mission = {}
+    if 's_add_dec_by_mission' not in locals():
+        s_add_dec_by_mission = {}
 
     # Extract proper motion and parallax values
     # Extract proper motion and parallax values with errors
@@ -1225,7 +1301,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 opacity=opacity,
                 line=dict(width=2, color='black')
             ),
-            name=mission,  # This will appear in the legend
+            name=(mission + (f"  (σ_add={s_add_ra_by_mission.get(mission, 0.0):.2f} mas)" if inflate_errors and s_add_ra_by_mission.get(mission, 0.0) > 0 else "")),
             customdata=mission_data['id'],
             text=mission_data.apply(
                 lambda row: 
@@ -1359,7 +1435,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 opacity=opacity,
                 line=dict(width=2, color='black')
             ),
-            name=mission,  # This will appear in the legend
+            name=(mission + (f"  (σ_add={s_add_dec_by_mission.get(mission, 0.0):.2f} mas)" if inflate_errors and s_add_dec_by_mission.get(mission, 0.0) > 0 else "")),
             customdata=mission_data['id'],
             text=mission_data.apply(
                 lambda row: 
