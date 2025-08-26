@@ -512,7 +512,7 @@ layout = html.Div([
             dcc.Checklist(
                 id="only-use-recalibrated-checkbox",
                 options=[{'label': 'Only use recalibrated astrometry when possible', 'value': 'only_recalibrated'}],
-                value=[],
+                value=['only_recalibrated'], # default ON
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
