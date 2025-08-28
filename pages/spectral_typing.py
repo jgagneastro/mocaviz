@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, MetaData, Table, select, Float
 from scipy.optimize import minimize
 from math import floor, ceil, log10
 import os
+import re
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
 
 debug_printing = True
@@ -93,6 +94,38 @@ default_bins_per_micron = 200
 # =============================================================================
 # Helper functions for spectral processing
 # =============================================================================
+# --- UI-configurable normalization regions ---
+def _format_norm_regions_text(regions):
+    # e.g. [(0.85,1.395),(1.395,1.93),(1.93,2.4)] -> "0.850-1.395, 1.395-1.930, 1.930-2.400"
+    return ", ".join([f"{r[0]:.3f}-{r[1]:.3f}" for r in regions])
+
+DEFAULT_NORM_REGIONS_TEXT = _format_norm_regions_text(norm_regions)
+
+# Robust parser for user-entered normalization regions
+# Accepts: "0.85-1.395, 1.395-1.93, 1.93-2.4" or "[0.85:1.395]; (1.395,1.93) 1.93 2.4" etc.
+REGION_WINDOW_SPLIT_RE = re.compile(r"[;,]+|\s{2,}")
+REGION_BOUNDS_SPLIT_RE = re.compile(r"\s*[-:,]\s*|\s+")
+
+def parse_norm_regions(text, low=wv_min, high=wv_max):
+    if not text:
+        return list(norm_regions)
+    s = re.sub(r"[\[\](){}]", " ", text.strip())
+    chunks = [c for c in REGION_WINDOW_SPLIT_RE.split(s) if c.strip()]
+    out = []
+    for ch in chunks:
+        parts = [p for p in REGION_BOUNDS_SPLIT_RE.split(ch) if p.strip()]
+        if len(parts) < 2:
+            continue
+        try:
+            a = float(parts[0]); b = float(parts[1])
+            lo, hi = (a, b) if a <= b else (b, a)
+            lo = max(lo, low); hi = min(hi, high)
+            if hi > lo:
+                out.append((round(lo, 6), round(hi, 6)))
+        except ValueError:
+            continue
+    return out if out else list(norm_regions)
+
 def median_smooth(df, bins_per_micron):
     if bins_per_micron <= 0:
         return df  # no smoothing if disabled
@@ -264,7 +297,7 @@ def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
     return result.x  # Returns (A_V, R_V)
 
 #def load_and_process_spectrum(moca_specid, bins_per_micron=None, common_wv=None, debug=False, url_search=None):
-def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
+def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False, norm_regions_param=None):
     # Ensure that at least one of bins_per_micron or common_wv is provided.
     if bins_per_micron is None and common_wv is None:
         raise ValueError("Either bins_per_micron or common_wv must be specified.")
@@ -279,9 +312,11 @@ def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
     # Apply wavelength mask.
     df = apply_wavelength_mask(df, masked_regions)
     
+    local_norm_regions = norm_regions_param if norm_regions_param else norm_regions
+    
     # Process normalization over defined wavelength regions.
     df_processed = pd.DataFrame()
-    for norm_min, norm_max in norm_regions:
+    for norm_min, norm_max in local_norm_regions:
         region_df = df[(df['wv'] >= norm_min) & (df['wv'] <= norm_max)].copy()
         if region_df.empty:
             continue
@@ -308,9 +343,9 @@ def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
     if common_wv is None:
         required_bin_size = 1.0 / bins_per_micron
         if current_res >= required_bin_size:
-            # The spectrum is too coarse: keep original grid (split by norm_regions)
+            # The spectrum is too coarse: keep original grid (split by local_norm_regions)
             df_binned_list = []
-            for norm_min, norm_max in norm_regions:
+            for norm_min, norm_max in local_norm_regions:
                 region_df = df_processed[(df_processed['wv'] >= norm_min) & (df_processed['wv'] <= norm_max)]
                 if not region_df.empty:
                     df_binned_list.append(region_df)
@@ -321,7 +356,7 @@ def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
             # Otherwise, perform median binning as usual.
             df_binned_list = []
             # Create bins using bins_per_micron over each norm region.
-            for norm_min, norm_max in norm_regions:
+            for norm_min, norm_max in local_norm_regions:
                 region_df = df_processed[(df_processed['wv'] >= norm_min) & (df_processed['wv'] <= norm_max)].copy()
                 if region_df.empty:
                     continue
@@ -370,7 +405,7 @@ def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False):
             # Otherwise, if the original spectrum is high-resolution compared to common_wv,
             # perform median binning onto the common_wv grid for each norm_region.
             df_binned_list = []
-            for norm_min, norm_max in norm_regions:
+            for norm_min, norm_max in local_norm_regions:
                 region_df = df_processed[(df_processed['wv'] >= norm_min) & (df_processed['wv'] <= norm_max)].copy()
                 if region_df.empty:
                     continue
@@ -458,123 +493,6 @@ def darken_color(color, factor=0.7):
 # =============================================================================
 dash.register_page(__name__, path='/spectral-typing')
 
-# layout = html.Div([
-#     dcc.Location(id='sp-typing-url'),
-#     html.H1("MOCA Spectral Typing", id='sp-typing-header'),
-#     html.P("This dash app is used to assign spectral types visually; please be patient as the initial download of the spectral standards grid can take a minute or two.", style={"fontStyle": "italic", "marginBottom": "20px"}),
-#     html.Div([
-#          html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
-#          dcc.Dropdown(
-#              id='sp-typing-comparison-dropdown',
-#              options=[],  # Populated via callback
-#          )
-#     ], id='sp-typing-comparison-div', style={'margin-bottom': '15px'}),
-#     html.Div([
-#     # Left column with controls
-#     html.Div([
-#         # New container: Grid dropdown, Bins input and Grid navigation buttons
-#         html.Div([
-#              # Left part: Grid dropdown and Bins per Micron input stacked vertically
-#              html.Div([
-#                   html.Div([
-#                        html.Label("Select Spectral Grid:", style={"fontWeight": "bold"}),
-#                        dcc.Dropdown(id='sp-typing-grid-dropdown', options=[]),
-#                   ], id='sp-typing-grid-div', style={'margin-bottom': '15px'}),
-#                   html.Div([
-#                        html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
-#                        dcc.Input(id='sp-typing-bins-input', type='number', value=default_bins_per_micron),
-#                   ], id='sp-typing-bins-div', style={'margin-bottom': '15px'}),
-#              ], style={'flex': '1'}),
-             
-#              # Right part: Vertical stack of Grid navigation buttons
-#              html.Div([
-#                   html.Button("↑ Previous Grid", id='sp-typing-prev-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'margin-bottom': '10px', 'textAlign': 'left'}),
-#                   html.Button("↓ Next Grid", id='sp-typing-next-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'textAlign': 'left'})
-#              ], style={'display': 'flex', 'flexDirection': 'column', 'justifyContent': 'center', 'margin-left': '15px'})
-#         ], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
-        
-#         # The remaining controls below the grid navigation
-#         html.Div([
-#              dcc.Checklist(
-#                  options=[{'label': 'Apply Dereddening (slow)', 'value': 'deredden'}],
-#                  id='sp-typing-deredden-checklist',
-#              )
-#         ], id='sp-typing-deredden-div', style={'margin-bottom': '15px'}),
-#         html.Div([
-#              html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
-#              html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
-#         ], id='sp-typing-nav-div', style={'margin-bottom': '15px'}),
-#         html.Div([
-#              dcc.Slider(
-#                   id='sp-typing-index-slider',
-#                   min=0,
-#                   max=0,
-#                   step=1,
-#                   value=0,
-#                   marks={0: ''},
-#              )
-#         ], style={'margin-top': '10px', 'padding-right': '80px'})
-#     ], style={'flex': '1'}),
-#     # Right column with vertical slider
-#     html.Div([
-#         dcc.Slider(
-#             id='sp-typing-vertical-slider',
-#             min=0,
-#             max=10,
-#             step=1,
-#             value=0,
-#             disabled=True,
-#             marks={0: ''},
-#             updatemode='drag'
-#         )
-#     ], style={
-#         'flex': '0 0 auto',
-#         'alignItems': 'flex-start',
-#         'width': '300px',  # Ensure the container is wide enough
-#         'transform': 'rotate(-90deg) translateX(-200px) translateY(-10px)',
-#         'transform-origin': 'top left',
-#         'margin-left': '20px',
-#         'textAlign': 'left',
-#         'padding': '20px 0'  # Add vertical padding so labels have room
-#     })], style={'display': 'flex', 'align-items': 'center', 'margin-bottom': '15px'}),
-#     dcc.Graph(id='sp-typing-graph', config=figure_export_config, style={'height': '700px'}),
-#     dcc.Graph(id='sp-typing-chi2-graph'),
-#     html.Div(
-#         className="row",
-#         id="url-help-section-xupage",
-#         children=[
-#             dcc.Markdown(
-#                 """
-#                 ## Using URL Parameters
-
-#                 You can customize the app by appending parameters to the URL query string. The following parameters are supported:
-
-#                 - **specid**: Pre-select a comparison spectrum (e.g., `specid=1`).
-#                 - **grid**: Select the spectral grid (e.g., `grid=field`).
-#                 - **bins**: Set the number of bins per micron (e.g., `bins=20`).
-#                 - **deredden**: Apply dereddening if set to True (e.g., `deredden=True`).
-#                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
-
-#                 ### Example URL:  
-#                 - `http://your-domain/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
-                
-#                 Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
-#                 """
-#             ),
-#         ],
-#         style={"padding": "20px", "backgroundColor": "#f9f9f9"}
-#     ),
-#     dcc.Store(id='sp-typing-precomputed-store'),
-#     dcc.Store(id='sp-typing-current-index', data=0),
-#     dcc.Store(id='sp-typing-comparison-spectrum'),
-#     dcc.Store(id='sp-typing-comparison-designation'),
-#     dcc.Store(id='sp-typing-db-data'),
-#     dcc.Store(id='sp-typing-grid-data'),
-#     dcc.Store(id='sp-typing-grid-raw-spectra'),
-#     dcc.Store(id='sp-typing-comparison-raw-spectrum'),
-#     dcc.Store(id='sp-typing-current-sptnum'),
-# ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
-
 layout = html.Div([
     dcc.Location(id='sp-typing-url'),
     html.Div([
@@ -601,7 +519,19 @@ layout = html.Div([
                         html.Div([
                              html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
                              dcc.Input(id='sp-typing-bins-input', type='number', value=default_bins_per_micron),
-                        ], id='sp-typing-bins-div', style={'margin-bottom': '15px'})
+                        ], id='sp-typing-bins-div', style={'margin-bottom': '15px'}),
+                        html.Div([
+                            html.Label("Normalization regions (µm):", style={"fontWeight": "bold"}),
+                            dcc.Textarea(
+                                id='sp-typing-norm-regions-input',
+                                value=DEFAULT_NORM_REGIONS_TEXT,
+                                style={'width': '100%', 'height': '30px', 'fontFamily': 'monospace'},
+                                placeholder='e.g. 0.850-1.395, 1.395-1.930, 1.930-2.400'
+                            ),
+                            html.Div([
+                                html.Button("Reset to default", id='sp-typing-norm-reset', n_clicks=0, style={'marginTop': '6px'})
+                            ])
+                        ], id='sp-typing-norm-div', style={'margin-bottom': '15px'})
                    ], style={'flex': '1'}),
                    html.Div([
                         html.Button("↑ Previous Grid", id='sp-typing-prev-grid-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'margin-bottom': '10px', 'textAlign': 'left'}),
@@ -688,6 +618,7 @@ layout = html.Div([
     dcc.Store(id='sp-typing-grid-raw-spectra'),
     dcc.Store(id='sp-typing-comparison-raw-spectrum'),
     dcc.Store(id='sp-typing-current-sptnum'),
+    dcc.Store(id='sp-typing-norm-regions-store'),
 ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
 
 # =============================================================================
@@ -1006,11 +937,12 @@ def download_comparison_spectrum(comparison_specid, url_search):
     Input('sp-typing-bins-input', 'value'), # If the user selects a different binning we re-bin all spectra
     Input('sp-typing-deredden-checklist', 'value'), # If the deredden option changes we re-bin all spectra
     Input('sp-typing-grid-raw-spectra', 'data'), # If the grid raw spectra gets updated we also re-bin all spectra
+    Input('sp-typing-norm-regions-store', 'data'),
     State('sp-typing-grid-data', 'data'), # This encodes the list of standard spectra and their header properties
     #State('sp-typing-url', 'search'),
     prevent_initial_call = True
 )
-def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, grid_data):
+def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, norm_regions_store, grid_data):
     if debug_printing:
         print('precompute_comparisons callback being triggered')
     if not comparison_raw_spectrum or not grid_raw_spectra:
@@ -1020,7 +952,8 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
-    
+    local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
+
     # Read the comparison spectrum and the grid spectra
     comparison_df_raw = pd.read_json(comparison_raw_spectrum, orient='split')
     grid_df_raw = pd.read_json(grid_raw_spectra, orient='split')
@@ -1030,7 +963,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         return dash.no_update, dash.no_update
 
     # Bin comparison spectrum
-    comparison_df = process_spectrum(comparison_df_raw, bins_per_micron=bins)
+    comparison_df = process_spectrum(comparison_df_raw, bins_per_micron=bins, norm_regions_param=local_norm_regions)
     
     # Define a wavelength grid on which to bin the standard spectral grid
     common_wv = np.sort(comparison_df['wv'].unique())
@@ -1064,7 +997,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         # Rebin the standard spectrum on the common wavelength grid
         if debug_printing:
             print('Rebinning standard spectrum...')
-        std_df = process_spectrum(std_df_raw, common_wv=common_wv)
+        std_df = process_spectrum(std_df_raw, common_wv=common_wv, norm_regions_param=local_norm_regions)
         if debug_printing:
             print('Rebinning complete')
         std_data_dered = None
@@ -1077,7 +1010,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         # Normalize the standard spectrum using the median ratio (comparison / standard), per region.
         if debug_printing:
             print('Normalizing standard spectrum...')
-        for (region_min, region_max) in norm_regions:
+        for (region_min, region_max) in local_norm_regions:
             std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
             comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
             if not std_seg.empty and not comp_seg.empty:
@@ -1103,7 +1036,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 rv_list = []
                 std_df_dered = std_df.copy()
                 # Optimize A(V) and R(V) for each normalization region individually
-                for band_index, (region_min, region_max) in enumerate(norm_regions, start=1):
+                for band_index, (region_min, region_max) in enumerate(local_norm_regions, start=1):
                     std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
                     comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
                     if not std_seg.empty and not comp_seg.empty:
@@ -1133,7 +1066,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 # Normalize the dereddened standard spectrum using the median ratio (comparison / standard), per region.
                 if debug_printing:
                     print('Normalizing dereddened standard spectrum...')
-                for (region_min, region_max) in norm_regions:
+                for (region_min, region_max) in local_norm_regions:
                     std_seg_dered = std_df_dered[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)]
                     comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
                     if not std_seg_dered.empty and not comp_seg.empty:
@@ -1184,17 +1117,17 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
             except Exception as e:
                 if debug_printing:
                     print("An exception has occurred while optimizing dereddening")
-                av_list = [np.nan] * len(norm_regions)
-                rv_list = [np.nan] * len(norm_regions)
+                av_list = [np.nan] * len(local_norm_regions)
+                rv_list = [np.nan] * len(local_norm_regions)
                 std_data = std_df.to_dict('records')
         else:
-            av_list = [np.nan] * len(norm_regions)
-            rv_list = [np.nan] * len(norm_regions)
+            av_list = [np.nan] * len(local_norm_regions)
+            rv_list = [np.nan] * len(local_norm_regions)
             std_data = std_df.to_dict('records')
         
         if (not comparison_df.empty) and (not std_df.empty):
             residual_list = []
-            for (region_min, region_max) in norm_regions:
+            for (region_min, region_max) in local_norm_regions:
                 comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
                 std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
                 if not comp_seg.empty and not std_seg.empty:
@@ -1204,7 +1137,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                     if not valid.empty:
                         residual_list.append(valid)
             if residual_list:
-                n_bands = len(norm_regions)
+                n_bands = len(local_norm_regions)
                 all_residuals = np.concatenate([r.to_numpy() for r in residual_list])
                 N = len(all_residuals)
                 p = 3*n_bands if deredden else n_bands
@@ -1281,6 +1214,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Input('sp-typing-grid-dropdown', 'value'),
     Input('sp-typing-comparison-designation', 'data'),
     Input('sp-typing-chi2-graph', 'clickData'),
+    Input('sp-typing-norm-regions-store', 'data'),
     State('sp-typing-current-sptnum', 'data'),
     State('sp-typing-current-index', 'data'),
     State('sp-typing-precomputed-store', 'data'),
@@ -1288,7 +1222,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     State('sp-typing-db-data', 'data'),
     State('sp-typing-url', 'search')
 )
-def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, previous_sptnum, current_index, precomputed, deredden_value, df_data, url_search):
+def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, previous_sptnum, current_index, precomputed, deredden_value, df_data, url_search):
     if debug_printing:
         print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
@@ -1316,7 +1250,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
-
+    local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
+    
     triggered_ids = [t['prop_id'].split('.')[0] for t in ctx.triggered]
     if 'sp-typing-chi2-graph' in triggered_ids and chi2_clickData:
         # Expect the clicked point's customdata to be [grid, index]
@@ -1386,7 +1321,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     else:
         name = "Std. " + standard_short_label
         opacity = 1.0
-    for i, (region_min, region_max) in enumerate(norm_regions):
+    for i, (region_min, region_max) in enumerate(local_norm_regions):
         std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
         if not std_seg.empty:
             fig.add_trace(go.Scatter(
@@ -1429,7 +1364,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         
         # import pdb; pdb.set_trace()
 
-        for i, (region_min, region_max) in enumerate(norm_regions):
+        for i, (region_min, region_max) in enumerate(local_norm_regions):
             std_seg_dered = std_df_dered[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)]
             if not std_seg_dered.empty:
                 fig.add_trace(go.Scatter(
@@ -1449,7 +1384,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
     comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
     comp_specid_tag = f" (specid={int(comp_id)})" if not comp_designation_row.empty else ""
-    for i, (region_min, region_max) in enumerate(norm_regions):
+    for i, (region_min, region_max) in enumerate(local_norm_regions):
         comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
         if not comp_seg.empty:
             fig.add_trace(go.Scatter(
@@ -1598,6 +1533,28 @@ def spt_set_defaults_from_url(href):
     dereddening = qs.get("deredden", [None])[0]
     deredden_list = ["deredden"] if dereddening and dereddening.lower() == "true" else []
     return bins_val, deredden_list
+
+@dash.callback(
+    Output('sp-typing-norm-regions-store', 'data'),
+    Output('sp-typing-norm-regions-input', 'value'),
+    Input('sp-typing-norm-regions-input', 'value'),
+    Input('sp-typing-norm-reset', 'n_clicks'),
+    Input('sp-typing-url', 'href')
+)
+def update_norm_regions_store(text_value, reset_clicks, href):
+    ctx = callback_context
+    # Initial page load
+    if not ctx.triggered:
+        parsed = parse_norm_regions(DEFAULT_NORM_REGIONS_TEXT)
+        return parsed, DEFAULT_NORM_REGIONS_TEXT
+    trigger = ctx.triggered[0]['prop_id']
+    if 'sp-typing-norm-reset' in trigger:
+        parsed = parse_norm_regions(DEFAULT_NORM_REGIONS_TEXT)
+        return parsed, DEFAULT_NORM_REGIONS_TEXT
+    # Parse current text
+    parsed = parse_norm_regions(text_value)
+    pretty = _format_norm_regions_text(parsed) if parsed else DEFAULT_NORM_REGIONS_TEXT
+    return parsed, pretty
 
 @dash.callback(
     Output('sp-typing-chi2-graph', 'figure'),

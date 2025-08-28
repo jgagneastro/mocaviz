@@ -1,3 +1,272 @@
+try:
+    import ultranest
+    import ultranest.stepsampler
+    _ULTRANEST_AVAILABLE = True
+except Exception:
+    _ULTRANEST_AVAILABLE = False
+#Robust error-weighted fit
+
+# ===== UltraNest-based fitters (PM-only and PM+PLX) =====
+
+# ===== UltraNest-based fitters (PM-only and PM+PLX) =====
+
+def _ultranest_pm_only_fit(measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas,
+                           seed_pmra=None, seed_pmdec=None):
+    """DEPRECATED: Do not use. UltraNest is only allowed as a refinement step after EM.
+    This function intentionally raises to prevent accidental use.
+    """
+    raise RuntimeError("_ultranest_pm_only_fit is deprecated. Use _ultranest_refine_pm_only after EM.")
+
+
+def _ultranest_pm_plx_fit(measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas,
+                          ra_ref_deg, dec_ref_deg,
+                          seed_pmra=None, seed_pmdec=None, seed_plx=None):
+    """DEPRECATED: Do not use. UltraNest is only allowed as a refinement step after EM.
+    This function intentionally raises to prevent accidental use.
+    """
+    raise RuntimeError("_ultranest_pm_plx_fit is deprecated. Use _ultranest_refine_pm_plx after EM.")
+
+# ===== UltraNest refinement AFTER EM (keeps EM mixture/inlier logic) =====
+
+def _ultranest_refine_pm_only(t, y_ra, y_dec, s_ra, s_dec, inlier_mask,
+                              pmra_em, pmdec_em, pos_ra_em, pos_dec_em,
+                              s_add_ra=0.0, s_add_dec=0.0,
+                              mission_labels=None, s_add_ra_by_mission=None, s_add_dec_by_mission=None,
+                              t0_ref=None):
+    """Refine PM-only parameters with UltraNest using EM inliers and inflated sigmas.
+    Returns: pmra, pmdec, e_pmra, e_pmdec, pos_ra_m, pos_dec_m
+    """
+    if not _ULTRANEST_AVAILABLE:
+        raise RuntimeError("UltraNest is not available. Please install 'ultranest'.")
+
+    t = np.asarray(t, float)
+    y_ra = np.asarray(y_ra, float)
+    y_dec = np.asarray(y_dec, float)
+    s_ra = np.asarray(s_ra, float)
+    s_dec = np.asarray(s_dec, float)
+    mask = np.asarray(inlier_mask, bool)
+
+    # Center time using EM's reference epoch if provided; otherwise use inlier median
+    if t0_ref is None or not np.isfinite(t0_ref):
+        t0 = float(np.nanmedian(t[mask]))
+    else:
+        t0 = float(t0_ref)
+    tc = t - t0
+
+    # Build per-point inflated sigmas using global + per-mission s_add if provided
+    sig_ra = s_ra.copy()
+    sig_dec = s_dec.copy()
+    if mission_labels is not None and s_add_ra_by_mission and s_add_dec_by_mission:
+        missions_arr = np.asarray(mission_labels)
+        for m, s_add_m in s_add_ra_by_mission.items():
+            sig_ra[missions_arr == m] = np.sqrt(sig_ra[missions_arr == m]**2 + float(s_add_m)**2)
+        for m, s_add_m in s_add_dec_by_mission.items():
+            sig_dec[missions_arr == m] = np.sqrt(sig_dec[missions_arr == m]**2 + float(s_add_m)**2)
+    # Global additions
+    sig_ra = np.sqrt(sig_ra**2 + float(s_add_ra)**2)
+    sig_dec = np.sqrt(sig_dec**2 + float(s_add_dec)**2)
+
+    # Use only inliers
+    tc = tc[mask]
+    y_ra = y_ra[mask]
+    y_dec = y_dec[mask]
+    sig_ra = sig_ra[mask]
+    sig_dec = sig_dec[mask]
+
+    # --- Robust scales to set sensible bounds (avoid extreme exploration) ---
+    ra_res_em  = y_ra  - (pmra_em * tc + pos_ra_em)
+    dec_res_em = y_dec - (pmdec_em * tc + pos_dec_em)
+    mad_ra  = np.nanmedian(np.abs(ra_res_em - np.nanmedian(ra_res_em)))
+    mad_dec = np.nanmedian(np.abs(dec_res_em - np.nanmedian(dec_res_em)))
+    rob_pos = float(max(1.4826 * mad_ra, 1.4826 * mad_dec, 1.0))  # mas
+    baseline = float(max(np.ptp(tc), 1e-3))  # years
+    # rough slope scale from position scatter over baseline
+    rob_pm = float(max(rob_pos / baseline, 0.05))  # mas/yr
+
+    def model(theta):
+        pmra, pmdec, pos_ra, pos_dec = theta
+        return pmra * tc + pos_ra, pmdec * tc + pos_dec
+
+    def loglike(theta):
+        ra_m, dec_m = model(theta)
+        chi2 = np.sum(((y_ra - ra_m)/sig_ra)**2) + np.sum(((y_dec - dec_m)/sig_dec)**2)
+        return -0.5 * chi2
+
+    # --- Data-driven bounds centered on EM using robust scales ---
+    pmra_span   = (float(pmra_em) - 8*rob_pm,  float(pmra_em) + 8*rob_pm)
+    pmdec_span  = (float(pmdec_em) - 8*rob_pm,  float(pmdec_em) + 8*rob_pm)
+    # Ensure at least a modest span
+    if pmra_span[1] - pmra_span[0] < 0.2: pmra_span = (pmra_span[0]-0.1, pmra_span[1]+0.1)
+    if pmdec_span[1] - pmdec_span[0] < 0.2: pmdec_span = (pmdec_span[0]-0.1, pmdec_span[1]+0.1)
+    pos_ra_span = (float(pos_ra_em) - 8*rob_pos, float(pos_ra_em) + 8*rob_pos)
+    pos_dec_span= (float(pos_dec_em) - 8*rob_pos, float(pos_dec_em) + 8*rob_pos)
+    if pos_ra_span[1] - pos_ra_span[0] < 2.0: pos_ra_span = (pos_ra_span[0]-1.0, pos_ra_span[1]+1.0)
+    if pos_dec_span[1] - pos_dec_span[0] < 2.0: pos_dec_span = (pos_dec_span[0]-1.0, pos_dec_span[1]+1.0)
+
+    # ---- DEBUG: print anchor epoch, scales, and bounds ----
+    try:
+        print("[UltraNest PM-only] Anchor t0 = %.6f yr, N_inliers = %d" % (t0, tc.size))
+        print("[UltraNest PM-only] tc range: [%.3f, %.3f] yr" % (np.nanmin(tc), np.nanmax(tc)))
+        print("[UltraNest PM-only] EM seeds: pmRA=%.3f, pmDEC=%.3f, posRA@t0=%.3f, posDEC@t0=%.3f" % (pmra_em, pmdec_em, pos_ra_em, pos_dec_em))
+        print("[UltraNest PM-only] robust scales: rob_pos=%.3f mas, rob_pm=%.3f mas/yr" % (rob_pos, rob_pm))
+        print("[UltraNest PM-only] bounds pmRA=[%.3f, %.3f], pmDEC=[%.3f, %.3f]" % (pmra_span[0], pmra_span[1], pmdec_span[0], pmdec_span[1]))
+        print("[UltraNest PM-only] bounds posRA=[%.3f, %.3f], posDEC=[%.3f, %.3f]" % (pos_ra_span[0], pos_ra_span[1], pos_dec_span[0], pos_dec_span[1]))
+    except Exception as _e_dbg:
+        print("[UltraNest PM-only] DEBUG print failed:", _e_dbg)
+
+    bounds = [pmra_span, pmdec_span, pos_ra_span, pos_dec_span]
+
+    def transform(u):
+        return [b[0] + u[i]*(b[1]-b[0]) for i, b in enumerate(bounds)]
+
+    sampler = ultranest.ReactiveNestedSampler(
+        param_names=["pmra", "pmdec", "pos_ra", "pos_dec"],
+        loglike=loglike,
+        transform=transform,
+        resume="overwrite",
+    )
+    sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
+    result = sampler.run(min_num_live_points=300, dlogz=0.5)
+    stats = sampler.results
+    mean = stats['posterior']['mean']
+    stdev = stats['posterior']['stdev']
+
+    pmra, pmdec, pos_ra, pos_dec = [float(x) for x in mean]
+    e_pmra, e_pmdec = float(stdev[0]), float(stdev[1])
+    return pmra, pmdec, e_pmra, e_pmdec, pos_ra, pos_dec
+
+
+def _ultranest_refine_pm_plx(t, y_ra, y_dec, s_ra, s_dec, inlier_mask,
+                             ra_ref_deg, dec_ref_deg,
+                             pmra_em, pmdec_em, plx_em, pos_ra_em, pos_dec_em,
+                             s_add_ra=0.0, s_add_dec=0.0,
+                             mission_labels=None, s_add_ra_by_mission=None, s_add_dec_by_mission=None,
+                             t0_ref=None):
+    """Refine PM+PLX parameters with UltraNest using EM inliers and inflated sigmas.
+    Returns: plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, pos_ra, pos_dec
+    """
+    if not _ULTRANEST_AVAILABLE:
+        raise RuntimeError("UltraNest is not available. Please install 'ultranest'.")
+
+    t = np.asarray(t, float)
+    y_ra = np.asarray(y_ra, float)
+    y_dec = np.asarray(y_dec, float)
+    s_ra = np.asarray(s_ra, float)
+    s_dec = np.asarray(s_dec, float)
+    mask = np.asarray(inlier_mask, bool)
+
+    # Center time and parallax basis using EM's reference epoch if provided; else median of inliers
+    if t0_ref is None or not np.isfinite(t0_ref):
+        t0 = float(np.nanmedian(t[mask]))
+    else:
+        t0 = float(t0_ref)
+    tc = t - t0
+    plxm_all = parallax_motion(ra_ref_deg, dec_ref_deg, t)
+    pra_all = np.asarray(plxm_all["plx_motion_racosdec"], float)
+    pdec_all = np.asarray(plxm_all["plx_motion_dec"], float)
+    # Parallax basis relative to t0
+    plxm0 = parallax_motion(ra_ref_deg, dec_ref_deg, t0)
+    pra0 = float(plxm0["plx_motion_racosdec"])
+    pdec0 = float(plxm0["plx_motion_dec"])
+    pra_rel_all = pra_all - pra0
+    pdec_rel_all = pdec_all - pdec0
+
+    # --- Transform EM intercepts (defined at EM's reference epoch t0_em) to UltraNest epoch t0 ---
+    # After recent changes, EM PLX+PM uses centered time around t0_em (= t0_ref passed in),
+    # so pos_ra_em/pos_dec_em are intercepts at t0_em. Map them to t0 via linear + parallax shift:
+    t0_em = float(t0_ref) if (t0_ref is not None and np.isfinite(t0_ref)) else float(t0)
+    plxm_em0 = parallax_motion(ra_ref_deg, dec_ref_deg, t0_em)
+    pra_em0 = float(plxm_em0["plx_motion_racosdec"])  # parallax factor at EM's epoch
+    pdec_em0 = float(plxm_em0["plx_motion_dec"])      # parallax factor at EM's epoch
+    pos_ra_em_t0  = float(pos_ra_em  + pmra_em * (t0 - t0_em) + plx_em * (pra0 - pra_em0))
+    pos_dec_em_t0 = float(pos_dec_em + pmdec_em * (t0 - t0_em) + plx_em * (pdec0 - pdec_em0))
+
+    # Build inflated sigmas (per-mission + global) then mask to inliers
+    sig_ra = s_ra.copy()
+    sig_dec = s_dec.copy()
+    if mission_labels is not None and s_add_ra_by_mission and s_add_dec_by_mission:
+        missions_arr = np.asarray(mission_labels)
+        for m, s_add_m in s_add_ra_by_mission.items():
+            sig_ra[missions_arr == m] = np.sqrt(sig_ra[missions_arr == m]**2 + float(s_add_m)**2)
+        for m, s_add_m in s_add_dec_by_mission.items():
+            sig_dec[missions_arr == m] = np.sqrt(sig_dec[missions_arr == m]**2 + float(s_add_m)**2)
+    sig_ra = np.sqrt(sig_ra**2 + float(s_add_ra)**2)
+    sig_dec = np.sqrt(sig_dec**2 + float(s_add_dec)**2)
+
+    tc = tc[mask]
+    y_ra = y_ra[mask]
+    y_dec = y_dec[mask]
+    pra = pra_rel_all[mask]
+    pdec = pdec_rel_all[mask]
+    sig_ra = sig_ra[mask]
+    sig_dec = sig_dec[mask]
+
+    # --- Robust scales for bounds (centered model at t0, parallax relative to t0) ---
+    ra_res_em  = y_ra  - (pmra_em * tc + plx_em * pra + pos_ra_em_t0)
+    dec_res_em = y_dec - (pmdec_em * tc + plx_em * pdec + pos_dec_em_t0)
+    mad_ra  = np.nanmedian(np.abs(ra_res_em - np.nanmedian(ra_res_em)))
+    mad_dec = np.nanmedian(np.abs(dec_res_em - np.nanmedian(dec_res_em)))
+    rob_pos = float(max(1.4826 * mad_ra, 1.4826 * mad_dec, 1.0))  # mas
+    baseline = float(max(np.ptp(tc), 1e-3))  # years
+    rob_pm = float(max(rob_pos / baseline, 0.05))  # mas/yr
+    # Parallax scale from projection amplitudes
+    proj_amp = float(max(np.nanmax(np.abs(pra)), np.nanmax(np.abs(pdec)), 1e-2))
+    rob_plx = float(max(rob_pos / proj_amp, 0.02))  # mas
+
+    def model(theta):
+        pmra, pmdec, plx, pos_ra, pos_dec = theta
+        # Intercepts are defined at t0
+        return pmra * tc + plx * pra + pos_ra, pmdec * tc + plx * pdec + pos_dec
+
+    def loglike(theta):
+        ra_m, dec_m = model(theta)
+        chi2 = np.sum(((y_ra - ra_m)/sig_ra)**2) + np.sum(((y_dec - dec_m)/sig_dec)**2)
+        return -0.5 * chi2
+
+    # --- Data-driven bounds centered on EM using robust scales ---
+    pmra_span   = (float(pmra_em) - 8*rob_pm,  float(pmra_em) + 8*rob_pm)
+    pmdec_span  = (float(pmdec_em) - 8*rob_pm,  float(pmdec_em) + 8*rob_pm)
+    plx_span    = (float(plx_em)  - 8*rob_plx, float(plx_em)  + 8*rob_plx)
+    if pmra_span[1] - pmra_span[0] < 0.2: pmra_span = (pmra_span[0]-0.1, pmra_span[1]+0.1)
+    if pmdec_span[1] - pmdec_span[0] < 0.2: pmdec_span = (pmdec_span[0]-0.1, pmdec_span[1]+0.1)
+    if plx_span[1] - plx_span[0]   < 0.1: plx_span   = (plx_span[0]-0.05, plx_span[1]+0.05)
+    pos_ra_span = (pos_ra_em_t0 - 8*rob_pos, pos_ra_em_t0 + 8*rob_pos)
+    pos_dec_span= (pos_dec_em_t0 - 8*rob_pos, pos_dec_em_t0 + 8*rob_pos)
+    if pos_ra_span[1] - pos_ra_span[0] < 2.0: pos_ra_span = (pos_ra_span[0]-1.0, pos_ra_span[1]+1.0)
+    if pos_dec_span[1] - pos_dec_span[0] < 2.0: pos_dec_span = (pos_dec_span[0]-1.0, pos_dec_span[1]+1.0)
+
+    # ---- DEBUG: print anchor epoch, scales, and bounds ----
+    try:
+        print("[UltraNest PM+PLX] Anchor t0 = %.6f yr, N_inliers = %d" % (t0, tc.size))
+        print("[UltraNest PM+PLX] tc range: [%.3f, %.3f] yr" % (np.nanmin(tc), np.nanmax(tc)))
+        print("[UltraNest PM+PLX] EM seeds: pmRA=%.3f, pmDEC=%.3f, plx=%.3f, posRA@t0_em=%.3f, posDEC@t0_em=%.3f" % (pmra_em, pmdec_em, plx_em, pos_ra_em, pos_dec_em))
+        print("[UltraNest PM+PLX] transformed EM intercepts: posRA@t0=%.3f, posDEC@t0=%.3f" % (pos_ra_em_t0, pos_dec_em_t0))
+        print("[UltraNest PM+PLX] robust scales: rob_pos=%.3f mas, rob_pm=%.3f mas/yr, rob_plx=%.3f mas" % (rob_pos, rob_pm, rob_plx))
+        print("[UltraNest PM+PLX] bounds pmRA=[%.3f, %.3f], pmDEC=[%.3f, %.3f], plx=[%.3f, %.3f]" % (pmra_span[0], pmra_span[1], pmdec_span[0], pmdec_span[1], plx_span[0], plx_span[1]))
+        print("[UltraNest PM+PLX] bounds posRA=[%.3f, %.3f], posDEC=[%.3f, %.3f]" % (pos_ra_span[0], pos_ra_span[1], pos_dec_span[0], pos_dec_span[1]))
+    except Exception as _e_dbg:
+        print("[UltraNest PM+PLX] DEBUG print failed:", _e_dbg)
+
+    bounds = [pmra_span, pmdec_span, plx_span, pos_ra_span, pos_dec_span]
+
+    def transform(u):
+        return [b[0] + u[i]*(b[1]-b[0]) for i, b in enumerate(bounds)]
+
+    sampler = ultranest.ReactiveNestedSampler(
+        param_names=["pmra", "pmdec", "plx", "pos_ra", "pos_dec"],
+        loglike=loglike,
+        transform=transform,
+        resume="overwrite",
+    )
+    sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
+    result = sampler.run(min_num_live_points=400, dlogz=0.5)
+    stats = sampler.results
+    mean = stats['posterior']['mean']
+    stdev = stats['posterior']['stdev']
+
+    pmra, pmdec, plx, pos_ra, pos_dec = [float(x) for x in mean]
+    e_pmra, e_pmdec, e_plx = float(stdev[0]), float(stdev[1]), float(stdev[2])
+    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, pos_ra, pos_dec, t0
 import dash
 from math import floor, log10
 import numpy as np
@@ -33,7 +302,8 @@ figure_export_config = {
 
 def robust_error_weighted_plxfit_with_rejection(
     measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
-    sigma_threshold=10, max_iterations=5, inflate_errors=False, mission_labels=None, per_mission_inflate=False
+    sigma_threshold=10, max_iterations=5, inflate_errors=False, mission_labels=None, per_mission_inflate=False,
+    seed_pmra=None, seed_pmdec=None, seed_plx=None, seed_pos_ra=None, seed_pos_dec=None
 ):
     """
     Perform a robust error-weighted fit for parallax, proper motion, and positions with iterative outlier rejection.
@@ -105,6 +375,30 @@ def robust_error_weighted_plxfit_with_rejection(
         - sin_ref_ra * sin_ref_dec * cos_sun_obl * sin_sun_elong
     )
 
+    # ---- Center time and parallax basis at a reference epoch for numerical stability ----
+    # Use median epoch across all rows as EM reference (kept fixed through the EM loop)
+    t0_ref_plx = float(np.nanmedian(epoch_yr))
+    # Parallax basis relative to t0_ref_plx
+    mjd0 = float(Time(t0_ref_plx, format='jyear', scale='utc').mjd)
+    (void1_0, void2_0, void3_0, sun_elong0, sun_obl0) = sunpos(mjd0 + 2400000.5, full_output=True)
+    sun_elong0 = sun_elong0[0]
+    sun_obl0 = sun_obl0[0]
+    sin_sun_elong0 = np.sin(np.radians(sun_elong0))
+    cos_sun_elong0 = np.cos(np.radians(sun_elong0))
+    sin_sun_obl0 = np.sin(np.radians(sun_obl0))
+    cos_sun_obl0 = np.cos(np.radians(sun_obl0))
+
+    pra0 = cos_ref_ra * cos_sun_obl0 * sin_sun_elong0 - sin_ref_ra * cos_sun_elong0
+    pdec0 = (
+        cos_ref_dec * sin_sun_obl0 * sin_sun_elong0
+        - cos_ref_ra * sin_ref_dec * cos_sun_elong0
+        - sin_ref_ra * sin_ref_dec * cos_sun_obl0 * sin_sun_elong0
+    )
+
+    # Relative parallax factors
+    pra_rel = plx_motion_ra - pra0
+    pdec_rel = plx_motion_dec - pdec0
+
     # Initial mask (all points are considered inliers)
     inlier_mask = ~np.isnan(epoch_yr) & ~np.isnan(rel_ra) & ~np.isnan(rel_dec) & \
                   ~np.isnan(ra_unc) & ~np.isnan(dec_unc)
@@ -114,51 +408,116 @@ def robust_error_weighted_plxfit_with_rejection(
             f"Inlier mask dimension mismatch: inlier_mask={len(inlier_mask)}, epoch_yr={len(epoch_yr)}"
         )
 
-    # Define the model for fitting: y = pm * t + plx * plx_motion + pos
+    # Define the model for fitting: y = pm * t_centered + plx * relative_parallax + pos
     def plx_pm_model(xdata, pmra, pmdec, plx, pos_ra, pos_dec):
+        # xdata = [t_centered, pra_rel, pdec_rel]
         ra_model = pmra * xdata[0] + plx * xdata[1] + pos_ra
         dec_model = pmdec * xdata[0] + plx * xdata[2] + pos_dec
         return np.concatenate([ra_model, dec_model])  # Combine RA and Dec models into a single 1D array
 
     for iteration in range(max_iterations):
-        # Perform the fit using inliers
-        xdata = np.vstack([
-            epoch_yr[inlier_mask],
-            plx_motion_ra[inlier_mask],
-            plx_motion_dec[inlier_mask]
-        ])
+        # --- Build inlier subset arrays ---
+        e = epoch_yr[inlier_mask]
+        pra = pra_rel[inlier_mask]
+        pdec = pdec_rel[inlier_mask]
+        y_ra = rel_ra[inlier_mask]
+        y_dec = rel_dec[inlier_mask]
+        sig_ra = ra_unc[inlier_mask]
+        sig_dec = dec_unc[inlier_mask]
+        n = e.size
 
-        ydata = np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]])  # Combine observed RA and Dec offsets
-        sigma = np.concatenate([ra_unc[inlier_mask], dec_unc[inlier_mask]])  # Combine uncertainties for RA and Dec
+        # Prepare x/y for curve_fit (centered time, relative parallax factors)
+        tc = e - t0_ref_plx
+        xdata_in = np.vstack([tc, pra, pdec])
+        ydata_in = np.concatenate([y_ra, y_dec])
 
-        # Perform the fit using combined RA and Dec model
+        # ---- Initialize moving and stationary components ----
+        # ---- Optional seeding from literature PM/PLX ----
+        p0_seed = None
+        if (seed_pmra is not None) or (seed_pmdec is not None) or (seed_plx is not None) or (seed_pos_ra is not None) or (seed_pos_dec is not None):
+            # Fill missing seeds with zeros temporarily
+            spmra = float(seed_pmra) if seed_pmra is not None and np.isfinite(seed_pmra) else 0.0
+            spmdec = float(seed_pmdec) if seed_pmdec is not None and np.isfinite(seed_pmdec) else 0.0
+            splx  = float(seed_plx)  if seed_plx  is not None and np.isfinite(seed_plx)  else 0.0
+            # If intercepts are not given, estimate them as precision-weighted means of residuals
+            if seed_pos_ra is None or not np.isfinite(seed_pos_ra):
+                w_ra = 1.0 / np.maximum(sig_ra, 1e-6)**2
+                seed_pos_ra = float(np.sum(w_ra * (y_ra - spmra * e - splx * pra)) / np.sum(w_ra)) if np.sum(w_ra) > 0 else float(np.nanmedian(y_ra - spmra * e - splx * pra))
+            if seed_pos_dec is None or not np.isfinite(seed_pos_dec):
+                w_dec = 1.0 / np.maximum(sig_dec, 1e-6)**2
+                seed_pos_dec = float(np.sum(w_dec * (y_dec - spmdec * e - splx * pdec)) / np.sum(w_dec)) if np.sum(w_dec) > 0 else float(np.nanmedian(y_dec - spmdec * e - splx * pdec))
+            p0_seed = np.array([spmra, spmdec, splx, float(seed_pos_ra), float(seed_pos_dec)], dtype=float)
+
         popt, pcov = curve_fit(
-            plx_pm_model,  # The model function
-            xdata,         # Independent variable: epoch_yr repeated for RA and Dec
-            ydata,         # Dependent variable: observed RA and Dec offsets
-            sigma=sigma,   # Combined uncertainties
-            absolute_sigma=True
+            plx_pm_model,
+            xdata_in,
+            ydata_in,
+            sigma=np.concatenate([sig_ra, sig_dec]),
+            absolute_sigma=True,
+            p0=p0_seed
         )
 
-        # Extract residuals for RA and Dec from the concatenated model output
-        xdata = np.vstack([
-            epoch_yr,
-            plx_motion_ra,
-            plx_motion_dec
-        ])
-        model_output = plx_pm_model(xdata, *popt)  # Model output is concatenated for RA and Dec
-        ra_model = model_output[:len(rel_ra)]  # Extract RA model part
-        dec_model = model_output[len(rel_ra):]  # Extract Dec model part
+        # Initial stationary (constant offsets) estimates
+        w_ra0 = 1.0 / np.maximum(sig_ra, 1e-6) ** 2
+        w_dec0 = 1.0 / np.maximum(sig_dec, 1e-6) ** 2
+        s_ra_stat = float(np.sum(w_ra0 * y_ra) / np.sum(w_ra0)) if np.isfinite(np.sum(w_ra0)) and np.sum(w_ra0) > 0 else float(np.nanmean(y_ra))
+        s_dec_stat = float(np.sum(w_dec0 * y_dec) / np.sum(w_dec0)) if np.isfinite(np.sum(w_dec0)) and np.sum(w_dec0) > 0 else float(np.nanmean(y_dec))
 
-        # Calculate residuals for RA and Dec
+        # Mixture weight and responsibilities (for moving component)
+        w_mix = 0.7
+        r = np.full(n, 0.8, dtype=float)
+
+        # ---- EM loops (moving + stationary) ----
+        for _ in range(10):
+            # E-step: responsibilities for the moving component
+            model_concat = plx_pm_model(xdata_in, *popt)
+            ra_m = model_concat[:n]
+            dec_m = model_concat[n:]
+
+            m2_mov = ((y_ra - ra_m) ** 2) / (sig_ra ** 2) + ((y_dec - dec_m) ** 2) / (sig_dec ** 2)
+            m2_sta = ((y_ra - s_ra_stat) ** 2) / (sig_ra ** 2) + ((y_dec - s_dec_stat) ** 2) / (sig_dec ** 2)
+
+            ratio = ((1.0 - w_mix) / max(w_mix, 1e-6)) * np.exp(0.5 * (m2_mov - m2_sta))
+            r = 1.0 / (1.0 + ratio)
+
+            # M-step: update moving params with responsibilities as weights
+            scale = np.sqrt(np.clip(r, 1e-6, None))
+            sigma_eff = np.concatenate([sig_ra / scale, sig_dec / scale])
+
+            popt, pcov = curve_fit(
+                plx_pm_model,
+                xdata_in,
+                ydata_in,
+                sigma=sigma_eff,
+                absolute_sigma=True
+            )
+
+            # Update stationary offsets (constant model)
+            w_s_ra = (1.0 - r) / (sig_ra ** 2)
+            w_s_dec = (1.0 - r) / (sig_dec ** 2)
+            denom_ra = float(np.sum(w_s_ra))
+            denom_dec = float(np.sum(w_s_dec))
+            if denom_ra > 0:
+                s_ra_stat = float(np.sum(w_s_ra * y_ra) / denom_ra)
+            if denom_dec > 0:
+                s_dec_stat = float(np.sum(w_s_dec * y_dec) / denom_dec)
+
+            # Update mixture weight
+            w_mix = float(np.clip(np.mean(r), 0.05, 0.95))
+
+        # ---- After EM: compute residuals to MOVING component on ALL rows for rejection ----
+        xdata_all = np.vstack([epoch_yr - t0_ref_plx, pra_rel, pdec_rel])
+        model_output = plx_pm_model(xdata_all, *popt)
+        ra_model = model_output[:len(rel_ra)]
+        dec_model = model_output[len(rel_ra):]
+
         ra_residuals = rel_ra - ra_model
         dec_residuals = rel_dec - dec_model
 
-        # Calculate standardized residuals for RA and Dec
         ra_standardized_residuals = np.abs(ra_residuals / ra_unc)
         dec_standardized_residuals = np.abs(dec_residuals / dec_unc)
 
-        # Update inlier mask by combining RA and Dec criteria
+        # Outlier rejection based ONLY on the moving component residuals
         new_inlier_mask = (ra_standardized_residuals < sigma_threshold) & (dec_standardized_residuals < sigma_threshold)
 
         # Stop if no changes in the mask
@@ -166,11 +525,10 @@ def robust_error_weighted_plxfit_with_rejection(
             break
 
         inlier_mask = new_inlier_mask
-
-        # ========== Optional two-pass inflation of uncertainties ==========
+    # ========== Optional two-pass inflation of uncertainties ==========
     if inflate_errors:
         # Model for all rows
-        xdata_all = np.vstack([epoch_yr, plx_motion_ra, plx_motion_dec])
+        xdata_all = np.vstack([epoch_yr - t0_ref_plx, pra_rel, pdec_rel])
         model_all = plx_pm_model(xdata_all, *popt)
         ra_model_all = model_all[:len(rel_ra)]
         dec_model_all = model_all[len(rel_ra):]
@@ -191,7 +549,7 @@ def robust_error_weighted_plxfit_with_rejection(
         # Refit with inflated uncertainties on inliers
         popt, pcov = curve_fit(
             plx_pm_model,
-            np.vstack([epoch_yr[inlier_mask], plx_motion_ra[inlier_mask], plx_motion_dec[inlier_mask]]),
+            np.vstack([epoch_yr[inlier_mask] - t0_ref_plx, pra_rel[inlier_mask], pdec_rel[inlier_mask]]),
             np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]]),
             sigma=np.sqrt(np.concatenate([ra_unc[inlier_mask]**2 + s_ra**2, dec_unc[inlier_mask]**2 + s_dec**2])),
             absolute_sigma=True
@@ -203,7 +561,7 @@ def robust_error_weighted_plxfit_with_rejection(
         if inflate_errors and per_mission_inflate and mission_labels is not None:
             missions_arr = np.asarray(mission_labels)
             # Build model over ALL rows
-            xdata_all = np.vstack([epoch_yr, plx_motion_ra, plx_motion_dec])
+            xdata_all = np.vstack([epoch_yr - t0_ref_plx, pra_rel, pdec_rel])
             model_all = plx_pm_model(xdata_all, *popt)
             ra_model_all = model_all[:len(rel_ra)]
             dec_model_all = model_all[len(rel_ra):]
@@ -235,7 +593,7 @@ def robust_error_weighted_plxfit_with_rejection(
             
             popt, pcov = curve_fit(
                 plx_pm_model,
-                np.vstack([epoch_yr[inlier_mask], plx_motion_ra[inlier_mask], plx_motion_dec[inlier_mask]]),
+                np.vstack([epoch_yr[inlier_mask] - t0_ref_plx, pra_rel[inlier_mask], pdec_rel[inlier_mask]]),
                 np.concatenate([rel_ra[inlier_mask], rel_dec[inlier_mask]]),
                 sigma=sigma_vec,
                 absolute_sigma=True
@@ -245,7 +603,12 @@ def robust_error_weighted_plxfit_with_rejection(
     pmra, pmdec, plx, pos_ra, pos_dec = popt
     e_pmra, e_pmdec, e_plx, e_pos_ra, e_pos_dec = np.sqrt(np.diag(pcov))
 
-    return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, inlier_mask, s_ra, s_dec, s_ra_by_mission if ('s_ra_by_mission' in locals()) else {}, s_dec_by_mission if ('s_dec_by_mission' in locals()) else {}
+    return (plx, pmra, pmdec, e_plx, e_pmra, e_pmdec,
+        inlier_mask,
+        s_ra, s_dec,
+        s_ra_by_mission if ('s_ra_by_mission' in locals()) else {},
+        s_dec_by_mission if ('s_dec_by_mission' in locals()) else {},
+        pos_ra, pos_dec, t0_ref_plx)
 
 def _solve_sigma_add(residuals, sigma, dof):
     """
@@ -284,104 +647,435 @@ def _solve_sigma_add(residuals, sigma, dof):
     return s_hi
 
 #Robust error-weighted fit
-def robust_error_weighted_pmfit_with_rejection(measurement_epoch_yr, rel_ra, ra_unc_mas, sigma_threshold=10, max_iterations=5, inflate_errors=False, mission_labels=None, per_mission_inflate=False):
+def _fit_pm2d_from_two_points(t1, ra1, dec1, t2, ra2, dec2):
+    """Minimal model from two epochs for PM-only in RA+DEC."""
+    dt = float(t2 - t1)
+    if not np.isfinite(dt) or abs(dt) < 1e-6:
+        return None
+    pmra = (ra2 - ra1) / dt
+    pmdec = (dec2 - dec1) / dt
+    pos_ra_m = ra1 - pmra * t1
+    pos_dec_m = dec1 - pmdec * t1
+    return np.array([pmra, pmdec, pos_ra_m, pos_dec_m], dtype=float)
+
+def _theil_sen_pm2d_seed(t, y_ra, y_dec):
+    """Robust slope (Theil–Sen) for RA and DEC separately; returns params."""
+    t = np.asarray(t, float)
+    y_ra = np.asarray(y_ra, float)
+    y_dec = np.asarray(y_dec, float)
+    n = t.size
+    if n < 2:
+        return None
+
+    # Build pairwise slopes with a modest baseline guard
+    slopes_ra = []
+    slopes_dec = []
+    for i in range(n - 1):
+        dt = t[i+1:] - t[i]
+        good = np.isfinite(dt) & (np.abs(dt) > 0.25)  # >= 3 months baseline
+        if not np.any(good):
+            continue
+        slopes_ra.append((y_ra[i+1:][good] - y_ra[i]) / dt[good])
+        slopes_dec.append((y_dec[i+1:][good] - y_dec[i]) / dt[good])
+    if not slopes_ra:
+        return None
+    pmra = float(np.median(np.concatenate(slopes_ra)))
+    pmdec = float(np.median(np.concatenate(slopes_dec)))
+
+    # Intercepts via median at reference epoch (reduce correlation)
+    t0 = float(np.nanmedian(t))
+    pos_ra_m = float(np.nanmedian(y_ra - pmra * (t - t0))) + pmra * t0
+    pos_dec_m = float(np.nanmedian(y_dec - pmdec * (t - t0))) + pmdec * t0
+    return np.array([pmra, pmdec, pos_ra_m, pos_dec_m], dtype=float)
+
+def _ransac_pm2d_seed(t, y_ra, y_dec, sra, sde, n_trials=400, z_thresh=3.5, min_inliers=4):
     """
-    Perform a robust error-weighted fit with iterative outlier rejection.
-    
-    Parameters:
-    - measurement_epoch_yr (array-like): The time values (years).
-    - rel_ra (array-like): The relative RA offsets (mas).
-    - ra_unc_mas (array-like): The uncertainties in relative RA (mas).
-    - sigma_threshold (float): Number of standard deviations for outlier rejection.
-    - max_iterations (int): Maximum number of iterations for outlier rejection.
-    
+    RANSAC seed for the moving track. Chooses two-epoch fits and keeps the model
+    with the most 2D inliers (Mahalanobis threshold).
+    """
+    rng = np.random.default_rng(12345)
+    t = np.asarray(t, float)
+    y_ra = np.asarray(y_ra, float)
+    y_dec = np.asarray(y_dec, float)
+    sra = np.asarray(sra, float)
+    sde = np.asarray(sde, float)
+    n = t.size
+    if n < 2:
+        return None
+
+    best_params = None
+    best_count = 0
+
+    for _ in range(n_trials):
+        i, j = rng.integers(0, n, size=2)
+        if i == j:
+            continue
+        if abs(t[j] - t[i]) < 0.5:  # ensure >= 6 months baseline
+            continue
+        params = _fit_pm2d_from_two_points(t[i], y_ra[i], y_dec[i], t[j], y_ra[j], y_dec[j])
+        if params is None:
+            continue
+
+        pmra, pmdec, pos_ra_m, pos_dec_m = params
+        ra_m = pmra * t + pos_ra_m
+        dec_m = pmdec * t + pos_dec_m
+        z2 = ((y_ra - ra_m) / np.maximum(sra, 1e-3))**2 + ((y_dec - dec_m) / np.maximum(sde, 1e-3))**2
+        inliers = z2 < (z_thresh**2)
+        count = int(np.sum(inliers))
+        if count > best_count and count >= min_inliers:
+            best_count = count
+            best_params = params
+
+    return best_params
+
+def robust_error_weighted_pmfit_with_rejection(
+    measurement_epoch_yr,
+    rel_ra,
+    rel_dec,
+    ra_unc_mas,
+    dec_unc_mas,
+    sigma_threshold=10,
+    max_iterations=5,
+    inflate_errors=False,
+    mission_labels=None,
+    per_mission_inflate=False,
+    seed_pmra=None,
+    seed_pmdec=None
+):
+    """
+    Joint RA+DEC robust PM-only fit with a moving+stationary mixture.
+    Moving component: RA = pmra * t + pos_ra_m ; DEC = pmdec * t + pos_dec_m
+    Stationary component: RA = s_ra_stat ; DEC = s_dec_stat
+    Outlier rejection is based ONLY on residuals to the moving component.
     Returns:
-    - slope (float): Best-fit slope (proper motion in mas/yr).
-    - slope_error (float): Uncertainty in the slope.
-    - inlier_mask (array): Boolean mask indicating inliers used in the final fit.
+        pmra, pmdec, e_pmra, e_pmdec,
+        inlier_mask,
+        s_add_ra, s_add_dec,
+        s_add_ra_by_mission, s_add_dec_by_mission,
+        pos_ra_m, pos_dec_m, s_ra_stat, s_dec_stat
     """
-    # Define a linear model: y = m * x + b
-    def linear_model(x, m, b):
-        return m * x + b
+    # Model: use centered time for numerical stability
+    def pm2d_model(xdata, pmra, pmdec, pos_ra_m, pos_dec_m):
+        tcent = xdata[0]  # already centered before passing in
+        ra_model = pmra * tcent + pos_ra_m
+        dec_model = pmdec * tcent + pos_dec_m
+        return np.concatenate([ra_model, dec_model])
 
     # Convert inputs to numpy arrays
-    x = np.array(measurement_epoch_yr)
-    y = np.array(rel_ra)
-    sigma = np.array(ra_unc_mas)
-    # Track additive error inflation (mas)
-    s_add = 0.0
+    t_all = np.asarray(measurement_epoch_yr, float)
+    y_ra_all = np.asarray(rel_ra, float)
+    y_dec_all = np.asarray(rel_dec, float)
+    sig_ra_all = np.asarray(ra_unc_mas, float)
+    sig_dec_all = np.asarray(dec_unc_mas, float)
 
-    # Initial mask (all points are considered inliers)
-    inlier_mask = ~np.isnan(x) & ~np.isnan(y) & ~np.isnan(sigma)
+    # Center time to reduce intercept/pm correlation
+    t0_ref = float(np.nanmedian(t_all))
 
-    for iteration in range(max_iterations):
-        # Perform the fit using inliers
-        popt, pcov = curve_fit(
-            linear_model,
-            x[inlier_mask],
-            y[inlier_mask],
-            sigma=sigma[inlier_mask],
-            absolute_sigma=True
-        )
-        
-        # Calculate residuals
-        residuals = y - linear_model(x, *popt)
+    debug_pm_init = {"seeds": [], "chosen": None}
 
-        # Calculate standardized residuals (z-scores)
-        standardized_residuals = np.abs(residuals / sigma)
+    # Track additive error inflations
+    s_add_ra = 0.0
+    s_add_dec = 0.0
 
-        # Update inlier mask
-        new_inlier_mask = standardized_residuals < sigma_threshold
+    # Start: all valid points are inliers
+    inlier_mask = (~np.isnan(t_all) & ~np.isnan(y_ra_all) & ~np.isnan(y_dec_all)
+                   & ~np.isnan(sig_ra_all) & ~np.isnan(sig_dec_all))
 
-        # Stop if no changes in the mask
+    # EM + rejection loop
+    for _ in range(max_iterations):
+        # Inlier subset
+        t = t_all[inlier_mask]
+        y_ra = y_ra_all[inlier_mask]
+        y_dec = y_dec_all[inlier_mask]
+        sra = sig_ra_all[inlier_mask]
+        sde = sig_dec_all[inlier_mask]
+        n = t.size
+
+        # Centered time
+        tc = t - t0_ref
+
+        # ----- Detect a stationary core near the median and avoid it for seeding -----
+        mra0 = float(np.nanmedian(y_ra))
+        mdec0 = float(np.nanmedian(y_dec))
+        dr = np.sqrt((y_ra - mra0)**2 + (y_dec - mdec0)**2)
+        sig_med = float(np.sqrt(np.nanmedian(sra**2) + np.nanmedian(sde**2)))
+        # Core radius: max of 5σ or 30th percentile of radial distances
+        r_core = max(5.0 * (sig_med if np.isfinite(sig_med) and sig_med > 0 else 20.0),
+                     float(np.nanpercentile(dr, 30)) if np.isfinite(np.nanpercentile(dr, 30)) else 0.0)
+        core_mask = dr < r_core
+        # Use non-core (outer) points for robust seeding when available
+        use_outer = np.sum(~core_mask) >= 4
+        t_seed = tc[~core_mask] if use_outer else tc
+        ra_seed = y_ra[~core_mask] if use_outer else y_ra
+        dec_seed = y_dec[~core_mask] if use_outer else y_dec
+        sra_seed = sra[~core_mask] if use_outer else sra
+        sde_seed = sde[~core_mask] if use_outer else sde
+
+        # Prepare x/y for curve_fit
+        xdata_in = np.vstack([tc])
+        ydata_in = np.concatenate([y_ra, y_dec])
+
+        # ===== Multi-start initialisation for the moving model =====
+        # Optional seed from literature PM
+        seed_candidate = None
+        if (seed_pmra is not None and np.isfinite(seed_pmra)) or (seed_pmdec is not None and np.isfinite(seed_pmdec)):
+            spmra = float(seed_pmra) if seed_pmra is not None and np.isfinite(seed_pmra) else 0.0
+            spmdec = float(seed_pmdec) if seed_pmdec is not None and np.isfinite(seed_pmdec) else 0.0
+            # Intercepts consistent with centered time tc: pos = mean(y - pm*tcent)
+            w_ra0 = 1.0 / np.maximum(sra, 1e-6) ** 2
+            w_dec0 = 1.0 / np.maximum(sde, 1e-6) ** 2
+            pos_ra_seed = float(np.sum(w_ra0 * (y_ra - spmra * tc)) / np.sum(w_ra0)) if np.sum(w_ra0) > 0 else float(np.nanmedian(y_ra - spmra * tc))
+            pos_dec_seed = float(np.sum(w_dec0 * (y_dec - spmdec * tc)) / np.sum(w_dec0)) if np.sum(w_dec0) > 0 else float(np.nanmedian(y_dec - spmdec * tc))
+            seed_candidate = np.array([spmra, spmdec, pos_ra_seed, pos_dec_seed], dtype=float)
+
+        if '_debug_collected' not in locals():
+            # Candidate A: plain WLS seed (use outer points if available)
+            try:
+                popt_a, _ = curve_fit(
+                    pm2d_model,
+                    np.vstack([t_seed]),
+                    np.concatenate([ra_seed, dec_seed]),
+                    sigma=np.concatenate([sra_seed, sde_seed]),
+                    absolute_sigma=True,
+                )
+            except Exception:
+                popt_a = None
+            if popt_a is not None and np.all(np.isfinite(popt_a)):
+                debug_pm_init["seeds"].append(
+                    {"method": "WLS", "pmra": float(popt_a[0]), "pmdec": float(popt_a[1]),
+                    "pos_ra": float(popt_a[2]), "pos_dec": float(popt_a[3])}
+                )
+            else:
+                debug_pm_init["seeds"].append({"method": "WLS", "pmra": None, "pmdec": None, "pos_ra": None, "pos_dec": None})
+            # Candidate B: RANSAC seed (tends to lock onto the moving track)
+            popt_b = _ransac_pm2d_seed(t_seed, ra_seed, dec_seed, sra_seed, sde_seed, n_trials=2000, z_thresh=2.75, min_inliers=6)
+            if popt_b is not None and np.all(np.isfinite(popt_b)):
+                debug_pm_init["seeds"].append(
+                    {"method": "RANSAC", "pmra": float(popt_b[0]), "pmdec": float(popt_b[1]),
+                    "pos_ra": float(popt_b[2]), "pos_dec": float(popt_b[3])}
+                )
+            else:
+                debug_pm_init["seeds"].append({"method": "RANSAC", "pmra": None, "pmdec": None, "pos_ra": None, "pos_dec": None})
+            # Candidate C: Theil–Sen robust slope seed
+            popt_c = _theil_sen_pm2d_seed(t_seed, ra_seed, dec_seed)
+            if popt_c is not None and np.all(np.isfinite(popt_c)):
+                debug_pm_init["seeds"].append(
+                    {"method": "Theil-Sen", "pmra": float(popt_c[0]), "pmdec": float(popt_c[1]),
+                    "pos_ra": float(popt_c[2]), "pos_dec": float(popt_c[3])}
+                )
+            else:
+                debug_pm_init["seeds"].append({"method": "Theil-Sen", "pmra": None, "pmdec": None, "pos_ra": None, "pos_dec": None})
+            _debug_collected = True
+        else:
+            try:
+                popt_a, _ = curve_fit(
+                    pm2d_model,
+                    np.vstack([t_seed]),
+                    np.concatenate([ra_seed, dec_seed]),
+                    sigma=np.concatenate([sra_seed, sde_seed]),
+                    absolute_sigma=True,
+                )
+            except Exception:
+                popt_a = None
+            popt_b = _ransac_pm2d_seed(t_seed, ra_seed, dec_seed, sra_seed, sde_seed, n_trials=2000, z_thresh=2.75, min_inliers=6)
+            popt_c = _theil_sen_pm2d_seed(t_seed, ra_seed, dec_seed)
+
+        # Keep only finite candidates (B, C, A order), but put seed_candidate first if present
+        base_cands = [p for p in (popt_b, popt_c, popt_a) if p is not None and np.all(np.isfinite(p))]
+        if seed_candidate is not None and np.all(np.isfinite(seed_candidate)):
+            candidates = [seed_candidate] + base_cands
+            debug_pm_init["seeds"].insert(0, {"method": "Literature seed", "pmra": float(seed_candidate[0]), "pmdec": float(seed_candidate[1]), "pos_ra": float(seed_candidate[2]), "pos_dec": float(seed_candidate[3])})
+        else:
+            candidates = base_cands
+
+        # Simple motion scale heuristic from outer points
+        if use_outer and t_seed.size > 1:
+            rough_mu = np.median(np.abs(np.concatenate([
+                (ra_seed - np.median(ra_seed)) / np.maximum(np.abs(t_seed), 1e-6),
+                (dec_seed - np.median(dec_seed)) / np.maximum(np.abs(t_seed), 1e-6)
+            ])))
+        else:
+            rough_mu = 0.0
+
+        if not candidates:
+            # Fallback to zeros to avoid crash; EM will adjust or rejection will drop all
+            popt = np.array([0.0, 0.0, float(np.nanmedian(y_ra)), float(np.nanmedian(y_dec))], dtype=float)
+            debug_pm_init["chosen"] = "none"
+        else:
+            # Score each seed by initial log-likelihood (equal mixture, crude stationary)
+            best_ll = -np.inf
+            popt = candidates[0]
+            # Rough stationary centroids
+            s_ra_stat = float(np.nanmedian(y_ra))
+            s_dec_stat = float(np.nanmedian(y_dec))
+            seed_map = {}
+            if popt_b is not None: seed_map[tuple(np.round(popt_b, 12))] = "RANSAC"
+            if popt_c is not None: seed_map[tuple(np.round(popt_c, 12))] = "Theil-Sen"
+            if popt_a is not None: seed_map[tuple(np.round(popt_a, 12))] = "WLS"
+            for cand in candidates:
+                ra_m = cand[0] * tc + cand[2]
+                dec_m = cand[1] * tc + cand[3]
+                m2_mov = ((y_ra - ra_m) ** 2) / (sra ** 2) + ((y_dec - dec_m) ** 2) / (sde ** 2)
+                m2_sta = ((y_ra - s_ra_stat) ** 2) / (sra ** 2) + ((y_dec - s_dec_stat) ** 2) / (sde ** 2)
+                ll = np.sum(np.log(0.5 * np.exp(-0.5 * m2_mov) + 0.5 * np.exp(-0.5 * m2_sta) + 1e-300))
+                mu_mag = np.hypot(cand[0], cand[1])
+                penalty = 0.0
+                if rough_mu > 10.0:
+                    penalty = -0.1 * max(0.0, (10.0 * rough_mu / max(mu_mag, 1e-6)) - 1.0)
+                score = ll + penalty
+                if score > best_ll:
+                    best_ll = score
+                    popt = cand
+                    key = tuple(np.round(popt, 12))
+                    debug_pm_init["chosen"] = seed_map.get(key, "unknown")
+
+        # --- Initialize stationary offsets from precision-weighted means ---
+        w_ra0 = 1.0 / np.maximum(sra, 1e-6) ** 2
+        w_dec0 = 1.0 / np.maximum(sde, 1e-6) ** 2
+        s_ra_stat = float(np.sum(w_ra0 * y_ra) / np.sum(w_ra0)) if np.sum(w_ra0) > 0 else float(np.nanmedian(y_ra))
+        s_dec_stat = float(np.sum(w_dec0 * y_dec) / np.sum(w_dec0)) if np.sum(w_dec0) > 0 else float(np.nanmedian(y_dec))
+
+        # Start with neutral mixture weight (avoid bias to stationary if many near zero)
+        w_mix = 0.5
+        r = np.full(n, 0.5, dtype=float)
+
+        # ===== EM inner loop =====
+        for _em in range(12):
+            model_concat = pm2d_model(xdata_in, *popt)
+            ra_m = model_concat[:n]
+            dec_m = model_concat[n:]
+
+            m2_mov = ((y_ra - ra_m) ** 2) / (sra ** 2) + ((y_dec - dec_m) ** 2) / (sde ** 2)
+            m2_sta = ((y_ra - s_ra_stat) ** 2) / (sra ** 2) + ((y_dec - s_dec_stat) ** 2) / (sde ** 2)
+
+            # E-step with small temperature (anneal early responsibilities for stability)
+            tau = 1.5 - 1.2 * (_em / 11.0)
+            ratio = ((1.0 - w_mix) / max(w_mix, 1e-6)) * np.exp(0.5 / max(tau, 0.3) * (m2_mov - m2_sta))
+            r = 1.0 / (1.0 + ratio)
+            r = np.clip(r, 1e-4, 1.0 - 1e-4)
+
+            # M-step: refit moving with r-weights
+            scale = np.sqrt(r)
+            sigma_eff = np.concatenate([sra / scale, sde / scale])
+            popt, pcov = curve_fit(
+                pm2d_model,
+                xdata_in,
+                ydata_in,
+                sigma=sigma_eff,
+                absolute_sigma=True,
+                maxfev=20000
+            )
+
+            # Update stationary offsets
+            w_s_ra = (1.0 - r) / (sra ** 2)
+            w_s_dec = (1.0 - r) / (sde ** 2)
+            if np.sum(w_s_ra) > 0:
+                s_ra_stat = float(np.sum(w_s_ra * y_ra) / np.sum(w_s_ra))
+            if np.sum(w_s_dec) > 0:
+                s_dec_stat = float(np.sum(w_s_dec * y_dec) / np.sum(w_s_dec))
+
+            # Update mixture weight; keep away from extremes
+            w_mix = float(np.clip(np.mean(r), 0.1, 0.9))
+
+        # --- Outlier rejection based on moving-component residuals over ALL rows ---
+        x_all = np.vstack([t_all - t0_ref])
+        model_all = pm2d_model(x_all, *popt)
+        ra_model_all = model_all[:len(t_all)]
+        dec_model_all = model_all[len(t_all):]
+
+        ra_res = y_ra_all - ra_model_all
+        dec_res = y_dec_all - dec_model_all
+
+        z_ra = np.abs(ra_res / sig_ra_all)
+        z_dec = np.abs(dec_res / sig_dec_all)
+
+        new_inlier_mask = (z_ra < sigma_threshold) & (z_dec < sigma_threshold)
+
         if np.array_equal(inlier_mask, new_inlier_mask):
             break
-
         inlier_mask = new_inlier_mask
-    
-    
-    if inflate_errors and not per_mission_inflate:
-        residuals = y - linear_model(x, *popt)
-        in_inliers = inlier_mask
-        dof = max(1, in_inliers.sum() - 2)  # slope + intercept
-        s_add = _solve_sigma_add(residuals[in_inliers], sigma[in_inliers], dof)
-        popt, pcov = curve_fit(
-            linear_model,
-            x[in_inliers],
-            y[in_inliers],
-            sigma=np.sqrt(sigma[in_inliers]**2 + s_add**2),
-            absolute_sigma=True
-        )
-    elif inflate_errors and per_mission_inflate and mission_labels is not None:
-        missions_arr = np.asarray(mission_labels)
-        # Compute residuals on all points with current fit
-        residuals_all = y - linear_model(x, *popt)
-        # Start with base sigmas
-        sig2 = sigma**2
-        s_add_by_mission = {}
-        for m in np.unique(missions_arr[inlier_mask]):
-            mask_m = (missions_arr == m) & inlier_mask
-            if mask_m.sum() >= 3:
-                dof_m = max(1, mask_m.sum() - 2)
-                s_m = _solve_sigma_add(residuals_all[mask_m], sigma[mask_m], dof_m)
-                s_add_by_mission[m] = float(s_m)
-                sig2[missions_arr == m] = sigma[missions_arr == m]**2 + s_m**2
-            else:
-                s_add_by_mission[m] = 0.0
-        # Refit with per-point inflated sigmas on inliers only
-        popt, pcov = curve_fit(
-            linear_model,
-            x[inlier_mask],
-            y[inlier_mask],
-            sigma=np.sqrt(sig2[inlier_mask]),
-            absolute_sigma=True
-        )
-    
-    # Final slope and error
-    slope = popt[0]
-    slope_error = np.sqrt(pcov[0, 0])
 
-    return slope, slope_error, inlier_mask, s_add, s_add_by_mission if ('s_add_by_mission' in locals()) else {}
+    # Optional error inflation (global and/or per mission)
+    if inflate_errors:
+        # Residuals for inliers with current fit
+        x_all = np.vstack([t_all - t0_ref])
+        model_all = pm2d_model(x_all, *popt)
+        ra_model_all = model_all[:len(t_all)]
+        dec_model_all = model_all[len(t_all):]
+
+        ra_res_in = (y_ra_all - ra_model_all)[inlier_mask]
+        dec_res_in = (y_dec_all - dec_model_all)[inlier_mask]
+        ra_sig_in = sig_ra_all[inlier_mask]
+        dec_sig_in = sig_dec_all[inlier_mask]
+
+        dof_ra = max(1, ra_res_in.size - 2)  # pm + intercept
+        dof_dec = max(1, dec_res_in.size - 2)
+
+        s_add_ra = _solve_sigma_add(ra_res_in, ra_sig_in, dof_ra)
+        s_add_dec = _solve_sigma_add(dec_res_in, dec_sig_in, dof_dec)
+
+        # Refit with inflated uncertainties on inliers
+        sigma_vec = np.sqrt(np.concatenate([
+            (sig_ra_all[inlier_mask] ** 2 + s_add_ra ** 2),
+            (sig_dec_all[inlier_mask] ** 2 + s_add_dec ** 2)
+        ]))
+        popt, pcov = curve_fit(
+            pm2d_model,
+            np.vstack([t_all[inlier_mask] - t0_ref]),
+            np.concatenate([y_ra_all[inlier_mask], y_dec_all[inlier_mask]]),
+            sigma=sigma_vec,
+            absolute_sigma=True
+        )
+
+        # Per-mission inflation (optional)
+        s_add_ra_by_mission = {}
+        s_add_dec_by_mission = {}
+        if per_mission_inflate and mission_labels is not None:
+            missions_arr = np.asarray(mission_labels)
+            model_all = pm2d_model(np.vstack([t_all - t0_ref]), *popt)
+            ra_model_all = model_all[:len(t_all)]
+            dec_model_all = model_all[len(t_all):]
+            ra_sig2 = sig_ra_all ** 2
+            dec_sig2 = sig_dec_all ** 2
+            for m in np.unique(missions_arr[inlier_mask]):
+                mask_m = (missions_arr == m) & inlier_mask
+                if mask_m.sum() >= 3:
+                    dof_ra_m = max(1, mask_m.sum() - 2)
+                    dof_dec_m = max(1, mask_m.sum() - 2)
+                    s_ra_m = _solve_sigma_add((y_ra_all - ra_model_all)[mask_m], sig_ra_all[mask_m], dof_ra_m)
+                    s_dec_m = _solve_sigma_add((y_dec_all - dec_model_all)[mask_m], sig_dec_all[mask_m], dof_dec_m)
+                    s_add_ra_by_mission[m] = float(s_ra_m)
+                    s_add_dec_by_mission[m] = float(s_dec_m)
+                    ra_sig2[missions_arr == m] = sig_ra_all[missions_arr == m] ** 2 + s_ra_m ** 2
+                    dec_sig2[missions_arr == m] = sig_dec_all[missions_arr == m] ** 2 + s_dec_m ** 2
+                else:
+                    s_add_ra_by_mission[m] = 0.0
+                    s_add_dec_by_mission[m] = 0.0
+            sigma_vec = np.sqrt(np.concatenate([ra_sig2[inlier_mask], dec_sig2[inlier_mask]]))
+            popt, pcov = curve_fit(
+                pm2d_model,
+                np.vstack([t_all[inlier_mask] - t0_ref]),
+                np.concatenate([y_ra_all[inlier_mask], y_dec_all[inlier_mask]]),
+                sigma=sigma_vec,
+                absolute_sigma=True
+            )
+        else:
+            s_add_ra_by_mission = {}
+            s_add_dec_by_mission = {}
+    else:
+        s_add_ra_by_mission = {}
+        s_add_dec_by_mission = {}
+
+    # Extract results
+    pmra, pmdec, pos_ra_m, pos_dec_m = popt
+    e_pmra, e_pmdec = np.sqrt(np.diag(pcov))[0], np.sqrt(np.diag(pcov))[1]
+
+    return (pmra, pmdec, e_pmra, e_pmdec,
+        inlier_mask,
+        s_add_ra, s_add_dec,
+        s_add_ra_by_mission, s_add_dec_by_mission,
+        pos_ra_m, pos_dec_m, s_ra_stat, s_dec_stat,
+        debug_pm_init)
 
 # Group by binned time and calculate weighted averages
 def weighted_combination(group):
@@ -538,6 +1232,7 @@ layout = html.Div([
     html.Div([
         # Column 1
         html.Div([
+            # UltraNest now *only* refines EM results using EM inliers + inflated errors
             dcc.Checklist(
                 id="subtract-pm-checkbox",
                 options=[{'label': 'Subtract proper motion', 'value': 'subtract_pm'}],
@@ -591,6 +1286,13 @@ layout = html.Div([
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
+            (dcc.Checklist(
+                id="fit-ultranest-checkbox",
+                options=[{'label': 'Fit using ultranest (slow)', 'value': 'ultranest'}],
+                value=[],
+                inline=True,
+                style={'margin-bottom': '10px', 'font-size': '16px'}
+            ) if _ULTRANEST_AVAILABLE else html.Div()),
             dcc.Checklist(
                 id="inflate-errors-checkbox",
                 options=[{'label': 'Back propagate residuals into measurement errors during fit', 'value': 'inflate'}],
@@ -811,12 +1513,13 @@ def update_mission_dropdown(selected_dataset):
      Input("astrometry-bin-checkbox", "value"),
      Input("fit-proper-motion-checkbox", "value"),
      Input("fit-parallax-checkbox", "value"),
+     Input("fit-ultranest-checkbox", "value"),
      Input("inflate-errors-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, inflate_err_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -832,6 +1535,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     fit_pm = 'fit_pm' in fit_pm_values
     fit_plx = 'fit_plx' in fit_plx_values
     inflate_errors = 'inflate' in inflate_err_values
+    use_ultranest = 'ultranest' in ultranest_values
 
     triggered_prop = ctx.triggered[0]["prop_id"]
 
@@ -1013,18 +1717,45 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
 
     if fit_plx:
-        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask, s_add_ra, s_add_dec, s_add_ra_by_mission, s_add_dec_by_mission = robust_error_weighted_plxfit_with_rejection(
+        # Always run EM mixture fit first
+        plx, pmra, pmdec, eplx, epmra, epmdec, plx_inlier_mask, s_add_ra, s_add_dec, s_add_ra_by_mission, s_add_dec_by_mission, pos_ra_fit, pos_dec_fit, t0_ref_plx = robust_error_weighted_plxfit_with_rejection(
             data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
             data_df['ra_unc_mas'], data_df['dec_unc_mas'], ra_ref, dec_ref,
             inflate_errors=inflate_errors,
             mission_labels=data_df['mission'],
-            per_mission_inflate=inflate_errors
+            per_mission_inflate=inflate_errors,
+            seed_pmra=(float(pm_df.iloc[0]["pmra_masyr"]) if len(pm_df)!=0 and pd.notna(pm_df.iloc[0]["pmra_masyr"]) else None),
+            seed_pmdec=(float(pm_df.iloc[0]["pmdec_masyr"]) if len(pm_df)!=0 and pd.notna(pm_df.iloc[0]["pmdec_masyr"]) else None),
+            seed_plx=(float(plx_df.iloc[0]["parallax_mas"]) if len(plx_df)!=0 and pd.notna(plx_df.iloc[0]["parallax_mas"]) else None)
         )
+        # Optional UltraNest refinement using EM inliers and inflated sigmas
+        ultranest_flag = ""
+        if use_ultranest and _ULTRANEST_AVAILABLE:
+            ultranest_flag = " with UltraNest"
+            try:
+                print(f"[UltraNest PM+PLX] BEFORE: EM reference epoch t0_ref_plx = {t0_ref_plx:.6f} yr")
+                print(f"[UltraNest PM+PLX] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, plx={plx:.3f}, posRA={pos_ra_fit:.3f}, posDEC={pos_dec_fit:.3f}")
+                plx, pmra, pmdec, eplx, epmra, epmdec, pos_ra_fit, pos_dec_fit, t0_ultra = _ultranest_refine_pm_plx(
+                    data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+                    data_df['ra_unc_mas'], data_df['dec_unc_mas'], plx_inlier_mask,
+                    ra_ref, dec_ref,
+                    pmra, pmdec, plx, pos_ra_fit, pos_dec_fit,
+                    s_add_ra=s_add_ra, s_add_dec=s_add_dec,
+                    mission_labels=data_df['mission'],
+                    s_add_ra_by_mission=s_add_ra_by_mission,
+                    s_add_dec_by_mission=s_add_dec_by_mission,
+                    t0_ref=t0_ref_plx,
+                )
+                print(f"[UltraNest PM+PLX] AFTER: UltraNest reference epoch t0_ultra = {t0_ultra:.6f} yr")
+            except Exception as e:
+                print("[Astrometric Explorer] UltraNest refinement failed (PM+PLX). Using EM results.", e)
+        # Ensure t0_ultra is defined even if UltraNest wasn't used
+        t0_ultra = locals().get('t0_ultra', None)
         # Rebuild plx_df and pm_df
         plx_df = pd.DataFrame({
             "parallax_mas": [plx],
             "parallax_mas_unc": [eplx],
-            "plx_ref": ["fitted in Astrometric Explorer"]
+            "plx_ref": ["MOCAdb fit"+ultranest_flag]
         })
         # Rebuild pm_df
         pm_df = pd.DataFrame({
@@ -1032,31 +1763,102 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             "pmdec_masyr": [pmdec],
             "pmra_masyr_unc": [epmra],
             "pmdec_masyr_unc": [epmdec],
-            "pm_ref": ["fitted in Astrometric Explorer"]
+            "pm_ref": ["MOCAdb fit"+ultranest_flag]
         })
+        # --- Recenter observed data to moving-component reference at epoch_ref ---
+        # Shift observed data so that zero is the moving-component position at epoch_ref
+        plxm_ref = parallax_motion(ra_ref, dec_ref, epoch_ref)
+        if t0_ultra is not None:
+            plxm_t0 = parallax_motion(ra_ref, dec_ref, t0_ultra)
+            ra0_mov = (
+                pm_df.iloc[0]["pmra_masyr"] * (epoch_ref - t0_ultra)
+                + plx * (plxm_ref["plx_motion_racosdec"] - plxm_t0["plx_motion_racosdec"])
+                + pos_ra_fit
+            )
+            dec0_mov = (
+                pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref - t0_ultra)
+                + plx * (plxm_ref["plx_motion_dec"] - plxm_t0["plx_motion_dec"])
+                + pos_dec_fit
+            )
+        else:
+            # EM (non-UltraNest) intercepts are defined at t=0
+            ra0_mov = pm_df.iloc[0]["pmra_masyr"] * (epoch_ref) + plx * plxm_ref["plx_motion_racosdec"] + pos_ra_fit
+            dec0_mov = pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref) + plx * plxm_ref["plx_motion_dec"] + pos_dec_fit
+        data_df["rel_ra"] = data_df["rel_ra"] - ra0_mov
+        data_df["rel_dec"] = data_df["rel_dec"] - dec0_mov
 
     if fit_pm and not fit_plx:
-        pmra, epmra, pmra_inlier_mask, s_add_ra, s_add_ra_by_mission = robust_error_weighted_pmfit_with_rejection(
-            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['ra_unc_mas'],
+        # Always run EM mixture fit first
+        (pmra, pmdec, epmra, epmdec,
+         pm_inlier_mask,
+         s_add_ra, s_add_dec,
+         s_add_ra_by_mission, s_add_dec_by_mission,
+         pos_ra_m, pos_dec_m, s_ra_stat, s_dec_stat,
+         debug_pm_init) = robust_error_weighted_pmfit_with_rejection(
+            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+            data_df['ra_unc_mas'], data_df['dec_unc_mas'],
             inflate_errors=inflate_errors,
             mission_labels=data_df['mission'],
-            per_mission_inflate=inflate_errors
+            per_mission_inflate=inflate_errors,
+            seed_pmra=(float(pm_df.iloc[0]["pmra_masyr"]) if len(pm_df)!=0 and pd.notna(pm_df.iloc[0]["pmra_masyr"]) else None),
+            seed_pmdec=(float(pm_df.iloc[0]["pmdec_masyr"]) if len(pm_df)!=0 and pd.notna(pm_df.iloc[0]["pmdec_masyr"]) else None)
         )
-        pmdec, epmdec, pmdec_inlier_mask, s_add_dec, s_add_dec_by_mission = robust_error_weighted_pmfit_with_rejection(
-            data_df['measurement_epoch_yr'], data_df['rel_dec'], data_df['dec_unc_mas'],
-            inflate_errors=inflate_errors,
-            mission_labels=data_df['mission'],
-            per_mission_inflate=inflate_errors
-        )
+        # Optional UltraNest refinement on EM inliers
+        t0_ref_em = float(np.nanmedian(data_df["measurement_epoch_yr"]))
+        ultranest_flag = ""
+        if use_ultranest and _ULTRANEST_AVAILABLE:
+            ultranest_flag = " with UltraNest"
+            try:
+                print(f"[UltraNest PM-only] BEFORE: EM reference epoch t0_ref_em = {t0_ref_em:.6f} yr")
+                print(f"[UltraNest PM-only] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, posRA={pos_ra_m:.3f}, posDEC={pos_dec_m:.3f}")
+                pmra, pmdec, epmra, epmdec, pos_ra_m, pos_dec_m = _ultranest_refine_pm_only(
+                    data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+                    data_df['ra_unc_mas'], data_df['dec_unc_mas'], pm_inlier_mask,
+                    pmra, pmdec, pos_ra_m, pos_dec_m,
+                    s_add_ra=s_add_ra, s_add_dec=s_add_dec,
+                    mission_labels=data_df['mission'],
+                    s_add_ra_by_mission=s_add_ra_by_mission,
+                    s_add_dec_by_mission=s_add_dec_by_mission,
+                    t0_ref=t0_ref_em,
+                )
+                print(f"[UltraNest PM-only] AFTER: UltraNest reference epoch t0_ref (passed) = {t0_ref_em:.6f} yr")
+            except Exception as e:
+                print("[Astrometric Explorer] UltraNest refinement failed (PM-only). Using EM results.", e)
 
-        # Rebuild pm_df
+        # For downstream display logic expecting per-axis masks, reuse the joint mask:
+        pmra_inlier_mask = pm_inlier_mask
+        pmdec_inlier_mask = pm_inlier_mask
+
+        # Rebuild pm_df from joint fit
         pm_df = pd.DataFrame({
             "pmra_masyr": [pmra],
             "pmdec_masyr": [pmdec],
             "pmra_masyr_unc": [epmra],
             "pmdec_masyr_unc": [epmdec],
-            "pm_ref": ["fitted in Astrometric Explorer"]
+            "pm_ref": ["MOCAdb fit"+ultranest_flag]
         })
+        
+        def _fmt(x):
+            return "N/A" if (x is None or (isinstance(x, float) and not np.isfinite(x))) else f"{x:.2f}"
+        
+        seed_lines = []
+        for s in debug_pm_init.get("seeds", []):
+            seed_lines.append(f"{s['method']}: pmRA={_fmt(s['pmra'])} mas/yr, pmDEC={_fmt(s['pmdec'])} mas/yr")
+        chosen = debug_pm_init.get("chosen", "unknown")
+        pm_init_text = "<br>".join(["<b>PM init seeds</b>"] + seed_lines + [f"<b>Chosen:</b> {chosen}"])
+        
+        print("[Astrometric Explorer] PM-only initialisation:")
+        for line in seed_lines:
+            print("  ", line)
+        print("  Chosen:", chosen)
+        # --- Recenter observed data to moving-component reference at epoch_ref using PM-only solution ---
+        # Center observed data to moving-component reference at epoch_ref using PM-only solution
+        t0_fit = float(np.nanmedian(data_df["measurement_epoch_yr"]))
+        ra0_mov = pm_df.iloc[0]["pmra_masyr"] * (epoch_ref - t0_fit) + pos_ra_m
+        dec0_mov = pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref - t0_fit) + pos_dec_m
+        data_df["rel_ra"] = data_df["rel_ra"] - ra0_mov
+        data_df["rel_dec"] = data_df["rel_dec"] - dec0_mov
+
     # Default additive error inflations (mas) if not set by fitting blocks
     if 's_add_ra' not in locals():
         s_add_ra = 0.0
@@ -1102,7 +1904,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     else:
         parallax_display = "N/A"
     
-    if adjust_reference_epoch:
+    if adjust_reference_epoch and (not fit_plx) and (not fit_pm):
         epochs = data_df["measurement_epoch_yr"].values
         epoch_ref = np.nanmean(epochs)
         rel_ra_observed = (data_df["ra"]) * np.cos(np.radians(data_df["dec"])) * 3600 * 1000
@@ -1199,43 +2001,77 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     ntimep = 5000
     time_values = np.linspace(xaxis_range[0], xaxis_range[1], ntimep)
 
-    if subtract_pm or len(pm_df) == 0:
-        expected_rel_ra = np.zeros_like(time_values)
-        expected_rel_dec = np.zeros_like(time_values)
-    else:
-        if phase_yearly:
-            expected_rel_ra = (time_values+np.round(np.mean(data_df["measurement_epoch_yr"])) - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
-            expected_rel_dec = (time_values+np.round(np.mean(data_df["measurement_epoch_yr"])) - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
+    # Build model using best-fitting moving-component reference when available
+    # Absolute time values for modeling (phase uses wrapped x but absolute calendar year for PM/PLX terms)
+    t_abs = time_values + np.round(np.mean(data_df["measurement_epoch_yr"])) if phase_yearly else time_values
+
+    if fit_plx:
+        # Anchor model to epoch_ref and then optionally subtract PM/PLX exactly like the data
+        plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
+        plxm_ref   = parallax_motion(ra_ref, dec_ref, epoch_ref)
+        # Base anchored components
+        pm_ra_term  = pm_df.iloc[0]["pmra_masyr"] * (t_abs - epoch_ref)
+        pm_dec_term = pm_df.iloc[0]["pmdec_masyr"] * (t_abs - epoch_ref)
+        # Parallax term (array); if not available, zero array with correct shape
+        if len(plx_df) != 0:
+            plx_ra_term = plx * (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"]) 
+            plx_dec_term = plx * (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"]) 
         else:
-            expected_rel_ra = (time_values - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
-            expected_rel_dec = (time_values - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
-    
-    if not subtract_plx and len(plx_df) != 0:
-        if phase_yearly:
-            plxm = parallax_motion(ra_ref, dec_ref, time_values+np.round(np.mean(data_df["measurement_epoch_yr"])))
-        else:    
-            plxm = parallax_motion(ra_ref, dec_ref, time_values)
-        expected_rel_ra += plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
-        expected_rel_dec += plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
+            plx_ra_term = np.zeros_like(time_values)
+            plx_dec_term = np.zeros_like(time_values)
+        # Apply the same subtractions as done to the data (preserve array shapes)
+        if subtract_pm:
+            pm_ra_term = np.zeros_like(time_values)
+            pm_dec_term = np.zeros_like(time_values)
+        if subtract_plx:
+            plx_ra_term = np.zeros_like(time_values)
+            plx_dec_term = np.zeros_like(time_values)
+        expected_rel_ra = pm_ra_term + plx_ra_term
+        expected_rel_dec = pm_dec_term + plx_dec_term
+    elif fit_pm:
+        # PM-only anchored to epoch_ref; optionally add DB parallax as differential
+        pm_ra_term  = pm_df.iloc[0]["pmra_masyr"] * (t_abs - epoch_ref)
+        pm_dec_term = pm_df.iloc[0]["pmdec_masyr"] * (t_abs - epoch_ref)
+        if subtract_pm:
+            pm_ra_term = np.zeros_like(time_values)
+            pm_dec_term = np.zeros_like(time_values)
+        expected_rel_ra = pm_ra_term
+        expected_rel_dec = pm_dec_term
+        if (not subtract_plx) and len(plx_df) != 0:
+            plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
+            plxm_ref   = parallax_motion(ra_ref, dec_ref, epoch_ref)
+            expected_rel_ra += (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"]) * plx_df.iloc[0]["parallax_mas"]
+            expected_rel_dec += (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"]) * plx_df.iloc[0]["parallax_mas"]
+    else:
+        # No fresh fit: fall back to MOCAdb solution relative to the chosen reference epoch
+        if subtract_pm or len(pm_df) == 0:
+            expected_rel_ra = np.zeros_like(time_values)
+            expected_rel_dec = np.zeros_like(time_values)
+        else:
+            expected_rel_ra = (t_abs - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
+            expected_rel_dec = (t_abs - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
+            if (not subtract_plx) and len(plx_df) != 0:
+                plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
+                expected_rel_ra += plxm_model["plx_motion_racosdec"] * plx_df.iloc[0]["parallax_mas"]
+                expected_rel_dec += plxm_model["plx_motion_dec"] * plx_df.iloc[0]["parallax_mas"]
 
     # === Compute 1-sigma model envelopes from parameter uncertainties ===
-    # Pull uncertainties (0 if missing)
-    pmra_unc = float(pm_df.iloc[0]["pmra_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr_unc"]) else 0.0
-    pmdec_unc = float(pm_df.iloc[0]["pmdec_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr_unc"]) else 0.0
+    # Pull uncertainties (0 if missing); zero them if subtract_pm
+    pmra_unc = 0.0 if subtract_pm else (float(pm_df.iloc[0]["pmra_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr_unc"]) else 0.0)
+    pmdec_unc = 0.0 if subtract_pm else (float(pm_df.iloc[0]["pmdec_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr_unc"]) else 0.0)
     plx_unc  = float(plx_df.iloc[0]["parallax_mas_unc"]) if len(plx_df) != 0 and pd.notna(plx_df.iloc[0]["parallax_mas_unc"]) else 0.0
 
-    # Time factor for PM contribution
+    # Time factor for PM contribution; zero if subtract_pm
     if phase_yearly:
         dt_vals = (time_values + np.round(np.mean(data_df["measurement_epoch_yr"])) - epoch_ref)
     else:
         dt_vals = (time_values - epoch_ref)
+    if subtract_pm:
+        dt_vals = np.zeros_like(dt_vals)
 
     # Parallax motion terms for the envelope (zeroed if subtract_plx or no parallax)
     if (not subtract_plx) and (len(plx_df) != 0):
-        if phase_yearly:
-            plxm_env = parallax_motion(ra_ref, dec_ref, time_values + np.round(np.mean(data_df["measurement_epoch_yr"])))
-        else:
-            plxm_env = parallax_motion(ra_ref, dec_ref, time_values)
+        plxm_env = parallax_motion(ra_ref, dec_ref, t_abs)
         plx_ra_term = plxm_env["plx_motion_racosdec"]
         plx_dec_term = plxm_env["plx_motion_dec"]
     else:
@@ -1332,6 +2168,9 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
         binned_df['ra_unc_mas_str'] = binned_df['ra_unc_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
         binned_df['dec_unc_mas_str'] = binned_df['dec_unc_mas'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
 
+    # Outlier legend flag for RA
+    outlier_legend_added = False
+
     for mission in unique_missions:
         
         mission_data = data_df[data_df["mission"] == mission]
@@ -1391,12 +2230,13 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 y=out_ra["rel_ra"],
                 mode='markers',
                 marker=dict(symbol='x-thin', size=14, color='red', line=dict(width=1, color='red')),
-                showlegend=True,
+                showlegend=not outlier_legend_added,
                 name='Flagged outliers',
                 legendgroup='outliers',
                 hoverinfo='skip'
             ))
-    
+            outlier_legend_added = True
+
     # Plot binned data points (black)
     if bin_activated:
         fig_ra.add_trace(go.Scatter(
@@ -1466,7 +2306,8 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             #x=0.02, y=0.98,  # Adjust legend position as needed
             bgcolor='rgba(255, 255, 255, 0.5)',  # Optional: semi-transparent background
             bordercolor='black',
-            borderwidth=2
+            borderwidth=2,
+            groupclick='togglegroup',
         ),
         annotations=[
             dict(
@@ -1476,9 +2317,23 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 showarrow=False,
                 font=dict(size=14, color="black"),
                 align="center"
-            )
+            ),
+            # dict(
+            #     xref="paper", yref="paper",
+            #     x=0.01, y=0.97,
+            #     text=pm_init_text if ('pm_init_text' in locals()) else "",
+            #     showarrow=False,
+            #     align="left",
+            #     font=dict(size=12, color="black"),
+            #     bgcolor="rgba(255,255,255,0.7)",
+            #     bordercolor="black",
+            #     borderwidth=1
+            # )
         ]
     )
+
+    # Outlier legend flag for DEC
+    outlier_legend_added = False
 
     for mission in unique_missions:
         
@@ -1535,11 +2390,12 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 y=out_dec["rel_dec"],
                 mode='markers',
                 marker=dict(symbol='x-thin', size=14, color='red', line=dict(width=1, color='red')),
-                showlegend=True,
+                showlegend=not outlier_legend_added,
                 name='Flagged outliers',
                 legendgroup='outliers',
                 hoverinfo='skip'
             ))
+            outlier_legend_added = True
 
     if bin_activated:
         fig_dec.add_trace(go.Scatter(
@@ -1609,7 +2465,8 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             #x=0.02, y=0.98,  # Adjust legend position as needed
             bgcolor='rgba(255, 255, 255, 0.5)',  # Optional: semi-transparent background
             bordercolor='black',
-            borderwidth=1
+            borderwidth=2,
+            groupclick='togglegroup',
         )
     )
 
