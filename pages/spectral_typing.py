@@ -1283,16 +1283,38 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         except Exception:
             new_index = current_index
     elif 'sp-typing-comparison-spectrum' in triggered_ids:
-        parsed = urlparse(url_search)
-        qs = parse_qs(parsed.query)
-        grid_index_param = qs.get("grid_index", [None])[0]
-        if grid_index_param is None:
-             new_index = len(filtered_precomputed) // 2
+        # On first plotting after a comparison spectrum is selected:
+        # If the URL provides ?grid_index=..., honor it. Otherwise, start at the
+        # grid point with the smallest reduced χ² within the currently selected grid.
+        parsed = urlparse(url_search) if url_search else None
+        grid_index_param = None
+        if parsed:
+            qs = parse_qs(parsed.query)
+            grid_index_param = qs.get("grid_index", [None])[0]
+
+        if grid_index_param is not None:
+            try:
+                new_index = int(grid_index_param)
+            except ValueError:
+                # Fallback to best-chi2 if the param is malformed
+                chi2_values = np.array(
+                    [entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed],
+                    dtype=float
+                )
+                if np.all(np.isnan(chi2_values)):
+                    new_index = len(filtered_precomputed) // 2
+                else:
+                    new_index = int(np.nanargmin(chi2_values))
         else:
-             try:
-                 new_index = int(grid_index_param)
-             except ValueError:
-                 new_index = len(filtered_precomputed) // 2
+            # Choose the index with the smallest reduced χ² (ignoring NaNs)
+            chi2_values = np.array(
+                [entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed],
+                dtype=float
+            )
+            if np.all(np.isnan(chi2_values)):
+                new_index = len(filtered_precomputed) // 2
+            else:
+                new_index = int(np.nanargmin(chi2_values))
     else:
         new_index = current_index
     
