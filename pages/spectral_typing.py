@@ -89,15 +89,24 @@ FEATURE_BANDS = [
     # Y/J band (~0.9–1.35 µm)
     {"name": "VO",  "rng": (1.045, 1.080)},     # VO band
     {"name": "FeH", "rng": (0.985, 1.005)},     # Wing–Ford band
+    {"name": "H₂O", "rng": (1.130, 1.170)},     # H2O feature near 1.15 µm
+    {"name": "VO",  "rng": (1.170, 1.200)},     # VO feature near 1.18–1.20 µm
+    {"name": "FeH", "rng": (1.190, 1.240)},     # FeH feature around 1.2 µm
+    {"name": "Na",  "rng": (1.137, 1.142), "ion": True},  # Na I doublet
+    {"name": "K",   "rng": (1.169, 1.181), "ion": True},  # K I doublet (~1.177 µm)
+    {"name": "K",   "rng": (1.243, 1.253), "ion": True},  # K I doublet
     {"name": "H₂O", "rng": (1.320, 1.350)},     # water edge into 1.4 µm band
-    {"name": "Na",  "rng": (1.137, 1.142)},     # Na I doublet
-    {"name": "K",   "rng": (1.168, 1.178)},     # K I doublet
-    {"name": "K",   "rng": (1.243, 1.253)},     # K I doublet
     # H band (~1.45–1.80 µm)
     {"name": "H₂O", "rng": (1.500, 1.620)},
     {"name": "FeH", "rng": (1.583, 1.620)},
+    # CH4 (from comparison figure): H-band and K-band features
+    {"name": "CH₄", "rng": (1.60, 1.68)},     # H-band methane
+    {"name": "CH₄", "rng": (1.72, 1.78)},     # H-band methane
+    {"name": "CH₄", "rng": (2.20, 2.27)},     # K-band methane onset
     # K band (~2.00–2.40 µm)
-    {"name": "H₂O", "rng": (1.950, 2.030)},
+    {"name": "H₂O", "rng": (1.950, 2.11)},
+    # Single lines/features
+    {"name": "Na", "rng": (2.200-0.005, 2.200+0.005), "ion": True},       # Na I near 2.20 µm
     {"name": "CO",  "rng": (2.293, 2.400)},     # CO (2-0) bandheads and beyond
 ]
 
@@ -106,25 +115,64 @@ def _add_feature_bands(fig, ypad_frac=0.04):
     Add subtle shaded bands and labels for common features in the background.
     ypad_frac controls top/bottom padding in 'paper' coords to keep labels inside.
     """
-    # light neutral fill so it doesn't clash with spectra; labels small and semi-transparent
+    # Define ion and neutral colors
+    ion_fill = "rgba(139,100,0,0.10)"      # gold, subtle
+    ion_text = "rgba(139,100,0,0.65)"
+    vo_fill = "rgba(0,139,0,0.10)" #dark green, subtle
+    vo_text = "rgba(0,139,0,0.65)"
+    ch4_fill = "rgba(139,69,0,0.10)" #dark orange, subtle
+    ch4_text = "rgba(139,69,0,0.65)"
+    h2o_fill = "rgba(0,0,139,0.10)"      # dark blue, subtle
+    h2o_text = "rgba(0,0,139,0.65)"
+    neutral_fill = "rgba(100,100,100,0.06)"
+    neutral_text = "rgba(60,60,60,0.65)"
+    
     for fb in FEATURE_BANDS:
-        x0, x1 = fb["rng"]
-        # shaded region
-        fig.add_shape(
-            type="rect",
-            x0=x0, x1=x1, xref="x",
-            y0=0.0 + ypad_frac, y1=1.0 - ypad_frac, yref="paper",
-            fillcolor="rgba(100,100,100,0.06)",
-            line=dict(width=0),
-            layer="below"
-        )
-        # centered label near top
+        is_ion = fb.get("ion", False) or fb["name"] in ("Na", "K", "Ca")
+        is_h2o = fb["name"] in ("H₂O", "H2O")
+        is_ch4 = fb["name"] in ("CH₄", "CH4")
+        is_vo = fb["name"] in ("VO")
+
+        fillcolor = ch4_fill if is_ch4 else (h2o_fill if is_h2o else (ion_fill if is_ion else (vo_fill if is_vo else neutral_fill)))
+        textcolor = ch4_text if is_ch4 else (h2o_text if is_h2o else (ion_text if is_ion else (vo_text if is_vo else neutral_text)))
+
+        base_y = 1.0 - ypad_frac*0.3
+        base_offset_unit = 0.04
+        ion_offset = base_offset_unit if is_ion else 0.0
+        blue_offset = -base_offset_unit if is_h2o else 0.0
+        vo_offset = -base_offset_unit/2 if is_vo else 0.0
+        max_ploty = 1.0 - ypad_frac*0.04
+        y_pos = min(max_ploty, base_y + ion_offset + blue_offset + vo_offset)
+
+        # Support either a band (rng) or a single vertical line (x)
+        if "rng" in fb:
+            x0, x1 = fb["rng"]
+            fig.add_shape(
+                type="rect",
+                x0=x0, x1=x1, xref="x",
+                y0=0.0, y1=y_pos-base_offset_unit, yref="paper",
+                fillcolor=fillcolor,
+                line=dict(width=0),
+                layer="below"
+            )
+            x_annot = (x0 + x1) / 2.0
+        elif "x" in fb:
+            x_annot = fb["x"]
+            fig.add_shape(
+                type="line",
+                x0=x_annot, x1=x_annot, xref="x",
+                y0=0.0 + ypad_frac, y1=1.0 - ypad_frac, yref="paper",
+                line=dict(width=1.5, color=textcolor)
+            )
+        else:
+            continue
+
         fig.add_annotation(
-            x=(x0 + x1) / 2.0, xref="x",
-            y=1.0 - ypad_frac*0.6, yref="paper",
+            x=x_annot, xref="x",
+            y=y_pos, yref="paper",
             text=fb["name"],
             showarrow=False,
-            font=dict(size=11, color="rgba(60,60,60,0.65)"),
+            font=dict(size=13, color=textcolor),
             align="center"
         )
 
@@ -594,6 +642,20 @@ layout = html.Div([
                        id='sp-typing-deredden-checklist',
                    )
               ], id='sp-typing-deredden-div', style={'margin-bottom': '15px'}),
+              html.Div([
+                   dcc.Checklist(
+                       options=[{'label': 'All standards shown in red', 'value': 'allred'}],
+                       value=['allred'],  # default ON
+                       id='sp-typing-allred-checklist',
+                   )
+              ], id='sp-typing-allred-div', style={'margin-bottom': '15px'}),
+              html.Div([
+                   dcc.Checklist(
+                       options=[{'label': 'Show chemical features', 'value': 'showfeatures'}],
+                       value=['showfeatures'],  # default ON
+                       id='sp-typing-showfeatures-checklist',
+                   )
+              ], id='sp-typing-showfeatures-div', style={'margin-bottom': '15px'}),
               html.Div([
                    html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
                    html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
@@ -1239,14 +1301,16 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Input('sp-typing-comparison-designation', 'data'),
     Input('sp-typing-chi2-graph', 'clickData'),
     Input('sp-typing-norm-regions-store', 'data'),
+    Input('sp-typing-showfeatures-checklist', 'value'),
     State('sp-typing-current-sptnum', 'data'),
     State('sp-typing-current-index', 'data'),
     State('sp-typing-precomputed-store', 'data'),
     State('sp-typing-deredden-checklist', 'value'),
+    State('sp-typing-allred-checklist', 'value'),
     State('sp-typing-db-data', 'data'),
     State('sp-typing-url', 'search')
 )
-def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, previous_sptnum, current_index, precomputed, deredden_value, df_data, url_search):
+def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, showfeatures_value, previous_sptnum, current_index, precomputed, deredden_value, allred_value, df_data, url_search):
     if debug_printing:
         print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
@@ -1274,6 +1338,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
+
+    allred = 'allred' in (allred_value or [])
     # Print selected grid, best (effective) χ², and the spectral type at the raw smallest χ² on that grid
     try:
         chi_vals = np.array([entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed], dtype=float)
@@ -1302,6 +1368,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     except Exception as _e:
         print(f"[Spectral Typing] Could not compute effective χ² for grid {selected_grid}: {_e}")
     local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
+    showfeatures = 'showfeatures' in (showfeatures_value or [])
     
     triggered_ids = [t['prop_id'].split('.')[0] for t in ctx.triggered]
     if 'sp-typing-chi2-graph' in triggered_ids and chi2_clickData:
@@ -1376,9 +1443,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     fig = go.Figure()
     
     # Compute custom colors for the standard spectra
-    #custom_colors = ['#E41A1C', '#377EB8', '#984EA3', '#A65628', '#FF5733', '#4682B4', '#8A2BE2', '#D62728', '#FF6347', '#5F9EA0', '#800080', '#DC143C', '#4169E1', '#C71585']
     custom_colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00', '#FFFF33', '#A65628', '#F781BF']
-    standard_color = custom_colors[new_index % len(custom_colors)]
+    standard_color = '#E41A1C' if allred else custom_colors[new_index % len(custom_colors)]
 
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
     standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
@@ -1521,7 +1587,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     x_margin = 0.015 * (x_max - x_min)
 
     # Subtle background features (VO, FeH, H₂O, Na, K, CO)
-    _add_feature_bands(fig, ypad_frac=0.05)
+    if showfeatures:
+        _add_feature_bands(fig, ypad_frac=0.05)
 
     fig.update_layout(
         title=title_text,
