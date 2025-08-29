@@ -82,12 +82,17 @@ def generate_spectral_type_label(value):
 # =============================================================================
 wv_min, wv_max = 0.85, 2.4
 masked_regions = [(1.367, 1.424), (1.86, 2.0)]
+
 # Use three normalization regions as in tom_redl_sequence.py
-norm_regions = [
-    (wv_min, np.mean(masked_regions[0])),
-    (np.mean(masked_regions[0]), np.mean(masked_regions[1])),
-    (np.mean(masked_regions[1]), wv_max)
-]
+# norm_regions = [
+#     (wv_min, np.mean(masked_regions[0])),
+#     (np.mean(masked_regions[0]), np.mean(masked_regions[1])),
+#     (np.mean(masked_regions[1]), wv_max)
+# ]
+
+#More restrained norm regions
+norm_regions = [(0.86, 1.35), (1.445, 1.800), (2.01, 2.400)]
+
 pre_smoothing_min_bins_per_micron = 200
 default_bins_per_micron = 200
 
