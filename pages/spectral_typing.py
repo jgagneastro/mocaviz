@@ -1640,6 +1640,12 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
         ))
     fig.update_yaxes(type="log")
 
+    # Set y-axis upper limit based on the second smallest nonzero reduced_chi2 value
+    vals = np.sort(df_merged['reduced_chi2'][df_merged['reduced_chi2'] > 0].dropna().values)
+    if len(vals) >= 2:
+        limit = 1.6 * vals[1]
+        fig.update_yaxes(range=[None, limit])
+
     # Add a highlighted marker around the currently selected standard for the active grid
     df_sel = df_merged[df_merged['grid'] == selected_grid].sort_values('spectral_type_number')
     if not df_sel.empty and current_index is not None and current_index < len(df_sel):
