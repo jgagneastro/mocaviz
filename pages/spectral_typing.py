@@ -1662,12 +1662,6 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
         ))
     fig.update_yaxes(type="log")
 
-    # Set y-axis upper limit based on the second smallest nonzero reduced_chi2 value
-    vals = np.sort(df_merged['reduced_chi2'][df_merged['reduced_chi2'] > 0].dropna().values)
-    if len(vals) >= 2:
-        limit = 1.6 * vals[1]
-        fig.update_yaxes(range=[None, limit])
-
     # Add a highlighted marker around the currently selected standard for the active grid
     df_sel = df_merged[df_merged['grid'] == selected_grid].sort_values('spectral_type_number')
     if not df_sel.empty and current_index is not None and current_index < len(df_sel):
@@ -1708,6 +1702,21 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
         yaxis_title='χ²',
         #ticktext=[generate_spectral_type_label(x) for x in tickvals]
     )
+
+    # Set y-axis range to include the 30 best χ² values ±5% on both ends.
+    chi2_vals = df_merged['reduced_chi2'].dropna().values
+    chi2_vals = chi2_vals[chi2_vals > 0]
+    if chi2_vals.size > 0:
+        frac_pop = 0.75
+        ntop = int(len(chi2_vals)*frac_pop)
+        top = np.sort(chi2_vals)[:min(ntop, chi2_vals.size)]
+        ymin = top.min()
+        ymax = top.max()
+        # Ensure strictly positive lower bound for log axis and add ±5% padding
+        ymin_padded = max(1e-12, 0.85 * ymin)
+        ymax_padded = 1.6 * ymax
+        # Plotly expects log10 values for the range when y-axis type is 'log'
+        fig.update_yaxes(range=[np.log10(ymin_padded), np.log10(ymax_padded)])
 
     #Update export file name
     date_str = datetime.now().strftime("%y%m%d")
