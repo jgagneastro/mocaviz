@@ -81,7 +81,52 @@ def generate_spectral_type_label(value):
 # Constants for spectral processing
 # =============================================================================
 wv_min, wv_max = 0.85, 2.4
+
 masked_regions = [(1.367, 1.424), (1.86, 2.0)]
+
+# Subtle background chemical/atomic features (µm). Ranges are approximate and easy to tweak.
+FEATURE_BANDS = [
+    # Y/J band (~0.9–1.35 µm)
+    {"name": "VO",  "rng": (1.045, 1.080)},     # VO band
+    {"name": "FeH", "rng": (0.985, 1.005)},     # Wing–Ford band
+    {"name": "H₂O", "rng": (1.320, 1.350)},     # water edge into 1.4 µm band
+    {"name": "Na",  "rng": (1.137, 1.142)},     # Na I doublet
+    {"name": "K",   "rng": (1.168, 1.178)},     # K I doublet
+    {"name": "K",   "rng": (1.243, 1.253)},     # K I doublet
+    # H band (~1.45–1.80 µm)
+    {"name": "H₂O", "rng": (1.500, 1.620)},
+    {"name": "FeH", "rng": (1.583, 1.620)},
+    # K band (~2.00–2.40 µm)
+    {"name": "H₂O", "rng": (1.950, 2.030)},
+    {"name": "CO",  "rng": (2.293, 2.400)},     # CO (2-0) bandheads and beyond
+]
+
+def _add_feature_bands(fig, ypad_frac=0.04):
+    """
+    Add subtle shaded bands and labels for common features in the background.
+    ypad_frac controls top/bottom padding in 'paper' coords to keep labels inside.
+    """
+    # light neutral fill so it doesn't clash with spectra; labels small and semi-transparent
+    for fb in FEATURE_BANDS:
+        x0, x1 = fb["rng"]
+        # shaded region
+        fig.add_shape(
+            type="rect",
+            x0=x0, x1=x1, xref="x",
+            y0=0.0 + ypad_frac, y1=1.0 - ypad_frac, yref="paper",
+            fillcolor="rgba(100,100,100,0.06)",
+            line=dict(width=0),
+            layer="below"
+        )
+        # centered label near top
+        fig.add_annotation(
+            x=(x0 + x1) / 2.0, xref="x",
+            y=1.0 - ypad_frac*0.6, yref="paper",
+            text=fb["name"],
+            showarrow=False,
+            font=dict(size=11, color="rgba(60,60,60,0.65)"),
+            align="center"
+        )
 
 # Use three normalization regions as in tom_redl_sequence.py
 # norm_regions = [
@@ -1474,6 +1519,9 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     
     y_margin = 0.05 * (y_max - y_min)
     x_margin = 0.015 * (x_max - x_min)
+
+    # Subtle background features (VO, FeH, H₂O, Na, K, CO)
+    _add_feature_bands(fig, ypad_frac=0.05)
 
     fig.update_layout(
         title=title_text,
