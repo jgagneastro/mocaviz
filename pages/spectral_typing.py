@@ -752,9 +752,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
 # Callback: Update spt grids controls
 # =============================================================================
 @dash.callback(
-    #Output('sp-typing-grid-dropdown', 'options'),
     Output('sp-typing-grid-dropdown', 'value'),
-    #Output('sp-typing-grid-data', 'data'),
     Output('sp-typing-vertical-slider', 'min'),
     Output('sp-typing-vertical-slider', 'max'),
     Output('sp-typing-vertical-slider', 'marks'),
@@ -766,15 +764,13 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
     Input('sp-typing-vertical-slider', 'value'),
     Input('sp-typing-grid-dropdown', 'value'),
     Input('sp-typing-chi2-graph', 'clickData'),
-    Input('sp-typing-grid-dropdown', 'options'), # This is now an input on Friday morning to trigger the first occurrence
-    Input('sp-typing-grid-data', 'data'), # This is now an input on Friday morning to trigger the first occurrence
-    #Input('sp-typing-grid-raw-spectra', 'data'), # This is now an input on Friday morning to trigger the first occurrence
-    State('sp-typing-url', 'search'), #Changed to State on Friday
-    #State('sp-typing-grid-dropdown', 'options'),
-    # Putting this back on on Friday
+    Input('sp-typing-grid-dropdown', 'options'),
+    Input('sp-typing-grid-data', 'data'),
+    Input('sp-typing-precomputed-store', 'data'),
+    State('sp-typing-url', 'search'),
     prevent_initial_call=True
 )
-def grid_controls_callback(prev_click, next_click, slider_input, current_value, chi2_clickData, options, grid_data, url_search):
+def grid_controls_callback(prev_click, next_click, slider_input, current_value, chi2_clickData, options, grid_data, precomputed, url_search):
     if debug_printing:
         print("grid_controls_callback triggered")
     # If the dropdown options are empty (initial call) then exit and wait for them to be populated
@@ -789,11 +785,6 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
     else:
         if debug_printing:
             print("grid_controls_callback: Updating the selected grid")
-        # Read necessary data
-        #df_options = pd.read_json(grid_data, orient='split')
-        #df_std_spectra = pd.read_json(grid_spectra, orient='split')
-        #options = [{'label': label, 'value': grid} for grid, label in df[['grid', 'grid']].drop_duplicates().values]
-
         # Set the default grid if none are set yet
         if not current_value:
             # Parse URL parameters for grid
@@ -803,11 +794,25 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
                 grid = qs.get("grid", [None])[0]
             else:
                 grid = None
-            
+
             valid_grids = [str(opt['value']) for opt in options]
-            default_value = grid if grid in valid_grids else ('field')
-            current_value = default_value
-        
+            current_value = grid if grid in valid_grids else ('field')
+
+            # If no explicit grid in URL and we have precomputed data, pick the grid of the global min χ²
+            if not grid and precomputed:
+                try:
+                    pre = pd.DataFrame(precomputed)
+                    if 'reduced_chi2' in pre.columns and pre['reduced_chi2'].notna().any():
+                        best_idx = int(pre['reduced_chi2'].astype(float).idxmin())
+                        best_grid = str(pre.loc[best_idx, 'grid'])
+                        if best_grid in [str(opt['value']) for opt in options]:
+                            current_value = best_grid
+                except Exception as _e:
+                    if debug_printing:
+                        print(f"grid_controls_callback: could not set grid from global min χ²: {_e}")
+            if debug_printing:
+                print(f"grid_controls_callback: initial grid set to '{current_value}'")
+
         # Initialize slider outputs based on the options.
         num_options = len(options)
         min_val = 0
@@ -819,10 +824,6 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
             current_index = 0
         slider_value = num_options - 1 - current_index
 
-        # Set button disabled states based on the current index.
-        #prev_disabled = (current_index == 0)
-        #next_disabled = (current_index == num_options - 1)
-        
         ctx = dash.callback_context
         new_index = current_index
         if debug_printing:
@@ -839,46 +840,18 @@ def grid_controls_callback(prev_click, next_click, slider_input, current_value, 
                     print('New index will be', new_index)
             elif 'sp-typing-vertical-slider' in trigger_prop:
                 new_index = num_options - 1 - slider_input
-            #elif 'sp-typing-grid-dropdown' in trigger_prop:
-            #    new_index = current_index
             elif 'sp-typing-chi2-graph' in trigger_prop:
                 if chi2_clickData:
                     point = chi2_clickData.get('points', [{}])[0]
                     cd = point.get('customdata', None)
                     if cd and isinstance(cd, list) and len(cd) >= 2:
-                        # Update grid selection
                         try:
                             new_index = next(i for i, opt in enumerate(options) if opt['value'] == cd[0])
                         except StopIteration:
                             new_index = current_index
-                    #else:
-                    #    new_index = current_index
-                #else:
-                #    new_index = current_index
-        #else:
-        #    new_index = current_index
-
-            # # If the grid has changed, try to find the best matching index in the new grid based on spectral_type_number
-            # if 'sp-typing-chi2-graph' not in trigger_prop
-            #     if new_index != current_index:
-            #         try:
-            #             df_grid = pd.read_json(grid_data, orient='split')
-            #             current_grid = options[current_index]['value']
-            #             new_grid = options[new_index]['value']
-            #             current_grid_spts = df_grid[df_grid['grid'] == current_grid].reset_index(drop=True)
-            #             new_grid_spts = df_grid[df_grid['grid'] == new_grid].reset_index(drop=True)
-            #             if not current_grid_spts.empty and not new_grid_spts.empty:
-            #                 #These mix up the horizontal and vertical indexes
-            #                 #current_spt_num = current_grid_spts.iloc[current_index]['spectral_type_number']
-            #                 #best_index = (new_grid_spts['spectral_type_number'] - current_spt_num).abs().idxmin()
-            #                 #new_index = num_options - 1 - new_grid_spts.index.get_loc(best_index)
-            #         except Exception:
-            #             pass
-                        
         new_value = options[new_index]['value']
         slider_value = num_options - 1 - new_index
 
-        # Update button disabling
         prev_disabled = (new_index == 0)
         next_disabled = (new_index == num_options - 1)
         return new_value, min_val, max_val, marks, slider_value, prev_disabled, next_disabled
@@ -1317,7 +1290,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     elif 'sp-typing-comparison-spectrum' in triggered_ids:
         # On first plotting after a comparison spectrum is selected:
         # If the URL provides ?grid_index=..., honor it. Otherwise, start at the
-        # grid point with the smallest reduced χ² across all grids.
+        # grid point with the smallest reduced χ² within the current grid.
         parsed = urlparse(url_search) if url_search else None
         grid_index_param = None
         if parsed:
@@ -1329,36 +1302,19 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 # Honor explicit within-grid index if user provided it
                 new_index = int(grid_index_param)
             except ValueError:
-                # Fallback to global best χ² across all grids if param is malformed
-                chi2_all = np.array([e.get('reduced_chi2', np.nan) for e in precomputed], dtype=float)
-                if np.all(np.isnan(chi2_all)):
-                    # No usable χ² anywhere; keep middle of current grid
+                # Fallback: choose the smallest χ² WITHIN THE CURRENT GRID
+                chi2_values = np.array([e.get('reduced_chi2', np.nan) for e in filtered_precomputed], dtype=float)
+                if np.all(np.isnan(chi2_values)):
                     new_index = len(filtered_precomputed) // 2
                 else:
-                    best_global_idx = int(np.nanargmin(chi2_all))
-                    best_entry = precomputed[best_global_idx]
-                    # Switch to that grid and recompute the grid-local list
-                    selected_grid = best_entry.get('grid', selected_grid)
-                    filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
-                    # Find index within the selected grid by specid
-                    try:
-                        new_index = next(i for i, e in enumerate(filtered_precomputed) if e['moca_specid'] == best_entry.get('moca_specid'))
-                    except StopIteration:
-                        new_index = len(filtered_precomputed) // 2
+                    new_index = int(np.nanargmin(chi2_values))
         else:
-            # Choose the smallest χ² ACROSS ALL GRIDS by default
-            chi2_all = np.array([e.get('reduced_chi2', np.nan) for e in precomputed], dtype=float)
-            if np.all(np.isnan(chi2_all)):
+            # Default when first plotting: if no index param, choose the smallest χ² within the current grid
+            chi2_values = np.array([e.get('reduced_chi2', np.nan) for e in filtered_precomputed], dtype=float)
+            if np.all(np.isnan(chi2_values)):
                 new_index = len(filtered_precomputed) // 2
             else:
-                best_global_idx = int(np.nanargmin(chi2_all))
-                best_entry = precomputed[best_global_idx]
-                selected_grid = best_entry.get('grid', selected_grid)
-                filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
-                try:
-                    new_index = next(i for i, e in enumerate(filtered_precomputed) if e['moca_specid'] == best_entry.get('moca_specid'))
-                except StopIteration:
-                    new_index = len(filtered_precomputed) // 2
+                new_index = int(np.nanargmin(chi2_values))
     else:
         new_index = current_index
     
@@ -1676,30 +1632,6 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
 
     fig = go.Figure()
     grids = df_merged['grid'].unique()
-    # --- Overlay an open-circle marker on the currently selected point (by specid) ---
-    try:
-        # Determine the selected specid using the original intra-grid order from df_pre
-        df_pre_selected_grid = df_pre[df_pre['grid'] == selected_grid].reset_index(drop=True)
-        if (len(df_pre_selected_grid) > 0) and (current_index is not None) and (0 <= int(current_index) < len(df_pre_selected_grid)):
-            selected_specid = int(df_pre_selected_grid.iloc[int(current_index)]['moca_specid'])
-            # Find that row in the plotted (possibly adjusted) dataframe
-            row_sel = df_merged[(df_merged['grid'] == selected_grid) & (df_merged['moca_specid'] == selected_specid)].iloc[0]
-            # Also compute the local index (within-grid) to keep customdata consistent on click
-            intra_grid_specids = df_pre_selected_grid['moca_specid'].tolist()
-            local_index = int(intra_grid_specids.index(selected_specid)) if selected_specid in intra_grid_specids else None
-            fig.add_trace(go.Scatter(
-                x=[row_sel['spectral_type_number']],
-                y=[row_sel['reduced_chi2']],
-                mode='markers',
-                marker=dict(symbol='circle-open', size=16, line=dict(width=2, color='black')),
-                showlegend=False,
-                hoverinfo='skip',
-                customdata=[[selected_grid, local_index]],
-                name=''  # no legend entry
-            ))
-    except Exception as _e:
-        if debug_printing:
-            print(f"[Spectral Typing] Could not add selected-point overlay: {_e}")
     #colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00', '#FFFF33', '#A65628', '#F781BF']
     #colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     #colors = ['#E41A1C', '#FF7F00', '#FFFF33', '#4DAF4A', '#984EA3', '#F781BF', '#A65628', '#999999']
@@ -1728,6 +1660,28 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
         # If <2 finite values, leave as-is
         adjusted_frames.append(df_g_tmp)
     df_merged = pd.concat(adjusted_frames, ignore_index=True)
+
+    # Overlay an open-circle marker on the currently selected point (by specid), after adjustments
+    try:
+        df_pre_selected_grid = df_pre[df_pre['grid'] == selected_grid].reset_index(drop=True)
+        if (len(df_pre_selected_grid) > 0) and (current_index is not None) and (0 <= int(current_index) < len(df_pre_selected_grid)):
+            selected_specid = int(df_pre_selected_grid.iloc[int(current_index)]['moca_specid'])
+            row_sel = df_merged[(df_merged['grid'] == selected_grid) & (df_merged['moca_specid'] == selected_specid)].iloc[0]
+            intra_grid_specids = df_pre_selected_grid['moca_specid'].tolist()
+            local_index = int(intra_grid_specids.index(selected_specid)) if selected_specid in intra_grid_specids else None
+            fig.add_trace(go.Scatter(
+                x=[row_sel['spectral_type_number']],
+                y=[row_sel['reduced_chi2']],
+                mode='markers',
+                marker=dict(symbol='circle-open', size=16, line=dict(width=2, color='black')),
+                showlegend=False,
+                hoverinfo='skip',
+                customdata=[[selected_grid, local_index]],
+                name=''  # no legend entry
+            ))
+    except Exception as _e:
+        if debug_printing:
+            print(f"[Spectral Typing] Could not add selected-point overlay (post-adjustment): {_e}")
     
     for i, g in enumerate(grids):
         df_g = df_merged[df_merged['grid'] == g].sort_values('spectral_type_number').reset_index(drop=True)
@@ -1747,18 +1701,6 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
             customdata=customdata
         ))
     fig.update_yaxes(type="log")
-
-    # Add a highlighted marker around the currently selected standard for the active grid
-    df_sel = df_merged[df_merged['grid'] == selected_grid].sort_values('spectral_type_number')
-    if not df_sel.empty and current_index is not None and current_index < len(df_sel):
-         highlight = df_sel.iloc[current_index]
-         fig.add_trace(go.Scatter(
-             x=[highlight['spectral_type_number']],
-             y=[highlight['reduced_chi2']],
-             mode='markers',
-             marker=dict(symbol='circle-open', size=20, color='black', line=dict(width=3)),
-             name='displayed'
-         ))
 
     #tickvals = fig.layout.xaxis.tickvals if fig.layout.xaxis.tickvals else [-10, 0, 14, 20, 25, 32]
     x_min_val = np.floor(df_merged['spectral_type_number'].min())
