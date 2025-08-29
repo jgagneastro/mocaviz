@@ -1256,6 +1256,33 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
+    # Print selected grid, best (effective) χ², and the spectral type at the raw smallest χ² on that grid
+    try:
+        chi_vals = np.array([entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed], dtype=float)
+        finite = chi_vals[np.isfinite(chi_vals)]
+        finite = finite[np.argsort(finite)]  # sorted copy
+        if finite.size >= 2:
+            effective_min = float(finite[1]) / 5.0
+        elif finite.size == 1:
+            effective_min = float(finite[0])
+        else:
+            effective_min = float('nan')
+        # Identify the raw minimum on this grid to report its spectral type
+        if np.any(np.isfinite(chi_vals)):
+            raw_min_idx = int(np.nanargmin(chi_vals))
+            raw_min_entry = filtered_precomputed[raw_min_idx]
+            raw_min_val = float(chi_vals[raw_min_idx])
+            raw_min_spt = raw_min_entry.get('spectral_type', 'N/A')
+            raw_min_des = raw_min_entry.get('designation', 'N/A')
+            raw_min_specid = raw_min_entry.get('moca_specid', 'N/A')
+            print(
+                f"[Spectral Typing] Selected grid: {selected_grid} | Smallest χ² (effective): {effective_min:.6g} | "
+                f"Best entry: {raw_min_spt} ({raw_min_des}, specid={raw_min_specid}) with raw χ²={raw_min_val:.6g}"
+            )
+        else:
+            print(f"[Spectral Typing] Selected grid: {selected_grid} | Smallest χ² (effective): {effective_min:.6g} | Best entry: none (no finite χ²)")
+    except Exception as _e:
+        print(f"[Spectral Typing] Could not compute effective χ² for grid {selected_grid}: {_e}")
     local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
     
     triggered_ids = [t['prop_id'].split('.')[0] for t in ctx.triggered]
@@ -1290,7 +1317,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     elif 'sp-typing-comparison-spectrum' in triggered_ids:
         # On first plotting after a comparison spectrum is selected:
         # If the URL provides ?grid_index=..., honor it. Otherwise, start at the
-        # grid point with the smallest reduced χ² within the currently selected grid.
+        # grid point with the smallest reduced χ² across all grids.
         parsed = urlparse(url_search) if url_search else None
         grid_index_param = None
         if parsed:
@@ -1299,27 +1326,39 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
 
         if grid_index_param is not None:
             try:
+                # Honor explicit within-grid index if user provided it
                 new_index = int(grid_index_param)
             except ValueError:
-                # Fallback to best-chi2 if the param is malformed
-                chi2_values = np.array(
-                    [entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed],
-                    dtype=float
-                )
-                if np.all(np.isnan(chi2_values)):
+                # Fallback to global best χ² across all grids if param is malformed
+                chi2_all = np.array([e.get('reduced_chi2', np.nan) for e in precomputed], dtype=float)
+                if np.all(np.isnan(chi2_all)):
+                    # No usable χ² anywhere; keep middle of current grid
                     new_index = len(filtered_precomputed) // 2
                 else:
-                    new_index = int(np.nanargmin(chi2_values))
+                    best_global_idx = int(np.nanargmin(chi2_all))
+                    best_entry = precomputed[best_global_idx]
+                    # Switch to that grid and recompute the grid-local list
+                    selected_grid = best_entry.get('grid', selected_grid)
+                    filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
+                    # Find index within the selected grid by specid
+                    try:
+                        new_index = next(i for i, e in enumerate(filtered_precomputed) if e['moca_specid'] == best_entry.get('moca_specid'))
+                    except StopIteration:
+                        new_index = len(filtered_precomputed) // 2
         else:
-            # Choose the index with the smallest reduced χ² (ignoring NaNs)
-            chi2_values = np.array(
-                [entry.get('reduced_chi2', np.nan) for entry in filtered_precomputed],
-                dtype=float
-            )
-            if np.all(np.isnan(chi2_values)):
+            # Choose the smallest χ² ACROSS ALL GRIDS by default
+            chi2_all = np.array([e.get('reduced_chi2', np.nan) for e in precomputed], dtype=float)
+            if np.all(np.isnan(chi2_all)):
                 new_index = len(filtered_precomputed) // 2
             else:
-                new_index = int(np.nanargmin(chi2_values))
+                best_global_idx = int(np.nanargmin(chi2_all))
+                best_entry = precomputed[best_global_idx]
+                selected_grid = best_entry.get('grid', selected_grid)
+                filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
+                try:
+                    new_index = next(i for i, e in enumerate(filtered_precomputed) if e['moca_specid'] == best_entry.get('moca_specid'))
+                except StopIteration:
+                    new_index = len(filtered_precomputed) // 2
     else:
         new_index = current_index
     
@@ -1637,6 +1676,30 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
 
     fig = go.Figure()
     grids = df_merged['grid'].unique()
+    # --- Overlay an open-circle marker on the currently selected point (by specid) ---
+    try:
+        # Determine the selected specid using the original intra-grid order from df_pre
+        df_pre_selected_grid = df_pre[df_pre['grid'] == selected_grid].reset_index(drop=True)
+        if (len(df_pre_selected_grid) > 0) and (current_index is not None) and (0 <= int(current_index) < len(df_pre_selected_grid)):
+            selected_specid = int(df_pre_selected_grid.iloc[int(current_index)]['moca_specid'])
+            # Find that row in the plotted (possibly adjusted) dataframe
+            row_sel = df_merged[(df_merged['grid'] == selected_grid) & (df_merged['moca_specid'] == selected_specid)].iloc[0]
+            # Also compute the local index (within-grid) to keep customdata consistent on click
+            intra_grid_specids = df_pre_selected_grid['moca_specid'].tolist()
+            local_index = int(intra_grid_specids.index(selected_specid)) if selected_specid in intra_grid_specids else None
+            fig.add_trace(go.Scatter(
+                x=[row_sel['spectral_type_number']],
+                y=[row_sel['reduced_chi2']],
+                mode='markers',
+                marker=dict(symbol='circle-open', size=16, line=dict(width=2, color='black')),
+                showlegend=False,
+                hoverinfo='skip',
+                customdata=[[selected_grid, local_index]],
+                name=''  # no legend entry
+            ))
+    except Exception as _e:
+        if debug_printing:
+            print(f"[Spectral Typing] Could not add selected-point overlay: {_e}")
     #colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00', '#FFFF33', '#A65628', '#F781BF']
     #colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     #colors = ['#E41A1C', '#FF7F00', '#FFFF33', '#4DAF4A', '#984EA3', '#F781BF', '#A65628', '#999999']
@@ -1644,9 +1707,27 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
     #colors = ['#D9D9D9', '#BFBFBF', '#A6A6A6', '#8C8C8C', '#737373', '#595959', '#404040', '#262626']
     colors = ['#8DD3C7', '#FFFFB3', '#BEBADA', '#FB8072', '#80B1D3', '#FDB462', '#B3DE69', '#FCCDE5']
 
-    # Replace zero reduced_chi2 values with 0.8 × minimum non-zero value
-    non_zero_min = df_merged.loc[df_merged['reduced_chi2'] > 0, 'reduced_chi2'].min()
-    df_merged.loc[df_merged['reduced_chi2'] == 0, 'reduced_chi2'] = non_zero_min * 0.8 if pd.notnull(non_zero_min) else min_chi2_val
+    # Enforce: the smallest available χ² becomes (second-smallest)/5, applied per grid
+    # (Zeros or extremely tiny values will be lifted accordingly.)
+    adjusted_frames = []
+    for g in df_merged['grid'].unique():
+        df_g_tmp = df_merged[df_merged['grid'] == g].copy()
+        # Work with finite χ² only to find order statistics
+        chi = df_g_tmp['reduced_chi2'].astype(float)
+        finite_mask = np.isfinite(chi)
+        chi_finite = chi[finite_mask]
+        if chi_finite.size >= 2:
+            # Get order statistics
+            sorted_vals = np.sort(chi_finite.values)
+            second_smallest = sorted_vals[1]
+            smallest = sorted_vals[0]
+            # Identify rows that have the smallest value (there can be ties)
+            idx_min = df_g_tmp.index[finite_mask][chi_finite.values == smallest]
+            # Replace those minima with second_smallest / 5.0
+            df_g_tmp.loc[idx_min, 'reduced_chi2'] = float(second_smallest) / 5.0
+        # If <2 finite values, leave as-is
+        adjusted_frames.append(df_g_tmp)
+    df_merged = pd.concat(adjusted_frames, ignore_index=True)
     
     for i, g in enumerate(grids):
         df_g = df_merged[df_merged['grid'] == g].sort_values('spectral_type_number').reset_index(drop=True)
