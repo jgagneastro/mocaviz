@@ -139,10 +139,11 @@ def _add_feature_bands(fig, ypad_frac=0.04):
         base_y = 1.0 - ypad_frac*0.3
         base_offset_unit = 0.04
         ion_offset = base_offset_unit if is_ion else 0.0
-        blue_offset = -base_offset_unit if is_h2o else 0.0
+        h2o_offset = -base_offset_unit if is_h2o else 0.0
+        ch4_offset = -base_offset_unit if is_ch4 else 0.0
         vo_offset = -base_offset_unit/2 if is_vo else 0.0
         max_ploty = 1.0 - ypad_frac*0.04
-        y_pos = min(max_ploty, base_y + ion_offset + blue_offset + vo_offset)
+        y_pos = min(max_ploty, base_y + ion_offset + h2o_offset + ch4_offset + vo_offset)
 
         # Support either a band (rng) or a single vertical line (x)
         if "rng" in fb:
