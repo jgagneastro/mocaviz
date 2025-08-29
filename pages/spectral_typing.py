@@ -599,11 +599,12 @@ layout = html.Div([
                 - **bins**: Set the number of bins per micron (e.g., `bins=20`).
                 - **deredden**: Apply dereddening if set to True (e.g., `deredden=True`).
                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
+                - **norm**: Custom normalization regions in microns. Accepts flexible separators like commas or semicolons and `-`, `:`, or whitespace between bounds. Example: `norm=0.850-1.395,1.395-1.930,1.930-2.400`.
                 
                 ### Example URL:  
-                - `https://dataviz.mocadb.ca/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2`
+                - `https://dataviz.mocadb.ca/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2&norm=0.850-1.395,1.395-1.930,1.930-2.400`
                 
-                Note that you can also click on an individual star to open its MOCAdb report in a separate tab of you allow for popups in your browser.
+                *Tip:* If you include spaces, your browser will URL-encode them automatically. The app also accepts semicolons and colons as separators.
                   """
               ),
          ],
@@ -1534,6 +1535,8 @@ def spt_set_defaults_from_url(href):
     deredden_list = ["deredden"] if dereddening and dereddening.lower() == "true" else []
     return bins_val, deredden_list
 
+
+# --- Updated normalization regions callback to support ?norm=... in the URL ---
 @dash.callback(
     Output('sp-typing-norm-regions-store', 'data'),
     Output('sp-typing-norm-regions-input', 'value'),
@@ -1543,18 +1546,45 @@ def spt_set_defaults_from_url(href):
 )
 def update_norm_regions_store(text_value, reset_clicks, href):
     ctx = callback_context
-    # Initial page load
+
+    # Helper to produce store+pretty text from a raw string
+    def _parse_and_format(raw: str):
+        parsed = parse_norm_regions(raw)
+        pretty = _format_norm_regions_text(parsed) if parsed else DEFAULT_NORM_REGIONS_TEXT
+        return parsed, pretty
+
+    # On initial page load, prefer URL ?norm=... if provided; else defaults
     if not ctx.triggered:
+        if href:
+            parsed_url = urlparse(href)
+            qs = parse_qs(parsed_url.query)
+            norm_param = qs.get('norm', [None])[0]
+            if norm_param:
+                return _parse_and_format(norm_param)
+        # Fallback to defaults
         parsed = parse_norm_regions(DEFAULT_NORM_REGIONS_TEXT)
         return parsed, DEFAULT_NORM_REGIONS_TEXT
+
     trigger = ctx.triggered[0]['prop_id']
+
+    # Reset button: restore defaults
     if 'sp-typing-norm-reset' in trigger:
         parsed = parse_norm_regions(DEFAULT_NORM_REGIONS_TEXT)
         return parsed, DEFAULT_NORM_REGIONS_TEXT
-    # Parse current text
-    parsed = parse_norm_regions(text_value)
-    pretty = _format_norm_regions_text(parsed) if parsed else DEFAULT_NORM_REGIONS_TEXT
-    return parsed, pretty
+
+    # URL changed: try to read ?norm=...; if absent, keep current text_value parsed
+    if 'sp-typing-url' in trigger:
+        if href:
+            parsed_url = urlparse(href)
+            qs = parse_qs(parsed_url.query)
+            norm_param = qs.get('norm', [None])[0]
+            if norm_param:
+                return _parse_and_format(norm_param)
+        # If no norm in URL, fall back to current text box content
+        return _parse_and_format(text_value or DEFAULT_NORM_REGIONS_TEXT)
+
+    # Default path: user typed in the textarea → parse it
+    return _parse_and_format(text_value)
 
 @dash.callback(
     Output('sp-typing-chi2-graph', 'figure'),

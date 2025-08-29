@@ -1,30 +1,43 @@
+import dash
+from math import floor, log10
+import numpy as np
+import decimal
+from dash import dcc, html, Input, Output, State, callback_context
+import plotly.graph_objs as go
+from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
+from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case
+import pandas as pd
+import os
+from utils.plx_motion import parallax_motion
+from scipy.optimize import curve_fit
+from astropy.time import Time
+from PyAstronomy.pyasl import sunpos
+from datetime import datetime
+
+# Register the page in the Dash app
+dash.register_page(__name__)
+
+# Placeholder for the database connection string
+connection_string = None
+
+bin_size_days = 50
+bin_size_days_phased = 20
+
+figure_export_config = {
+  'toImageButtonOptions': {
+    'format': 'png', # one of png, svg, jpeg, webp
+    'height': 700,
+    'width': 1900,
+    'scale': 2 # Multiply title/legend/axis/canvas sizes by this factor
+  }
+}
+
 try:
     import ultranest
     import ultranest.stepsampler
     _ULTRANEST_AVAILABLE = True
 except Exception:
     _ULTRANEST_AVAILABLE = False
-#Robust error-weighted fit
-
-# ===== UltraNest-based fitters (PM-only and PM+PLX) =====
-
-# ===== UltraNest-based fitters (PM-only and PM+PLX) =====
-
-def _ultranest_pm_only_fit(measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas,
-                           seed_pmra=None, seed_pmdec=None):
-    """DEPRECATED: Do not use. UltraNest is only allowed as a refinement step after EM.
-    This function intentionally raises to prevent accidental use.
-    """
-    raise RuntimeError("_ultranest_pm_only_fit is deprecated. Use _ultranest_refine_pm_only after EM.")
-
-
-def _ultranest_pm_plx_fit(measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas,
-                          ra_ref_deg, dec_ref_deg,
-                          seed_pmra=None, seed_pmdec=None, seed_plx=None):
-    """DEPRECATED: Do not use. UltraNest is only allowed as a refinement step after EM.
-    This function intentionally raises to prevent accidental use.
-    """
-    raise RuntimeError("_ultranest_pm_plx_fit is deprecated. Use _ultranest_refine_pm_plx after EM.")
 
 # ===== UltraNest refinement AFTER EM (keeps EM mixture/inlier logic) =====
 
@@ -267,38 +280,6 @@ def _ultranest_refine_pm_plx(t, y_ra, y_dec, s_ra, s_dec, inlier_mask,
     pmra, pmdec, plx, pos_ra, pos_dec = [float(x) for x in mean]
     e_pmra, e_pmdec, e_plx = float(stdev[0]), float(stdev[1]), float(stdev[2])
     return plx, pmra, pmdec, e_plx, e_pmra, e_pmdec, pos_ra, pos_dec, t0
-import dash
-from math import floor, log10
-import numpy as np
-import decimal
-from dash import dcc, html, Input, Output, State, callback_context
-import plotly.graph_objs as go
-from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case
-import pandas as pd
-import os
-from utils.plx_motion import parallax_motion
-from scipy.optimize import curve_fit
-from astropy.time import Time
-from PyAstronomy.pyasl import sunpos
-
-# Register the page in the Dash app
-dash.register_page(__name__)
-
-# Placeholder for the database connection string
-connection_string = None
-
-bin_size_days = 50
-bin_size_days_phased = 20
-
-figure_export_config = {
-  'toImageButtonOptions': {
-    'format': 'png', # one of png, svg, jpeg, webp
-    'height': 500*2,
-    'width': 700*2,
-    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
-  }
-}
 
 def robust_error_weighted_plxfit_with_rejection(
     measurement_epoch_yr, rel_ra, rel_dec, ra_unc_mas, dec_unc_mas, ref_ra, ref_dec,
@@ -1318,11 +1299,11 @@ layout = html.Div([
         ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
 
     html.Div([
-        dcc.Graph(id="astrometry-plot-ra",config=figure_export_config),
+        dcc.Graph(id="astrometry-plot-ra"),
     ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
     
     html.Div([
-        dcc.Graph(id="astrometry-plot-dec",config=figure_export_config),
+        dcc.Graph(id="astrometry-plot-dec"),
     ], style={'width': '100%', 'display': 'inline-block'}),
 
     html.Div([
@@ -1501,7 +1482,9 @@ def update_mission_dropdown(selected_dataset):
 # Define the callback to update the scatter plot based on input
 @dash.callback(
     [Output("astrometry-plot-ra", "figure"),
-     Output("astrometry-plot-dec", "figure")],
+     Output("astrometry-plot-ra", "config"),
+     Output("astrometry-plot-dec", "figure"),
+     Output("astrometry-plot-dec", "config")],
     [Input("astrometry-filtered-dropdown", "value"),
      Input("mission-toggle-dropdown", "value"),  # New input for selected missions
      Input("subtract-pm-checkbox", "value"),
@@ -2469,5 +2452,17 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             groupclick='togglegroup',
         )
     )
+    
+    date_str = datetime.now().strftime("%y%m%d")
 
-    return fig_ra, fig_dec
+    config_ra = {'toImageButtonOptions': figure_export_config['toImageButtonOptions'].copy()}
+    config_ra['toImageButtonOptions']['filename'] = (
+        f"astrometry_global_chi2_ra_mocaoid_{int(moca_oid)}_{date_str}"
+    )
+
+    config_dec = {'toImageButtonOptions': figure_export_config['toImageButtonOptions'].copy()}
+    config_dec['toImageButtonOptions']['filename'] = (
+        f"astrometry_global_chi2_dec_mocaoid_{int(moca_oid)}_{date_str}"
+    )
+
+    return fig_ra, config_ra, fig_dec, config_dec
