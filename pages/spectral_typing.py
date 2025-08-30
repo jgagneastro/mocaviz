@@ -1755,27 +1755,35 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
     #colors = ['#D9D9D9', '#BFBFBF', '#A6A6A6', '#8C8C8C', '#737373', '#595959', '#404040', '#262626']
     colors = ['#8DD3C7', '#FFFFB3', '#BEBADA', '#FB8072', '#80B1D3', '#FDB462', '#B3DE69', '#FCCDE5']
 
-    # Enforce: the smallest available χ² becomes (second-smallest)/5, applied per grid
+    # Enforce: that zero χ² values becomes (second-smallest)/5, applied per grid
     # (Zeros or extremely tiny values will be lifted accordingly.)
-    adjusted_frames = []
-    for g in df_merged['grid'].unique():
-        df_g_tmp = df_merged[df_merged['grid'] == g].copy()
-        # Work with finite χ² only to find order statistics
-        chi = df_g_tmp['reduced_chi2'].astype(float)
-        finite_mask = np.isfinite(chi)
-        chi_finite = chi[finite_mask]
-        if chi_finite.size >= 2:
-            # Get order statistics
-            sorted_vals = np.sort(chi_finite.values)
-            second_smallest = sorted_vals[1]
-            smallest = sorted_vals[0]
-            # Identify rows that have the smallest value (there can be ties)
-            idx_min = df_g_tmp.index[finite_mask][chi_finite.values == smallest]
-            # Replace those minima with second_smallest / 5.0
-            df_g_tmp.loc[idx_min, 'reduced_chi2'] = float(second_smallest) / 5.0
-        # If <2 finite values, leave as-is
-        adjusted_frames.append(df_g_tmp)
-    df_merged = pd.concat(adjusted_frames, ignore_index=True)
+    chi = df_merged['reduced_chi2'].astype(float)
+
+    #If any chi2 is exactly zero, replace it with second smallest value / 5
+    if (chi == 0).any():
+        # Get the second smallest value among the finite ones
+        second_smallest = chi[finite_mask].nsmallest(2).iloc[-1]
+        df_merged.loc[chi == 0, 'reduced_chi2'] = second_smallest / 5
+
+    # adjusted_frames = []
+    # for g in df_merged['grid'].unique():
+    #     df_g_tmp = df_merged
+    #     # Work with finite χ² only to find order statistics
+        
+    #     chi_finite = chi[finite_mask]
+    #     if chi_finite.size >= 2:
+    #         # Get order statistics
+    #         sorted_vals = np.sort(chi_finite.values)
+    #         second_smallest = sorted_vals[1]
+    #         smallest = sorted_vals[0]
+    #         # Identify rows that have the smallest value (there can be ties)
+    #         idx_min = df_g_tmp.index[finite_mask][chi_finite.values == smallest]
+    #         # Replace those minima with second_smallest / 5.0
+    #         import pdb; pdb.set_trace()
+    #         #df_g_tmp.loc[idx_min, 'reduced_chi2'] = float(second_smallest) / 5.0
+    #     # If <2 finite values, leave as-is
+    #     adjusted_frames.append(df_g_tmp)
+    # df_merged = pd.concat(adjusted_frames, ignore_index=True)
 
     # Overlay an open-circle marker on the currently selected point (by specid), after adjustments
     try:
