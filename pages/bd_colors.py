@@ -544,6 +544,8 @@ layout = (
                 - **photdist** → Includes photometric distance estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **binaries** → Displays binary systems. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photspt** → Includes photometric spectral type estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
+                - **xerr_max** → Maximum allowed *measurement* uncertainty (σ, in mag) for the X-axis. Points above this are faded/shrunk and excluded from X-axis limits.
+                - **yerr_max** → Maximum allowed *measurement* uncertainty (σ, in mag) for the Y-axis. Points above this are faded/shrunk and excluded from Y-axis limits.
 
                 ### Example URLs  
                 - `https://dataviz.mocadb.ca/bd-colors?xaxis_type=color&yaxis_type=absolute_magnitude&yaxis_value_1=mko_jmag&xaxis_value_1=mko_jmag&xaxis_value_2=mko_kmag&moca_oid=602&binaries=true`
@@ -557,6 +559,24 @@ layout = (
         style={"padding": "20px", "backgroundColor": "#f9f9f9"}
     ),
 )
+
+@dash.callback(
+    Output('bdphot-x-err-threshold', 'value'),
+    Output('bdphot-y-err-threshold', 'value'),
+    Input('url', 'href')
+)
+def update_error_thresholds_from_url(url):
+    params = parse_url_params(url)
+    x_raw = params.get('xerr_max', [None])[0]
+    y_raw = params.get('yerr_max', [None])[0]
+    def _to_float(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return None
+    return _to_float(x_raw), _to_float(y_raw)
 
 def parse_url_params(url):
     """Parse URL parameters into a dictionary."""
@@ -990,7 +1010,11 @@ def update_dropdowns_from_url(url):
 )
 #, best_photometry_value
 def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, display_errors_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, x_err_threshold, y_err_threshold, url):
-
+    
+    # Placeholders for MOCA-style axis ranges (also used by "Home")
+    custom_xrange = None
+    custom_yrange = None
+    
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
     moca_ids_array = []
@@ -999,6 +1023,19 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             moca_ids_array = [int(moca_id.strip()) for moca_id in moca_ids.split(',') if moca_id.strip()]
         except ValueError:
             moca_ids_array = []
+
+    # Read URL fallbacks for error thresholds if inputs are None
+    url_params_local = parse_url_params(url)
+    if x_err_threshold is None:
+        try:
+            x_err_threshold = float(url_params_local.get('xerr_max', [None])[0])
+        except Exception:
+            pass
+    if y_err_threshold is None:
+        try:
+            y_err_threshold = float(url_params_local.get('yerr_max', [None])[0])
+        except Exception:
+            pass
 
     # Extract labels for the selected axis types
     x_axis_type_label = next((opt['label'] for opt in x_axis_options if opt['value'] == x_axis_type), None)
@@ -2369,7 +2406,11 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     xmin = float(np.nanmin(md.loc[good_for_x, xcol]))
                     xmax = float(np.nanmax(md.loc[good_for_x, xcol]))
                     if np.isfinite(xmin) and np.isfinite(xmax) and xmin != xmax:
-                        fig.update_xaxes(range=[xmin, xmax], autorange=False)
+                        custom_xrange = [xmin, xmax]
+                        # Add 5% padding
+                        x_padding = 0.05 * np.abs(xmax - xmin)
+                        custom_xrange = [custom_xrange[0] - x_padding, custom_xrange[1] + x_padding]
+                        fig.update_xaxes(range=custom_xrange, autorange=False)
             if ycol:
                 good_for_y = (~md['too_noisy_y']) if yerr_max is not None else md[ycol].notna()
                 if good_for_y.any():
@@ -2377,9 +2418,13 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ymax = float(np.nanmax(md.loc[good_for_y, ycol]))
                     if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
                         if y_axis_type == 'absolute_magnitude':
-                            fig.update_yaxes(range=[ymax, ymin], autorange=False)
+                            custom_yrange = [ymax, ymin]
                         else:
-                            fig.update_yaxes(range=[ymin, ymax], autorange=False)
+                            custom_yrange = [ymin, ymax]
+                        # Add 5% padding
+                        y_padding = 0.05 * np.abs(ymax - ymin)
+                        custom_yrange = [custom_yrange[0] - y_padding, custom_yrange[1] + y_padding]
+                        fig.update_yaxes(range=custom_yrange, autorange=False)
         except Exception:
             pass
 
@@ -2398,6 +2443,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             xaxis=dict(showgrid=True),
             yaxis=dict(showgrid=True)
         )
+
+    # Ensure "Home" resets to MOCA-style limits (initial ranges)
+    if custom_xrange is not None:
+        fig.update_xaxes(autorange=False, range=custom_xrange)
+    if custom_yrange is not None:
+        fig.update_yaxes(autorange=False, range=custom_yrange)
+
+    # Optional: keep zoom/pan state stable across re-renders
+    fig.update_layout(uirevision="moca_home_v1")
 
     return fig, dcc.Markdown(missing_ids_message) if missing_ids_message else None, merged_data.to_dict('records')  # Save `merged_data` as a JSON serializable dictionary
 

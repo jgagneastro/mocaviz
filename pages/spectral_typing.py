@@ -4,7 +4,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
-from sqlalchemy import create_engine, MetaData, Table, select, Float
+from sqlalchemy import create_engine, MetaData, Table, select, Float, text
 from scipy.optimize import minimize
 from math import floor, ceil, log10
 import os
@@ -659,8 +659,30 @@ layout = html.Div([
               ], id='sp-typing-showfeatures-div', style={'margin-bottom': '15px'}),
               html.Div([
                    html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
-                   html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'})
-              ], id='sp-typing-nav-div', style={'margin-bottom': '15px'})
+                   html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'}),
+                   html.Button(
+                       "Generate SQL type",
+                       id='sp-typing-sqlout-button',
+                       n_clicks=0,
+                       style={'fontSize': '16px',
+                              'border': '3px solid black',
+                              'verticalAlign': 'middle',
+                              'marginLeft': '15px',
+                              'display': 'none'}
+                   )
+              ], id='sp-typing-nav-div', style={'margin-bottom': '15px'}),
+            html.Div(
+                id='sp-typing-sqlout-output',
+                children=[
+                    dcc.Textarea(
+                        id='sp-typing-sqlout-text',
+                        value='',
+                        readOnly=True,
+                        style={'width': '100%', 'height': '140px', 'fontFamily': 'monospace'}
+                    )
+                ],
+                style={'display': 'none', 'marginTop': '10px'}
+            )
          ], style={'flex': '1'}),
          html.Div([
             html.Div([
@@ -733,6 +755,7 @@ layout = html.Div([
     dcc.Store(id='sp-typing-comparison-raw-spectrum'),
     dcc.Store(id='sp-typing-current-sptnum'),
     dcc.Store(id='sp-typing-norm-regions-store'),
+    dcc.Store(id='sp-typing-sqlout-flag'),
 ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
 
 # =============================================================================
@@ -756,7 +779,9 @@ def update_comparison_options(search):
     connection_string = get_connection_string_sptype(url_search=search)
     engine = create_engine(connection_string)
     query = """
-        SELECT ms.moca_specid, CONCAT(
+        SELECT ms.moca_specid,
+               ms.moca_oid,
+               CONCAT(
             ms.moca_specid, ': ',
             COALESCE(
                 CONCAT(
@@ -782,6 +807,203 @@ def update_comparison_options(search):
     return options, int(default_value) if default_value is not None else None, designation_map, df.to_json(date_format='iso', orient='split')
 
 # =============================================================================
+# SQL Output Button Helper Functions and Callbacks
+# =============================================================================
+
+def _parse_spectral_class_and_suffix(spt: str):
+    if not spt or not isinstance(spt, str):
+        return None, None
+    s = spt.strip()
+    for pref in ('esd', 'd/sd', 'sd'):
+        if s.lower().startswith(pref):
+            rest = s[len(pref):].lstrip()
+            m = re.search(r'[OBAFGKMLTY]', rest, re.IGNORECASE)
+            spectral_class = m.group(0).upper() if m else None
+            return spectral_class, ('d/sd' if pref == 'd/sd' else pref)
+    m = re.search(r'[OBAFGKMLTY]', s, re.IGNORECASE)
+    spectral_class = m.group(0).upper() if m else None
+    return spectral_class, None
+
+def _infer_gravity_class(grid_row):
+    gc = None
+    try:
+        gc = (grid_row.get('gravity_class') or '').strip().lower()
+    except Exception:
+        gc = None
+    if gc in ('beta', 'β'):
+        return 'β'
+    if gc in ('gamma','γ'):
+        return 'γ'
+    if gc in ('delta','δ'):
+        return 'δ'
+    name = ''
+    try:
+        name = (grid_row.get('moca_sptgridid') or '').lower()
+    except Exception:
+        name = ''
+    if any(tag in name for tag in ['beta', 'vl-g', 'vlg']):
+        return 'beta'
+    if any(tag in name for tag in ['gamma', 'int-g', 'intg']):
+        return 'gamma'
+    if 'delta' in name:
+        return 'delta'
+    return None
+
+# Callback to read sqlout=true from URL and toggle the button
+@dash.callback(
+    Output('sp-typing-sqlout-flag', 'data'),
+    Output('sp-typing-sqlout-button', 'style'),
+    Input('sp-typing-url', 'href')
+)
+def set_sqlout_flag(href):
+    show = False
+    if href:
+        parsed = urlparse(href)
+        qs = parse_qs(parsed.query)
+        val = (qs.get('sqlout', [None])[0] or '').lower()
+        show = val in ('true', '1', 'yes')
+    btn_style = {'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginLeft': '15px'}
+    if not show:
+        btn_style['display'] = 'none'
+    return bool(show), btn_style
+
+# Callback to generate SQL text on button press
+@dash.callback(
+    Output('sp-typing-sqlout-text', 'value'),
+    Output('sp-typing-sqlout-output', 'style'),
+    Input('sp-typing-sqlout-button', 'n_clicks'),
+    State('sp-typing-sqlout-flag', 'data'),
+    State('sp-typing-current-index', 'data'),
+    State('sp-typing-grid-dropdown', 'value'),
+    State('sp-typing-precomputed-store', 'data'),
+    State('sp-typing-comparison-spectrum', 'data'),
+    State('sp-typing-db-data', 'data'),
+    State('sp-typing-grid-data', 'data'),
+    State('sp-typing-deredden-checklist', 'value'),
+    State('sp-typing-url', 'search')
+    
+)
+def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomputed, comparison_data, df_data_json, grid_data_json, deredden_value, url_search):
+    if not (sqlout_enabled and n_clicks and precomputed and comparison_data and df_data_json and grid_data_json):
+        raise dash.exceptions.PreventUpdate
+    # pick current entry
+    filtered = [e for e in precomputed if e.get('grid') == selected_grid]
+    if not filtered:
+        raise dash.exceptions.PreventUpdate
+    idx = max(0, min(int(current_index or 0), len(filtered)-1))
+    entry = filtered[idx]
+    std_specid = int(entry.get('moca_specid'))
+    spt = str(entry.get('spectral_type'))
+    sptn = float(entry.get('spectral_type_number')) if entry.get('spectral_type_number') is not None else None
+    redchi2 = entry.get('reduced_chi2')
+    comp_df = pd.DataFrame(comparison_data)
+    comp_specid = int(comp_df['moca_specid'].iloc[0])
+    df_data = pd.read_json(df_data_json, orient='split')
+    row_obj = df_data[df_data['moca_specid'] == comp_specid].iloc[0]
+    # NaN-safe extraction for moca_oid and designation
+    _moca_oid_val = row_obj.get('moca_oid', None)
+    moca_oid = int(_moca_oid_val) if (_moca_oid_val is not None and not pd.isna(_moca_oid_val)) else None
+    _obj_desig_val = row_obj.get('designation', None)
+    object_designation = None if (_obj_desig_val is None or pd.isna(_obj_desig_val)) else _obj_desig_val
+    grid_df = pd.read_json(grid_data_json, orient='split')
+    grid_row = grid_df[grid_df['grid'] == selected_grid].iloc[0].to_dict()
+    moca_sptgridhid = int(grid_row.get('moca_sptgridhid')) if grid_row.get('moca_sptgridhid') is not None else None
+    gravity_class = _infer_gravity_class(grid_row)
+    spectral_class, inferred_suffix = _parse_spectral_class_and_suffix(spt)
+    suffix = inferred_suffix if inferred_suffix in ('d/sd', 'sd', 'esd') else None
+    if gravity_class not in ('β', 'γ', 'δ'):
+        gravity_class = None
+    max_wv = float(pd.to_numeric(comp_df['wv'], errors='coerce').max())
+    wavelength_regime = 'visible' if (np.isfinite(max_wv) and max_wv < 0.8) else 'near_infrared'
+    is_bd = False
+    if sptn is not None:
+        if sptn >= 10:
+            is_bd = True
+        elif sptn >= 6 and gravity_class in ('β', 'γ', 'δ'):
+            is_bd = True
+    object_type = 'brown_dwarf' if is_bd else None
+    der = ('deredden' in (deredden_value or []))
+    std_descr = f"{entry.get('designation','Unknown')}"
+    comments = f"Standard: {std_descr}; χ²={redchi2:.3f} ; dereddened={'yes' if der else 'no'}"
+    now = datetime.now()
+    calc_date = now.strftime('%Y-%m-%d')
+    calc_time = now.strftime('%H:%M:%S')
+    calc_method = 'dataviz.mocadb.ca/spectral-typing'
+    origin = 'spectral_typing.py'
+    
+    # If the URL contains user=management, execute the SQL and show a concise result message
+    try:
+        parsed = urlparse(url_search) if url_search else None
+        qs = parse_qs(parsed.query) if parsed else {}
+        username_param = (qs.get('user', [env_username])[0] or '').strip().lower()
+    except Exception:
+        username_param = env_username
+
+    if username_param == 'management':
+        author = 'gagne'
+    else:
+        author = None
+        
+    def fv(val):
+        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+            return 'NULL'
+        if isinstance(val, (int, float)):
+            return str(val)
+        s = str(val).replace('"', '\\"')
+        return f'"{s}"'
+    cols = [
+        ('moca_oid', moca_oid),
+        ('moca_specid', comp_specid),
+        ('spectral_type', spt),
+        ('moca_sptgridhid', moca_sptgridhid),
+        ('spectral_standard_moca_specid', std_specid),
+        ('spectral_type_number', sptn),
+        ('spectral_type_unc', 0.5),
+        ('quality_flag', 'B'),
+        ('photometric_estimate', 0),
+        ('spectral_class', spectral_class),
+        ('gravity_class', gravity_class),
+        ('suffix', suffix),
+        ('simple_spectral_type', spt),
+        ('complete_spectral_type', spt),
+        ('wavelength_regime', wavelength_regime),
+        ('adopted', 0),
+        ('ignored', 0),
+        ('adopt_asis', 0),
+        ('calculation_method', calc_method),
+        ('origin', origin),
+        ('author', author),
+        ('calculation_date', calc_date),
+        ('calculation_time', calc_time),
+        ('object_designation', object_designation),
+        ('object_type', object_type),
+        ('comments', comments)
+    ]
+    col_names = ", ".join([c for c, _ in cols])
+    select_parts = ", ".join([f"{fv(v)} AS {c}" for c, v in cols])
+    sql = f"INSERT INTO cdata_spectral_types ({col_names}) SELECT {select_parts};"
+
+    if username_param == 'management':
+        try:
+            connection_string = get_connection_string_sptype(url_search=url_search)
+            engine = create_engine(connection_string)
+            with engine.begin() as conn:
+                result = conn.execute(text(sql))
+                affected = result.rowcount
+            # Normalize message; some drivers return -1 when rowcount is unknown
+            if affected is None or affected < 0:
+                msg = 'Statement executed'
+            else:
+                plural = '' if affected == 1 else 's'
+                msg = f'{affected} row{plural} added'
+            return msg, {'display': 'block', 'marginTop': '10px'}
+        except Exception as e:
+            # Surface the error to the UI box
+            return f'ERROR: {e}', {'display': 'block', 'marginTop': '10px'}
+
+    return sql, {'display': 'block', 'marginTop': '10px'}
+
+# =============================================================================
 # Callback: Define spectral grid options and download grid spectra
 # =============================================================================
 @dash.callback(
@@ -804,13 +1026,29 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
         engine = create_engine(connection_string)
         # SQL Query to populate the dropdown options
         query_options = """
-            SELECT dstg.moca_sptgridid AS grid, dstg.moca_specid, dstg.spectral_type, dstg.spectral_type_number, dstg.short_object_designation AS designation, CONCAT(dstg.spectral_type,' (',dstg.short_object_designation,')') AS label
+            SELECT
+              dstg.moca_sptgridid AS grid,
+              dstg.moca_sptgridhid,
+              dstg.moca_specid,
+              dstg.moca_oid,
+              dstg.object_designation,
+              dstg.spectral_type,
+              dstg.spectral_type_number,
+              dstg.short_object_designation AS designation,
+              CONCAT(dstg.spectral_type,' (',dstg.short_object_designation,')') AS label,
+              CASE WHEN mstg.moca_sptgridid='extremely low gravity' THEN 'δ'
+                   WHEN mstg.moca_sptgridid='very low gravity' THEN 'γ'
+                   WHEN mstg.moca_sptgridid='intermediate gravity' THEN 'β'
+                   WHEN mstg.moca_sptgridid='field' THEN 'α'
+                   ELSE NULL
+              END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
+
         if df_options.empty:
             if debug_printing:
                 print("Encountered empty standard grid header")
