@@ -1759,11 +1759,16 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
     # (Zeros or extremely tiny values will be lifted accordingly.)
     chi = df_merged['reduced_chi2'].astype(float)
 
-    #If any chi2 is exactly zero, replace it with second smallest value / 5
+    #If any chi2 is exactly zero, replace it with second smallest value / 10
     if (chi == 0).any():
         # Get the second smallest value among the finite ones
         second_smallest = chi[finite_mask].nsmallest(2).iloc[-1]
-        df_merged.loc[chi == 0, 'reduced_chi2'] = second_smallest / 5
+        df_merged.loc[chi == 0, 'reduced_chi2'] = second_smallest / 10.0
+    
+    #Adjust extreme but non zero Chi2 values
+    chi_sorted = np.sort(chi)
+    if chi_sorted[0] < chi_sorted[1] / 10.0:
+        df_merged.loc[chi == chi_sorted[0], 'reduced_chi2'] = chi_sorted[1] / 10.0
 
     # adjusted_frames = []
     # for g in df_merged['grid'].unique():

@@ -225,6 +225,87 @@ def format_dataframe_with_error(df, value_col, error_col, unit="", output_col="f
     df[output_col] = df.apply(apply_format, axis=1)
     return df.copy()
 
+def _modulate_rgba_alpha(color_str, alpha_factor=1.0, default='rgba(0,0,0,1.0)'):
+    """
+    Return same color with alpha multiplied by alpha_factor.
+    Accepts 'rgba(r,g,b,a)', 'rgb(r,g,b)', or '#RRGGBB'.
+    """
+    if not isinstance(color_str, str) or not color_str:
+        color_str = default
+    color_str = color_str.strip()
+    # rgba
+    if color_str.lower().startswith('rgba'):
+        try:
+            parts = color_str[color_str.find('(')+1:color_str.rfind(')')].split(',')
+            r, g, b, a = [p.strip() for p in parts]
+            a_val = float(a)
+            a_new = max(0.0, min(1.0, a_val * float(alpha_factor)))
+            return f'rgba({r},{g},{b},{a_new})'
+        except Exception:
+            return default
+    # rgb
+    if color_str.lower().startswith('rgb'):
+        try:
+            parts = color_str[color_str.find('(')+1:color_str.rfind(')')].split(',')
+            r, g, b = [p.strip() for p in parts[:3]]
+            a_new = max(0.0, min(1.0, float(alpha_factor)))
+            return f'rgba({r},{g},{b},{a_new})'
+        except Exception:
+            return default
+    # hex #RRGGBB
+    if color_str.startswith('#') and len(color_str) == 7:
+        try:
+            r = int(color_str[1:3], 16)
+            g = int(color_str[3:5], 16)
+            b = int(color_str[5:7], 16)
+            a_new = max(0.0, min(1.0, float(alpha_factor)))
+            return f'rgba({r},{g},{b},{a_new})'
+        except Exception:
+            return default
+    # Fallback (named colors etc.)
+    return default
+
+def _derive_error_color_from_trace(trace, default='#1f77b4'):
+    """
+    Compute an RGBA for error bars matching the trace's marker (or line) color & opacity.
+    If the marker has a per-point color array, we use the first valid entry.
+    Fallback order: marker.color -> marker.line.color -> line.color -> default.
+    """
+    def _first_valid_color(c):
+        # Accept string color; if list/tuple, pick first string entry
+        if isinstance(c, str) and c:
+            return c
+        if isinstance(c, (list, tuple)):
+            for v in c:
+                if isinstance(v, str) and v:
+                    return v
+        return None
+
+    mcol = None
+    try:
+        mcol = _first_valid_color(getattr(trace.marker, 'color', None))
+    except Exception:
+        mcol = None
+    if not mcol:
+        try:
+            mcol = _first_valid_color(getattr(trace.marker, 'line', None).color)
+        except Exception:
+            mcol = None
+    if not mcol:
+        try:
+            mcol = _first_valid_color(getattr(trace, 'line', None).color)
+        except Exception:
+            mcol = None
+    if not mcol:
+        mcol = default
+
+    try:
+        op = trace.opacity if trace.opacity is not None else 1.0
+    except Exception:
+        op = 1.0
+
+    return _modulate_rgba_alpha(mcol, alpha_factor=op, default=default)
+
 # Layout for the page
 layout = (
     html.Div([
@@ -327,6 +408,13 @@ layout = (
 
             html.Div([
                 dcc.Checklist(
+                    options=[{'label': 'Display measurement errors', 'value': 'display_errors'}],
+                    id='bdphot-checkbox-display-errors',
+                )
+            ], style={'gridArea': '1 / 1'}),
+
+            html.Div([
+                dcc.Checklist(
                     options=[{'label': 'Include photometric distance estimates', 'value': 'photometric_distances'}],
                     id='bdphot-checkbox-photometric-distances',
                 )
@@ -352,6 +440,50 @@ layout = (
             "gap": "1rem",
             "marginTop": "1rem",
         }),
+
+        # Photometry error filters
+        html.Div([
+            html.Label("Fade and shrink large errors:"),
+            html.Div([
+                html.Div([
+                    html.Label("Max X-axis measurement error (mag):"),
+                    dcc.Input(
+                        id='bdphot-x-err-threshold',
+                        type='number',
+                        placeholder="e.g. 0.1",
+                        min=0,
+                        step=0.001,
+                        debounce=True,
+                        style={'width': '100%'}
+                    ),
+                    html.Small(
+                        "Points with σ_x above this will be drawn transparent and ignored for X limits.",
+                        style={'display': 'block', 'color': '#666'}
+                    )
+                ], style={'gridArea': '1 / 1'}),
+                html.Div([
+                    html.Label("Max Y-axis measurement error (mag):"),
+                    dcc.Input(
+                        id='bdphot-y-err-threshold',
+                        type='number',
+                        placeholder="e.g. 0.1",
+                        min=0,
+                        step=0.001,
+                        debounce=True,
+                        style={'width': '100%'}
+                    ),
+                    html.Small(
+                        "Points with σ_y above this will be drawn transparent and ignored for Y limits.",
+                        style={'display': 'block', 'color': '#666'}
+                    )
+                ], style={'gridArea': '1 / 2'}),
+            ], style={
+                "display": "grid",
+                "gridTemplateColumns": "1fr 1fr",
+                "gridTemplateRows": "auto",
+                "gap": "1rem",
+            }),
+        ], style={'marginTop': '1rem'}),
 
         # Scatter Plot
         dcc.Graph(id='bdphot-scatter-plot', config=figure_export_config, clickData=None),
@@ -408,6 +540,7 @@ layout = (
                 - **yaxis_value_2** → Specifies the second band for the Y-axis when using some axis types that require it.
                 - **moca_oid** → Highlights specific objects by their MOCA OID. You can list multiple OIDs separated by commas.
                 - **spt_range** → Sets the spectral type range. Use the format like `M6-Y2`.
+                - **errors** → Display measurement errors. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photdist** → Includes photometric distance estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **binaries** → Displays binary systems. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photspt** → Includes photometric spectral type estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
@@ -845,15 +978,18 @@ def update_dropdowns_from_url(url):
         Input('bdphot-moca-ids-input', 'value'),
         Input('bdphot-moca-ids-input', 'n_submit'),  # Trigger on Enter
         #Input('bdphot-checkbox-best-photometry', 'value'),
+        Input('bdphot-checkbox-display-errors', 'value'),
         Input('bdphot-checkbox-photometric-distances', 'value'),
         Input('bdphot-checkbox-binaries', 'value'),
         Input('bdphot-checkbox-spectral-type-estimates', 'value'),
         Input('bdphot-spt-range-store', 'data'), 
+        Input('bdphot-x-err-threshold', 'value'),
+        Input('bdphot-y-err-threshold', 'value'),
     ],
     State('url', 'href')
 )
 #, best_photometry_value
-def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, url):
+def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, display_errors_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, x_err_threshold, y_err_threshold, url):
 
     # Interpret the highlighted moca_oids
     # Process moca_ids only when Enter is pressed
@@ -2050,6 +2186,219 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             fig.layout.yaxis.tickvals = y_tickvals
             fig.layout.yaxis.ticktext = [generate_spectral_type_label(val) for val in y_tickvals]
 
+    # --- Optional measurement error bars ---
+    display_errors_flag = isinstance(display_errors_value, (list, tuple)) and ('display_errors' in display_errors_value)
+
+    if merged_data is not None and len(merged_data) and len(fig.data) >= 1 and isinstance(fig.data[0], (go.Scatter, go.Scattergl)):
+        md = merged_data.copy()
+        md['err_x'] = md['ex_data']
+        md['err_y'] = md['ey_data']
+
+        main = fig.data[0]
+        oids = list(main.customdata) if getattr(main, "customdata", None) is not None else None
+        if oids is not None and 'moca_oid' in md.columns:
+            ex_map = md.set_index('moca_oid')['err_x'].to_dict()
+            ey_map = md.set_index('moca_oid')['err_y'].to_dict()
+            errx_all = [ex_map.get(int(oid), None) for oid in oids]
+            erry_all = [ey_map.get(int(oid), None) for oid in oids]
+        else:
+            # fallback: assume same order
+            errx_all = md['err_x'].tolist() if 'err_x' in md.columns else None
+            erry_all = md['err_y'].tolist() if 'err_y' in md.columns else None
+
+        error_thick = 0.7
+        err_color_main = 'rgba(128,128,128,0.2)'  # transparent gray
+        if display_errors_flag:
+            if errx_all is not None:
+                main.update(error_x=dict(
+                    array=errx_all, type='data', visible=True,
+                    thickness=error_thick,  # thinner lines
+                    width=0,      # no end caps
+                    color=err_color_main  # match marker color + opacity
+                ))
+            if erry_all is not None:
+                main.update(error_y=dict(
+                    array=erry_all, type='data', visible=True,
+                    thickness=error_thick,
+                    width=0,
+                    color=err_color_main
+                ))
+        else:
+            main.update(error_x=dict(visible=False, thickness=error_thick, width=0), error_y=dict(visible=False, thickness=error_thick, width=0))
+
+    # --- Measurements error filtering & styling (per-axis) ---
+
+    # Allow thresholds from URL if UI empty
+    url_params_local = parse_url_params(url)
+    url_xerr = url_params_local.get('xerr_max', [None])[0]
+    url_yerr = url_params_local.get('yerr_max', [None])[0]
+
+    def _as_float(v):
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    xerr_max = (_as_float(x_err_threshold) if x_err_threshold is not None else _as_float(url_xerr))
+    yerr_max = (_as_float(y_err_threshold) if y_err_threshold is not None else _as_float(url_yerr))
+
+    # Skip if no data
+    if merged_data is not None and len(merged_data):
+        md = merged_data.copy()
+
+        # Per-point photometric sigmas for each axis
+        md['sigma_x'] = md['ex_data'] #md.apply(lambda r: _compute_photometric_sigma(x_axis_type, r), axis=1)
+        md['sigma_y'] = md['ey_data'] #md.apply(lambda r: _compute_photometric_sigma(y_axis_type, r), axis=1)
+
+        # Masks
+        md['too_noisy_x'] = md['sigma_x'] > xerr_max if xerr_max is not None else False
+        md['too_noisy_y'] = md['sigma_y'] > yerr_max if yerr_max is not None else False
+        md['transparent_mask'] = md['too_noisy_x'] | md['too_noisy_y']
+
+        # Fading: keep original color & symbol; split into two traces with different opacities
+        try:
+            # The main regular-data scatter was added first (index 0)
+            if len(fig.data) >= 1 and isinstance(fig.data[0], (go.Scatter, go.Scattergl)):
+                main = fig.data[0]
+
+                # We rely on customdata holding moca_oid to align with md
+                oids = list(main.customdata) if getattr(main, "customdata", None) is not None else None
+                if oids is not None:
+                    # Map each OID to its transparent flag
+                    mask_by_oid = md.set_index('moca_oid')['transparent_mask']
+                    noisy_flags = [bool(mask_by_oid.get(int(oid), False)) for oid in oids]
+
+                    good_idx = [i for i, f in enumerate(noisy_flags) if not f]
+                    noisy_idx = [i for i, f in enumerate(noisy_flags) if f]
+
+                    def _subset(arr, idxs):
+                        if arr is None:
+                            return None
+                        a = list(arr)
+                        return [a[i] for i in idxs]
+
+                    # Snapshot existing arrays so we can slice them consistently
+                    x_all = list(main.x)
+                    y_all = list(main.y)
+                    text_all = list(main.text) if getattr(main, "text", None) is not None else None
+                    cdata_all = list(main.customdata) if getattr(main, "customdata", None) is not None else None
+                    color_all = list(main.marker.color) if getattr(main.marker, "color", None) is not None else None
+                    symbol_all = list(main.marker.symbol) if getattr(main.marker, "symbol", None) is not None else None
+                    size_all = list(main.marker.size) if isinstance(main.marker.size, (list, tuple)) else main.marker.size
+
+                    # Update main trace to only GOOD points (preserve existing color/symbol arrays and opacity)
+                    main.x = _subset(x_all, good_idx)
+                    main.y = _subset(y_all, good_idx)
+                    main.text = _subset(text_all, good_idx) if text_all is not None else None
+                    main.customdata = _subset(cdata_all, good_idx) if cdata_all is not None else None
+                    if color_all is not None:
+                        main.marker.update(color=_subset(color_all, good_idx))
+                    if symbol_all is not None:
+                        main.marker.update(symbol=_subset(symbol_all, good_idx))
+
+                    # Slice error arrays on the main (GOOD) trace as well
+                    try:
+                        if getattr(main, "error_x", None) and getattr(main.error_x, "array", None) is not None:
+                            main.update(error_x=dict(
+                                array=_subset(list(main.error_x.array), good_idx),
+                                type='data',
+                                visible=display_errors_flag,
+                                thickness=error_thick,
+                                width=0,
+                                color=err_color_main
+                            ))
+                        if getattr(main, "error_y", None) and getattr(main.error_y, "array", None) is not None:
+                            main.update(error_y=dict(
+                                array=_subset(list(main.error_y.array), good_idx),
+                                type='data',
+                                visible=display_errors_flag,
+                                thickness=error_thick,
+                                width=0,
+                                color=err_color_main
+                            ))
+                    except Exception:
+                        pass
+
+                    # Add a second trace for NOISY points with low opacity (colors/symbols preserved)
+                    if noisy_idx:
+                        hidden_opacity = 0.08
+                        errx_all = list(main.error_x.array) if getattr(main, "error_x", None) and getattr(main.error_x, "array", None) is not None else None
+                        erry_all = list(main.error_y.array) if getattr(main, "error_y", None) and getattr(main.error_y, "array", None) is not None else None
+                        noisy_err_color = _modulate_rgba_alpha(_derive_error_color_from_trace(main), alpha_factor=hidden_opacity)
+                        fig.add_trace(go.Scatter(
+                            x=_subset(x_all, noisy_idx),
+                            y=_subset(y_all, noisy_idx),
+                            mode='markers',
+                            text=_subset(text_all, noisy_idx) if text_all is not None else None,
+                            customdata=_subset(cdata_all, noisy_idx) if cdata_all is not None else None,
+                            marker=dict(
+                                size=(size_all * 0.5 if not isinstance(size_all, list)
+                                    else [s * 0.5 for s in _subset(size_all, noisy_idx)]),
+                                color=_subset(color_all, noisy_idx) if color_all is not None else None,
+                                symbol=_subset(symbol_all, noisy_idx) if symbol_all is not None else None,
+                            ),
+                            # error_x=(dict(array=_subset(errx_all, noisy_idx), type='data', visible=True,
+                            #             thickness=1, width=0, color=noisy_err_color)
+                            #         if errx_all is not None and display_errors_flag else None),
+                            # error_y=(dict(array=_subset(erry_all, noisy_idx), type='data', visible=True,
+                            #             thickness=1, width=0, color=noisy_err_color)
+                            #         if erry_all is not None and display_errors_flag else None),
+                            opacity=hidden_opacity,
+                            showlegend=False
+                        ))
+        except Exception:
+            pass
+
+        # Axis ranges: exclude noisy points per-axis, keep them drawn
+        # Identify columns used for plotting
+        xcol = None
+        for cand in ['x', 'x_value', 'x_data', 'x_data_value', 'x_plot']:
+            if cand in md.columns:
+                xcol = cand
+                break
+        ycol = None
+        for cand in ['y', 'y_value', 'y_data', 'y_data_value', 'y_plot']:
+            if cand in md.columns:
+                ycol = cand
+                break
+
+        try:
+            if xcol:
+                good_for_x = (~md['too_noisy_x']) if xerr_max is not None else md[xcol].notna()
+                if good_for_x.any():
+                    xmin = float(np.nanmin(md.loc[good_for_x, xcol]))
+                    xmax = float(np.nanmax(md.loc[good_for_x, xcol]))
+                    if np.isfinite(xmin) and np.isfinite(xmax) and xmin != xmax:
+                        fig.update_xaxes(range=[xmin, xmax], autorange=False)
+            if ycol:
+                good_for_y = (~md['too_noisy_y']) if yerr_max is not None else md[ycol].notna()
+                if good_for_y.any():
+                    ymin = float(np.nanmin(md.loc[good_for_y, ycol]))
+                    ymax = float(np.nanmax(md.loc[good_for_y, ycol]))
+                    if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
+                        if y_axis_type == 'absolute_magnitude':
+                            fig.update_yaxes(range=[ymax, ymin], autorange=False)
+                        else:
+                            fig.update_yaxes(range=[ymin, ymax], autorange=False)
+        except Exception:
+            pass
+
+        # Store augmented data (so selection/export include flags if useful)
+        merged_data = md
+
+    if display_errors_value and 'display_errors' in display_errors_value:
+        # Hide the grid when errors are shown
+        fig.update_layout(
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=False)
+        )
+    else:
+        # Restore the grid when errors are hidden
+        fig.update_layout(
+            xaxis=dict(showgrid=True),
+            yaxis=dict(showgrid=True)
+        )
+
     return fig, dcc.Markdown(missing_ids_message) if missing_ids_message else None, merged_data.to_dict('records')  # Save `merged_data` as a JSON serializable dictionary
 
 @dash.callback(
@@ -2161,6 +2510,7 @@ def update_moca_ids_input(url):
 @dash.callback(
     [
         #Output('bdphot-checkbox-best-photometry', 'value'),
+        Output('bdphot-checkbox-display-errors', 'value'),
         Output('bdphot-checkbox-photometric-distances', 'value'),
         Output('bdphot-checkbox-binaries', 'value'),
         Output('bdphot-checkbox-spectral-type-estimates', 'value'),
@@ -2178,10 +2528,12 @@ def update_checkboxes_from_url(url):
     photdist = url_params.get('photdist', ['false'])[0].lower() == 'true'
     binaries = url_params.get('binaries', ['false'])[0].lower() == 'true'
     photspt = url_params.get('photspt', ['false'])[0].lower() == 'true'
+    errors = url_params.get('errors', ['false'])[0].lower() == 'true'
 
     # Return values for each checkbox
     return (
         #['best_photometry'] if bestphot else [],
+        ['display_errors'] if errors else [],
         ['photometric_distances'] if photdist else [],
         ['binaries'] if binaries else [],
         ['spectral_type_estimates'] if photspt else [],
