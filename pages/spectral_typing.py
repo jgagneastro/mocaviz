@@ -798,6 +798,7 @@ def update_comparison_options(search):
     query = """
         SELECT ms.moca_specid,
                ms.moca_oid,
+               ms.moca_instid,
                CONCAT(
             ms.moca_specid, ': ',
             COALESCE(
@@ -941,9 +942,11 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
     comp_specid = int(comp_df['moca_specid'].iloc[0])
     df_data = pd.read_json(df_data_json, orient='split')
     row_obj = df_data[df_data['moca_specid'] == comp_specid].iloc[0]
-    # NaN-safe extraction for moca_oid and designation
+    # NaN-safe extraction for moca_oid, moca_instid, and designation
     _moca_oid_val = row_obj.get('moca_oid', None)
     moca_oid = int(_moca_oid_val) if (_moca_oid_val is not None and not pd.isna(_moca_oid_val)) else None
+    _instid_val = row_obj.get('moca_instid', None)
+    moca_instid = None if (_instid_val is None or pd.isna(_instid_val)) else _instid_val
     _obj_desig_val = row_obj.get('designation', None)
     object_designation = None if (_obj_desig_val is None or pd.isna(_obj_desig_val)) else _obj_desig_val
     grid_df = pd.read_json(grid_data_json, orient='split')
@@ -1036,6 +1039,7 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
     cols = [
         ('moca_oid', moca_oid),
         ('moca_specid', comp_specid),
+        ('moca_instid', moca_instid),
         ('spectral_type', spt),
         ('moca_sptgridhid', moca_sptgridhid),
         ('spectral_standard_moca_specid', std_specid),
