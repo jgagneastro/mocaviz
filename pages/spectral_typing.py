@@ -658,18 +658,33 @@ layout = html.Div([
                    )
               ], id='sp-typing-showfeatures-div', style={'margin-bottom': '15px'}),
               html.Div([
-                   html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
-                   html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0, style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'}),
-                   html.Button(
-                       "Generate SQL type",
-                       id='sp-typing-sqlout-button',
-                       n_clicks=0,
-                       style={'fontSize': '16px',
-                              'border': '3px solid black',
-                              'verticalAlign': 'middle',
-                              'marginLeft': '15px',
-                              'display': 'none'}
-                   )
+                   html.Div([
+                        html.Button(
+                            "Generate SQL type",
+                            id='sp-typing-sqlout-button',
+                            n_clicks=0,
+                            style={'fontSize': '12px',
+                                   'border': '3px solid black',
+                                   'verticalAlign': 'middle',
+                                   'marginRight': '12px',
+                                   'display': 'none'}
+                        ),
+                        html.Button(
+                            "Adopt type in MOCAdb",
+                            id='sp-typing-sqlout-adopt-button',
+                            n_clicks=0,
+                            style={'fontSize': '12px',
+                                   'border': '3px solid black',
+                                   'verticalAlign': 'middle',
+                                   'display': 'none'}
+                        )
+                   ], style={'display': 'flex', 'flexDirection': 'row'}),
+                   html.Div([
+                        html.Button("← Previous Standard", id='sp-typing-prev-button', disabled=True, n_clicks=0,
+                                    style={'fontSize': '16px', 'border': '3px solid black', 'marginRight': '15px', 'verticalAlign': 'middle'}),
+                        html.Button("Next Standard →", id='sp-typing-next-button', disabled=True, n_clicks=0,
+                                    style={'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle'}),
+                   ], style={'display': 'flex', 'flexDirection': 'row', 'marginBottom': '10px'})
               ], id='sp-typing-nav-div', style={'margin-bottom': '15px'}),
             html.Div(
                 id='sp-typing-sqlout-output',
@@ -756,6 +771,7 @@ layout = html.Div([
     dcc.Store(id='sp-typing-current-sptnum'),
     dcc.Store(id='sp-typing-norm-regions-store'),
     dcc.Store(id='sp-typing-sqlout-flag'),
+    dcc.Store(id='sp-typing-sqlout-adopt-flag'),
 ], style={'width': '70%', 'margin': 'auto', 'padding': '20px'})
 
 # =============================================================================
@@ -852,26 +868,50 @@ def _infer_gravity_class(grid_row):
 # Callback to read sqlout=true from URL and toggle the button
 @dash.callback(
     Output('sp-typing-sqlout-flag', 'data'),
+    Output('sp-typing-sqlout-adopt-flag', 'data'),
     Output('sp-typing-sqlout-button', 'style'),
+    Output('sp-typing-sqlout-adopt-button', 'style'),
     Input('sp-typing-url', 'href')
 )
 def set_sqlout_flag(href):
     show = False
+    show_adopt = False
+    
+    # If the username is management or collaborators, show SQLout button
+    try:
+        parsed = urlparse(url_search) if url_search else None
+        qs = parse_qs(parsed.query) if parsed else {}
+        username_param = (qs.get('user', [env_username])[0] or '').strip().lower()
+    except Exception:
+        username_param = env_username
+
     if href:
         parsed = urlparse(href)
         qs = parse_qs(parsed.query)
         val = (qs.get('sqlout', [None])[0] or '').lower()
         show = val in ('true', '1', 'yes')
-    btn_style = {'fontSize': '16px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginLeft': '15px'}
+
+    if username_param == 'management' or username_param == 'collaborators':
+        show = True
+    if username_param == 'management':
+        show_adopt = True
+        
+    btn_style = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginLeft': '12px'}
     if not show:
         btn_style['display'] = 'none'
-    return bool(show), btn_style
+
+    btn_style_adopt = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginLeft': '12px'}
+    if not show:
+        btn_style_adopt['display'] = 'none'
+
+    return bool(show), bool(show_adopt), btn_style, btn_style_adopt
 
 # Callback to generate SQL text on button press
 @dash.callback(
     Output('sp-typing-sqlout-text', 'value'),
     Output('sp-typing-sqlout-output', 'style'),
     Input('sp-typing-sqlout-button', 'n_clicks'),
+    Input('sp-typing-sqlout-adopt-button', 'n_clicks'),
     State('sp-typing-sqlout-flag', 'data'),
     State('sp-typing-current-index', 'data'),
     State('sp-typing-grid-dropdown', 'value'),
@@ -883,8 +923,8 @@ def set_sqlout_flag(href):
     State('sp-typing-url', 'search')
     
 )
-def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomputed, comparison_data, df_data_json, grid_data_json, deredden_value, url_search):
-    if not (sqlout_enabled and n_clicks and precomputed and comparison_data and df_data_json and grid_data_json):
+def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, selected_grid, precomputed, comparison_data, df_data_json, grid_data_json, deredden_value, url_search):
+    if not (sqlout_enabled and (n_clicks or n_clicks_adopt) and precomputed and comparison_data and df_data_json and grid_data_json):
         raise dash.exceptions.PreventUpdate
     # pick current entry
     filtered = [e for e in precomputed if e.get('grid') == selected_grid]
@@ -928,9 +968,11 @@ def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomp
     now = datetime.now()
     calc_date = now.strftime('%Y-%m-%d')
     calc_time = now.strftime('%H:%M:%S')
-    calc_method = 'dataviz.mocadb.ca/spectral-typing'
     origin = 'spectral_typing.py'
-    
+    adopted = 0
+    if n_clicks_adopt:
+        adopted = 1
+
     # If the URL contains user=management, execute the SQL and show a concise result message
     try:
         parsed = urlparse(url_search) if url_search else None
@@ -943,7 +985,7 @@ def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomp
         author = 'gagne'
     else:
         author = None
-        
+
     def fv(val):
         if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
             return 'NULL'
@@ -967,10 +1009,9 @@ def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomp
         ('simple_spectral_type', spt),
         ('complete_spectral_type', spt),
         ('wavelength_regime', wavelength_regime),
-        ('adopted', 0),
+        ('adopted', adopted),
         ('ignored', 0),
         ('adopt_asis', 0),
-        ('calculation_method', calc_method),
         ('origin', origin),
         ('author', author),
         ('calculation_date', calc_date),
@@ -988,14 +1029,23 @@ def generate_sql(n_clicks, sqlout_enabled, current_index, selected_grid, precomp
             connection_string = get_connection_string_sptype(url_search=url_search)
             engine = create_engine(connection_string)
             with engine.begin() as conn:
+                
+                msg_suffix = ''
+                if n_clicks_adopt and moca_oid is not None:
+                    # First reset all adopted types for this object
+                    update_stmt = text("UPDATE cdata_spectral_types SET adopted=0 WHERE adopted=1 AND moca_oid=:moca_oid")
+                    conn.execute(update_stmt, {"moca_oid": moca_oid})
+                    msg_suffix = ' and de-adopted other spectral types for this moca_oid'
+
                 result = conn.execute(text(sql))
                 affected = result.rowcount
+            
             # Normalize message; some drivers return -1 when rowcount is unknown
             if affected is None or affected < 0:
                 msg = 'Statement executed'
             else:
                 plural = '' if affected == 1 else 's'
-                msg = f'{affected} row{plural} added'
+                msg = f'{affected} row{plural} added to cdata_spectral_types{msg_suffix}'
             return msg, {'display': 'block', 'marginTop': '10px'}
         except Exception as e:
             # Surface the error to the UI box
