@@ -87,8 +87,9 @@ masked_regions = [(1.367, 1.424), (1.86, 2.0)]
 # Subtle background chemical/atomic features (µm). Ranges are approximate and easy to tweak.
 FEATURE_BANDS = [
     # Y/J band (~0.9–1.35 µm)
-    {"name": "VO",  "rng": (1.045, 1.080)},     # VO band
+    {"name": "H₂O", "rng": (0.92, 0.96)},     # H2O feature near 0.95 µm
     {"name": "FeH", "rng": (0.985, 1.005)},     # Wing–Ford band
+    {"name": "VO",  "rng": (1.045, 1.080)},     # VO band
     {"name": "H₂O", "rng": (1.130, 1.170)},     # H2O feature near 1.15 µm
     {"name": "VO",  "rng": (1.170, 1.200)},     # VO feature near 1.18–1.20 µm
     {"name": "FeH", "rng": (1.190, 1.240)},     # FeH feature around 1.2 µm
