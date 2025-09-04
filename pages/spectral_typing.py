@@ -1807,6 +1807,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
     comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
     comp_specid_tag = f" (specid={int(comp_id)})" if not comp_designation_row.empty else ""
+    comp_oid_tag = f" (oid={int(comp_designation_row['moca_oid'].iloc[0])})" if not comp_designation_row.empty and not comp_designation_row["moca_oid"].iloc[0] is None else ""
     for i, (region_min, region_max) in enumerate(local_norm_regions):
         comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
         if not comp_seg.empty:
@@ -1820,7 +1821,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 opacity=0.8,
                 legendgroup="comparison"
             ))
-    title_text = f"{comp_designation} {comp_specid_tag} vs {standard_label}, {selected_grid} grid"
+    title_text = f"{comp_designation} {comp_specid_tag} {comp_oid_tag} vs {standard_label}, {selected_grid} grid"
 
     y_min_values = []
     y_max_values = []
