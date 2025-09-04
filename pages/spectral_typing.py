@@ -921,10 +921,10 @@ def set_sqlout_flag(href):
     State('sp-typing-db-data', 'data'),
     State('sp-typing-grid-data', 'data'),
     State('sp-typing-deredden-checklist', 'value'),
+    State('sp-typing-norm-regions-store', 'data'),
     State('sp-typing-url', 'search')
-    
 )
-def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, selected_grid, precomputed, comparison_data, df_data_json, grid_data_json, deredden_value, url_search):
+def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, selected_grid, precomputed, comparison_data, df_data_json, grid_data_json, deredden_value, norm_regions_store, url_search):
     if not (sqlout_enabled and (n_clicks or n_clicks_adopt) and precomputed and comparison_data and df_data_json and grid_data_json):
         raise dash.exceptions.PreventUpdate
     # pick current entry
@@ -965,7 +965,46 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
     object_type = 'brown_dwarf' if is_bd else None
     der = ('deredden' in (deredden_value or []))
     std_descr = f"{entry.get('designation','Unknown')}"
-    comments = f"Standard: {std_descr}; χ²={redchi2:.3f} ; dereddened={'yes' if der else 'no'}"
+
+    # Determine active normalization regions and formatted text
+    local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
+    norm_text = _format_norm_regions_text(local_norm_regions)
+
+    # Format reddening values if available and dereddening is applied
+    av_list = entry.get('A_V') or []
+    rv_list = entry.get('R_V') or []
+
+    def _fmt_list(vals):
+        try:
+            return ",".join([f"{v:.3f}" if (v is not None and np.isfinite(float(v))) else "nan" for v in vals])
+        except Exception:
+            return ""
+
+    def _nanmedian(vals):
+        try:
+            arr = np.array([float(v) if v is not None else np.nan for v in vals], dtype=float)
+            finite = arr[np.isfinite(arr)]
+            return float(np.nanmedian(arr)) if finite.size > 0 else float('nan')
+        except Exception:
+            return float('nan')
+
+    if der and (av_list or rv_list):
+        av_med = _nanmedian(av_list)
+        rv_med = _nanmedian(rv_list)
+        av_str = _fmt_list(av_list)
+        rv_str = _fmt_list(rv_list)
+        comments = (
+            f"Standard: {std_descr}; χ²={redchi2:.3f} ; dereddened=yes; "
+            f"A(V)_med={av_med:.3f}; R(V)_med={rv_med:.3f}; "
+            f"A(V)_bands=[{av_str}]; R(V)_bands=[{rv_str}]; "
+            f"norm_regions={norm_text}"
+        )
+    else:
+        comments = (
+            f"Standard: {std_descr}; χ²={redchi2:.3f} ; dereddened={'yes' if der else 'no'}; "
+            f"norm_regions={norm_text}"
+        )
+
     now = datetime.now()
     calc_date = now.strftime('%Y-%m-%d')
     calc_time = now.strftime('%H:%M:%S')
