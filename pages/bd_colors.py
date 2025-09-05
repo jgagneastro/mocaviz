@@ -8,7 +8,7 @@ from dash.dependencies import ALL
 from sqlalchemy import create_engine, MetaData, Table, select, case
 from sqlalchemy.sql import func
 import pandas as pd
-from math import log10, floor
+from math import log10, floor, ceil
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs, unquote
 import os
 import numpy as np
@@ -91,9 +91,6 @@ def compute_ticks(data_range, axis_length_pixels=400, min_tick_spacing=50):
     Returns:
     - numpy.ndarray: The computed tick positions.
     """
-    import numpy as np
-    from math import floor, ceil, log10
-
     # Calculate ideal number of ticks based on axis length and minimum spacing
     num_ticks = axis_length_pixels // min_tick_spacing
 

@@ -815,7 +815,7 @@ def update_comparison_options(search):
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
         LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)
-        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL) AND ms.adopted=1
     """
     df = pd.read_sql(query, engine)
     options = [{'label': row["spectrum_name"], 'value': row["moca_specid"]} for index, row in df.iterrows()]
