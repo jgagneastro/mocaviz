@@ -800,16 +800,18 @@ def update_comparison_options(search):
                ms.moca_oid,
                ms.moca_instid,
                CONCAT(
-            ms.moca_specid, ': ',
-            COALESCE(
-                CONCAT(
-                    mo.designation, ' (', spt.spectral_type, ') with ', ms.moca_instid,
-                    COALESCE(CONCAT(' in ', ms.instrument_mode_name, ' mode'), ''),
-                    COALESCE(CONCAT(' (', ms.data_collection_date, ')'), '')
-                ),
-                ms.spectrum_name
-            )
-        ) AS spectrum_name, mo.designation
+                'specid', ms.moca_specid,
+                COALESCE(CONCAT(',oid', ms.moca_oid),''), ': ',
+                COALESCE(
+                    CONCAT(
+                        mo.designation, ' (', spt.spectral_type, ') with ', ms.moca_instid,
+                        COALESCE(CONCAT(' in ', ms.instrument_mode_name, ' mode'), ''),
+                        COALESCE(CONCAT(' (', ms.data_collection_date, ')'), '')
+                    ),
+                    ms.spectrum_name
+                )
+               ) AS spectrum_name,
+               mo.designation
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
         LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)
