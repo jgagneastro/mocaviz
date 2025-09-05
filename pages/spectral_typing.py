@@ -2101,7 +2101,7 @@ def update_chi2_graph(precomputed_data, grid_data, selected_grid, current_index,
     #If any chi2 is exactly zero, replace it with second smallest value / 10
     if (chi == 0).any():
         # Get the second smallest value among the finite ones
-        second_smallest = chi[finite_mask].nsmallest(2).iloc[-1]
+        second_smallest = chi.nsmallest(2).iloc[-1]
         df_merged.loc[chi == 0, 'reduced_chi2'] = second_smallest / 10.0
     
     #Adjust extreme but non zero Chi2 values
