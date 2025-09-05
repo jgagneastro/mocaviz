@@ -139,6 +139,7 @@ def construct_hovertext(row):
         f"Main designation: {row['designation']}",
         f"Spectral type: {row['complete_spectral_type']} ({row['spt_ref']})",
         f"Distance: {row['distance_display']} ({row['distance_ref']})",
+        f"Age: {row['age']} (Myr)" if 'age' in row and not pd.isna(row['age']) else "",
         f""
     ]
     
@@ -394,7 +395,7 @@ layout = (
             )
         ], style={'marginTop': '1rem'}),
 
-        # Checkboxes in a 2x2 Grid
+        # Checkboxes in a 2x3 Grid
         html.Div([
             #html.Div([
             #    dcc.Checklist(
@@ -423,17 +424,22 @@ layout = (
                     id='bdphot-checkbox-binaries',
                 )
             ], style={'gridArea': '2 / 1'}),
-
             html.Div([
                 dcc.Checklist(
                     options=[{'label': 'Include photometric spectral type estimates', 'value': 'spectral_type_estimates'}],
                     id='bdphot-checkbox-spectral-type-estimates',
                 )
             ], style={'gridArea': '2 / 2'}),
+            html.Div([
+                dcc.Checklist(
+                    options=[{'label': 'Color-code by age', 'value': 'color_by_age'}],
+                    id='bdphot-checkbox-color-by-age',
+                )
+            ], style={'gridArea': '3 / 1'}),
         ], style={
             "display": "grid",
             "gridTemplateColumns": "1fr 1fr",
-            "gridTemplateRows": "auto auto",
+            "gridTemplateRows": "auto auto auto",
             "gap": "1rem",
             "marginTop": "1rem",
         }),
@@ -540,6 +546,7 @@ layout = (
                 - **errors** → Display measurement errors. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photdist** → Includes photometric distance estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **binaries** → Displays binary systems. Set to `true` to activate or `false` to deactivate. Default is `false`.
+                - **agecolor** → Enables color-coding by association age. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **photspt** → Includes photometric spectral type estimates. Set to `true` to activate or `false` to deactivate. Default is `false`.
                 - **xerr_max** → Maximum allowed *measurement* uncertainty (σ, in mag) for the X-axis. Points above this are faded/shrunk and excluded from X-axis limits.
                 - **yerr_max** → Maximum allowed *measurement* uncertainty (σ, in mag) for the Y-axis. Points above this are faded/shrunk and excluded from Y-axis limits.
@@ -999,6 +1006,7 @@ def update_dropdowns_from_url(url):
         Input('bdphot-checkbox-photometric-distances', 'value'),
         Input('bdphot-checkbox-binaries', 'value'),
         Input('bdphot-checkbox-spectral-type-estimates', 'value'),
+        Input('bdphot-checkbox-color-by-age', 'value'),
         Input('bdphot-spt-range-store', 'data'), 
         Input('bdphot-x-err-threshold', 'value'),
         Input('bdphot-y-err-threshold', 'value'),
@@ -1006,7 +1014,7 @@ def update_dropdowns_from_url(url):
     State('url', 'href')
 )
 #, best_photometry_value
-def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, display_errors_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, spt_range, x_err_threshold, y_err_threshold, url):
+def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band_values, y_band_values, moca_ids, n_submit, display_errors_value, photometric_distances_value, binaries_value, spectral_type_estimates_value, color_by_age_value, spt_range, x_err_threshold, y_err_threshold, url):
     
     # Placeholders for MOCA-style axis ranges (also used by "Home")
     custom_xrange = None
@@ -1127,6 +1135,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if len(y_band_values) < 1 or any(v is None for v in y_band_values):
             return empty_figure, None, None
 
+    want_age_color = isinstance(color_by_age_value, (list, tuple)) and ('color_by_age' in color_by_age_value)
+
     connection_string = get_connection_string(url)
 
     # Establish connection
@@ -1139,6 +1149,45 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         x_data = pd.DataFrame()
         y_data = pd.DataFrame()
 
+        # --- Age-coloring tables & helpers ---
+        moca_banyan_sigma_models = Table('moca_banyan_sigma_models', metadata, autoload_with=engine)
+        calc_banyan_sigma         = Table('calc_banyan_sigma',         metadata, autoload_with=engine)
+        data_association_ages     = Table('data_association_ages',     metadata, autoload_with=engine)
+        # Adopted BANYAN Sigma model id (scalar subquery)
+        adopted_bsmdid_sq = select([moca_banyan_sigma_models.c.moca_bsmdid])\
+            .where(moca_banyan_sigma_models.c.adopted == 1)\
+            .limit(1)\
+            .as_scalar()
+        
+        def with_age_left_joins(sel_from):
+            """If age coloring requested, LEFT JOIN cbs and daa with the required constraints."""
+            if not want_age_color:
+                return sel_from
+            return (
+                sel_from
+                .outerjoin(
+                    calc_banyan_sigma,
+                    (calc_banyan_sigma.c.moca_oid == moca_objects.c.moca_oid) &
+                    (calc_banyan_sigma.c.max_observables == 1) &
+                    (calc_banyan_sigma.c.moca_aid.isnot(None)) &
+                    (calc_banyan_sigma.c.ya_prob >= 80) &
+                    (calc_banyan_sigma.c.moca_bsmdid == adopted_bsmdid_sq)
+                )
+                .outerjoin(
+                    data_association_ages,
+                    (data_association_ages.c.moca_aid == calc_banyan_sigma.c.moca_aid) &
+                    (data_association_ages.c.age_myr.isnot(None)) &
+                    (data_association_ages.c.adopted == 1)
+                )
+            )
+
+        def add_age_column(columns):
+            """If age coloring requested, include daa.age_myr as age."""
+            if not want_age_color:
+                return columns
+            return columns + [func.min(data_association_ages.c.age_myr).label('age')]
+
+        # --- General Tables ---
         cdata_spectral_types = Table('cdata_spectral_types', metadata, autoload_with=engine)
         moca_objects = Table('moca_objects', metadata, autoload_with=engine)
         cdata_distances = Table('cdata_distances', metadata, autoload_with=engine)
@@ -1207,7 +1256,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         
         if x_axis_type == 'spectral_type' or y_axis_type == 'spectral_type':
             spt_query = (
-                select([
+                select(add_age_column([
                     cdata_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),  # Take the first designation
                     func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
@@ -1255,8 +1304,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         ],
                         else_='field'  # Default to 'field'
                     ).label('age_sample')
-                ])
-                .select_from(
+                ]))
+                .select_from(with_age_left_joins(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .outerjoin(cdata_distances, distance_join_condition)
@@ -1280,7 +1329,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         mechanics_object_properties_combined,
                         (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     )
-                )
+                ))
                 .where(
                     ((cdata_spectral_types.c.adopted == 1) &
                     (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
@@ -1298,7 +1347,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude':
             absmag_query = (
-                select([
+                select(add_age_column([
                     cdata_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
                     func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
@@ -1354,8 +1403,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         ],
                         else_='field'  # Default to 'field'
                     ).label('age_sample')
-                ])
-                .select_from(
+                ]))
+                .select_from(with_age_left_joins(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .join(cdata_distances, distance_join_condition)
@@ -1392,7 +1441,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         mechanics_object_properties_combined,
                         (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     )
-                )
+                ))
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
                     (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
@@ -1410,7 +1459,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
         if x_axis_type == 'spectral_index' or y_axis_type == 'spectral_index':
             spti_query = (
-                select([
+                select(add_age_column([
                     cdata_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
                     func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
@@ -1466,8 +1515,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         ],
                         else_='field'  # Default to 'field'
                     ).label('age_sample')
-                ])
-                .select_from(
+                ]))
+                .select_from(with_age_left_joins(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .join(
@@ -1504,7 +1553,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         mechanics_object_properties_combined,
                         (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     )
-                )
+                ))
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
                     (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
@@ -1522,7 +1571,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
         if x_axis_type == 'equivalent_width' or y_axis_type == 'equivalent_width':
             ew_query = (
-                select([
+                select(add_age_column([
                     cdata_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
                     func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
@@ -1578,8 +1627,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         ],
                         else_='field'  # Default to 'field'
                     ).label('age_sample')
-                ])
-                .select_from(
+                ]))
+                .select_from(with_age_left_joins(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .join(
@@ -1616,7 +1665,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         mechanics_object_properties_combined,
                         (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     )
-                )
+                ))
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
                     (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
@@ -1634,7 +1683,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
 
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
-                select([
+                select(add_age_column([
                     cdata_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
                     func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
@@ -1694,8 +1743,8 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         ],
                         else_='field'  # Default to 'field'
                     ).label('age_sample')
-                ])
-                .select_from(
+                ]))
+                .select_from(with_age_left_joins(
                     cdata_spectral_types
                     .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     .join(
@@ -1745,7 +1794,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         mechanics_object_properties_combined,
                         (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
                     )
-                )
+                ))
                 .where(
                     (cdata_spectral_types.c.adopted == 1) &
                     (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
@@ -2028,73 +2077,163 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
     # Define symbols for age_sample categories
     age_sample_symbols = {
         'field': 'circle',  # Default symbol
-        'young': 'triangle-up',  # Young or red
+        'young': 'triangle-up',  # Low-gravity or red
         'old': 'square',  # Subdwarf or blue
     }
 
     # Define legend names for age_sample categories
     age_sample_legend_names = {
         'field': 'No spectral flags',
-        'young': 'Young or red',
+        'young': 'Low-gravity or red',
         'old': 'Subdwarf or blue',
     }
-
-    # Add a default color for unknown or unrecognized spectral classes
-    default_color = 'aqua'
-
-    # Map colors to spectral classes in the merged_data DataFrame
-    regular_data['color'] = regular_data['spectral_class'].map(spectral_class_colors).fillna(default_color)
 
     # Map symbols to age_sample in the merged_data DataFrame
     regular_data['symbol'] = regular_data['age_sample'].map(age_sample_symbols).fillna('circle')  # Default to circle for unknown age_sample
     
-    # Filter regular_data to only include points with ey_data < 0.05
-    #regular_data = regular_data[regular_data['ey_data'] < 0.1]
-
     # Determine missing MOCA IDs
     missing_ids_message = None
     missing_ids = set(moca_ids_array) - set(highlighted_data['moca_oid'].unique())
     if missing_ids:
         missing_ids_message = f"MOCA IDs not found: {', '.join(map(str, missing_ids))}"
 
-    fig = go.Figure()
+    color_by_age = want_age_color and ('age' in merged_data.columns)
 
-    # Scatter plot logic
-    fig.add_trace(go.Scatter(
-        x=regular_data['x_data'],  # Replace with appropriate x column
-        y=regular_data['y_data'],  # Replace with appropriate y column
-        mode='markers',
-        text=regular_data['hovertext'],  # Replace with desired hover text
-        customdata=regular_data['moca_oid'],  # Include moca_oid for identification
-        marker=dict(
-            size=10,
-            color=regular_data['color'],  # Assign colors based on spectral_class
-            symbol=regular_data['symbol'],  # Assign symbols based on age_sample
-            opacity=0.4
-        ),
-        showlegend=False      # Exclude from legend
-    ))
+    # Add a default color for unknown or unrecognized spectral classes
+    if not color_by_age:
+    
+        default_color = 'aqua'
 
-    # Add invisible traces to create the spectral class legend
-    for spectral_class, color in spectral_class_colors.items():
-        if spectral_class in regular_data['spectral_class'].unique():
+        # Map colors to spectral classes in the merged_data DataFrame
+        regular_data['color'] = regular_data['spectral_class'].map(spectral_class_colors).fillna(default_color)
+
+        fig = go.Figure()
+
+        # Scatter plot logic
+        fig.add_trace(go.Scatter(
+            x=regular_data['x_data'],  # Replace with appropriate x column
+            y=regular_data['y_data'],  # Replace with appropriate y column
+            mode='markers',
+            text=regular_data['hovertext'],  # Replace with desired hover text
+            customdata=regular_data['moca_oid'],  # Include moca_oid for identification
+            marker=dict(
+                size=10,
+                color=regular_data['color'],  # Assign colors based on spectral_class
+                symbol=regular_data['symbol'],  # Assign symbols based on age_sample
+                opacity=0.4
+            ),
+            showlegend=False      # Exclude from legend
+        ))
+
+        # Add invisible traces to create the spectral class legend
+        for spectral_class, color in spectral_class_colors.items():
+            if spectral_class in regular_data['spectral_class'].unique():
+                fig.add_trace(go.Scatter(
+                    x=[None],  # No data for the trace
+                    y=[None],  # No data for the trace
+                    mode='markers',
+                    marker=dict(size=10, color=color),
+                    name=f"{spectral_class} class"  # Legend entry
+                ))
+
+        # Add an invisible trace for unknown classes if needed
+        if (regular_data['spectral_class'].isnull().any() or not regular_data['spectral_class'].isin(spectral_class_colors.keys()).all()):
             fig.add_trace(go.Scatter(
                 x=[None],  # No data for the trace
                 y=[None],  # No data for the trace
                 mode='markers',
-                marker=dict(size=10, color=color),
-                name=f"{spectral_class} class"  # Legend entry
+                marker=dict(size=10, color=default_color),
+                name="Other classes"
             ))
 
-    # Add an invisible trace for unknown classes if needed
-    if (regular_data['spectral_class'].isnull().any() or not regular_data['spectral_class'].isin(spectral_class_colors.keys()).all()):
-        fig.add_trace(go.Scatter(
-            x=[None],  # No data for the trace
-            y=[None],  # No data for the trace
-            mode='markers',
-            marker=dict(size=10, color=default_color),
-            name="Other classes"
-        ))
+    if color_by_age:
+        has_age = (regular_data['age'].notna()) # & (regular_data['age'] < 2e3)
+
+        merged_with_age = regular_data[has_age].copy()
+        merged_no_age   = regular_data[~has_age].copy()
+
+        traces = []
+
+        if color_by_age and not merged_no_age.empty:
+            traces.append(
+                go.Scattergl(
+                    x=merged_no_age['x_data'],
+                    y=merged_no_age['y_data'],
+                    mode='markers',
+                    marker=dict(
+                        size=merged_no_age.get('marker_size', 5),
+                        symbol=merged_no_age.get('symbol', 'circle'),
+                        color='rgba(120,120,120,0.3)',
+                        line=dict(width=merged_no_age.get('marker_line_width', 0)),
+                    ),
+                    hovertemplate=merged_no_age.get('hovertemplate', None),
+                    name='No age',
+                    text=merged_no_age['hovertext'],
+                    customdata=merged_no_age['moca_oid'],  # Include moca_oid for identification
+                    showlegend=False,
+                )
+            )
+        
+        if color_by_age and not merged_with_age.empty:
+
+            logages = np.log10(merged_with_age['age'])
+            # --- Build logarithmic colorbar ticks (in Age, not log(Age)) ---
+            try:
+                age_min = float(np.nanmin(merged_with_age['age']))
+                age_max = float(np.nanmax(merged_with_age['age']))
+                if np.isfinite(age_min) and np.isfinite(age_max) and age_min > 0 and age_max > 0:
+                    kmin = int(np.floor(np.log10(age_min)))
+                    kmax = int(np.ceil(np.log10(age_max)))
+                    _tick_ages = [10**k for k in range(kmin, kmax + 1)]
+                    _tickvals = [np.log10(a) for a in _tick_ages]
+                    _ticktext = [str(int(a)) if a >= 1 else f"{a:g}" for a in _tick_ages]
+                else:
+                    _tickvals = None
+                    _ticktext = None
+            except Exception:
+                _tickvals = None
+                _ticktext = None
+
+            # Common colorbar styling: closer to figure and thick black outline
+            _colorbar_kwargs = dict(
+                title='<b>Age (Myr)</b>',
+                ticks='outside',
+                ticklen=5,
+                tickwidth=2,
+                x=1.02,         # pull closer to the plotting area
+                xpad=0,        # remove extra padding
+                outlinecolor='black',
+                outlinewidth=3,
+            )
+            if _tickvals is not None and _ticktext is not None:
+                _colorbar_kwargs.update(tickmode='array', tickvals=_tickvals, ticktext=_ticktext)
+
+            traces.append(
+                go.Scattergl(
+                    x=merged_with_age['x_data'],
+                    y=merged_with_age['y_data'],
+                    mode='markers',
+                    marker=dict(
+                        size=merged_with_age.get('marker_size', 6),
+                        symbol=merged_with_age.get('symbol', 'circle'),
+                        color=logages,
+                        #color=np.log10(merged_with_age['age']),
+                        colorscale='Rainbow',   # purple (young) → red (old)
+                        reversescale=False,
+                        colorbar=_colorbar_kwargs,
+                        showscale=True,
+                        line=dict(width=merged_with_age.get('marker_line_width', 0)),
+                        opacity=merged_with_age.get('marker_opacity', 0.6),
+                    ),
+                    hovertemplate=merged_with_age.get('hovertemplate', None),
+                    name='Objects (age-coded)',
+                    text=merged_with_age['hovertext'],
+                    customdata=merged_with_age['moca_oid'],  # Include moca_oid for identification
+                    showlegend=False,  # colorbar replaces color legend
+                )
+            )
+
+        fig = go.Figure(data=traces)
 
     # Add invisible traces for the age_sample legend
     for age_sample, symbol in age_sample_symbols.items():
@@ -2182,6 +2321,9 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         ],
         height=800,  # Increase the height (default is usually ~450-500)
     )
+    
+    if want_age_color:
+        fig.update_layout(legend=dict(x=1.15))
 
     # Update x-axis tick labels if spectral type is selected
     if x_axis_type == 'spectral_type':
@@ -2565,6 +2707,7 @@ def update_moca_ids_input(url):
         Output('bdphot-checkbox-photometric-distances', 'value'),
         Output('bdphot-checkbox-binaries', 'value'),
         Output('bdphot-checkbox-spectral-type-estimates', 'value'),
+        Output('bdphot-checkbox-color-by-age', 'value'),
     ],
     Input('url', 'href')
 )
@@ -2580,6 +2723,7 @@ def update_checkboxes_from_url(url):
     binaries = url_params.get('binaries', ['false'])[0].lower() == 'true'
     photspt = url_params.get('photspt', ['false'])[0].lower() == 'true'
     errors = url_params.get('errors', ['false'])[0].lower() == 'true'
+    agecolor = url_params.get('agecolor', ['false'])[0].lower() == 'true'
 
     # Return values for each checkbox
     return (
@@ -2588,6 +2732,7 @@ def update_checkboxes_from_url(url):
         ['photometric_distances'] if photdist else [],
         ['binaries'] if binaries else [],
         ['spectral_type_estimates'] if photspt else [],
+        ['color_by_age'] if agecolor else [],
     )
 
 @dash.callback(
