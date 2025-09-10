@@ -117,6 +117,247 @@ def compute_ticks(data_range, axis_length_pixels=400, min_tick_spacing=50):
 
     return ticks
     
+# --- Best18 median colors overlay helpers ---
+from plotly import graph_objs as pgo
+from sqlalchemy import Table
+
+def _fetch_median_colors_df(engine, psid1, psid2, moca_pid_preference='Best18'):
+    """
+    Return DataFrame with columns: spectral_type_number, color_mag, n_obj
+    for a given (psid1, psid2). Prefers rows with moca_pid==moca_pid_preference; 
+    falls back to any moca_pid if needed.
+    """
+    t = Table('data_median_colors', MetaData(), autoload_with=engine)
+    with engine.connect() as conn:
+        # Preferred moca_pid (e.g. Best18)
+        q_pref = (
+            select([t.c.spectral_type_number.label('spectral_type_number'),
+                    t.c.color_mag.label('color_mag'),
+                    t.c.n_obj.label('n_obj')])
+            .where((t.c.moca_psid1 == psid1) & (t.c.moca_psid2 == psid2) & (t.c.moca_pid == moca_pid_preference))
+        )
+        try:
+            df = pd.read_sql(q_pref, conn)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+        # Fallback: any moca_pid
+        q_any = (
+            select([t.c.spectral_type_number.label('spectral_type_number'),
+                    t.c.color_mag.label('color_mag'),
+                    t.c.n_obj.label('n_obj')])
+            .where((t.c.moca_psid1 == psid1) & (t.c.moca_psid2 == psid2))
+        )
+        try:
+            df_any = pd.read_sql(q_any, conn)
+            return df_any
+        except Exception:
+            return pd.DataFrame(columns=['spectral_type_number', 'color_mag', 'n_obj'])
+
+def _spt_color_to_markers(df, axis_for_color='y', spt_min=None, spt_max=None, name='Median colors (Best18)'):
+    """
+    Build two Plotly traces for median colors:
+      • Large unfilled black circles at each SPT/color point
+      • Centered text labels (e.g., M6) colored by spectral class
+
+    axis_for_color: 'y' => (SPT on X, color on Y); 'x' => (color on X, SPT on Y)
+    Returns a list of two traces (circle, text) or None if no data.
+    """
+    if df is None or df.empty:
+        return None
+    df = df.dropna(subset=['spectral_type_number', 'color_mag']).copy()
+    if df.empty:
+        return None
+
+    if spt_min is not None:
+        df = df[df['spectral_type_number'] >= spt_min]
+    if spt_max is not None:
+        df = df[df['spectral_type_number'] <= spt_max]
+    if df.empty:
+        return None
+
+    sptn = df['spectral_type_number'].astype(float).values
+    col  = df['color_mag'].astype(float).values
+
+    # Positions for the overlay according to the axes
+    if axis_for_color == 'y':
+        xvals, yvals = sptn, col
+    else:
+        xvals, yvals = col, sptn
+
+    # Helper to get spectral class letter and label (no decimals)
+    def _class_and_label(s):
+        lbl = generate_spectral_type_label(s)
+        # Keep just the class letter and integer subclass (e.g., M6)
+        try:
+            cls = lbl[0]
+            # Find first digit run
+            # parse_spt_label expects like 'M6' or 'L3.5', but we want integer subclass for the tag
+            # We format using nearest integer for cleanliness on the marker text.
+            sub = int(round(float(lbl[1:]))) if lbl[1:] else 0
+            return cls, f"{cls}{sub}"
+        except Exception:
+            return 'M', lbl
+
+    # Try to use an existing class colormap from the module if present
+    # e.g., CLASS_COLOR_MAP = {'M': '#e53935', 'L': '#fdd835', 'T': '#1e88e5', 'Y': '#8e24aa', 'K': '#6d4c41'}
+    _globals = globals()
+    class_map = None
+    for key in ('CLASS_COLOR_MAP', 'SPT_CLASS_COLORS', 'SPECTRAL_CLASS_COLORS'):
+        if key in _globals and isinstance(_globals[key], dict):
+            class_map = _globals[key]
+            break
+    if class_map is None:
+        class_map = {
+            'M': '#e53935',   # red
+            'L': '#fdd835',   # yellow
+            'T': '#1e88e5',   # blue
+            'Y': '#8e24aa',   # purple
+            'K': '#6d4c41',   # brown
+            'G': '#fb8c00',   # orange (fallbacks below M if ever shown)
+            'F': '#43a047',   # green
+            'A': '#8d6e63',
+            'B': '#546e7a',
+            'O': '#424242',
+        }
+
+    classes, labels, colors = [], [], []
+    for s in sptn:
+        cls, lbl = _class_and_label(s)
+        classes.append(cls)
+        labels.append(lbl)
+        colors.append(class_map.get(cls, '#000000'))
+
+    hover = [f"SPT={generate_spectral_type_label(s)} | color={c:.3f}" for s, c in zip(sptn, col)]
+
+    circle_trace = pgo.Scatter(
+        x=xvals,
+        y=yvals,
+        mode='markers',
+        name=name,
+        marker=dict(
+            size=18,
+            color='rgba(0,0,0,0)',   # unfilled
+            line=dict(color='black', width=2),
+            symbol='circle'
+        ),
+        hoverinfo='text',
+        hovertext=hover,
+        showlegend=True
+    )
+
+    text_trace = pgo.Scatter(
+        x=xvals,
+        y=yvals,
+        mode='text',
+        name=f"{name} labels",
+        text=labels,
+        textposition='middle center',
+        textfont=dict(size=10, color='black'),   # always black text
+        hoverinfo='skip',
+        showlegend=False
+    )
+
+    return [circle_trace, text_trace]
+
+def _add_best18_overlay(fig, engine, x_axis_type, y_axis_type, x_band_values, y_band_values, spt_range):
+    """
+    Decide which overlay(s) to add based on the axis types and add to fig in place.
+    Works for SPT–color, color–SPT, and color–color.
+    """
+    try:
+        spt_min = spt_range.get('min') if isinstance(spt_range, dict) else None
+        spt_max = spt_range.get('max') if isinstance(spt_range, dict) else None
+
+        # SPT (x) vs Color (y)
+        if x_axis_type == 'spectral_type' and y_axis_type == 'color' and y_band_values and len(y_band_values) >= 2:
+            ps1, ps2 = y_band_values[0], y_band_values[1]
+            df = _fetch_median_colors_df(engine, ps1, ps2)
+            tr = _spt_color_to_markers(df, axis_for_color='y', spt_min=spt_min, spt_max=spt_max)
+            if tr is not None:
+                if isinstance(tr, list):
+                    for _t in tr:
+                        fig.add_trace(_t)
+                else:
+                    fig.add_trace(tr)
+
+        # Color (x) vs SPT (y)
+        if x_axis_type == 'color' and y_axis_type == 'spectral_type' and x_band_values and len(x_band_values) >= 2:
+            ps1, ps2 = x_band_values[0], x_band_values[1]
+            df = _fetch_median_colors_df(engine, ps1, ps2)
+            tr = _spt_color_to_markers(df, axis_for_color='x', spt_min=spt_min, spt_max=spt_max)
+            if tr is not None:
+                if isinstance(tr, list):
+                    for _t in tr:
+                        fig.add_trace(_t)
+                else:
+                    fig.add_trace(tr)
+
+        # Color (x) vs Color (y)
+        if (x_axis_type == 'color' and y_axis_type == 'color' and
+            x_band_values and y_band_values and len(x_band_values) >= 2 and len(y_band_values) >= 2):
+            x1, x2 = x_band_values[0], x_band_values[1]
+            y1, y2 = y_band_values[0], y_band_values[1]
+            dfx = _fetch_median_colors_df(engine, x1, x2)
+            dfy = _fetch_median_colors_df(engine, y1, y2)
+            if dfx is not None and not dfx.empty and dfy is not None and not dfy.empty:
+                m = pd.merge(
+                    dfx[['spectral_type_number', 'color_mag']],
+                    dfy[['spectral_type_number', 'color_mag']],
+                    on='spectral_type_number',
+                    suffixes=('_x', '_y')
+                ).dropna()
+                if not m.empty:
+                    sptn = m['spectral_type_number'].astype(float).values
+                    xcol = m['color_mag_x'].astype(float).values
+                    ycol = m['color_mag_y'].astype(float).values
+                    if spt_min is not None:
+                        mask = sptn >= spt_min
+                        sptn, xcol, ycol = sptn[mask], xcol[mask], ycol[mask]
+                    if spt_max is not None:
+                        mask = sptn <= spt_max
+                        sptn, xcol, ycol = sptn[mask], xcol[mask], ycol[mask]
+                    if len(sptn) > 0:
+                        # Build labels and class colors
+                        def _class_and_label(s):
+                            lbl = generate_spectral_type_label(s)
+                            try:
+                                cls = lbl[0]
+                                sub = int(round(float(lbl[1:]))) if lbl[1:] else 0
+                                return cls, f"{cls}{sub}"
+                            except Exception:
+                                return 'M', lbl
+                        _globals = globals()
+                        class_map = None
+                        for key in ('CLASS_COLOR_MAP', 'SPT_CLASS_COLORS', 'SPECTRAL_CLASS_COLORS'):
+                            if key in _globals and isinstance(_globals[key], dict):
+                                class_map = _globals[key]
+                                break
+                        if class_map is None:
+                            class_map = {'M':'#e53935','L':'#fdd835','T':'#1e88e5','Y':'#8e24aa','K':'#6d4c41','G':'#fb8c00','F':'#43a047','A':'#8d6e63','B':'#546e7a','O':'#424242'}
+                        labels = []
+                        text_colors = []
+                        for s in sptn:
+                            cls, lbl = _class_and_label(s)
+                            labels.append(lbl)
+                            text_colors.append(class_map.get(cls, '#000000'))
+                        hover = [f"SPT={generate_spectral_type_label(s)} | x={x:.3f} | y={y:.3f}" for s, x, y in zip(sptn, xcol, ycol)]
+                        # Unfilled circle markers
+                        fig.add_trace(pgo.Scatter(
+                            x=xcol, y=ycol, mode='markers', name='Median colors (Best18)',
+                            marker=dict(size=18, color='rgba(0,0,0,0)', line=dict(color='black', width=2), symbol='circle'),
+                            hoverinfo='text', hovertext=hover
+                        ))
+                        # Centered black labels
+                        fig.add_trace(pgo.Scatter(
+                            x=xcol, y=ycol, mode='text', name='Median colors labels', text=labels,
+                            textposition='middle center', textfont=dict(size=10, color='black'), hoverinfo='skip', showlegend=False
+                        ))
+    except Exception:
+        # Never break the app if overlay has issues
+        pass
+
 # Add Gaussian noise for the spt axis
 def add_gaussian_noise(data, stddev=0.25, max_amplitude=0.5):
     """
@@ -2582,6 +2823,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             xaxis=dict(showgrid=True),
             yaxis=dict(showgrid=True)
         )
+    
+    # --- Overlay Best18 median colors as large circles, color-coded by spectral type ---
+    try:
+        # Determine the active figure variable name (fig vs figure)
+        _target_fig = locals().get('fig') or locals().get('figure')
+        if _target_fig is not None:
+            _add_best18_overlay(_target_fig, engine, x_axis_type, y_axis_type, x_band_values, y_band_values, spt_range)
+    except Exception:
+        pass
 
     # Ensure "Home" resets to MOCA-style limits (initial ranges)
     if custom_xrange is not None:
