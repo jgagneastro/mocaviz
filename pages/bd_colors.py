@@ -2519,6 +2519,10 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if y_axis_type == 'equivalent_width' and y_band_values and any(v for v in y_band_values if v is not None):
             y_equivalent_width = y_band_values[0]
             
+            if y_equivalent_width == 'li':
+                y_data['y_data'] *= 1000
+                y_data['ey_data'] *= 1000
+
             y_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == y_equivalent_width)
 
             y_data = pd.read_sql(y_query, connection)
@@ -2530,12 +2534,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             # Add index-related info
             y_data_reformatted = format_dataframe_with_error(y_data, "ew_angstrom", "ew_angstrom_unc", unit="", output_col="ew_display").loc[:, ["ew_display"]]
             y_data['y_ref'] = y_data['equivalent_width_description']+" : "+y_data_reformatted['ew_display']+" ("+y_data['equivalent_width_ref'].fillna('No reference').str.replace(r'[()]', '', regex=True)+")"
-
+            
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['ew_angstrom']
             y_data['ey_data'] = y_data['ew_angstrom_unc']
             
-            y_axis_label = y_data['equivalent_width_description'].iloc[0]
+            if y_equivalent_width == 'li':
+                y_axis_label = y_data['equivalent_width_description'].iloc[0] + ' (mÅ)'
+            else:
+                y_axis_label = y_data['equivalent_width_description'].iloc[0] + ' (Å)'
         
         if y_axis_type == 'absolute_magnitude' and y_band_values and any(v for v in y_band_values if v is not None):
             y_photometry_band = y_band_values[0]  # Extract the selected bandpass (e.g., 'mko_jmag')
