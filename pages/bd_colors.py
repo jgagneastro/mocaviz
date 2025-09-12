@@ -13,6 +13,7 @@ from urllib.parse import quote_plus as urlquote, urlparse, parse_qs, unquote
 import os
 import numpy as np
 import plotly.graph_objs as go
+import fnmatch
 
 # Register the page
 dash.register_page(__name__, path='/bd-colors')
@@ -39,18 +40,104 @@ figure_export_config = {
 }
 
 # --- Reference sequences overplot rules & helpers ---
-# Generalized, flag-based schema (no name resolution)
-REF_SEQUENCE_RULES = [
-    {
-        'seqid': 'zw2_mz_ps1_field',
-        'legend': 'Reference: PS1 z vs (z−W2) — field',
-        'axes': {
-            'x': {'type': 'color', 'color': {'psid1': 'panstarrs1_zmag', 'psid2': 'wise_w2mag', 'unordered': True}},
-            'y': {'type': 'absolute_magnitude', 'absmag': {'psid': 'panstarrs1_zmag'}},
-        },
-        'swap_ok': True
-    }
-]
+# Rules are dynamically generated from `moca_sequences` (DB-driven).
+REF_SEQUENCE_RULES = None  # populated on-demand from DB
+
+def _build_axis_from_row(axis_prefix, row):
+    """Build an axis spec dict for a given row using *_bdcolapp columns.
+    axis_prefix: 'x' or 'y'
+    Returns a dict like {'type': 'color', 'color': {...}} or None if insufficient data.
+    Assumptions per user request:
+      - swap_ok = True (handled at rule level)
+      - unordered = False for all color axes
+      - Ignore rows with NULL in required fields for the axis type
+    """
+    tkey = f"{axis_prefix}axis_type_bdcolapp"
+    v1k  = f"{axis_prefix}axis_value_1_bdcolapp"
+    v2k  = f"{axis_prefix}axis_value_2_bdcolapp"
+
+    atype = row.get(tkey)
+    v1 = row.get(v1k)
+    v2 = row.get(v2k)
+
+    if atype is None:
+        return None
+
+    atype = atype.strip()
+
+    if atype == 'color':
+        # Need two distinct bands
+        if not v1 or not v2 or v1 == 'NULL' or v2 == 'NULL' or v1 == v2:
+            return None
+        return {
+            'type': 'color',
+            'color': {'psid1': v1, 'psid2': v2, 'unordered': False}
+        }
+    elif atype == 'absolute_magnitude':
+        if not v1 or v1 == 'NULL':
+            return None
+        return {'type': 'absolute_magnitude', 'absmag': {'psid': v1}}
+    elif atype == 'spectral_index':
+        if not v1 or v1 == 'NULL':
+            return None
+        return {'type': 'spectral_index', 'sindex': {'flag': v1}}
+    elif atype == 'equivalent_width':
+        if not v1 or v1 == 'NULL':
+            return None
+        return {'type': 'equivalent_width', 'eqw': {'flag': v1}}
+    elif atype == 'spectral_type':
+        return {'type': 'spectral_type'}
+    else:
+        # Unknown/unsupported type
+        return None
+
+
+def _load_ref_sequence_rules(engine):
+    """Generate REF_SEQUENCE_RULES from table `moca_sequences` using the *_bdcolapp columns.
+    Criteria:
+      - display_in_bdcolapp == 1 (intended for the app)
+      - xaxis_type_bdcolapp and yaxis_type_bdcolapp not NULL
+      - Required value columns for each axis type not NULL (and distinct for colors)
+      - swap_ok=True for all rules; unordered=False for color axes
+    """
+    global REF_SEQUENCE_RULES
+    try:
+        meta = MetaData()
+        t = Table('moca_sequences', meta, autoload_with=engine)
+        with engine.connect() as conn:
+            sel = select([
+                t.c.moca_seqid,
+                t.c.name_bdcolapp,
+                t.c.display_in_bdcolapp,
+                t.c.xaxis_type_bdcolapp,
+                t.c.yaxis_type_bdcolapp,
+                t.c.xaxis_value_1_bdcolapp,
+                t.c.xaxis_value_2_bdcolapp,
+                t.c.yaxis_value_1_bdcolapp,
+                t.c.yaxis_value_2_bdcolapp,
+            ]).where(t.c.display_in_bdcolapp == 1)
+            df = pd.read_sql(sel, conn)
+    except Exception:
+        # Fallback: no rules if table not accessible
+        REF_SEQUENCE_RULES = []
+        return REF_SEQUENCE_RULES
+
+    rules = []
+    for _, row in df.iterrows():
+        rowd = row.to_dict()
+        axx = _build_axis_from_row('x', rowd)
+        axy = _build_axis_from_row('y', rowd)
+        if axx is None or axy is None:
+            continue  # ignore rows with NULLs or invalid combos
+        rules.append({
+            'seqid': rowd.get('moca_seqid'),
+            'legend': rowd.get('name_bdcolapp') or rowd.get('moca_seqid') or 'reference sequence',
+            'axes': {'x': axx, 'y': axy},
+            'swap_ok': True
+        })
+
+    REF_SEQUENCE_RULES = rules
+    return REF_SEQUENCE_RULES
 
 # ---- Generalized, flag-based axis matching (no DB resolution) ----
 
@@ -83,9 +170,31 @@ def _axis_signature(axis_type, band_values):
     return sig
 
 
+
+# Helper for wildcard/flag matching
+def _match_flag(want, have):
+    """Return True if `have` matches `want` allowing shell-style wildcards.
+    - If want is None or want == '*', accept any non-None `have`.
+    - If want includes '*' or '?', use fnmatch.
+    - Else, require exact equality.
+    """
+    if want is None:
+        return True
+    if have is None:
+        return False
+    if isinstance(want, str):
+        w = want.strip()
+        if w == '*':
+            return True
+        if ('*' in w) or ('?' in w):
+            return fnmatch.fnmatch(str(have), w)
+        return str(have) == w
+    return want == have
+
 def _match_axis(sig, rule_axis):
     """Return True if a user axis signature matches the rule axis spec.
-    Matching is performed on raw flags; the rule may omit specifics to wildcard them.
+    Uses raw flags with optional wildcards ('*', '?') in rule values.
+    The rule may omit specifics to wildcard that sub-structure.
     """
     if rule_axis is None:
         return True
@@ -93,34 +202,40 @@ def _match_axis(sig, rule_axis):
         return False
 
     t = sig.get('type')
+
     if t == 'color':
         r = (rule_axis.get('color') or {})
         if not r:
             return True
         unordered = r.get('unordered', True)
-        want = (r.get('psid1'), r.get('psid2'))
-        have = (sig.get('color', {}).get('psid1'), sig.get('color', {}).get('psid2'))
+        want1, want2 = r.get('psid1'), r.get('psid2')
+        have1 = sig.get('color', {}).get('psid1')
+        have2 = sig.get('color', {}).get('psid2')
         if unordered:
-            return set(have) == set(want)
-        return have == want
+            # Accept either mapping (want1->have1 & want2->have2) OR swapped
+            direct = _match_flag(want1, have1) and _match_flag(want2, have2)
+            swapped = _match_flag(want1, have2) and _match_flag(want2, have1)
+            return direct or swapped
+        else:
+            return _match_flag(want1, have1) and _match_flag(want2, have2)
 
     if t == 'absolute_magnitude':
         r = (rule_axis.get('absmag') or {})
         want = r.get('psid')
         have = sig.get('absmag', {}).get('psid')
-        return (want is None) or (want == have)
+        return _match_flag(want, have)
 
     if t == 'spectral_index':
         r = (rule_axis.get('sindex') or {})
         want = r.get('flag')
         have = sig.get('sindex', {}).get('flag')
-        return (want is None) or (want == have)
+        return _match_flag(want, have)
 
     if t == 'equivalent_width':
         r = (rule_axis.get('eqw') or {})
         want = r.get('flag')
         have = sig.get('eqw', {}).get('flag')
-        return (want is None) or (want == have)
+        return _match_flag(want, have)
 
     if t == 'spectral_type':
         return True
@@ -152,78 +267,83 @@ def _maybe_add_reference_sequence(fig, engine, x_axis_type, y_axis_type, x_band_
         sig_x = _axis_signature(x_axis_type, x_band_values)
         sig_y = _axis_signature(y_axis_type, y_band_values)
 
-        matched_rule = None
-        swapped = False
-        for rule in REF_SEQUENCE_RULES:
+        # Ensure rules are loaded from the DB (once per callback execution)
+        global REF_SEQUENCE_RULES
+        if REF_SEQUENCE_RULES is None:
+            _load_ref_sequence_rules(engine)
+        rules_src = REF_SEQUENCE_RULES or []
+
+        # 1) Collect all matches
+        matches = []  # list of (rule, swapped_bool)
+        for rule in rules_src:
             ok, is_swapped = _match_rule(sig_x, sig_y, rule)
             if ok:
-                matched_rule = rule
-                swapped = is_swapped
-                break
-        if not matched_rule:
+                matches.append((rule, is_swapped))
+        if not matches:
             return
+
+        # 2) Pick a color per rule (rule.get('color', ...) if you ever add explicit colors)
+        palette = ["#000000", "#611414", "#195d19", "#63457e", "#613106","#12466b",
+           "#0c616a", "#603152", '#7f7f7f', '#bcbd22']
 
         # Fetch the sequence
-        from sqlalchemy import MetaData, Table, select
         meta = MetaData()
         seq = Table('data_astro_sequences', meta, autoload_with=engine)
-        with engine.connect() as conn:
-            q = select([seq.c.xdata, seq.c.ydata, seq.c.yerror]).where(seq.c.moca_seqid == matched_rule['seqid'])
-            df = pd.read_sql(q, conn)
-        if df.empty:
-            return
+        
+        for idx, (rule, swapped) in enumerate(matches):
+            color = rule.get('color', palette[idx % len(palette)])
+            legend_name = rule.get('legend', rule.get('seqid', 'reference sequence'))
 
-        x_vals = pd.to_numeric(df['xdata'], errors='coerce').values
-        y_vals = pd.to_numeric(df['ydata'], errors='coerce').values
-        yerr   = pd.to_numeric(df['yerror'], errors='coerce').values if 'yerror' in df.columns else None
+            with engine.connect() as conn:
+                q = select([seq.c.xdata, seq.c.ydata, seq.c.yerror]).where(seq.c.moca_seqid == rule['seqid'])
+                df = pd.read_sql(q, conn)
+            if df.empty:
+                continue
 
-        # Orient according to whether we matched swapped or not.
-        if swapped:
-            plot_x, plot_y = y_vals, x_vals
-            err_y = None  # yerror corresponds to DB y; when swapped, we skip error bars
-        else:
-            plot_x, plot_y = x_vals, y_vals
-            err_y = yerr
+            x_vals = pd.to_numeric(df['xdata'], errors='coerce').values
+            y_vals = pd.to_numeric(df['ydata'], errors='coerce').values
+            yerr   = pd.to_numeric(df['yerror'], errors='coerce').values if 'yerror' in df.columns else None
 
-        # Build a clean, sorted series to avoid self-crossing in the band polygon
-        order = np.argsort(plot_x)
-        xs = plot_x[order]
-        ys = plot_y[order]
+            # Orient according to match
+            if swapped:
+                plot_x, plot_y = y_vals, x_vals
+                err_y = None  # DB yerror maps to unswapped Y; skip in swapped orientation
+            else:
+                plot_x, plot_y = x_vals, y_vals
+                err_y = yerr
 
-        legend_name = matched_rule.get('legend', matched_rule.get('seqid', 'reference sequence'))
+            # Sort by X for stable filled polygon
+            order = np.argsort(plot_x)
+            xs = plot_x[order]
+            ys = plot_y[order]
 
-        # Add shaded uncertainty band only when the DB-side yerror aligns with plotted Y (i.e., not swapped)
-        if err_y is not None:
-            err_sorted = err_y[order]
-            y_upper = ys + err_sorted
-            y_lower = ys - err_sorted
+            # Shaded ±1σ band (only when not swapped)
+            if err_y is not None:
+                err_sorted = err_y[order]
+                y_upper = ys + err_sorted
+                y_lower = ys - err_sorted
+                band_x = np.concatenate([xs, xs[::-1]])
+                band_y = np.concatenate([y_upper, y_lower[::-1]])
 
-            band_x = np.concatenate([xs, xs[::-1]])
-            band_y = np.concatenate([y_upper, y_lower[::-1]])
+                fig.add_trace(go.Scatter(
+                    x=band_x, y=band_y, mode='lines',
+                    line=dict(width=0),
+                    fill='toself',
+                    fillcolor=_modulate_rgba_alpha(color, alpha_factor=0.15, default='rgba(0,0,0,0.12)'),
+                    hoverinfo='skip',
+                    name=f"{legend_name} ±1σ",
+                    showlegend=False,
+                    legendgroup=legend_name
+                ))
 
-            fig.add_trace(go.Scatter(
-                x=band_x,
-                y=band_y,
-                mode='lines',
-                line=dict(width=0),
-                fill='toself',
-                fillcolor='rgba(0,0,0,0.12)',  # neutral, semi-transparent band
-                hoverinfo='skip',
-                name=f"{legend_name} ±1σ",
-                showlegend=False,
-                legendgroup=legend_name
-            ))
-
-        # Central thick black line
-        fig.add_trace(go.Scatter(
-            x=xs,
-            y=ys,
-            mode='lines',
-            line=dict(width=3, color='black'),  # black thick line
-            name=legend_name,
-            legendgroup=legend_name,
-            hoverinfo='x+y+name'
-        ))
+                # Central thick line with per-sequence color
+                fig.add_trace(go.Scatter(
+                    x=xs, y=ys, mode='lines',
+                    line=dict(width=3, color=color),
+                    name=legend_name,
+                    legendgroup=legend_name,
+                    hoverinfo='x+y+name'
+                ))
     except Exception:
         return
 
@@ -1540,6 +1660,19 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                 )
             ]
         )
+    
+    def _message_figure(msg):
+        fig = go.Figure()
+        fig.update_layout(
+            title="No data available",
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False),
+            annotations=[dict(
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                text=msg, showarrow=False, font=dict(size=16)
+            )]
+        )
+        return fig
 
     # Check if all dropdowns are correctly filled
     if x_axis_type == 'absolute_magnitude':
@@ -1551,9 +1684,13 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
     if x_axis_type == 'color':
         if len(x_band_values) < 2 or any(v is None for v in x_band_values):
             return empty_figure, None, None
+        if (len(x_band_values) >= 2) and (x_band_values[0] == x_band_values[1]):
+            return _message_figure("Please select two distinct photometric bands for the desired colors"), None, None
     if y_axis_type == 'color':
         if len(y_band_values) < 2 or any(v is None for v in y_band_values):
             return empty_figure, None, None
+        if (len(y_band_values) >= 2) and (y_band_values[0] == y_band_values[1]):
+            return _message_figure("Please select two distinct photometric bands for the desired colors"), None, None
     if x_axis_type == 'spectral_index':
         if len(x_band_values) < 1 or any(v is None for v in x_band_values):
             return empty_figure, None, None
