@@ -32,11 +32,200 @@ two_values_axis_types = ['color']
 figure_export_config = {
   'toImageButtonOptions': {
     'format': 'png', # one of png, svg, jpeg, webp
-    'height': 500*2,
-    'width': 700*2,
-    'scale': 6*2 # Multiply title/legend/axis/canvas sizes by this factor
+    'height': 500,
+    'width': 700,
+    'scale': 6 # Multiply title/legend/axis/canvas sizes by this factor
   }
 }
+
+# --- Reference sequences overplot rules & helpers ---
+# Generalized, flag-based schema (no name resolution)
+REF_SEQUENCE_RULES = [
+    {
+        'seqid': 'zw2_mz_ps1_field',
+        'legend': 'Reference: PS1 z vs (z−W2) — field',
+        'axes': {
+            'x': {'type': 'color', 'color': {'psid1': 'panstarrs1_zmag', 'psid2': 'wise_w2mag', 'unordered': True}},
+            'y': {'type': 'absolute_magnitude', 'absmag': {'psid': 'panstarrs1_zmag'}},
+        },
+        'swap_ok': True
+    }
+]
+
+# ---- Generalized, flag-based axis matching (no DB resolution) ----
+
+def _axis_signature(axis_type, band_values):
+    """Build a canonical signature dict for an axis selection using raw flags.
+    Examples (using the provided flags as-is):
+      {'type':'color', 'color': {'psid1':'mko_jmag','psid2':'mko_hmag'}}
+      {'type':'absolute_magnitude','absmag': {'psid':'mko_jmag'}}
+      {'type':'spectral_type'}
+      {'type':'spectral_index','sindex': {'flag':'h2o_j'}}
+      {'type':'equivalent_width','eqw': {'flag':'na_i_8190'}}
+    """
+    sig = {'type': axis_type}
+    bv = band_values or []
+    t = axis_type or ''
+    if t == 'color':
+        f1 = bv[0] if len(bv) >= 1 else None
+        f2 = bv[1] if len(bv) >= 2 else None
+        sig['color'] = {'psid1': f1, 'psid2': f2}
+    elif t == 'absolute_magnitude':
+        f1 = bv[0] if len(bv) >= 1 else None
+        sig['absmag'] = {'psid': f1}
+    elif t == 'spectral_index':
+        f1 = bv[0] if len(bv) >= 1 else None
+        sig['sindex'] = {'flag': f1}
+    elif t == 'equivalent_width':
+        f1 = bv[0] if len(bv) >= 1 else None
+        sig['eqw'] = {'flag': f1}
+    # spectral_type carries no flags
+    return sig
+
+
+def _match_axis(sig, rule_axis):
+    """Return True if a user axis signature matches the rule axis spec.
+    Matching is performed on raw flags; the rule may omit specifics to wildcard them.
+    """
+    if rule_axis is None:
+        return True
+    if sig.get('type') != rule_axis.get('type'):
+        return False
+
+    t = sig.get('type')
+    if t == 'color':
+        r = (rule_axis.get('color') or {})
+        if not r:
+            return True
+        unordered = r.get('unordered', True)
+        want = (r.get('psid1'), r.get('psid2'))
+        have = (sig.get('color', {}).get('psid1'), sig.get('color', {}).get('psid2'))
+        if unordered:
+            return set(have) == set(want)
+        return have == want
+
+    if t == 'absolute_magnitude':
+        r = (rule_axis.get('absmag') or {})
+        want = r.get('psid')
+        have = sig.get('absmag', {}).get('psid')
+        return (want is None) or (want == have)
+
+    if t == 'spectral_index':
+        r = (rule_axis.get('sindex') or {})
+        want = r.get('flag')
+        have = sig.get('sindex', {}).get('flag')
+        return (want is None) or (want == have)
+
+    if t == 'equivalent_width':
+        r = (rule_axis.get('eqw') or {})
+        want = r.get('flag')
+        have = sig.get('eqw', {}).get('flag')
+        return (want is None) or (want == have)
+
+    if t == 'spectral_type':
+        return True
+
+    return False
+
+
+def _match_rule(sig_x, sig_y, rule):
+    """Try to match a rule in direct orientation or swapped (if swap_ok).
+    Returns (matched: bool, swapped: bool).
+    """
+    axes = rule.get('axes', {})
+    rx, ry = axes.get('x'), axes.get('y')
+    swap_ok = rule.get('swap_ok', True)
+
+    if _match_axis(sig_x, rx) and _match_axis(sig_y, ry):
+        return True, False
+    if swap_ok and _match_axis(sig_x, ry) and _match_axis(sig_y, rx):
+        return True, True
+    return False, False
+
+def _maybe_add_reference_sequence(fig, engine, x_axis_type, y_axis_type, x_band_values, y_band_values):
+    """
+    If the (x,y) selections match any rule in REF_SEQUENCE_RULES, fetch the sequence
+    from data_astro_sequences and overplot. Works for any axis-type combo. Orientation
+    is adapted if the rule matched in swapped mode.
+    """
+    try:
+        sig_x = _axis_signature(x_axis_type, x_band_values)
+        sig_y = _axis_signature(y_axis_type, y_band_values)
+
+        matched_rule = None
+        swapped = False
+        for rule in REF_SEQUENCE_RULES:
+            ok, is_swapped = _match_rule(sig_x, sig_y, rule)
+            if ok:
+                matched_rule = rule
+                swapped = is_swapped
+                break
+        if not matched_rule:
+            return
+
+        # Fetch the sequence
+        from sqlalchemy import MetaData, Table, select
+        meta = MetaData()
+        seq = Table('data_astro_sequences', meta, autoload_with=engine)
+        with engine.connect() as conn:
+            q = select([seq.c.xdata, seq.c.ydata, seq.c.yerror]).where(seq.c.moca_seqid == matched_rule['seqid'])
+            df = pd.read_sql(q, conn)
+        if df.empty:
+            return
+
+        x_vals = pd.to_numeric(df['xdata'], errors='coerce').values
+        y_vals = pd.to_numeric(df['ydata'], errors='coerce').values
+        yerr   = pd.to_numeric(df['yerror'], errors='coerce').values if 'yerror' in df.columns else None
+
+        # Orient according to whether we matched swapped or not.
+        if swapped:
+            plot_x, plot_y = y_vals, x_vals
+            err_y = None  # yerror corresponds to DB y; when swapped, we skip error bars
+        else:
+            plot_x, plot_y = x_vals, y_vals
+            err_y = yerr
+
+        # Build a clean, sorted series to avoid self-crossing in the band polygon
+        order = np.argsort(plot_x)
+        xs = plot_x[order]
+        ys = plot_y[order]
+
+        legend_name = matched_rule.get('legend', matched_rule.get('seqid', 'reference sequence'))
+
+        # Add shaded uncertainty band only when the DB-side yerror aligns with plotted Y (i.e., not swapped)
+        if err_y is not None:
+            err_sorted = err_y[order]
+            y_upper = ys + err_sorted
+            y_lower = ys - err_sorted
+
+            band_x = np.concatenate([xs, xs[::-1]])
+            band_y = np.concatenate([y_upper, y_lower[::-1]])
+
+            fig.add_trace(go.Scatter(
+                x=band_x,
+                y=band_y,
+                mode='lines',
+                line=dict(width=0),
+                fill='toself',
+                fillcolor='rgba(0,0,0,0.12)',  # neutral, semi-transparent band
+                hoverinfo='skip',
+                name=f"{legend_name} ±1σ",
+                showlegend=False,
+                legendgroup=legend_name
+            ))
+
+        # Central thick black line
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode='lines',
+            line=dict(width=3, color='black'),  # black thick line
+            name=legend_name,
+            legendgroup=legend_name,
+            hoverinfo='x+y+name'
+        ))
+    except Exception:
+        return
 
 def parse_spt_label(label):
         """Reverse `generate_spectral_type_label` to map a spectral type to a number."""
@@ -354,6 +543,8 @@ def _add_best18_overlay(fig, engine, x_axis_type, y_axis_type, x_band_values, y_
                             x=xcol, y=ycol, mode='text', name='Median colors labels', text=labels,
                             textposition='middle center', textfont=dict(size=10, color='black'), hoverinfo='skip', showlegend=False
                         ))
+        # Finally, add any matching reference sequence overlays
+        _maybe_add_reference_sequence(fig, engine, x_axis_type, y_axis_type, x_band_values, y_band_values)
     except Exception:
         # Never break the app if overlay has issues
         pass
