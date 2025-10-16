@@ -2519,10 +2519,6 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if y_axis_type == 'equivalent_width' and y_band_values and any(v for v in y_band_values if v is not None):
             y_equivalent_width = y_band_values[0]
             
-            if y_equivalent_width == 'li':
-                y_data['y_data'] *= 1000
-                y_data['ey_data'] *= 1000
-
             y_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == y_equivalent_width)
 
             y_data = pd.read_sql(y_query, connection)
@@ -2538,6 +2534,10 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             # Calculate absolute magnitude and uncertainty using dmod
             y_data['y_data'] = y_data['ew_angstrom']
             y_data['ey_data'] = y_data['ew_angstrom_unc']
+
+            if y_equivalent_width == 'li':
+                y_data['y_data'] *= 1000
+                y_data['ey_data'] *= 1000
             
             if y_equivalent_width == 'li':
                 y_axis_label = y_data['equivalent_width_description'].iloc[0] + ' (mÅ)'

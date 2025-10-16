@@ -237,6 +237,21 @@ def update_gh_figure(dummy, url_search):
     df.loc[df['nobj'].isnull(),'nobj'] = 10
     df.loc[len(df), ['moca_aid','nobj','parent_aid']] = 'ALL', df[df.parent_aid=='ALL'].nobj.sum(), ''
 
+    # Missing parents (allow root parent as empty string only). Instead of erroring,
+    # synthesize root nodes for any missing parents so the sunburst can render.
+    ids = set(df["moca_aid"].tolist())
+    missing_parents = sorted({p for p in df["parent_aid"] if p != "" and p not in ids})
+    if missing_parents:
+        # Build one empty-row per missing parent, with parent_aid set to root ""
+        synth_rows = []
+        for p in missing_parents:
+            new_row = {col: None for col in df.columns}
+            new_row["moca_aid"] = str(p)
+            new_row["parent_aid"] = ""
+            synth_rows.append(new_row)
+        if synth_rows:
+            df = pd.concat([df, pd.DataFrame(synth_rows)], ignore_index=True)
+
     return generate_gh_sunburst(df, aid_select)
 
 # @dash.callback(

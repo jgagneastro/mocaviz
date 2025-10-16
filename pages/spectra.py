@@ -38,7 +38,7 @@ moca = MocaEngine()
 query_e = """
     SELECT ds.moca_specid, ms.spectrum_name, COALESCE(ms.flux_units,"NO_UNITS") AS flux_units, ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp
     FROM moca_spectra ms
-    JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.adopted=1)
+    JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.ignored=0)
 """
 
 unselected_opacity = 0.1
@@ -46,7 +46,7 @@ selected_opacity = 1
 
 df_all_spectra = moca.query("SELECT moca_specid, CONCAT(ms.moca_specid,': ',COALESCE(CONCAT(mo.designation, ' (',spt.spectral_type, ') with ', ms.moca_instid,COALESCE(CONCAT(' in ', ms.instrument_mode_name,' mode'),''),COALESCE(CONCAT(' (', ms.data_collection_date,')'),'')),ms.spectrum_name)) AS spectrum_name FROM moca_spectra ms LEFT JOIN moca_objects mo USING(moca_oid) LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)")
 
-dfe = moca_vanilla.query("SELECT ds.moca_specid, ms.spectrum_name, ms.flux_units, ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp FROM moca_spectra ms JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.adopted=1) LIMIT 0")
+dfe = moca_vanilla.query("SELECT ds.moca_specid, ms.spectrum_name, ms.flux_units, ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp FROM moca_spectra ms JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.ignored=0) LIMIT 0")
 
 #To make hex colors more transparent
 def hex_to_rgba(hex_color, alpha=0.5):

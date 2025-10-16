@@ -815,7 +815,7 @@ def update_comparison_options(search):
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
         LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)
-        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL) AND ms.adopted=1
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL) AND ms.ignored=0
     """
     df = pd.read_sql(query, engine)
     options = [{'label': row["spectrum_name"], 'value': row["moca_specid"]} for index, row in df.iterrows()]
@@ -1140,7 +1140,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL
+            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
@@ -1156,7 +1156,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             JOIN data_spectra ds USING(moca_specid)
-            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL AND ds.adopted=1 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
+            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
@@ -1327,7 +1327,7 @@ def download_comparison_spectrum(comparison_specid, url_search):
             ds.flux_flambda AS sp,
             ds.flux_flambda_unc AS esp
         FROM moca_spectra ms
-        JOIN data_spectra ds ON (ds.moca_specid = ms.moca_specid AND ds.adopted = 1)
+        JOIN data_spectra ds ON (ds.moca_specid = ms.moca_specid AND ds.ignored = 0)
         WHERE ds.moca_specid = {comparison_specid}
     """
 
