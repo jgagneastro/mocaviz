@@ -1140,7 +1140,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL
+            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
@@ -1156,7 +1156,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             JOIN data_spectra ds USING(moca_specid)
-            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
+            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
