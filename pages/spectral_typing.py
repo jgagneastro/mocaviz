@@ -814,7 +814,7 @@ def update_comparison_options(search):
                mo.designation
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
-        LEFT JOIN (SELECT moca_oid, spectral_type FROM cdata_spectral_types WHERE adopted=1) spt USING(moca_oid)
+        LEFT JOIN (SELECT moca_oid, spectral_type FROM data_spectral_types WHERE adopted=1) spt USING(moca_oid)
         WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL) AND ms.ignored=0
     """
     df = pd.read_sql(query, engine)
@@ -1068,7 +1068,7 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
     ]
     col_names = ", ".join([c for c, _ in cols])
     select_parts = ", ".join([f"{fv(v)} AS {c}" for c, v in cols])
-    sql = f"INSERT INTO cdata_spectral_types ({col_names}) SELECT {select_parts};"
+    sql = f"INSERT INTO data_spectral_types ({col_names}) SELECT {select_parts};"
 
     if username_param == 'management':
         try:
@@ -1079,7 +1079,7 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
                 msg_suffix = ''
                 if n_clicks_adopt and moca_oid is not None:
                     # First reset all adopted types for this object
-                    update_stmt = text("UPDATE cdata_spectral_types SET adopted=0 WHERE adopted=1 AND moca_oid=:moca_oid")
+                    update_stmt = text("UPDATE data_spectral_types SET adopted=0 WHERE adopted=1 AND moca_oid=:moca_oid")
                     conn.execute(update_stmt, {"moca_oid": moca_oid})
                     msg_suffix = ' and de-adopted other spectral types for this moca_oid'
 
@@ -1091,7 +1091,7 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
                 msg = 'Statement executed'
             else:
                 plural = '' if affected == 1 else 's'
-                msg = f'{affected} row{plural} added to cdata_spectral_types{msg_suffix}'
+                msg = f'{affected} row{plural} added to data_spectral_types{msg_suffix}'
             return msg, {'display': 'block', 'marginTop': '10px'}
         except Exception as e:
             # Surface the error to the UI box
@@ -1140,7 +1140,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL
+            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
@@ -1156,7 +1156,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             JOIN data_spectra ds USING(moca_specid)
-            WHERE dstg.adopted=1 AND mstg.adopted=1 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
+            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:

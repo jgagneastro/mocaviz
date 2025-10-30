@@ -35,8 +35,8 @@ moca_vanilla = MocaEngine()
 #Query an empty row to obtain the structure for the table (this needs to be the same regardless of credentials)
 df_columns = ['designation','moca_aid','moca_mtid','spt','moca_oid','gmag','bmag', 'rmag','plx','dmod','dr3_ruwe','x','y','z','u','v','w','prot_days','gaia_act','ewli','ewha']
 df_columns_memonly = ['x_opt','y_opt','z_opt','u_opt','v_opt','w_opt']
-dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members LIMIT 0")
-dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects LIMIT 0")
+dfe = moca_vanilla.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM old_summary_all_members LIMIT 0")
+dfoe = moca_vanilla.query("SELECT "+", ".join(df_columns)+" FROM old_summary_all_objects LIMIT 0")
 #dfoe = dfe.copy(deep=True)
 dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
 
@@ -48,7 +48,7 @@ field_markersize = 3
 bcg_color = np.array([230,236,245])
 
 #Here we are assuming that MTIDs are the same regardless of credentials
-df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM old_summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
@@ -2188,7 +2188,7 @@ def update_aid_select(
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
         mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
-        df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM old_summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
 
         df['gr'] = df['gmag']-df['rmag']
         df['br'] = df['bmag']-df['rmag']
@@ -2209,7 +2209,7 @@ def update_aid_select(
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
-        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM summary_all_objects WHERE ("+oid_query+")")
+        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM old_summary_all_objects WHERE ("+oid_query+")")
         dfo['gr'] = dfo['gmag']-dfo['rmag']
         dfo['br'] = dfo['bmag']-dfo['rmag']
         dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
