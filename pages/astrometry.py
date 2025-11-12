@@ -1662,7 +1662,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     ).select_from(dec_base).where(
         and_(
             data_equatorial_coordinates.c.moca_oid == moca_oid,
-            data_equatorial_coordinates.c.adopted == 1,
+            data_equatorial_coordinates.c.ignored == 0,
             data_equatorial_coordinates.c.single_epoch == 1,
             recalib_condition if only_recalibrated else True,
         )
