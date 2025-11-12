@@ -1466,7 +1466,7 @@ def update_mission_dropdown(selected_dataset):
         ).distinct().where(
         and_(
             data_equatorial_coordinates.c.moca_oid == moca_oid,
-            data_equatorial_coordinates.c.adopted == 1,
+            data_equatorial_coordinates.c.ignored == 0,
             data_equatorial_coordinates.c.single_epoch == 1
             )
     )
