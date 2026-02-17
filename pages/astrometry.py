@@ -5,7 +5,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case
+from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case, Column, Integer, Float, Text
 import pandas as pd
 import os
 from utils.plx_motion import parallax_motion
@@ -1448,7 +1448,31 @@ def update_mission_dropdown(selected_dataset):
     metadata = MetaData()
 
     # Reflect the relevant table and fetch unique missions
-    data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    data_equatorial_coordinates = Table(
+        "data_equatorial_coordinates", metadata,
+        Column("id", Integer),
+        Column("moca_oid", Integer),
+        Column("ra", Float),
+        Column("dec", Float),
+        Column("measurement_epoch_yr", Float),
+        Column("ra_unc_mas", Float),
+        Column("dec_unc_mas", Float),
+        Column("measurement_epoch_yr_unc", Float),
+        Column("ignored", Integer),
+        Column("single_epoch", Integer),
+        Column("adopt_as_reference", Integer),
+        Column("mission_name", String(64)),
+        Column("data_release", String(64)),
+        Column("moca_pid", String(64)),
+        Column("origin", String(255)),
+        Column("comments", Text),
+        Column("airmass", Float),
+        Column("moca_psid", Integer),
+        Column("calibration_delta_ra_mas", Float),
+        Column("calibration_delta_dec_mas", Float),
+        Column("nstars_calibration", Integer),
+        Column("calibration_method", String(64)),
+    )
     query = select(
             func.coalesce(
                 case(
@@ -1538,7 +1562,32 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     metadata = MetaData()
 
     #Query combined coordinates
-    data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    #data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    data_equatorial_coordinates = Table(
+        "data_equatorial_coordinates", metadata,
+        Column("id", Integer),
+        Column("moca_oid", Integer),
+        Column("ra", Float),
+        Column("dec", Float),
+        Column("measurement_epoch_yr", Float),
+        Column("ra_unc_mas", Float),
+        Column("dec_unc_mas", Float),
+        Column("measurement_epoch_yr_unc", Float),
+        Column("ignored", Integer),
+        Column("single_epoch", Integer),
+        Column("adopt_as_reference", Integer),
+        Column("mission_name", String(64)),
+        Column("data_release", String(64)),
+        Column("moca_pid", String(64)),
+        Column("origin", String(255)),
+        Column("comments", Text),
+        Column("airmass", Float),
+        Column("moca_psid", Integer),
+        Column("calibration_delta_ra_mas", Float),
+        Column("calibration_delta_dec_mas", Float),
+        Column("nstars_calibration", Integer),
+        Column("calibration_method", String(64)),
+    )
 
     query = select(data_equatorial_coordinates.c.ra,
                    data_equatorial_coordinates.c.dec,
