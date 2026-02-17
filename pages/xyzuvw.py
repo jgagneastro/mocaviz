@@ -1092,7 +1092,12 @@ def update_aid_select_xupage(
         oid_query = " OR ".join(["mo.moca_oid='"+stri+"'" for stri in oid_select.split(',')])
         dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
 
-    df_asso_centers = moca.query("CALL list_association_labels();")
+    # Association label centers are expensive to compute; only load when requested
+    if "asscen" in xymap_view:
+        df_asso_centers = moca.query("CALL list_association_labels();")
+    else:
+        # Provide an empty DataFrame with the expected columns
+        df_asso_centers = pd.DataFrame(columns=["moca_aid", "x", "y", "z", "u", "v", "w"])
     return (
         df.to_json(date_format='iso', orient='split'),
         dfm.to_json(date_format='iso', orient='split'),
