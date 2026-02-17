@@ -1530,7 +1530,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     ctx = dash.callback_context
     
     if not selected_dataset:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     subtract_pm = 'subtract_pm' in pm_checkbox_values  # Check if the checkbox is selected
     subtract_plx = 'subtract_plx' in plx_checkbox_values  # Check if the checkbox is selected
@@ -1549,13 +1549,13 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     triggered_by_selection = ('selectedData_ra' in ctx.triggered[0]['prop_id']) or ('selectedData_dec' in ctx.triggered[0]['prop_id'])
 
     if triggered_by_selection and ((selectedData_ra is None and selectedData_dec is None) or (not selectedData_ra.get('points') and not selectedData_dec.get('points'))):
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     try:
         moca_oid = selected_dataset
         #moca_oid, designation = selected_dataset.split('|')
     except ValueError:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     engine = create_engine(connection_string)
     connection = engine.connect()
@@ -1739,7 +1739,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                 )
             ]
         )
-        return empty_figure, empty_figure
+        return empty_figure, figure_export_config, empty_figure, figure_export_config
 
     if selected_missions:
         data_df = data_df[data_df["mission"].isin(selected_missions)]

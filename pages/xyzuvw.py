@@ -901,15 +901,12 @@ selections = {
 )
 def update_axes_from_url_xupage(url_search):
     """Extract axis selections from the URL and update dropdown values."""
-    if url_search:
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-
+    parsed_url_data = parse_qs((url_search or "").lstrip("?"))
+    if parsed_url_data:
         if 'axes' in parsed_url_data:
             axes = list(parsed_url_data['axes'][0])  # Convert "xuw" into ["x", "u", "w"]
             if len(axes) == 3:
                 return axes[0].upper(), axes[1].upper(), axes[2].upper()
-
     # Default values if no valid URL parameter
     return "X", "Y", "Z"
 
@@ -921,14 +918,10 @@ def update_axes_from_url_xupage(url_search):
 def update_checklist_from_url(url_search):
     """Extract checkbox states from the URL and update the checklist component."""
     default_checkboxes = ["models", "errors"]  # Default values
-
-    if url_search:
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-
+    parsed_url_data = parse_qs((url_search or "").lstrip("?"))
+    if parsed_url_data:
         if "checkbox" in parsed_url_data:
             return parsed_url_data["checkbox"][0].split(",")  # Use URL values
-
     return default_checkboxes  # Use defaults if no parameter is found
 
 # Update BSMDID dropdown from URL and read credentials
@@ -942,13 +935,10 @@ def update_banyan_version_dropdown(url_search):
     moca = MocaEngine()
 
     # Extract credentials from URL
-    user, pwd, dbase = None, None, None
-    if url_search:
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-        user = parsed_url_data.get("user", [None])[0]
-        pwd = parsed_url_data.get("pwd", [None])[0]
-        dbase = parsed_url_data.get("dbase", [None])[0]
+    parsed_url_data = parse_qs((url_search or "").lstrip("?"))
+    user = parsed_url_data.get("user", [None])[0]
+    pwd = parsed_url_data.get("pwd", [None])[0]
+    dbase = parsed_url_data.get("dbase", [None])[0]
 
     # If credentials are provided, override connection
     if user and pwd and dbase:
@@ -965,7 +955,7 @@ def update_banyan_version_dropdown(url_search):
 
     # Determine selected version from URL
     selected_version = "latest"  # Default value
-    if url_search and "bsmdid" in parsed_url_data:
+    if "bsmdid" in parsed_url_data:
         url_bsmdid = parsed_url_data["bsmdid"][0]
         available_versions = [opt["value"] for opt in model_options]
         if url_bsmdid in available_versions:
@@ -994,7 +984,11 @@ def update_banyan_version_dropdown(url_search):
 def update_aid_select_xupage(
     aid_select, mtid_select, oid_select, xymap_view, banyan_version, url_search
 ):
-    
+    # Normalize potentially-None inputs (can be None on first page load)
+    xymap_view = xymap_view or []
+    url_search = url_search or ""
+    parsed_url_data = parse_qs(url_search.lstrip("?"))
+
     # Determine if the "Only Display Likely Members" checkbox is checked
     if "likely" in xymap_view:
         query_e_modified = query_e_most_likely_mode
@@ -1009,8 +1003,6 @@ def update_aid_select_xupage(
             aid_select = initial_aids
             mtid_select = initial_mtids
         else:
-            parsed_url = urlparse(url_search)
-            parsed_url_data = parse_qs(parsed_url.query)
             if 'asso' in parsed_url_data.keys():
                 aid_select = parsed_url_data['asso'][0].split(',')
             else:
@@ -1027,18 +1019,9 @@ def update_aid_select_xupage(
                 oid_select = parsed_url_data['oid'][0]
 
     # Read credentials
-    user = None
-    pwd = None
-    dbase = None
-    if url_search:
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-        if 'user' in parsed_url_data.keys():
-            user = parsed_url_data['user'][0]
-        if 'pwd' in parsed_url_data.keys():
-            pwd = parsed_url_data['pwd'][0]
-        if 'dbase' in parsed_url_data.keys():
-            dbase = parsed_url_data['dbase'][0]
+    user = parsed_url_data.get('user', [None])[0]
+    pwd = parsed_url_data.get('pwd', [None])[0]
+    dbase = parsed_url_data.get('dbase', [None])[0]
 
     # Load MOCA engine for this user
     moca = MocaEngine()
@@ -1165,6 +1148,9 @@ def update_map_xupage(
     if prop_id == "xyz-recenter-in-xupage":
         print("DO RECENTER HERE")
     
+    # Upstream callback may have errored; avoid crashing on None
+    if not jsonified_db_data or len(jsonified_db_data) < 4:
+        return self_figure
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
