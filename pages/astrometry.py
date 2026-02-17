@@ -17,8 +17,38 @@ from datetime import datetime
 # Register the page in the Dash app
 dash.register_page(__name__)
 
-# Placeholder for the database connection string
-connection_string = None
+figure_export_config = {
+  'toImageButtonOptions': {
+    'format': 'png', # one of png, svg, jpeg, webp
+    'height': 700,
+    'width': 1900,
+    'scale': 2 # Multiply title/legend/axis/canvas sizes by this factor
+  }
+}
+
+# ---- DB connection helper (avoid globals; safe for multi-worker deployments) ----
+
+def _parse_url_search(url_search: str):
+    """Parse Dash dcc.Location.search (e.g. '?a=1&b=2') into a dict."""
+    return parse_qs((url_search or "").lstrip("?"))
+
+
+def get_engine_from_url(url_search: str):
+    """Build a SQLAlchemy engine from URL query params or environment defaults."""
+    parsed = _parse_url_search(url_search)
+
+    default_host = '104.248.106.21'
+    default_username = 'public'
+    default_password = 'z@nUg_2h7_%?31y88'
+    default_dbname = 'mocadb'
+
+    env_username = parsed.get('user', [None])[0] or os.environ.get('MOCA_USERNAME', default_username)
+    env_password = parsed.get('pwd', [None])[0] or os.environ.get('MOCA_PASSWORD', default_password)
+    env_dbname = parsed.get('dbase', [None])[0] or os.environ.get('MOCA_DBNAME', default_dbname)
+    env_host = os.environ.get('MOCA_HOST', default_host)
+
+    conn_str = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
+    return create_engine(conn_str)
 
 bin_size_days = 50
 bin_size_days_phased = 20
@@ -1348,8 +1378,7 @@ layout = html.Div([
 def update_dropdown(href, search_value, url_search):
 
     # Parse URL parameters
-    parsed_url = urlparse(url_search)
-    parsed_url_data = parse_qs(parsed_url.query)
+    parsed_url_data = _parse_url_search(url_search)
     
     # Check for moca_oid in the URL query parameters
     moca_oid_param = parsed_url_data.get('moca_oid', [None])[0]
@@ -1379,11 +1408,8 @@ def update_dropdown(href, search_value, url_search):
     if env_dbname is None:
         return dash.no_update
 
-    global connection_string
-    connection_string = f'mysql+pymysql://{env_username}:{urlquote(env_password)}@{env_host}/{env_dbname}'
-
     # Establish connection to the database
-    engine = create_engine(connection_string)
+    engine = get_engine_from_url(url_search)
     connection = engine.connect()
     metadata = MetaData()
 
@@ -1436,14 +1462,15 @@ def update_dropdown(href, search_value, url_search):
     Output("mission-toggle-dropdown", "options"),
     Output("mission-toggle-dropdown", "value"),
     Input("astrometry-filtered-dropdown", "value"),
+    State("url", "search"),
     prevent_initial_call=True
 )
-def update_mission_dropdown(selected_dataset):
+def update_mission_dropdown(selected_dataset, url_search):
     if not selected_dataset:
         return [], []
     
     moca_oid = selected_dataset
-    engine = create_engine(connection_string)
+    engine = get_engine_from_url(url_search)
     connection = engine.connect()
     metadata = MetaData()
 
@@ -1523,10 +1550,11 @@ def update_mission_dropdown(selected_dataset):
      Input("fit-ultranest-checkbox", "value"),
      Input("inflate-errors-checkbox", "value"),
      Input("astrometry-plot-ra", "selectedData"),
-     Input("astrometry-plot-dec", "selectedData")],
+     Input("astrometry-plot-dec", "selectedData"),
+     State("url", "search")],
      prevent_initial_call=True,
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec):
+def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
     
     if not selected_dataset:
@@ -1557,7 +1585,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     except ValueError:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    engine = create_engine(connection_string)
+    engine = get_engine_from_url(url_search)
     connection = engine.connect()
     metadata = MetaData()
 
