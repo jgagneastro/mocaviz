@@ -198,7 +198,7 @@ def populate_aid_dropdown(search):
     q = text("""
         SELECT DISTINCT daa.moca_aid
         FROM data_association_ages AS daa
-        WHERE daa.rls='public' AND daa.moca_aid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_association_age_pdfs AS cap WHERE cap.data_age_id = daa.id)
+        WHERE daa.rls='public' AND daa.moca_aid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_association_age_pdfs AS cap WHERE cap.age_id = daa.id)
         ORDER BY daa.moca_aid
     """)
     df = pd.read_sql(q, engine)
@@ -223,7 +223,7 @@ def populate_methods_for_aid(moca_aid, search):
         SELECT DISTINCT daa.calculation_method, daa.comments
         FROM data_association_ages AS daa
         JOIN calc_association_age_pdfs AS cap
-          ON cap.data_age_id = daa.id
+          ON cap.age_id = daa.id
         WHERE daa.moca_aid = :aid
           AND daa.rls='public'
           AND daa.calculation_method IS NOT NULL
@@ -281,13 +281,13 @@ def update_graph(moca_aid, methods, display_opts, search):
     engine = get_engine_from_params(search)
     # Fetch PDFs (log probability density) for selected methods
     q = text("""
-        SELECT daa.id AS data_age_id,
+        SELECT daa.id AS age_id,
                daa.calculation_method,
                cap.age_myr,
                cap.log_probability_density
         FROM data_association_ages AS daa
         JOIN calc_association_age_pdfs AS cap
-          ON cap.data_age_id = daa.id
+          ON cap.age_id = daa.id
         WHERE daa.moca_aid = :aid
           AND daa.calculation_method IN :methods
           AND daa.rls='public'
