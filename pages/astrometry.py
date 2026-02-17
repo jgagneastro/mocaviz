@@ -1593,200 +1593,227 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     except ValueError:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    engine = get_engine_from_url(url_search)
-    connection = engine.connect()
-    metadata = MetaData()
+    try:
+        engine = get_engine_from_url(url_search)
+        connection = engine.connect()
+        metadata = MetaData()
 
-    #Query combined coordinates
-    #data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
-    data_equatorial_coordinates = Table(
-        "data_equatorial_coordinates", metadata,
-        Column("id", Integer),
-        Column("moca_oid", Integer),
-        Column("ra", Float),
-        Column("dec", Float),
-        Column("measurement_epoch_yr", Float),
-        Column("ra_unc_mas", Float),
-        Column("dec_unc_mas", Float),
-        Column("measurement_epoch_yr_unc", Float),
-        Column("ignored", Integer),
-        Column("single_epoch", Integer),
-        Column("adopt_as_reference", Integer),
-        Column("mission_name", String(64)),
-        Column("data_release", String(64)),
-        Column("moca_pid", String(64)),
-        Column("origin", String(255)),
-        Column("comments", Text),
-        Column("airmass", Float),
-        Column("moca_psid", Integer),
-        Column("calibration_delta_ra_mas", Float),
-        Column("calibration_delta_dec_mas", Float),
-        Column("nstars_calibration", Integer),
-        Column("calibration_method", String(64)),
-    )
-
-    query = select(data_equatorial_coordinates.c.ra,
-                   data_equatorial_coordinates.c.dec,
-                   data_equatorial_coordinates.c.measurement_epoch_yr
-                   ).where(
-        and_(data_equatorial_coordinates.c.moca_oid == moca_oid, data_equatorial_coordinates.c.adopt_as_reference == 1)
-    )
-    ref_df = pd.read_sql(query, connection)
-    ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
-
-    #Query PM
-    # Define only needed columns explicitly (avoid reflection warnings for MySQL/MariaDB POINT types)
-    data_proper_motions = Table(
-        'data_proper_motions', metadata,
-        Column('moca_oid', Integer),
-        Column('pmra_masyr', Float),
-        Column('pmdec_masyr', Float),
-        Column('pmra_masyr_unc', Float),
-        Column('pmdec_masyr_unc', Float),
-        Column('moca_pid', String(64)),
-        Column('origin', String(255)),
-        Column('mission_name', String(64)),
-        Column('data_release', String(64)),
-        Column('adopted', Integer),
-    )
-    moca_publications = Table(
-        'moca_publications', metadata,
-        Column('moca_pid', String(64)),
-        Column('name', String(255)),
-    )
-    pm_publications = moca_publications.alias('pm_publications')
-
-    query = (select([data_proper_motions.c.pmra_masyr,
-                   data_proper_motions.c.pmdec_masyr,
-                   data_proper_motions.c.pmra_masyr_unc,
-                   data_proper_motions.c.pmdec_masyr_unc,
-                   func.concat(func.coalesce(func.coalesce(pm_publications.c.name, pm_publications.c.moca_pid), data_proper_motions.c.origin),func.coalesce(func.concat(', ',data_proper_motions.c.mission_name,func.coalesce(func.concat(' ',data_proper_motions.c.data_release),'')),'')).label('pm_ref')
-                ])
-                .select_from(data_proper_motions
-                            .outerjoin(
-                                pm_publications,
-                                (pm_publications.c.moca_pid == data_proper_motions.c.moca_pid)
-                            )
-                    )
-                .where(
-                    and_(data_proper_motions.c.moca_oid == moca_oid, data_proper_motions.c.adopted == 1)
-                ).limit(1))
-    
-    pm_df = pd.read_sql(query, connection)
-    
-    #Query PLX
-    # Define only needed columns explicitly (avoid reflection warnings for MySQL/MariaDB POINT types)
-    data_parallaxes = Table(
-        'data_parallaxes', metadata,
-        Column('moca_oid', Integer),
-        Column('parallax_mas', Float),
-        Column('parallax_mas_unc', Float),
-        Column('moca_pid', String(64)),
-        Column('origin', String(255)),
-        Column('mission_name', String(64)),
-        Column('data_release', String(64)),
-        Column('adopted', Integer),
-    )
-    plx_publications = moca_publications.alias('plx_publications')
-
-    query = (select([data_parallaxes.c.parallax_mas,
-                   data_parallaxes.c.parallax_mas_unc,
-                   func.concat(func.coalesce(func.coalesce(plx_publications.c.name, plx_publications.c.moca_pid), data_parallaxes.c.origin),func.coalesce(func.concat(', ',data_parallaxes.c.mission_name,func.coalesce(func.concat(' ',data_parallaxes.c.data_release),'')),'')).label('plx_ref')
-                ])
-                .select_from(data_parallaxes
-                            .outerjoin(
-                                plx_publications,
-                                (plx_publications.c.moca_pid == data_parallaxes.c.moca_pid)
-                            )
-                    )
-                .where(
-                    and_(data_parallaxes.c.moca_oid == moca_oid, data_parallaxes.c.adopted == 1)
-                ).limit(1))
-
-    plx_df = pd.read_sql(query, connection)
-
-    #Query all coordinates
-    # data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
-    # Reflect missions table for recalibrated filter logic
-    moca_missions = Table(
-        'moca_missions', metadata,
-        Column('mission_name', String(64)),
-        Column('data_release', String(64)),
-        Column('include_in_recalibrated_display', Integer),
-    )
-
-    # Conditionally construct the "ra" and "dec" columns
-    if revert_raw:
-        ra_column = (data_equatorial_coordinates.c.ra -
-                    func.ifnull(
-                        data_equatorial_coordinates.c.calibration_delta_ra_mas /
-                        (3600 * 1000 * func.cos(data_equatorial_coordinates.c.dec * func.pi() / 180)), 0)
-                    ).label('ra')
-        dec_column = (data_equatorial_coordinates.c.dec -
-                    func.ifnull(
-                        data_equatorial_coordinates.c.calibration_delta_dec_mas /
-                        (3600 * 1000), 0)
-                    ).label('dec')
-    else:
-        ra_column = data_equatorial_coordinates.c.ra.label('ra')
-        dec_column = data_equatorial_coordinates.c.dec.label('dec')
-
-    # Left join to missions to know whether a detections table exists for a mission
-    dec_base = data_equatorial_coordinates.outerjoin(
-        moca_missions,
-        and_(
-            moca_missions.c.mission_name == data_equatorial_coordinates.c.mission_name,
-            moca_missions.c.data_release == data_equatorial_coordinates.c.data_release,
+        #Query combined coordinates
+        data_equatorial_coordinates = Table(
+            "data_equatorial_coordinates", metadata,
+            Column("id", Integer),
+            Column("moca_oid", Integer),
+            Column("ra", Float),
+            Column("dec", Float),
+            Column("measurement_epoch_yr", Float),
+            Column("ra_unc_mas", Float),
+            Column("dec_unc_mas", Float),
+            Column("measurement_epoch_yr_unc", Float),
+            Column("ignored", Integer),
+            Column("single_epoch", Integer),
+            Column("adopt_as_reference", Integer),
+            Column("mission_name", String(64)),
+            Column("data_release", String(64)),
+            Column("moca_pid", String(64)),
+            Column("origin", String(255)),
+            Column("comments", Text),
+            Column("airmass", Float),
+            Column("moca_psid", Integer),
+            Column("calibration_delta_ra_mas", Float),
+            Column("calibration_delta_dec_mas", Float),
+            Column("nstars_calibration", Integer),
+            Column("calibration_method", String(64)),
         )
-    )
 
-    # Build the recalibration condition: require calibrated OR mission explicitly allowed
-    # Note: with the outer join, rows without a matching mission will NOT pass this flag check
-    recalib_condition = or_(
-        data_equatorial_coordinates.c.calibration_method.isnot(None),
-        moca_missions.c.include_in_recalibrated_display == 1
-    )
-
-    query = select(
-        data_equatorial_coordinates.c.id,
-        ra_column,
-        dec_column,
-        data_equatorial_coordinates.c.measurement_epoch_yr,
-        data_equatorial_coordinates.c.ra_unc_mas,
-        data_equatorial_coordinates.c.dec_unc_mas,
-        func.coalesce(data_equatorial_coordinates.c.measurement_epoch_yr_unc, 0).label('measurement_epoch_yr_unc'),
-        func.coalesce(
-            case(
-                [
-                    (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
-                ],
-                else_=func.coalesce(
-                    func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
-                    data_equatorial_coordinates.c.moca_pid
-                )
-            ), 'No mission'
-        ).label('mission'),
-        data_equatorial_coordinates.c.moca_pid,
-        data_equatorial_coordinates.c.mission_name,
-        data_equatorial_coordinates.c.data_release,
-        data_equatorial_coordinates.c.origin,
-        data_equatorial_coordinates.c.comments,
-        data_equatorial_coordinates.c.airmass,
-        data_equatorial_coordinates.c.moca_psid,
-        data_equatorial_coordinates.c.calibration_delta_ra_mas,
-        data_equatorial_coordinates.c.calibration_delta_dec_mas,
-        data_equatorial_coordinates.c.nstars_calibration,
-        data_equatorial_coordinates.c.calibration_method,
-    ).select_from(dec_base).where(
-        and_(
-            data_equatorial_coordinates.c.moca_oid == moca_oid,
-            data_equatorial_coordinates.c.ignored == 0,
-            data_equatorial_coordinates.c.single_epoch == 1,
-            recalib_condition if only_recalibrated else True,
+        query = select(data_equatorial_coordinates.c.ra,
+                       data_equatorial_coordinates.c.dec,
+                       data_equatorial_coordinates.c.measurement_epoch_yr
+                       ).where(
+            and_(data_equatorial_coordinates.c.moca_oid == moca_oid, data_equatorial_coordinates.c.adopt_as_reference == 1)
         )
-    )
-    data_df = pd.read_sql(query, connection)
-    connection.close()
+        ref_df = pd.read_sql(query, connection)
+        if ref_df.empty:
+            empty_figure = go.Figure()
+            empty_figure.update_layout(
+                title="No reference epoch available (adopt_as_reference=1 not found)",
+                xaxis_title="Epoch (Year)",
+                yaxis_title="Offset (mas)",
+            )
+            return empty_figure, figure_export_config, empty_figure, figure_export_config
+        ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
+
+        #Query PM
+        data_proper_motions = Table(
+            'data_proper_motions', metadata,
+            Column('moca_oid', Integer),
+            Column('pmra_masyr', Float),
+            Column('pmdec_masyr', Float),
+            Column('pmra_masyr_unc', Float),
+            Column('pmdec_masyr_unc', Float),
+            Column('moca_pid', String(64)),
+            Column('origin', String(255)),
+            Column('mission_name', String(64)),
+            Column('data_release', String(64)),
+            Column('adopted', Integer),
+        )
+        moca_publications = Table(
+            'moca_publications', metadata,
+            Column('moca_pid', String(64)),
+            Column('name', String(255)),
+        )
+        pm_publications = moca_publications.alias('pm_publications')
+
+        query = (select([data_proper_motions.c.pmra_masyr,
+                       data_proper_motions.c.pmdec_masyr,
+                       data_proper_motions.c.pmra_masyr_unc,
+                       data_proper_motions.c.pmdec_masyr_unc,
+                       func.concat(func.coalesce(func.coalesce(pm_publications.c.name, pm_publications.c.moca_pid), data_proper_motions.c.origin),func.coalesce(func.concat(', ',data_proper_motions.c.mission_name,func.coalesce(func.concat(' ',data_proper_motions.c.data_release),'')),'')).label('pm_ref')
+                    ])
+                    .select_from(data_proper_motions
+                                .outerjoin(
+                                    pm_publications,
+                                    (pm_publications.c.moca_pid == data_proper_motions.c.moca_pid)
+                                )
+                        )
+                    .where(
+                        and_(data_proper_motions.c.moca_oid == moca_oid, data_proper_motions.c.adopted == 1)
+                    ).limit(1))
+    
+        pm_df = pd.read_sql(query, connection)
+        if pm_df.empty:
+            pm_df = pd.DataFrame([{ 'pmra_masyr': np.nan, 'pmdec_masyr': np.nan, 'pmra_masyr_unc': np.nan, 'pmdec_masyr_unc': np.nan, 'pm_ref': 'No adopted PM' }])
+
+        #Query PLX
+        data_parallaxes = Table(
+            'data_parallaxes', metadata,
+            Column('moca_oid', Integer),
+            Column('parallax_mas', Float),
+            Column('parallax_mas_unc', Float),
+            Column('moca_pid', String(64)),
+            Column('origin', String(255)),
+            Column('mission_name', String(64)),
+            Column('data_release', String(64)),
+            Column('adopted', Integer),
+        )
+        plx_publications = moca_publications.alias('plx_publications')
+
+        query = (select([data_parallaxes.c.parallax_mas,
+                       data_parallaxes.c.parallax_mas_unc,
+                       func.concat(func.coalesce(func.coalesce(plx_publications.c.name, plx_publications.c.moca_pid), data_parallaxes.c.origin),func.coalesce(func.concat(', ',data_parallaxes.c.mission_name,func.coalesce(func.concat(' ',data_parallaxes.c.data_release),'')),'')).label('plx_ref')
+                    ])
+                    .select_from(data_parallaxes
+                                .outerjoin(
+                                    plx_publications,
+                                    (plx_publications.c.moca_pid == data_parallaxes.c.moca_pid)
+                                )
+                        )
+                    .where(
+                        and_(data_parallaxes.c.moca_oid == moca_oid, data_parallaxes.c.adopted == 1)
+                    ).limit(1))
+
+        plx_df = pd.read_sql(query, connection)
+        if plx_df.empty:
+            plx_df = pd.DataFrame([{ 'parallax_mas': np.nan, 'parallax_mas_unc': np.nan, 'plx_ref': 'No adopted PLX' }])
+
+        #Query all coordinates
+        moca_missions = Table(
+            'moca_missions', metadata,
+            Column('mission_name', String(64)),
+            Column('data_release', String(64)),
+            Column('include_in_recalibrated_display', Integer),
+        )
+
+        # Conditionally construct the "ra" and "dec" columns
+        if revert_raw:
+            ra_column = (data_equatorial_coordinates.c.ra -
+                        func.ifnull(
+                            data_equatorial_coordinates.c.calibration_delta_ra_mas /
+                            (3600 * 1000 * func.cos(data_equatorial_coordinates.c.dec * func.pi() / 180)), 0)
+                        ).label('ra')
+            dec_column = (data_equatorial_coordinates.c.dec -
+                        func.ifnull(
+                            data_equatorial_coordinates.c.calibration_delta_dec_mas /
+                            (3600 * 1000), 0)
+                        ).label('dec')
+        else:
+            ra_column = data_equatorial_coordinates.c.ra.label('ra')
+            dec_column = data_equatorial_coordinates.c.dec.label('dec')
+
+        # Left join to missions to know whether a detections table exists for a mission
+        dec_base = data_equatorial_coordinates.outerjoin(
+            moca_missions,
+            and_(
+                moca_missions.c.mission_name == data_equatorial_coordinates.c.mission_name,
+                moca_missions.c.data_release == data_equatorial_coordinates.c.data_release,
+            )
+        )
+
+        # Build the recalibration condition: require calibrated OR mission explicitly allowed
+        recalib_condition = or_(
+            data_equatorial_coordinates.c.calibration_method.isnot(None),
+            moca_missions.c.include_in_recalibrated_display == 1
+        )
+
+        query = select(
+            data_equatorial_coordinates.c.id,
+            ra_column,
+            dec_column,
+            data_equatorial_coordinates.c.measurement_epoch_yr,
+            data_equatorial_coordinates.c.ra_unc_mas,
+            data_equatorial_coordinates.c.dec_unc_mas,
+            func.coalesce(data_equatorial_coordinates.c.measurement_epoch_yr_unc, 0).label('measurement_epoch_yr_unc'),
+            func.coalesce(
+                case(
+                    [
+                        (func.trim(func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release)) == "", "No mission"),
+                    ],
+                    else_=func.coalesce(
+                        func.concat(data_equatorial_coordinates.c.mission_name, ' ', data_equatorial_coordinates.c.data_release),
+                        data_equatorial_coordinates.c.moca_pid
+                    )
+                ), 'No mission'
+            ).label('mission'),
+            data_equatorial_coordinates.c.moca_pid,
+            data_equatorial_coordinates.c.mission_name,
+            data_equatorial_coordinates.c.data_release,
+            data_equatorial_coordinates.c.origin,
+            data_equatorial_coordinates.c.comments,
+            data_equatorial_coordinates.c.airmass,
+            data_equatorial_coordinates.c.moca_psid,
+            data_equatorial_coordinates.c.calibration_delta_ra_mas,
+            data_equatorial_coordinates.c.calibration_delta_dec_mas,
+            data_equatorial_coordinates.c.nstars_calibration,
+            data_equatorial_coordinates.c.calibration_method,
+        ).select_from(dec_base).where(
+            and_(
+                data_equatorial_coordinates.c.moca_oid == moca_oid,
+                data_equatorial_coordinates.c.ignored == 0,
+                data_equatorial_coordinates.c.single_epoch == 1,
+                recalib_condition if only_recalibrated else True,
+            )
+        )
+        data_df = pd.read_sql(query, connection)
+    
+        # NOTE: connection is closed in the finally block below
+    
+    except Exception as e:
+        # Surface server-side exceptions directly in the figure titles so failures are visible
+        try:
+            print('[astrometry.update_scatter_plot] ERROR:', repr(e))
+        except Exception:
+            pass
+        err_fig = go.Figure()
+        err_fig.update_layout(
+            title=f"Astrometry callback error: {type(e).__name__}: {e}",
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+        )
+        return err_fig, figure_export_config, err_fig, figure_export_config
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
 
     # Check if data_df is empty
     if data_df.empty:
