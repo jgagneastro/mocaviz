@@ -12,7 +12,11 @@ from utils.plx_motion import parallax_motion
 from scipy.optimize import curve_fit
 from astropy.time import Time
 from PyAstronomy.pyasl import sunpos
+
 from datetime import datetime
+
+# ---- Astrometry page version stamp ----
+ASTROMETRY_PAGE_VERSION = "2026-02-17-debug-v1"
 
 # Register the page in the Dash app
 dash.register_page(__name__)
@@ -1205,6 +1209,10 @@ layout = html.Div([
                " with their best-available proper motion and parallax solutions."
                ),
     ], style={'width': '100%', 'display': 'inline-block'}),
+    html.Div(
+        f"Astrometry page version: {ASTROMETRY_PAGE_VERSION}",
+        style={"fontSize": "12px", "opacity": 0.7, "marginBottom": "10px"}
+    ),
     
     dcc.Input(
         id="astrometry-dropdown-search",
@@ -1567,6 +1575,26 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     
     if not selected_dataset:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    # --- DEBUG: prove callback is firing on server ---
+    try:
+        debug_title = f"DEBUG: update_scatter_plot fired | oid={selected_dataset} | missions={'None' if selected_missions is None else len(selected_missions)} | {ASTROMETRY_PAGE_VERSION} | {datetime.utcnow().isoformat()}Z"
+        print(debug_title)
+        dbg_fig = go.Figure()
+        dbg_fig.update_layout(
+            title=debug_title,
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+        )
+        # If running on the server and the callback is firing, you will see this title.
+        # Remove this return once debugging is complete.
+        return dbg_fig, figure_export_config, dbg_fig, figure_export_config
+    except Exception:
+        pass
+
+    # Make selected_missions robust if None
+    if selected_missions is None:
+        selected_missions = []
     
     subtract_pm = 'subtract_pm' in pm_checkbox_values  # Check if the checkbox is selected
     subtract_plx = 'subtract_plx' in plx_checkbox_values  # Check if the checkbox is selected
