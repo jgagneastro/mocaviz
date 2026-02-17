@@ -1413,9 +1413,17 @@ def update_dropdown(href, search_value, url_search):
     connection = engine.connect()
     metadata = MetaData()
 
-    # Reflect the moca_objects table
-    moca_objects = Table('moca_objects', metadata, autoload_with=engine)
-    mechanics_all_designations = Table('mechanics_all_designations', metadata, autoload_with=engine)
+    # Define only needed columns explicitly (avoid reflection warnings for MySQL/MariaDB POINT types)
+    moca_objects = Table(
+        'moca_objects', metadata,
+        Column('moca_oid', Integer),
+        Column('designation', String(255)),
+    )
+    mechanics_all_designations = Table(
+        'mechanics_all_designations', metadata,
+        Column('moca_oid', Integer),
+        Column('designation', String(255)),
+    )
 
     # Determine the query logic based on inputs
     if search_value:  # If a search term is provided
@@ -1627,8 +1635,25 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
 
     #Query PM
-    data_proper_motions = Table('data_proper_motions', metadata, autoload_with=engine)
-    moca_publications = Table('moca_publications', metadata, autoload_with=engine)
+    # Define only needed columns explicitly (avoid reflection warnings for MySQL/MariaDB POINT types)
+    data_proper_motions = Table(
+        'data_proper_motions', metadata,
+        Column('moca_oid', Integer),
+        Column('pmra_masyr', Float),
+        Column('pmdec_masyr', Float),
+        Column('pmra_masyr_unc', Float),
+        Column('pmdec_masyr_unc', Float),
+        Column('moca_pid', String(64)),
+        Column('origin', String(255)),
+        Column('mission_name', String(64)),
+        Column('data_release', String(64)),
+        Column('adopted', Integer),
+    )
+    moca_publications = Table(
+        'moca_publications', metadata,
+        Column('moca_pid', String(64)),
+        Column('name', String(255)),
+    )
     pm_publications = moca_publications.alias('pm_publications')
 
     query = (select([data_proper_motions.c.pmra_masyr,
@@ -1650,7 +1675,18 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     pm_df = pd.read_sql(query, connection)
     
     #Query PLX
-    data_parallaxes = Table('data_parallaxes', metadata, autoload_with=engine)
+    # Define only needed columns explicitly (avoid reflection warnings for MySQL/MariaDB POINT types)
+    data_parallaxes = Table(
+        'data_parallaxes', metadata,
+        Column('moca_oid', Integer),
+        Column('parallax_mas', Float),
+        Column('parallax_mas_unc', Float),
+        Column('moca_pid', String(64)),
+        Column('origin', String(255)),
+        Column('mission_name', String(64)),
+        Column('data_release', String(64)),
+        Column('adopted', Integer),
+    )
     plx_publications = moca_publications.alias('plx_publications')
 
     query = (select([data_parallaxes.c.parallax_mas,
@@ -1672,7 +1708,12 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     #Query all coordinates
     # data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
     # Reflect missions table for recalibrated filter logic
-    moca_missions = Table('moca_missions', metadata, autoload_with=engine)
+    moca_missions = Table(
+        'moca_missions', metadata,
+        Column('mission_name', String(64)),
+        Column('data_release', String(64)),
+        Column('include_in_recalibrated_display', Integer),
+    )
 
     # Conditionally construct the "ra" and "dec" columns
     if revert_raw:
