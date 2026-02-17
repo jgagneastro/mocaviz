@@ -967,7 +967,7 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
             is_bd = True
         elif sptn >= 6 and gravity_class in ('β', 'γ', 'δ'):
             is_bd = True
-    object_type = 'brown_dwarf' if is_bd else None
+    object_type = 'brown dwarf' if is_bd else None
     der = ('deredden' in (deredden_value or []))
     std_descr = f"{entry.get('designation','Unknown')}"
 
@@ -1010,13 +1010,13 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
             f"norm_regions={norm_text}"
         )
 
-    now = datetime.now()
-    calc_date = now.strftime('%Y-%m-%d')
-    calc_time = now.strftime('%H:%M:%S')
     origin = 'spectral_typing.py'
     adopted = 0
+    adopt_asis = 0
     if n_clicks_adopt:
         adopted = 1
+    if n_clicks_adopt:
+        adopt_asis = 1
 
     # If the URL contains user=management, execute the SQL and show a concise result message
     try:
@@ -1057,11 +1057,9 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
         ('wavelength_regime', wavelength_regime),
         ('adopted', adopted),
         ('ignored', 0),
-        ('adopt_asis', 0),
+        ('adopt_asis', adopt_asis),
         ('origin', origin),
         ('author', author),
-        ('calculation_date', calc_date),
-        ('calculation_time', calc_time),
         ('object_designation', object_designation),
         ('object_type', object_type),
         ('comments', comments)
@@ -1081,6 +1079,8 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
                     # First reset all adopted types for this object
                     update_stmt = text("UPDATE data_spectral_types SET adopted=0 WHERE adopted=1 AND moca_oid=:moca_oid")
                     conn.execute(update_stmt, {"moca_oid": moca_oid})
+                    update_stmt2 = text("UPDATE data_spectral_types SET adopt_asis=0 WHERE adopt_asis=1 AND moca_oid=:moca_oid")
+                    conn.execute(update_stmt2, {"moca_oid": moca_oid})
                     msg_suffix = ' and de-adopted other spectral types for this moca_oid'
 
                 result = conn.execute(text(sql))

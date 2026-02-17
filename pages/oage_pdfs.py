@@ -207,9 +207,9 @@ def populate_oid_dropdown(search):
     engine = get_engine_from_params(search)
     q = text("""
         SELECT DISTINCT mo.moca_oid, mo.designation
-        FROM cdata_object_ages AS co
+        FROM data_object_ages AS co
         JOIN moca_objects AS mo ON mo.moca_oid = co.moca_oid
-        WHERE co.rls='public' AND co.moca_oid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_object_age_pdfs AS cap WHERE cap.cdata_age_id = co.id)
+        WHERE co.moca_oid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_object_age_pdfs AS cap WHERE cap.age_id = co.id)
         ORDER BY mo.designation IS NULL, mo.designation, mo.moca_oid
     """)
     df = pd.read_sql(q, engine)
@@ -243,11 +243,10 @@ def populate_methods_for_oid(moca_oid, search):
     engine = get_engine_from_params(search)
     q = text("""
         SELECT DISTINCT co.calculation_method, co.comments
-        FROM cdata_object_ages AS co
+        FROM data_object_ages AS co
         JOIN calc_object_age_pdfs AS cap
-          ON cap.cdata_age_id = co.id
+          ON cap.age_id = co.id
         WHERE co.moca_oid = :oid
-          AND co.rls='public'
           AND co.calculation_method IS NOT NULL
         ORDER BY co.calculation_method
     """)
@@ -298,16 +297,15 @@ def update_graph(moca_oid, methods, display_opts, search):
 
     engine = get_engine_from_params(search)
     q = text("""
-        SELECT co.id AS cdata_age_id,
+        SELECT co.id AS age_id,
                co.calculation_method,
                cap.age_myr,
                cap.log_probability_density
-        FROM cdata_object_ages AS co
+        FROM data_object_ages AS co
         JOIN calc_object_age_pdfs AS cap
-          ON cap.cdata_age_id = co.id
+          ON cap.age_id = co.id
         WHERE co.moca_oid = :oid
           AND co.calculation_method IN :methods
-          AND co.rls='public'
         ORDER BY co.calculation_method, cap.age_myr
     """)
     df = pd.read_sql(q, engine, params={"oid": int(moca_oid), "methods": tuple(methods)})

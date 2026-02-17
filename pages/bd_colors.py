@@ -1757,9 +1757,9 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             return columns + [func.min(data_association_ages.c.age_myr).label('age')]
 
         # --- General Tables ---
-        cdata_spectral_types = Table('cdata_spectral_types', metadata, autoload_with=engine)
+        data_spectral_types = Table('data_spectral_types', metadata, autoload_with=engine)
         moca_objects = Table('moca_objects', metadata, autoload_with=engine)
-        cdata_distances = Table('cdata_distances', metadata, autoload_with=engine)
+        data_distances = Table('data_distances', metadata, autoload_with=engine)
         moca_publications = Table('moca_publications', metadata, autoload_with=engine)
         data_parallaxes = Table('data_parallaxes', metadata, autoload_with=engine)
         mechanics_object_properties_combined = Table('mechanics_object_properties_combined', metadata, autoload_with=engine)
@@ -1771,14 +1771,14 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         
         if 'photometric_distances' not in photometric_distances_value:
             distance_join_condition = (
-                (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                (cdata_distances.c.adopted == 1) &
-                ((cdata_distances.c.photometric_estimate == 0) | (cdata_distances.c.photometric_estimate.is_(None)))
+                (data_distances.c.moca_oid == data_spectral_types.c.moca_oid) &
+                (data_distances.c.adopted == 1) &
+                ((data_distances.c.photometric_estimate == 0) | (data_distances.c.photometric_estimate.is_(None)))
             )
         else:
             distance_join_condition = (
-                (cdata_distances.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                (cdata_distances.c.adopted == 1)
+                (data_distances.c.moca_oid == data_spectral_types.c.moca_oid) &
+                (data_distances.c.adopted == 1)
             )
 
         # Add a filter for binary systems if the checkbox is off
@@ -1787,22 +1787,22 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             binary_filter = (~(
                 mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:C%') |
                 mechanics_object_properties_combined.c.all_prop_confidences.like('%multiple_system:Y%')
-            ) | (mechanics_object_properties_combined.c.all_prop_confidences.is_(None))) | (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+            ) | (mechanics_object_properties_combined.c.all_prop_confidences.is_(None))) | (data_spectral_types.c.moca_oid.in_(moca_ids_array))
 
         # Add filter for photometric spectral type estimates
         if 'spectral_type_estimates' not in spectral_type_estimates_value:
-            spectral_type_filter = (cdata_spectral_types.c.photometric_estimate == 0) | (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))
+            spectral_type_filter = (data_spectral_types.c.photometric_estimate == 0) | (data_spectral_types.c.moca_oid.in_(moca_ids_array))
         else:
             spectral_type_filter = True  # No filter applied
 
         if x_axis_type == 'spectral_index' or y_axis_type == 'spectral_index':
             moca_spectral_indices = Table('moca_spectral_indices', metadata, autoload_with=engine)
-            cdata_spectral_indices = Table('cdata_spectral_indices', metadata, autoload_with=engine)
+            data_spectral_indices = Table('data_spectral_indices', metadata, autoload_with=engine)
             spectral_index_publications = moca_publications.alias('spectral_index_publications')
 
         if x_axis_type == 'equivalent_width' or y_axis_type == 'equivalent_width':
             moca_equivalent_widths = Table('moca_chemical_species', metadata, autoload_with=engine)
-            cdata_equivalent_widths = Table('cdata_equivalent_widths', metadata, autoload_with=engine)
+            data_equivalent_widths = Table('data_equivalent_widths', metadata, autoload_with=engine)
             equivalent_widths_publications = moca_publications.alias('equivalent_widths_publications')
 
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude' or x_axis_type == 'color' or y_axis_type == 'color':
@@ -1810,7 +1810,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
             #if 'best_photometry' in best_photometry_value:
             #    photometry = Table('mechanics_best_photometry_by_band', metadata, autoload_with=engine)
             #else:
-            photometry = Table('cdata_photometry', metadata, autoload_with=engine)
+            photometry = Table('data_photometry', metadata, autoload_with=engine)
             photsys = Table('moca_photometry_systems', metadata, autoload_with=engine)
             photometry_publications = moca_publications.alias('photometry_publications')
 
@@ -1826,48 +1826,48 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'spectral_type' or y_axis_type == 'spectral_type':
             spt_query = (
                 select(add_age_column([
-                    cdata_spectral_types.c.moca_oid,
+                    data_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),  # Take the first designation
-                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
-                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
-                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
-                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
-                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
-                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
-                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
-                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(data_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(data_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(data_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(data_spectral_types.c.suffix).label('suffix'),
+                    func.min(data_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(data_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(data_distances.c.distance_pc).label('distance_pc'),
+                    func.min(data_distances.c.distance_pc_unc).label('distance_pc_unc'),
                     func.min(
-                        func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                        func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), data_spectral_types.c.origin)
                     ).label('spt_ref'),
                     func.min(
-                        func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                        func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),data_distances.c.calculation_method),data_distances.c.origin)
                     ).label('distance_ref'),
                     case(
                         [
                             # Young brown dwarfs condition
                             (
-                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
-                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
-                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
-                                (cdata_spectral_types.c.suffix.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                (data_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (data_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (data_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (data_spectral_types.c.suffix.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%δ%')),
                                 'young'
                             ),
                             # Subdwarfs condition
                             (
-                                (cdata_spectral_types.c.suffix.like('sd%')) |
-                                (cdata_spectral_types.c.suffix.like('esd%')) |
-                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
-                                (cdata_spectral_types.c.suffix.like('%blue%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                (data_spectral_types.c.suffix.like('sd%')) |
+                                (data_spectral_types.c.suffix.like('esd%')) |
+                                (data_spectral_types.c.suffix.like('d/sd%')) |
+                                (data_spectral_types.c.suffix.like('%blue%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%blue%')),
                                 'old'
                             ),
                         ],
@@ -1875,20 +1875,20 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ).label('age_sample')
                 ]))
                 .select_from(with_age_left_joins(
-                    cdata_spectral_types
-                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
-                    .outerjoin(cdata_distances, distance_join_condition)
+                    data_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == data_spectral_types.c.moca_oid)
+                    .outerjoin(data_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
-                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                        (spt_publications.c.moca_pid == data_spectral_types.c.moca_pid)
                     )
                     .outerjoin(
                         distance_publications,
-                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                        (distance_publications.c.moca_pid == data_distances.c.moca_pid)
                     )
                     .outerjoin(
                         data_parallaxes,
-                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                        (data_parallaxes.c.id == data_distances.c.parallax_id)
                     )
                     .outerjoin(
                         parallax_publications,
@@ -1896,15 +1896,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         mechanics_object_properties_combined,
-                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                        (mechanics_object_properties_combined.c.moca_oid == data_spectral_types.c.moca_oid)
                     )
                 ))
                 .where(
-                    ((cdata_spectral_types.c.adopted == 1) &
-                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array))))
+                    ((data_spectral_types.c.adopted == 1) &
+                    (((data_spectral_types.c.spectral_type_number >= spt_range['min']) & (data_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (data_spectral_types.c.moca_oid.in_(moca_ids_array))))
                 )
-                .group_by(cdata_spectral_types.c.moca_oid)
+                .group_by(data_spectral_types.c.moca_oid)
             )
             
             # Add the binary filter to the query dynamically
@@ -1917,26 +1917,26 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'absolute_magnitude' or y_axis_type == 'absolute_magnitude':
             absmag_query = (
                 select(add_age_column([
-                    cdata_spectral_types.c.moca_oid,
+                    data_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
-                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
-                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
-                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
-                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
-                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
-                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
-                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
-                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
-                    func.min(cdata_distances.c.dmod).label('dmod'),
-                    func.min(cdata_distances.c.dmod_unc).label('dmod_unc'),
+                    func.min(data_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(data_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(data_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(data_spectral_types.c.suffix).label('suffix'),
+                    func.min(data_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(data_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(data_distances.c.distance_pc).label('distance_pc'),
+                    func.min(data_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(data_distances.c.dmod).label('dmod'),
+                    func.min(data_distances.c.dmod_unc).label('dmod_unc'),
                     func.min(photometry.c.magnitude).label('magnitude'),
                     func.min(photometry.c.magnitude_unc).label('magnitude_unc'),
                     func.min(photsys.c.name).label('magnitude_name'),
                     func.min(
-                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), data_spectral_types.c.origin)
                         ).label('spt_ref'),
                     func.min(
-                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),data_distances.c.calculation_method),data_distances.c.origin)
                         ).label('distance_ref'),
                     func.min(
                             func.concat(func.coalesce(func.coalesce(func.coalesce(photometry_publications.c.name, photometry_publications.c.moca_pid),photometry.c.origin),photometry.c.calculation_method),func.coalesce(func.concat(', ',func.concat(photometry.c.mission_name,func.coalesce(func.concat(' ',photometry.c.data_release),''))),''))
@@ -1945,28 +1945,28 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         [
                             # Young brown dwarfs condition
                             (
-                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
-                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
-                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
-                                (cdata_spectral_types.c.suffix.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                (data_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (data_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (data_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (data_spectral_types.c.suffix.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%δ%')),
                                 'young'
                             ),
                             # Subdwarfs condition
                             (
-                                (cdata_spectral_types.c.suffix.like('sd%')) |
-                                (cdata_spectral_types.c.suffix.like('esd%')) |
-                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
-                                (cdata_spectral_types.c.suffix.like('%blue%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                (data_spectral_types.c.suffix.like('sd%')) |
+                                (data_spectral_types.c.suffix.like('esd%')) |
+                                (data_spectral_types.c.suffix.like('d/sd%')) |
+                                (data_spectral_types.c.suffix.like('%blue%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%blue%')),
                                 'old'
                             ),
                         ],
@@ -1974,12 +1974,12 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ).label('age_sample')
                 ]))
                 .select_from(with_age_left_joins(
-                    cdata_spectral_types
-                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
-                    .join(cdata_distances, distance_join_condition)
+                    data_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == data_spectral_types.c.moca_oid)
+                    .join(data_distances, distance_join_condition)
                     .join(
                         photometry,
-                        (photometry.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                        (photometry.c.moca_oid == data_spectral_types.c.moca_oid) &
                         (photometry.c.adopted == 1) & (photometry.c.magnitude_unc.isnot(None))
                     )
                     .join(
@@ -1988,15 +1988,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         spt_publications,
-                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                        (spt_publications.c.moca_pid == data_spectral_types.c.moca_pid)
                     )
                     .outerjoin(
                         distance_publications,
-                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                        (distance_publications.c.moca_pid == data_distances.c.moca_pid)
                     )
                     .outerjoin(
                         data_parallaxes,
-                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                        (data_parallaxes.c.id == data_distances.c.parallax_id)
                     )
                     .outerjoin(
                         parallax_publications,
@@ -2008,15 +2008,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         mechanics_object_properties_combined,
-                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                        (mechanics_object_properties_combined.c.moca_oid == data_spectral_types.c.moca_oid)
                     )
                 ))
                 .where(
-                    (cdata_spectral_types.c.adopted == 1) &
-                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
+                    (data_spectral_types.c.adopted == 1) &
+                    (((data_spectral_types.c.spectral_type_number >= spt_range['min']) & (data_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (data_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
-                .group_by(cdata_spectral_types.c.moca_oid)
+                .group_by(data_spectral_types.c.moca_oid)
             )
         
             # Add the binary filter to the query dynamically
@@ -2029,56 +2029,56 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'spectral_index' or y_axis_type == 'spectral_index':
             spti_query = (
                 select(add_age_column([
-                    cdata_spectral_types.c.moca_oid,
+                    data_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
-                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
-                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
-                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
-                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
-                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
-                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
-                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
-                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
-                    func.min(cdata_distances.c.dmod).label('dmod'),
-                    func.min(cdata_distances.c.dmod_unc).label('dmod_unc'),
-                    func.min(cdata_spectral_indices.c.index_value).label('index_value'),
-                    func.min(cdata_spectral_indices.c.index_value_unc).label('index_value_unc'),
+                    func.min(data_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(data_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(data_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(data_spectral_types.c.suffix).label('suffix'),
+                    func.min(data_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(data_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(data_distances.c.distance_pc).label('distance_pc'),
+                    func.min(data_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(data_distances.c.dmod).label('dmod'),
+                    func.min(data_distances.c.dmod_unc).label('dmod_unc'),
+                    func.min(data_spectral_indices.c.index_value).label('index_value'),
+                    func.min(data_spectral_indices.c.index_value_unc).label('index_value_unc'),
                     func.min(moca_spectral_indices.c.description).label('spectral_index_description'),
                     func.min(
-                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), data_spectral_types.c.origin)
                         ).label('spt_ref'),
                     func.min(
-                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),data_distances.c.calculation_method),data_distances.c.origin)
                         ).label('distance_ref'),
                     func.min(
-                            func.concat(func.coalesce(func.coalesce(func.coalesce(spectral_index_publications.c.name, spectral_index_publications.c.moca_pid),cdata_spectral_indices.c.origin),cdata_spectral_indices.c.calculation_method),func.coalesce(func.concat(', ',func.concat(cdata_spectral_indices.c.mission_name,func.coalesce(func.concat(' ',cdata_spectral_indices.c.data_release),''))),''))
+                            func.concat(func.coalesce(func.coalesce(func.coalesce(spectral_index_publications.c.name, spectral_index_publications.c.moca_pid),data_spectral_indices.c.origin),data_spectral_indices.c.calculation_method),func.coalesce(func.concat(', ',func.concat(data_spectral_indices.c.mission_name,func.coalesce(func.concat(' ',data_spectral_indices.c.data_release),''))),''))
                         ).label('spectral_index_ref'),
                     case(
                         [
                             # Young brown dwarfs condition
                             (
-                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
-                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
-                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
-                                (cdata_spectral_types.c.suffix.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                (data_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (data_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (data_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (data_spectral_types.c.suffix.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%δ%')),
                                 'young'
                             ),
                             # Subdwarfs condition
                             (
-                                (cdata_spectral_types.c.suffix.like('sd%')) |
-                                (cdata_spectral_types.c.suffix.like('esd%')) |
-                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
-                                (cdata_spectral_types.c.suffix.like('%blue%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                (data_spectral_types.c.suffix.like('sd%')) |
+                                (data_spectral_types.c.suffix.like('esd%')) |
+                                (data_spectral_types.c.suffix.like('d/sd%')) |
+                                (data_spectral_types.c.suffix.like('%blue%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%blue%')),
                                 'old'
                             ),
                         ],
@@ -2086,29 +2086,29 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ).label('age_sample')
                 ]))
                 .select_from(with_age_left_joins(
-                    cdata_spectral_types
-                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    data_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == data_spectral_types.c.moca_oid)
                     .join(
-                        cdata_spectral_indices,
-                        (cdata_spectral_indices.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (cdata_spectral_indices.c.adopted == 1)
+                        data_spectral_indices,
+                        (data_spectral_indices.c.moca_oid == data_spectral_types.c.moca_oid) &
+                        (data_spectral_indices.c.ignored == 0)
                     )
                     .join(
                         moca_spectral_indices,
-                        (cdata_spectral_indices.c.moca_siid == moca_spectral_indices.c.moca_siid)
+                        (data_spectral_indices.c.moca_siid == moca_spectral_indices.c.moca_siid)
                     )
-                    .outerjoin(cdata_distances, distance_join_condition)
+                    .outerjoin(data_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
-                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                        (spt_publications.c.moca_pid == data_spectral_types.c.moca_pid)
                     )
                     .outerjoin(
                         distance_publications,
-                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                        (distance_publications.c.moca_pid == data_distances.c.moca_pid)
                     )
                     .outerjoin(
                         data_parallaxes,
-                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                        (data_parallaxes.c.id == data_distances.c.parallax_id)
                     )
                     .outerjoin(
                         parallax_publications,
@@ -2116,19 +2116,19 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         spectral_index_publications,
-                        (spectral_index_publications.c.moca_pid == cdata_spectral_indices.c.moca_pid)
+                        (spectral_index_publications.c.moca_pid == data_spectral_indices.c.moca_pid)
                     )
                     .outerjoin(
                         mechanics_object_properties_combined,
-                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                        (mechanics_object_properties_combined.c.moca_oid == data_spectral_types.c.moca_oid)
                     )
                 ))
                 .where(
-                    (cdata_spectral_types.c.adopted == 1) &
-                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
+                    (data_spectral_types.c.adopted == 1) &
+                    (((data_spectral_types.c.spectral_type_number >= spt_range['min']) & (data_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (data_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
-                .group_by(cdata_spectral_types.c.moca_oid)
+                .group_by(data_spectral_types.c.moca_oid)
             )
         
             # Add the binary filter to the query dynamically
@@ -2141,56 +2141,56 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'equivalent_width' or y_axis_type == 'equivalent_width':
             ew_query = (
                 select(add_age_column([
-                    cdata_spectral_types.c.moca_oid,
+                    data_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
-                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
-                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
-                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
-                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
-                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
-                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
-                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
-                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
-                    func.min(cdata_distances.c.dmod).label('dmod'),
-                    func.min(cdata_distances.c.dmod_unc).label('dmod_unc'),
-                    func.min(cdata_equivalent_widths.c.ew_angstrom).label('ew_angstrom'),
-                    func.min(cdata_equivalent_widths.c.ew_angstrom_unc).label('ew_angstrom_unc'),
+                    func.min(data_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(data_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(data_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(data_spectral_types.c.suffix).label('suffix'),
+                    func.min(data_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(data_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(data_distances.c.distance_pc).label('distance_pc'),
+                    func.min(data_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(data_distances.c.dmod).label('dmod'),
+                    func.min(data_distances.c.dmod_unc).label('dmod_unc'),
+                    func.min(data_equivalent_widths.c.ew_angstrom).label('ew_angstrom'),
+                    func.min(data_equivalent_widths.c.ew_angstrom_unc).label('ew_angstrom_unc'),
                     func.min(moca_equivalent_widths.c.description).label('equivalent_width_description'),
                     func.min(
-                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), data_spectral_types.c.origin)
                         ).label('spt_ref'),
                     func.min(
-                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),data_distances.c.calculation_method),data_distances.c.origin)
                         ).label('distance_ref'),
                     func.min(
-                            func.concat(func.coalesce(func.coalesce(func.coalesce(equivalent_widths_publications.c.name, equivalent_widths_publications.c.moca_pid),cdata_equivalent_widths.c.origin),cdata_equivalent_widths.c.calculation_method),func.coalesce(func.concat(', ',func.concat(cdata_equivalent_widths.c.mission_name,func.coalesce(func.concat(' ',cdata_equivalent_widths.c.data_release),''))),''))
+                            func.concat(func.coalesce(func.coalesce(func.coalesce(equivalent_widths_publications.c.name, equivalent_widths_publications.c.moca_pid),data_equivalent_widths.c.origin),data_equivalent_widths.c.calculation_method),func.coalesce(func.concat(', ',func.concat(data_equivalent_widths.c.mission_name,func.coalesce(func.concat(' ',data_equivalent_widths.c.data_release),''))),''))
                         ).label('equivalent_width_ref'),
                     case(
                         [
                             # Young brown dwarfs condition
                             (
-                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
-                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
-                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
-                                (cdata_spectral_types.c.suffix.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                (data_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (data_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (data_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (data_spectral_types.c.suffix.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%δ%')),
                                 'young'
                             ),
                             # Subdwarfs condition
                             (
-                                (cdata_spectral_types.c.suffix.like('sd%')) |
-                                (cdata_spectral_types.c.suffix.like('esd%')) |
-                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
-                                (cdata_spectral_types.c.suffix.like('%blue%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                (data_spectral_types.c.suffix.like('sd%')) |
+                                (data_spectral_types.c.suffix.like('esd%')) |
+                                (data_spectral_types.c.suffix.like('d/sd%')) |
+                                (data_spectral_types.c.suffix.like('%blue%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%blue%')),
                                 'old'
                             ),
                         ],
@@ -2198,29 +2198,29 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ).label('age_sample')
                 ]))
                 .select_from(with_age_left_joins(
-                    cdata_spectral_types
-                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    data_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == data_spectral_types.c.moca_oid)
                     .join(
-                        cdata_equivalent_widths,
-                        (cdata_equivalent_widths.c.moca_oid == cdata_spectral_types.c.moca_oid) &
-                        (cdata_equivalent_widths.c.adopted == 1)
+                        data_equivalent_widths,
+                        (data_equivalent_widths.c.moca_oid == data_spectral_types.c.moca_oid) &
+                        (data_equivalent_widths.c.adopted == 1)
                     )
                     .join(
                         moca_equivalent_widths,
-                        (cdata_equivalent_widths.c.moca_spid == moca_equivalent_widths.c.moca_spid)
+                        (data_equivalent_widths.c.moca_spid == moca_equivalent_widths.c.moca_spid)
                     )
-                    .outerjoin(cdata_distances, distance_join_condition)
+                    .outerjoin(data_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
-                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                        (spt_publications.c.moca_pid == data_spectral_types.c.moca_pid)
                     )
                     .outerjoin(
                         distance_publications,
-                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                        (distance_publications.c.moca_pid == data_distances.c.moca_pid)
                     )
                     .outerjoin(
                         data_parallaxes,
-                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                        (data_parallaxes.c.id == data_distances.c.parallax_id)
                     )
                     .outerjoin(
                         parallax_publications,
@@ -2228,19 +2228,19 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         equivalent_widths_publications,
-                        (equivalent_widths_publications.c.moca_pid == cdata_equivalent_widths.c.moca_pid)
+                        (equivalent_widths_publications.c.moca_pid == data_equivalent_widths.c.moca_pid)
                     )
                     .outerjoin(
                         mechanics_object_properties_combined,
-                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                        (mechanics_object_properties_combined.c.moca_oid == data_spectral_types.c.moca_oid)
                     )
                 ))
                 .where(
-                    (cdata_spectral_types.c.adopted == 1) &
-                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
+                    (data_spectral_types.c.adopted == 1) &
+                    (((data_spectral_types.c.spectral_type_number >= spt_range['min']) & (data_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (data_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
-                .group_by(cdata_spectral_types.c.moca_oid)
+                .group_by(data_spectral_types.c.moca_oid)
             )
         
             # Add the binary filter to the query dynamically
@@ -2253,16 +2253,16 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'color' or y_axis_type == 'color':
             color_query = (
                 select(add_age_column([
-                    cdata_spectral_types.c.moca_oid,
+                    data_spectral_types.c.moca_oid,
                     func.min(moca_objects.c.designation).label('designation'),
-                    func.min(cdata_spectral_types.c.spectral_type_number).label('spectral_type_number'),
-                    func.min(cdata_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
-                    func.min(cdata_spectral_types.c.spectral_class).label('spectral_class'),
-                    func.min(cdata_spectral_types.c.suffix).label('suffix'),
-                    func.min(cdata_spectral_types.c.gravity_class).label('gravity_class'),
-                    func.min(cdata_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
-                    func.min(cdata_distances.c.distance_pc).label('distance_pc'),
-                    func.min(cdata_distances.c.distance_pc_unc).label('distance_pc_unc'),
+                    func.min(data_spectral_types.c.spectral_type_number).label('spectral_type_number'),
+                    func.min(data_spectral_types.c.spectral_type_unc).label('spectral_type_unc'),
+                    func.min(data_spectral_types.c.spectral_class).label('spectral_class'),
+                    func.min(data_spectral_types.c.suffix).label('suffix'),
+                    func.min(data_spectral_types.c.gravity_class).label('gravity_class'),
+                    func.min(data_spectral_types.c.complete_spectral_type).label('complete_spectral_type'),
+                    func.min(data_distances.c.distance_pc).label('distance_pc'),
+                    func.min(data_distances.c.distance_pc_unc).label('distance_pc_unc'),
                     func.min(phot1.c.magnitude).label('magnitude_1'),
                     func.min(phot1.c.magnitude_unc).label('magnitude_unc_1'),
                     func.min(phot2.c.magnitude).label('magnitude_2'),
@@ -2270,10 +2270,10 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     func.min(photsys1.c.name).label('magnitude_name_1'),
                     func.min(photsys2.c.name).label('magnitude_name_2'),
                     func.min(
-                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), cdata_spectral_types.c.origin)
+                            func.coalesce(func.coalesce(spt_publications.c.name, spt_publications.c.moca_pid), data_spectral_types.c.origin)
                         ).label('spt_ref'),
                     func.min(
-                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),cdata_distances.c.calculation_method),cdata_distances.c.origin)
+                            func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(func.coalesce(distance_publications.c.name, distance_publications.c.moca_pid),parallax_publications.c.name),parallax_publications.c.moca_pid),data_parallaxes.c.origin),data_distances.c.calculation_method),data_distances.c.origin)
                         ).label('distance_ref'),
                     func.min(
                             func.concat(func.coalesce(func.coalesce(func.coalesce(photometry_publications1.c.name, photometry_publications1.c.moca_pid),phot1.c.origin),phot1.c.calculation_method),func.coalesce(func.concat(', ',func.concat(phot1.c.mission_name,func.coalesce(func.concat(' ',phot1.c.data_release),''))),''))
@@ -2285,28 +2285,28 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         [
                             # Young brown dwarfs condition
                             (
-                                (cdata_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
-                                (cdata_spectral_types.c.gravity_class.like('VL-G%')) |
-                                (cdata_spectral_types.c.gravity_class.like('INT-G%')) |
-                                (cdata_spectral_types.c.suffix.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%red%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%γ%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%β%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%δ%')),
+                                (data_spectral_types.c.gravity_class.in_(['γ', 'β', 'β-γ', 'δ', 'β/γ', 'low gravity', 'low-gravity'])) |
+                                (data_spectral_types.c.gravity_class.like('VL-G%')) |
+                                (data_spectral_types.c.gravity_class.like('INT-G%')) |
+                                (data_spectral_types.c.suffix.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%red%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%VL-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%INT-G%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%γ%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%β%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%δ%')),
                                 'young'
                             ),
                             # Subdwarfs condition
                             (
-                                (cdata_spectral_types.c.suffix.like('sd%')) |
-                                (cdata_spectral_types.c.suffix.like('esd%')) |
-                                (cdata_spectral_types.c.suffix.like('d/sd%')) |
-                                (cdata_spectral_types.c.suffix.like('%blue%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('esd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('d/sd%')) |
-                                (cdata_spectral_types.c.complete_spectral_type.like('%blue%')),
+                                (data_spectral_types.c.suffix.like('sd%')) |
+                                (data_spectral_types.c.suffix.like('esd%')) |
+                                (data_spectral_types.c.suffix.like('d/sd%')) |
+                                (data_spectral_types.c.suffix.like('%blue%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('esd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('d/sd%')) |
+                                (data_spectral_types.c.complete_spectral_type.like('%blue%')),
                                 'old'
                             ),
                         ],
@@ -2314,16 +2314,16 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     ).label('age_sample')
                 ]))
                 .select_from(with_age_left_joins(
-                    cdata_spectral_types
-                    .join(moca_objects, moca_objects.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                    data_spectral_types
+                    .join(moca_objects, moca_objects.c.moca_oid == data_spectral_types.c.moca_oid)
                     .join(
                         phot1,
-                        (phot1.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                        (phot1.c.moca_oid == data_spectral_types.c.moca_oid) &
                         (phot1.c.adopted == 1) & (phot1.c.magnitude_unc.isnot(None))
                     )
                     .join(
                         phot2,
-                        (phot2.c.moca_oid == cdata_spectral_types.c.moca_oid) &
+                        (phot2.c.moca_oid == data_spectral_types.c.moca_oid) &
                         (phot2.c.adopted == 1) & (phot2.c.magnitude_unc.isnot(None))
                     )
                     .join(
@@ -2334,18 +2334,18 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                         photsys2,
                         (photsys2.c.moca_psid == phot2.c.moca_psid)
                     )
-                    .outerjoin(cdata_distances, distance_join_condition)
+                    .outerjoin(data_distances, distance_join_condition)
                     .outerjoin(
                         spt_publications,
-                        (spt_publications.c.moca_pid == cdata_spectral_types.c.moca_pid)
+                        (spt_publications.c.moca_pid == data_spectral_types.c.moca_pid)
                     )
                     .outerjoin(
                         distance_publications,
-                        (distance_publications.c.moca_pid == cdata_distances.c.moca_pid)
+                        (distance_publications.c.moca_pid == data_distances.c.moca_pid)
                     )
                     .outerjoin(
                         data_parallaxes,
-                        (data_parallaxes.c.id == cdata_distances.c.parallax_id)
+                        (data_parallaxes.c.id == data_distances.c.parallax_id)
                     )
                     .outerjoin(
                         parallax_publications,
@@ -2361,15 +2361,15 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     )
                     .outerjoin(
                         mechanics_object_properties_combined,
-                        (mechanics_object_properties_combined.c.moca_oid == cdata_spectral_types.c.moca_oid)
+                        (mechanics_object_properties_combined.c.moca_oid == data_spectral_types.c.moca_oid)
                     )
                 ))
                 .where(
-                    (cdata_spectral_types.c.adopted == 1) &
-                    (((cdata_spectral_types.c.spectral_type_number >= spt_range['min']) & (cdata_spectral_types.c.spectral_type_number <= spt_range['max'])) |
-                    (cdata_spectral_types.c.moca_oid.in_(moca_ids_array)))
+                    (data_spectral_types.c.adopted == 1) &
+                    (((data_spectral_types.c.spectral_type_number >= spt_range['min']) & (data_spectral_types.c.spectral_type_number <= spt_range['max'])) |
+                    (data_spectral_types.c.moca_oid.in_(moca_ids_array)))
                 )
-                .group_by(cdata_spectral_types.c.moca_oid)
+                .group_by(data_spectral_types.c.moca_oid)
             )
         
             # Add the binary filter to the query dynamically
@@ -2396,7 +2396,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'spectral_index' and x_band_values and any(v for v in x_band_values if v is not None):
             x_spectral_index = x_band_values[0]
             
-            x_query = spti_query.where(cdata_spectral_indices.c.moca_siid == x_spectral_index)
+            x_query = spti_query.where(data_spectral_indices.c.moca_siid == x_spectral_index)
 
             x_data = pd.read_sql(x_query, connection)
             
@@ -2417,7 +2417,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if x_axis_type == 'equivalent_width' and x_band_values and any(v for v in x_band_values if v is not None):
             x_equivalent_width = x_band_values[0]
             
-            x_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == x_equivalent_width)
+            x_query = ew_query.where(data_equivalent_widths.c.moca_spid == x_equivalent_width)
 
             x_data = pd.read_sql(x_query, connection)
             
@@ -2498,7 +2498,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if y_axis_type == 'spectral_index' and y_band_values and any(v for v in y_band_values if v is not None):
             y_spectral_index = y_band_values[0]
             
-            y_query = spti_query.where(cdata_spectral_indices.c.moca_siid == y_spectral_index)
+            y_query = spti_query.where(data_spectral_indices.c.moca_siid == y_spectral_index)
 
             y_data = pd.read_sql(y_query, connection)
             
@@ -2519,7 +2519,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
         if y_axis_type == 'equivalent_width' and y_band_values and any(v for v in y_band_values if v is not None):
             y_equivalent_width = y_band_values[0]
             
-            y_query = ew_query.where(cdata_equivalent_widths.c.moca_spid == y_equivalent_width)
+            y_query = ew_query.where(data_equivalent_widths.c.moca_spid == y_equivalent_width)
 
             y_data = pd.read_sql(y_query, connection)
             
@@ -3033,7 +3033,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     x_all = list(main.x)
                     y_all = list(main.y)
                     text_all = list(main.text) if getattr(main, "text", None) is not None else None
-                    cdata_all = list(main.customdata) if getattr(main, "customdata", None) is not None else None
+                    data_all = list(main.customdata) if getattr(main, "customdata", None) is not None else None
                     color_all = list(main.marker.color) if getattr(main.marker, "color", None) is not None else None
                     symbol_all = list(main.marker.symbol) if getattr(main.marker, "symbol", None) is not None else None
                     size_all = list(main.marker.size) if isinstance(main.marker.size, (list, tuple)) else main.marker.size
@@ -3042,7 +3042,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                     main.x = _subset(x_all, good_idx)
                     main.y = _subset(y_all, good_idx)
                     main.text = _subset(text_all, good_idx) if text_all is not None else None
-                    main.customdata = _subset(cdata_all, good_idx) if cdata_all is not None else None
+                    main.customdata = _subset(data_all, good_idx) if data_all is not None else None
                     if color_all is not None:
                         main.marker.update(color=_subset(color_all, good_idx))
                     if symbol_all is not None:
@@ -3082,7 +3082,7 @@ def update_plot(x_axis_type, y_axis_type, x_axis_options, y_axis_options, x_band
                             y=_subset(y_all, noisy_idx),
                             mode='markers',
                             text=_subset(text_all, noisy_idx) if text_all is not None else None,
-                            customdata=_subset(cdata_all, noisy_idx) if cdata_all is not None else None,
+                            customdata=_subset(data_all, noisy_idx) if data_all is not None else None,
                             marker=dict(
                                 size=(size_all * 0.5 if not isinstance(size_all, list)
                                     else [s * 0.5 for s in _subset(size_all, noisy_idx)]),

@@ -1538,16 +1538,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     metadata = MetaData()
 
     #Query combined coordinates
-    calc_equatorial_coordinates_combined = Table('calc_equatorial_coordinates_combined', metadata, autoload_with=engine)
+    data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
 
-    query = select(calc_equatorial_coordinates_combined.c.ra,
-                   calc_equatorial_coordinates_combined.c.dec,
-                   calc_equatorial_coordinates_combined.c.position_epoch_yr
+    query = select(data_equatorial_coordinates.c.ra,
+                   data_equatorial_coordinates.c.dec,
+                   data_equatorial_coordinates.c.measurement_epoch_yr
                    ).where(
-        (calc_equatorial_coordinates_combined.c.moca_oid == moca_oid)
+        and_(data_equatorial_coordinates.c.moca_oid == moca_oid, data_equatorial_coordinates.c.adopt_as_reference == 1)
     )
     ref_df = pd.read_sql(query, connection)
-    ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["position_epoch_yr"]
+    ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
 
     #Query PM
     data_proper_motions = Table('data_proper_motions', metadata, autoload_with=engine)
@@ -1567,7 +1567,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                             )
                     )
                 .where(
-                    (data_proper_motions.c.moca_oid == moca_oid)
+                    and_(data_proper_motions.c.moca_oid == moca_oid, data_proper_motions.c.adopted == 1)
                 ).limit(1))
     
     pm_df = pd.read_sql(query, connection)
@@ -1587,13 +1587,13 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
                             )
                     )
                 .where(
-                    (data_parallaxes.c.moca_oid == moca_oid)
+                    and_(data_parallaxes.c.moca_oid == moca_oid, data_parallaxes.c.adopted == 1)
                 ).limit(1))
 
     plx_df = pd.read_sql(query, connection)
 
     #Query all coordinates
-    data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
+    # data_equatorial_coordinates = Table('data_equatorial_coordinates', metadata, autoload_with=engine)
     # Reflect missions table for recalibrated filter logic
     moca_missions = Table('moca_missions', metadata, autoload_with=engine)
 

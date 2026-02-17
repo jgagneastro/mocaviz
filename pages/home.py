@@ -10,7 +10,6 @@ default_text = \
 " You can also access the Python codes used to run these visualizations" + \
 " [on my GitHub](https://github.com/jgagneastro/mocaviz) and run them locally.\n\n" + \
 " Please choose one of the following tools:\n" + \
-" * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer?#args#).\n" + \
 " * Explore the 3D XYZUVW spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyzuvw?#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
 " * Visualize spectra stored in MOCAdb with the [Spectral Explorer](/spectra?#args#).\n" + \
@@ -21,7 +20,7 @@ default_text = \
 " * Visualize the age probability density functions of an association with the [MOCA Association Age Explorer](/age-pdfs?#args#).\n" + \
 " * Visualize the age probability density functions of an object with the [MOCA Object Age Explorer](/oage-pdfs?#args#).\n" + \
 " * Return to the [MOCAdb website](https://mocadb.ca).\n"
-
+#" * Explore general MOCAdb data with the [MOCA explorer](/moca-explorer?#args#).\n" + \
 layout = html.Div(
     className="banner",
     children=[

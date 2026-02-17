@@ -61,13 +61,13 @@ query_e = f"""
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
     LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
-    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
+    LEFT JOIN data_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
     LEFT JOIN calc_uvw uvwany ON(uvwany.moca_oid=mv.moca_oid AND uvwany.moca_aid IS NULL)
     LEFT JOIN (SELECT cbs.id, cbs.moca_oid, cbs.max_observables, cbs.moca_bsmdid FROM calc_banyan_sigma cbs JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted = 1) cbs ON cbs.moca_oid = mv.moca_oid AND cbs.max_observables = 1
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
 
-#This is just the same query but with a constraint YA_PROB >= 90
+#This is just the same query as above but with a constraint YA_PROB >= 90
 query_e_most_likely_mode = f"""
     SELECT mo.designation, mv.moca_aid, mv.moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mv.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z, 
     xyz.xx_covar, xyz.yy_covar, xyz.zz_covar, 
@@ -85,23 +85,25 @@ query_e_most_likely_mode = f"""
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN moca_objects mo USING(moca_oid)
     LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
-    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
+    LEFT JOIN data_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
     LEFT JOIN calc_uvw uvwany ON(uvwany.moca_oid=mv.moca_oid AND uvwany.moca_aid IS NULL)
-    LEFT JOIN (SELECT cbs.id, cbs.moca_oid, cbs.max_observables, cbs.moca_bsmdid FROM calc_banyan_sigma cbs JOIN moca_banyan_sigma_models mbsm USING(moca_bsmdid) WHERE mbsm.adopted = 1) cbs ON cbs.moca_oid = mv.moca_oid AND cbs.max_observables = 1 AND cbs.ya_prob >= 90
+    LEFT JOIN calc_banyan_sigma cbs ON(cbs.moca_oid=mv.moca_oid AND cbs.max_observables=1 AND cbs.ya_prob >= 90 AND cbs.moca_bsmdid=(SELECT mbsm.moca_bsmdid FROM moca_banyan_sigma_models mbsm WHERE mbsm.adopted=1))
     LEFT JOIN calc_banyan_sigma_details cbsd ON(cbs.id=cbsd.cbs_id AND cbsd.moca_aid=mv.moca_aid)
 """
+# This is a query that models what happens when the user selects a specific moca_oid to be displayed. By default
+#  it is set to LIMIT 0 but when a user selects a moca_oid the limit is removed and a filter on the moca_oid is set.
 query_oe = f"""
-    SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, COALESCE(mv.moca_mtid,'N/A') AS moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
+    SELECT mo.designation, COALESCE(mv.moca_aid,'N/A') AS moca_aid, 'N/A' AS moca_mtid, cspt.spectral_type AS spt, dr3.RUWE AS dr3_ruwe, mo.moca_oid, xyz.x_pc AS x, xyz.y_pc AS y, xyz.z_pc AS z,
     {c_value} * uvw.u_kms AS u, {c_value} * uvw.v_kms AS v, {c_value} * uvw.w_kms AS w,
     mo.ra, mo.`dec`,dpm.pmra_masyr,dpm.pmdec_masyr,cdist.distance_pc,crvc.radial_velocity_kms
     FROM moca_objects mo
-    LEFT JOIN mechanics_best_memberships mv USING(moca_oid)
+    LEFT JOIN calc_banyan_sigma_best mv USING(moca_oid)
     LEFT JOIN calc_xyz xyz USING(moca_oid)
     LEFT JOIN calc_uvw_raw uvw USING(moca_oid)
     LEFT JOIN calc_radial_velocities_corrected crvc USING(moca_oid,moca_aid)
     LEFT JOIN cat_gaiadr3 dr3 USING(moca_oid)
-    LEFT JOIN cdata_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
-    LEFT JOIN cdata_distances cdist ON(cdist.moca_oid=mo.moca_oid AND cdist.adopted=1)
+    LEFT JOIN data_spectral_types cspt ON(cspt.moca_oid=mv.moca_oid AND cspt.adopted=1)
+    LEFT JOIN data_distances cdist ON(cdist.moca_oid=mo.moca_oid AND cdist.adopted=1)
     LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mo.moca_oid AND dpm.adopted=1)
 """
 
@@ -113,7 +115,8 @@ unselected_opacity = 0.1
 selected_opacity = 1
 
 # Load a list of all associations for the Dropdown menu
-df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+#TMP FIX BELOW
+df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM mocadb.summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
 
@@ -215,7 +218,7 @@ def get_style_data_conditional(selected_rows: list = []) -> list:
             'backgroundColor': non_selected_band_color
         },
         {
-            'if': {'row_index': 'even'},
+            'if': {'row_index': 'even'}, 
             'backgroundColor': "white"
         },
         {
@@ -1107,7 +1110,6 @@ def update_aid_select_xupage(
         dfo = moca.query(query_oe+" WHERE ("+oid_query+")")
 
     df_asso_centers = moca.query("CALL list_association_labels();")
-
     return (
         df.to_json(date_format='iso', orient='split'),
         dfm.to_json(date_format='iso', orient='split'),
@@ -1162,7 +1164,7 @@ def update_map_xupage(
         return self_figure
     if prop_id == "xyz-recenter-in-xupage":
         print("DO RECENTER HERE")
-
+    
     df = pd.read_json(jsonified_db_data[0], orient='split')
     dfm = pd.read_json(jsonified_db_data[1], orient='split')
     dfo = pd.read_json(jsonified_db_data[2], orient='split')

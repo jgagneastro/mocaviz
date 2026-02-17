@@ -202,7 +202,8 @@ def update_scatter_plot(selected_dataset, selectedData):
     lsf_thresholds = {
         'spex_irtf': 1.33,
         'fire_magellan': 1.384,
-        'nires_keck': 1.378
+        'nires_keck': 1.378,
+        'nirspec_jwst': 2.5 # Unsure but with some subdwarfs it goes high
     }
 
     df['lsf_threshold'] = df['moca_instid'].map(lsf_thresholds).fillna(1.5)
