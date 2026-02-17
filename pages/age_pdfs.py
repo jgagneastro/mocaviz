@@ -198,7 +198,7 @@ def populate_aid_dropdown(search):
     q = text("""
         SELECT DISTINCT daa.moca_aid
         FROM data_association_ages AS daa
-        WHERE daa.rls='public' AND daa.moca_aid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_association_age_pdfs AS cap WHERE cap.age_id = daa.id)
+        WHERE daa.moca_aid IS NOT NULL AND EXISTS (SELECT 1 FROM calc_association_age_pdfs AS cap WHERE cap.age_id = daa.id)
         ORDER BY daa.moca_aid
     """)
     df = pd.read_sql(q, engine)
@@ -225,7 +225,6 @@ def populate_methods_for_aid(moca_aid, search):
         JOIN calc_association_age_pdfs AS cap
           ON cap.age_id = daa.id
         WHERE daa.moca_aid = :aid
-          AND daa.rls='public'
           AND daa.calculation_method IS NOT NULL
         ORDER BY daa.calculation_method
     """)
@@ -290,7 +289,6 @@ def update_graph(moca_aid, methods, display_opts, search):
           ON cap.age_id = daa.id
         WHERE daa.moca_aid = :aid
           AND daa.calculation_method IN :methods
-          AND daa.rls='public'
         ORDER BY daa.calculation_method, cap.age_myr
     """)
     # SQLAlchemy Core supports expanding IN with tuple
