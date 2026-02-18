@@ -426,6 +426,8 @@ def process_spectrum(df, bins_per_micron=None, common_wv=None, debug=False, norm
         weights = np.nan_to_num(region_smoothed['sp'].values ** 2)
         norm_val = weighted_median(region_smoothed['sp'].values, weights)
         region_df['spn'] = region_df['sp'] / norm_val
+        if 'esp' in region_df.columns:
+            region_df['espn'] = region_df['esp'] / norm_val
         df_processed = pd.concat([df_processed, region_df])
     
     if 'wv' not in df_processed.columns:
@@ -658,6 +660,13 @@ layout = html.Div([
                        id='sp-typing-showfeatures-checklist',
                    )
               ], id='sp-typing-showfeatures-div', style={'margin-bottom': '15px'}),
+              html.Div([
+                   dcc.Checklist(
+                       options=[{'label': 'Low-resolution data', 'value': 'lowres'}],
+                       value=[],
+                       id='sp-typing-lowres-checklist',
+                   )
+              ], id='sp-typing-lowres-div', style={'margin-bottom': '15px'}),
               html.Div([
                    html.Div([
                         html.Button(
@@ -1637,6 +1646,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Input('sp-typing-chi2-graph', 'clickData'),
     Input('sp-typing-norm-regions-store', 'data'),
     Input('sp-typing-showfeatures-checklist', 'value'),
+    Input('sp-typing-lowres-checklist', 'value'),
     State('sp-typing-current-sptnum', 'data'),
     State('sp-typing-current-index', 'data'),
     State('sp-typing-precomputed-store', 'data'),
@@ -1645,7 +1655,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     State('sp-typing-db-data', 'data'),
     State('sp-typing-url', 'search')
 )
-def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, showfeatures_value, previous_sptnum, current_index, precomputed, deredden_value, allred_value, df_data, url_search):
+def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, showfeatures_value, lowres_value, previous_sptnum, current_index, precomputed, deredden_value, allred_value, df_data, url_search):
     if debug_printing:
         print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
@@ -1704,6 +1714,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         print(f"[Spectral Typing] Could not compute effective χ² for grid {selected_grid}: {_e}")
     local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
     showfeatures = 'showfeatures' in (showfeatures_value or [])
+    lowres = 'lowres' in (lowres_value or [])
     
     triggered_ids = [t['prop_id'].split('.')[0] for t in ctx.triggered]
     if 'sp-typing-chi2-graph' in triggered_ids and chi2_clickData:
@@ -1781,6 +1792,43 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     custom_colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00', '#FFFF33', '#A65628', '#F781BF']
     standard_color = '#E41A1C' if allred else custom_colors[new_index % len(custom_colors)]
 
+    # Prepare comparison metadata early (used for low-res overlay and title)
+    comp_id = comparison_df['moca_specid'].iloc[0]
+    df_data_parsed = pd.read_json(df_data, orient='split')
+    comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
+    comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
+    comp_specid_tag = f" (specid={int(comp_id)})" if not comp_designation_row.empty else ""
+    moca_oid_val = comp_designation_row['moca_oid'].iloc[0] if not comp_designation_row.empty else None
+    if moca_oid_val is not None and not pd.isna(moca_oid_val):
+        comp_oid_tag = f" (oid={int(moca_oid_val)})"
+    else:
+        comp_oid_tag = ""
+
+    # Low-resolution comparison view: markers + error bars behind the standard
+    if lowres and not comparison_df.empty:
+        esp_col = "espn" if "espn" in comparison_df.columns else ("esp" if "esp" in comparison_df.columns else None)
+        fig.add_trace(go.Scatter(
+            x=comparison_df['wv'],
+            y=comparison_df['spn'],
+            mode='markers',
+            marker=dict(
+                size=7,
+                color='white',
+                line=dict(color='black', width=2)
+            ),
+            error_y=dict(
+                type='data',
+                array=comparison_df[esp_col] if esp_col else None,
+                color='rgba(120,120,120,0.9)',
+                thickness=2,
+                width=0
+            ) if esp_col else None,
+            name="Comparison (low-res)",
+            showlegend=True,
+            legendgroup="comparison",
+            opacity=1.0
+        ))
+
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
     standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
     standard_short_label = std_entry['spectral_type']
@@ -1847,30 +1895,21 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                     legendgroup="standard-dereddened"
                 ))
     
-    # For each normalization region, add a step trace for the Comparison Spectrum on top
-    comp_id = comparison_df['moca_specid'].iloc[0]
-    df_data_parsed = pd.read_json(df_data, orient='split')
-    comp_designation_row = df_data_parsed[df_data_parsed["moca_specid"] == comp_id]
-    comp_designation = comp_designation_row["designation"].iloc[0] if not comp_designation_row.empty else "Unknown"
-    comp_specid_tag = f" (specid={int(comp_id)})" if not comp_designation_row.empty else ""
-    moca_oid_val = comp_designation_row['moca_oid'].iloc[0] if not comp_designation_row.empty else None
-    if moca_oid_val is not None and not pd.isna(moca_oid_val):
-        comp_oid_tag = f" (oid={int(moca_oid_val)})"
-    else:
-        comp_oid_tag = ""
-    for i, (region_min, region_max) in enumerate(local_norm_regions):
-        comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
-        if not comp_seg.empty:
-            fig.add_trace(go.Scatter(
-                x=comp_seg['wv'],
-                y=comp_seg['spn'],
-                mode='lines',
-                line=dict(shape='hv', width=4, color='black'),
-                name=("Comparison") if i == 0 else "",
-                showlegend=(i == 0),
-                opacity=0.8,
-                legendgroup="comparison"
-            ))
+    # For each normalization region, add a step trace for the Comparison Spectrum on top (histogram mode)
+    if not lowres:
+        for i, (region_min, region_max) in enumerate(local_norm_regions):
+            comp_seg = comparison_df[(comparison_df['wv'] >= region_min) & (comparison_df['wv'] <= region_max)]
+            if not comp_seg.empty:
+                fig.add_trace(go.Scatter(
+                    x=comp_seg['wv'],
+                    y=comp_seg['spn'],
+                    mode='lines',
+                    line=dict(shape='hv', width=4, color='black'),
+                    name=("Comparison") if i == 0 else "",
+                    showlegend=(i == 0),
+                    opacity=0.8,
+                    legendgroup="comparison"
+                ))
     title_text = f"{comp_designation} {comp_specid_tag} {comp_oid_tag} vs {standard_label}, {selected_grid} grid"
 
     y_min_values = []
