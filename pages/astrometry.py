@@ -1205,7 +1205,7 @@ layout = html.Div([
     dcc.Location(id="url", refresh=False),
     html.Div([
         html.H1("Astrometric Explorer"),
-        html.P("This page allows to compare the individual-epoch astrometry of MOCAdb entries "
+        html.P("This page allow.s to compare the individual-epoch astrometry of MOCAdb entries "
                " with their best-available proper motion and parallax solutions."
                ),
     ], style={'width': '100%', 'display': 'inline-block'}),
