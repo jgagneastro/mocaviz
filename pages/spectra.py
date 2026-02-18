@@ -694,7 +694,7 @@ layout = html.Div(
             children=[
                 # Options in the middle
                 html.Div(
-                    className="two columns",
+                    className="six columns",
                     children=[
                         dcc.Checklist(
                             id="spectram-view-selector-spectrapage",
@@ -706,6 +706,21 @@ layout = html.Div(
                             ],
                             value=[],
                         ),
+                        dcc.Checklist(
+                            id="spectram-showfeatures-spectrapage",
+                            options=[
+                                {
+                                    "label": "Show chemical features",
+                                    "value": "showfeatures",
+                                },
+                            ],
+                            value=['showfeatures'],
+                        ),
+                    ],
+                ),
+                html.Div(
+                    className="six columns",
+                    children=[
                         dcc.Checklist(
                             id="spectram-normalize-spectrapage",
                             options=[
@@ -723,20 +738,7 @@ layout = html.Div(
                             value="0.95-1.35",
                             style={"width": "100%", "marginTop": "6px"}
                         ),
-                        dcc.Checklist(
-                            id="spectram-showfeatures-spectrapage",
-                            options=[
-                                {
-                                    "label": "Show chemical features",
-                                    "value": "showfeatures",
-                                },
-                            ],
-                            value=['showfeatures'],
-                        ),
                     ],
-                ),
-                html.Div(
-                    className="ten columns",
                 ),
             ],
         ),
