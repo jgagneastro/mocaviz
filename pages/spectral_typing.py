@@ -1804,31 +1804,6 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     else:
         comp_oid_tag = ""
 
-    # Low-resolution comparison view: markers + error bars behind the standard
-    if lowres and not comparison_df.empty:
-        esp_col = "espn" if "espn" in comparison_df.columns else ("esp" if "esp" in comparison_df.columns else None)
-        fig.add_trace(go.Scatter(
-            x=comparison_df['wv'],
-            y=comparison_df['spn'],
-            mode='markers',
-            marker=dict(
-                size=7,
-                color='white',
-                line=dict(color='black', width=2)
-            ),
-            error_y=dict(
-                type='data',
-                array=comparison_df[esp_col] if esp_col else None,
-                color='rgba(120,120,120,0.9)',
-                thickness=2,
-                width=0
-            ) if esp_col else None,
-            name="Comparison (low-res)",
-            showlegend=True,
-            legendgroup="comparison",
-            opacity=1.0
-        ))
-
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
     standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
     standard_short_label = std_entry['spectral_type']
@@ -1894,6 +1869,30 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                     showlegend=(i == 0),
                     legendgroup="standard-dereddened"
                 ))
+    # Low-resolution comparison view: markers + error bars on top of the standards
+    if lowres and not comparison_df.empty:
+        esp_col = "espn" if "espn" in comparison_df.columns else ("esp" if "esp" in comparison_df.columns else None)
+        fig.add_trace(go.Scatter(
+            x=comparison_df['wv'],
+            y=comparison_df['spn'],
+            mode='markers',
+            marker=dict(
+                size=9.1,
+                color='white',
+                line=dict(color='black', width=2)
+            ),
+            error_y=dict(
+                type='data',
+                array=comparison_df[esp_col] if esp_col else None,
+                color='rgba(120,120,120,0.9)',
+                thickness=2,
+                width=0
+            ) if esp_col else None,
+            name="Comparison (low-res)",
+            showlegend=True,
+            legendgroup="comparison",
+            opacity=1.0
+        ))
     
     # For each normalization region, add a step trace for the Comparison Spectrum on top (histogram mode)
     if not lowres:
