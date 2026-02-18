@@ -1137,6 +1137,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               dstg.moca_specid,
               dstg.moca_oid,
               dstg.object_designation,
+              dstg.comments,
+              dstg.bibcode,
               dstg.spectral_type,
               dstg.spectral_type_number,
               dstg.short_object_designation AS designation,
@@ -1414,6 +1416,9 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         std_spt = row['spectral_type']
         std_spt_number = row['spectral_type_number']
         std_designation = row['designation']
+        std_object_designation = row.get('object_designation', None)
+        std_comments = row.get('comments', None)
+        std_bibcode = row.get('bibcode', None)
         if debug_printing:
             print(std_specid)
         
@@ -1615,6 +1620,9 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
             'spectral_type': std_spt,
             'spectral_type_number': std_spt_number,
             'designation': std_designation,
+            'object_designation': std_object_designation,
+            'comments': std_comments,
+            'bibcode': std_bibcode,
             'spectrum': std_data,
             'spectrum_dered': std_data_dered,
             'A_V': av_list,
@@ -1807,6 +1815,9 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     # For each normalization region, add a step trace for the Standard Spectrum (not dereddened) first
     standard_label = std_entry['spectral_type']+' ('+std_entry['designation']+')'
     standard_short_label = std_entry['spectral_type']
+    std_object_designation = std_entry.get('object_designation', None)
+    std_comments = std_entry.get('comments', None)
+    std_bibcode = std_entry.get('bibcode', None)
     if 'deredden' in (deredden_value or []):
         name = "Std. " + standard_short_label + ", original"
         opacity = 0.3
@@ -1972,10 +1983,33 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         title=title_text,
         xaxis_title="Wavelength (µm)",
         yaxis_title="Normalized Flux",
-        margin=dict(t=40),
+        margin=dict(t=40, b=120),
         xaxis=dict(range=[x_min - x_margin, x_max + x_margin]),
         yaxis=dict(range=[y_min - y_margin, y_max + y_margin])
     )
+
+    # Add standard metadata at the bottom of the plot
+    meta_lines = []
+    if std_object_designation:
+        meta_lines.append(f"<b>Standard:</b> {std_object_designation}")
+    if std_comments:
+        meta_lines.append(f"<b>Comments:</b> {std_comments}")
+    if std_bibcode:
+        bib_url = f"https://ui.adsabs.harvard.edu/abs/{std_bibcode}/abstract"
+        meta_lines.append(f"<b>Bibcode:</b> <a href=\"{bib_url}\" target=\"_blank\">{std_bibcode}</a>")
+    if meta_lines:
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0,
+            y=-0.22,
+            xanchor="left",
+            yanchor="top",
+            align="left",
+            showarrow=False,
+            text="<br>".join(meta_lines),
+            font=dict(size=12, color="#333")
+        )
 
     reduced_chi2 = std_entry.get("reduced_chi2", np.nan)
     #mad = std_entry.get("mad", np.nan)
