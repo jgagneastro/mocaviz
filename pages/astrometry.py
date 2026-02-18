@@ -1612,7 +1612,16 @@ def update_mission_dropdown(selected_dataset, url_search):
 # Define the callback to update the scatter plot based on input
 try:
     import sys
-    sys.stderr.write("[astrometry:init] reached callback decorator for update_astrometry_scatter_plot\n")
+    try:
+        import dash
+        _app_at_decorator = dash.get_app()
+        _app_id = id(_app_at_decorator) if _app_at_decorator is not None else None
+    except Exception:
+        _app_id = None
+    sys.stderr.write(
+        "[astrometry:init] reached callback decorator for update_astrometry_scatter_plot "
+        f"(dash.get_app id={_app_id})\n"
+    )
     sys.stderr.flush()
 except Exception:
     pass

@@ -7,6 +7,16 @@ load_dotenv()  # take environment variables from .env.
 
 app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
 
+# ---- Diagnostics: log app identity + callback count at startup ----
+try:
+    import sys
+    sys.stderr.write(
+        f"[mocaviz:init] app id={id(app)} callbacks={len(getattr(app, 'callback_map', {}) or {})}\n"
+    )
+    sys.stderr.flush()
+except Exception:
+    pass
+
 app.layout = html.Div([
 	dash.page_container
 ])
