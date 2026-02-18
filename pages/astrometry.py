@@ -19,7 +19,48 @@ from datetime import datetime
 ASTROMETRY_PAGE_VERSION = "2026-02-17-debug-v1"
 
 # Register the page in the Dash app
+
 dash.register_page(__name__)
+
+# ---- Server-side request logging (helps debug when you can't access browser DevTools) ----
+try:
+    _app = dash.get_app()
+    _server = _app.server
+    if not getattr(_server, "_mocaviz_request_logger", False):
+        _server._mocaviz_request_logger = True
+
+        @_server.before_request
+        def _mocaviz_log_request():
+            try:
+                from flask import request
+                path = request.path or ""
+                # Focus on Dash update traffic + this page
+                if path.startswith("/_dash") or "astrometry" in path:
+                    import sys
+                    sys.stderr.write(
+                        f"[mocaviz:req] {request.method} {path} len={request.content_length} remote={request.remote_addr}\n"
+                    )
+                    sys.stderr.flush()
+            except Exception:
+                pass
+
+        @_server.after_request
+        def _mocaviz_log_response(response):
+            try:
+                from flask import request
+                path = request.path or ""
+                if path.startswith("/_dash") or "astrometry" in path:
+                    import sys
+                    sys.stderr.write(
+                        f"[mocaviz:resp] {request.method} {path} -> {response.status_code}\n"
+                    )
+                    sys.stderr.flush()
+            except Exception:
+                pass
+            return response
+except Exception:
+    # If pages are imported before the Dash app exists, skip logging.
+    pass
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -1573,6 +1614,14 @@ def update_mission_dropdown(selected_dataset, url_search):
 )
 def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
+    try:
+        import sys
+        sys.stderr.write(
+            f"[astrometry.update_scatter_plot] ENTER oid={selected_dataset} missions={'None' if selected_missions is None else (len(selected_missions) if isinstance(selected_missions, list) else 'nonlist')}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        pass
     def _diag(reason: str):
         fig = go.Figure()
         fig.update_layout(
