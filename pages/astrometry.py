@@ -128,9 +128,13 @@ figure_export_config = {
 }
 
 try:
-    # import ultranest
-    # import ultranest.stepsampler
-    _ULTRANEST_AVAILABLE = False
+    import importlib.util
+    if importlib.util.find_spec("ultranest") is not None:
+        import ultranest
+        import ultranest.stepsampler
+        _ULTRANEST_AVAILABLE = True
+    else:
+        _ULTRANEST_AVAILABLE = False
 except Exception:
     _ULTRANEST_AVAILABLE = False
 
