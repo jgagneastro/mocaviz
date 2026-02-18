@@ -1612,12 +1612,12 @@ def update_mission_dropdown(selected_dataset, url_search):
     ],
     state=[State("url", "search")],
 )
-def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
+def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
     try:
         import sys
         sys.stderr.write(
-            f"[astrometry.update_scatter_plot] ENTER oid={selected_dataset} missions={'None' if selected_missions is None else (len(selected_missions) if isinstance(selected_missions, list) else 'nonlist')}\n"
+            f"[astrometry.update_astrometry_scatter_plot] ENTER oid={selected_dataset} missions={'None' if selected_missions is None else (len(selected_missions) if isinstance(selected_missions, list) else 'nonlist')}\n"
         )
         sys.stderr.flush()
     except Exception:
@@ -1694,7 +1694,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     try:
         engine = get_engine_from_url(url_search)
         import sys
-        sys.stderr.write(f"[astrometry.update_scatter_plot] fired oid={moca_oid} missions={'ALL' if not selected_missions else len(selected_missions)}\n")
+        sys.stderr.write(f"[astrometry.update_astrometry_scatter_plot] fired oid={moca_oid} missions={'ALL' if not selected_missions else len(selected_missions)}\n")
         sys.stderr.flush()
         connection = engine.connect()
         metadata = MetaData()
@@ -1910,7 +1910,7 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     except Exception as e:
         # Surface server-side exceptions directly in the figure titles so failures are visible
         try:
-            print('[astrometry.update_scatter_plot] ERROR:', repr(e))
+            print('[astrometry.update_astrometry_scatter_plot] ERROR:', repr(e))
         except Exception:
             pass
         err_fig = go.Figure()
