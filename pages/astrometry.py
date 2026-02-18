@@ -1821,6 +1821,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
             )
         )
         data_df = pd.read_sql(query, connection)
+        if data_df.empty:
+            empty_fig = go.Figure()
+            empty_fig.update_layout(
+                title=(
+                    f"EMPTY data_df for oid={moca_oid} | "
+                    f"missions={'ALL' if not selected_missions else selected_missions[:5]} | "
+                    f"only_recalibrated={only_recalibrated} | revert_raw={revert_raw}"
+                )
+            )
+            return empty_fig, figure_export_config, empty_fig, figure_export_config
     
         # NOTE: connection is closed in the finally block below
     
