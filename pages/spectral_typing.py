@@ -737,7 +737,7 @@ layout = html.Div([
     dcc.Graph(id='sp-typing-chi2-graph'),
     html.Div(
          className="row",
-         id="url-help-section-xupage",
+         id="url-help-section-sptyping",
          children=[
               dcc.Markdown(
                   """

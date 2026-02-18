@@ -244,7 +244,7 @@ def get_style_data_conditional(selected_rows: list = []) -> list:
 # Visual website banner
 def build_banner():
     return html.Div(
-        id="banner",
+        id="xyz-banner",
         children=[
             html.H2("MOCA SPATIAL-KINEMATIC EXPLORER"),
         ],

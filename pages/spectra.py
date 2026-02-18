@@ -149,7 +149,7 @@ def selection_helper_spectra(selections):
 # Visual website banner
 def build_banner_spectra():
     return html.Div(
-        id="banner",
+        id="spectra-banner",
         #className="banner",
         children=[
             #html.Img(src=get_asset_url("dash-logo.png")),
