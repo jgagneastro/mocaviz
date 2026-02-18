@@ -1146,8 +1146,8 @@ def get_connection_string(url):
     parsed_url = urlparse(url)
     parsed_url_data = parse_qs(parsed_url.query)
     
-    # Check for moca_oid in the URL query parameters
-    moca_oid_param = parsed_url_data.get('moca_oid', [None])[0]
+    # Check for moca_oid (or oid) in the URL query parameters
+    moca_oid_param = parsed_url_data.get('moca_oid', parsed_url_data.get('oid', [None]))[0]
 
     env_username = parsed_url_data.get('user', [None])[0]
     env_password = parsed_url_data.get('pwd', [None])[0]
@@ -3275,7 +3275,7 @@ def update_moca_ids_input(url):
     Trigger a submit if `moca_oid` exists in the URL.
     """
     url_params = parse_url_params(url)
-    moca_oid = url_params.get('moca_oid', [None])[0]
+    moca_oid = url_params.get('moca_oid', url_params.get('oid', [None]))[0]
     
     if moca_oid:
         # Split and validate IDs

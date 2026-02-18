@@ -92,7 +92,7 @@ def parse_url_flags(search: str):
     if not search:
         return out
     qs = parse_qs(urlparse(search).query)
-    out["moca_aid"] = qs.get("moca_aid", [None])[0]
+    out["moca_aid"] = qs.get("moca_aid", qs.get("aid", [None]))[0]
     out["log_x"] = parse_bool_flag(qs.get("logx", [out["log_x"]])[0], out["log_x"])
     out["log_y"] = parse_bool_flag(qs.get("logy", [out["log_y"]])[0], out["log_y"])
     out["cdf"] = parse_bool_flag(qs.get("cdf", [out["cdf"]])[0], out["cdf"])

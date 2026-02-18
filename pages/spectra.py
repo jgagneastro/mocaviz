@@ -570,8 +570,9 @@ def update_specid_select_spectrapage(
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
-            if 'moca_specid' in parsed_url_data.keys():
-                specid_select = [int(x) for x in parsed_url_data['moca_specid'][0].split(',')]
+            if 'moca_specid' in parsed_url_data.keys() or 'specid' in parsed_url_data.keys():
+                raw_specids = parsed_url_data.get('moca_specid', parsed_url_data.get('specid', ['']))[0]
+                specid_select = [int(x) for x in raw_specids.split(',') if x.strip()]
             else:
                 if specid_select is None:
                     specid_select = initial_specids

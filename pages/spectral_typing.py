@@ -798,7 +798,7 @@ def update_comparison_options(search):
     if search:
         parsed = urlparse(search)
         qs = parse_qs(parsed.query)
-        specid = qs.get("specid", [None])[0]
+        specid = qs.get("moca_specid", qs.get("specid", [None]))[0]
     else:
         specid = None
     

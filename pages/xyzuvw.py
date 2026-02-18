@@ -1047,8 +1047,8 @@ def update_aid_select_xupage(
             aid_select = initial_aids
             mtid_select = initial_mtids
         else:
-            if 'asso' in parsed_url_data.keys():
-                aid_select = parsed_url_data['asso'][0].split(',')
+            if 'asso' in parsed_url_data.keys() or 'moca_aid' in parsed_url_data.keys() or 'aid' in parsed_url_data.keys():
+                aid_select = parsed_url_data.get('asso', parsed_url_data.get('moca_aid', parsed_url_data.get('aid', [''])))[0].split(',')
             else:
                 if aid_select is None:
                     aid_select = initial_aids
@@ -1059,8 +1059,8 @@ def update_aid_select_xupage(
                 if mtid_select is None:
                     mtid_select = initial_mtids
             #OID is always a string in the input box so do not already split it into an array
-            if 'oid' in parsed_url_data.keys():
-                oid_select = parsed_url_data['oid'][0]
+            if 'oid' in parsed_url_data.keys() or 'moca_oid' in parsed_url_data.keys():
+                oid_select = parsed_url_data.get('oid', parsed_url_data.get('moca_oid', ['']))[0]
 
     # Read credentials
     user = parsed_url_data.get('user', [None])[0]
