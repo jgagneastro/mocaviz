@@ -8,11 +8,13 @@ load_dotenv()  # take environment variables from .env.
 
 app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
 
-# ---- Preload astrometry page so callbacks are registered in every worker ----
-try:
-    importlib.import_module("pages.astrometry")
-except Exception:
-    pass
+# ---- Warm astrometry page in each worker before handling the first request ----
+@app.server.before_first_request
+def _mocaviz_warm_pages():
+    try:
+        importlib.import_module("pages.astrometry")
+    except Exception:
+        pass
 
 # ---- Diagnostics: log app identity + callback count at startup ----
 try:
