@@ -1610,6 +1610,12 @@ def update_mission_dropdown(selected_dataset, url_search):
 
 
 # Define the callback to update the scatter plot based on input
+try:
+    import sys
+    sys.stderr.write("[astrometry:init] reached callback decorator for update_astrometry_scatter_plot\n")
+    sys.stderr.flush()
+except Exception:
+    pass
 @dash.callback(
     [
         Output("astrometry-plot-ra", "figure"),
