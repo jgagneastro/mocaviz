@@ -1552,22 +1552,24 @@ def update_mission_dropdown(selected_dataset, url_search):
      Output("astrometry-plot-ra", "config"),
      Output("astrometry-plot-dec", "figure"),
      Output("astrometry-plot-dec", "config")],
-    [Input("astrometry-filtered-dropdown", "value"),
-     Input("mission-toggle-dropdown", "value"),  # New input for selected missions
-     Input("subtract-pm-checkbox", "value"),
-     Input("subtract-plx-checkbox", "value"),
-     Input("phase-yr-checkbox", "value"),
-     Input("adjust-reference-epoch-checkbox", "value"),
-     Input("only-use-recalibrated-checkbox", "value"),
-     Input("revert-raw-checkbox", "value"),
-     Input("astrometry-bin-checkbox", "value"),
-     Input("fit-proper-motion-checkbox", "value"),
-     Input("fit-parallax-checkbox", "value"),
-     Input("fit-ultranest-checkbox", "value"),
-     Input("inflate-errors-checkbox", "value"),
-     Input("astrometry-plot-ra", "selectedData"),
-     Input("astrometry-plot-dec", "selectedData"),
-     State("url", "search")],
+    inputs=[
+        Input("astrometry-filtered-dropdown", "value"),
+        Input("mission-toggle-dropdown", "value"),
+        Input("subtract-pm-checkbox", "value"),
+        Input("subtract-plx-checkbox", "value"),
+        Input("phase-yr-checkbox", "value"),
+        Input("adjust-reference-epoch-checkbox", "value"),
+        Input("only-use-recalibrated-checkbox", "value"),
+        Input("revert-raw-checkbox", "value"),
+        Input("astrometry-bin-checkbox", "value"),
+        Input("fit-proper-motion-checkbox", "value"),
+        Input("fit-parallax-checkbox", "value"),
+        Input("fit-ultranest-checkbox", "value"),
+        Input("inflate-errors-checkbox", "value"),
+        Input("astrometry-plot-ra", "selectedData"),
+        Input("astrometry-plot-dec", "selectedData"),
+    ],
+    state=[State("url", "search")],
 )
 def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
@@ -1608,21 +1610,23 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     inflate_errors = 'inflate' in inflate_err_values
     use_ultranest = 'ultranest' in ultranest_values
 
-    triggered_prop = ctx.triggered[0]["prop_id"]
+    triggered_prop = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
+    triggered_by_selection = triggered_prop.endswith(".selectedData")
 
-    triggered_by_selection = ('selectedData_ra' in ctx.triggered[0]['prop_id']) or ('selectedData_dec' in ctx.triggered[0]['prop_id'])
-
-    if triggered_by_selection and ((selectedData_ra is None and selectedData_dec is None) or (not selectedData_ra.get('points') and not selectedData_dec.get('points'))):
-        diag_fig = go.Figure()
-        diag_fig.update_layout(
-            title=(
-                "Selection-triggered update but no points selected; skipping update. "
-                f"oid={selected_dataset} | missions={'ALL' if not selected_missions else len(selected_missions)}"
-            ),
-            xaxis_title="Epoch (Year)",
-            yaxis_title="Offset (mas)",
-        )
-        return diag_fig, figure_export_config, diag_fig, figure_export_config
+    if triggered_by_selection:
+        pts_ra = (selectedData_ra or {}).get('points') or []
+        pts_dec = (selectedData_dec or {}).get('points') or []
+        if (len(pts_ra) == 0) and (len(pts_dec) == 0):
+            diag_fig = go.Figure()
+            diag_fig.update_layout(
+                title=(
+                    "Selection-triggered update but no points selected; skipping update. "
+                    f"oid={selected_dataset} | missions={'ALL' if not selected_missions else len(selected_missions)}"
+                ),
+                xaxis_title="Epoch (Year)",
+                yaxis_title="Offset (mas)",
+            )
+            return diag_fig, figure_export_config, diag_fig, figure_export_config
     
     try:
         moca_oid = selected_dataset
