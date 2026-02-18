@@ -1611,11 +1611,13 @@ def update_mission_dropdown(selected_dataset, url_search):
 
 # Define the callback to update the scatter plot based on input
 @dash.callback(
-    [Output("astrometry-plot-ra", "figure"),
-     Output("astrometry-plot-ra", "config"),
-     Output("astrometry-plot-dec", "figure"),
-     Output("astrometry-plot-dec", "config")],
-    inputs=[
+    [
+        Output("astrometry-plot-ra", "figure"),
+        Output("astrometry-plot-ra", "config"),
+        Output("astrometry-plot-dec", "figure"),
+        Output("astrometry-plot-dec", "config"),
+    ],
+    [
         Input("astrometry-filtered-dropdown", "value"),
         Input("mission-toggle-dropdown", "value"),
         Input("subtract-pm-checkbox", "value"),
@@ -1632,7 +1634,7 @@ def update_mission_dropdown(selected_dataset, url_search):
         Input("astrometry-plot-ra", "selectedData"),
         Input("astrometry-plot-dec", "selectedData"),
     ],
-    state=[State("url", "search")],
+    [State("url", "search")],
 )
 def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
