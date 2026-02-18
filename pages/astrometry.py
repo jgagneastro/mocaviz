@@ -2946,12 +2946,6 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
     if len(selected_missions) == 1:
         mission_name, data_release = _parse_mission(selected_missions[0])
 
-    # Fallback for data_equatorial_coordinates (data_release is NOT NULL)
-    if data_release is None:
-        data_release = "mocaviz_fit"
-        if mission_name is None:
-            mission_name = "MOCAVIZ"
-
     fit_mode = fit_data.get("fit_mode")
     fit_ultranest = bool(fit_data.get("fit_ultranest"))
     origin_base = "mocaviz_astrometry_pm_fit" if fit_mode == "pm" else "mocaviz_astrometry_pm_plx_fit"
