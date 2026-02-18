@@ -2077,9 +2077,18 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
                 + pos_dec_fit
             )
         else:
-            # EM (non-UltraNest) intercepts are defined at t=0
-            ra0_mov = pm_df.iloc[0]["pmra_masyr"] * (epoch_ref) + plx * plxm_ref["plx_motion_racosdec"] + pos_ra_fit
-            dec0_mov = pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref) + plx * plxm_ref["plx_motion_dec"] + pos_dec_fit
+            # EM (non-UltraNest) intercepts are defined at t0_ref_plx (fit reference epoch)
+            plxm_t0 = parallax_motion(ra_ref, dec_ref, t0_ref_plx)
+            ra0_mov = (
+                pm_df.iloc[0]["pmra_masyr"] * (epoch_ref - t0_ref_plx)
+                + plx * (plxm_ref["plx_motion_racosdec"] - plxm_t0["plx_motion_racosdec"])
+                + pos_ra_fit
+            )
+            dec0_mov = (
+                pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref - t0_ref_plx)
+                + plx * (plxm_ref["plx_motion_dec"] - plxm_t0["plx_motion_dec"])
+                + pos_dec_fit
+            )
         data_df["rel_ra"] = data_df["rel_ra"] - ra0_mov
         data_df["rel_dec"] = data_df["rel_dec"] - dec0_mov
 
