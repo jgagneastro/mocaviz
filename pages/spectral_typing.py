@@ -745,6 +745,18 @@ layout = html.Div([
     dcc.Graph(id='sp-typing-graph', style={'height': '700px'}),#sp-typing-chi2-graph
     dcc.Graph(id='sp-typing-chi2-graph'),
     html.Div(
+        id='sp-typing-standard-meta',
+        style={
+            'marginTop': '10px',
+            'marginBottom': '20px',
+            'padding': '10px 12px',
+            'border': '1px solid #ddd',
+            'backgroundColor': '#fcfcfc',
+            'borderRadius': '4px',
+            'lineHeight': 1.5
+        }
+    ),
+    html.Div(
          className="row",
          id="url-help-section-sptyping",
          children=[
@@ -1643,6 +1655,7 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     Output('sp-typing-index-slider', 'marks'),
     Output('sp-typing-graph', 'figure'),
     Output('sp-typing-graph', 'config'),
+    Output('sp-typing-standard-meta', 'children'),
     Output('sp-typing-prev-button', 'disabled'),
     Output('sp-typing-next-button', 'disabled'),
     Input('sp-typing-prev-button', 'n_clicks'),
@@ -1688,7 +1701,7 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         )
         prev_disabled = True
         next_disabled = True
-        return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, prev_disabled, next_disabled
+        return dash.no_update, current_index, slider_value, 0, {0: ''}, empty_fig, figure_export_config, [], prev_disabled, next_disabled
 
     filtered_precomputed = [entry for entry in precomputed if entry['grid'] == selected_grid]
 
@@ -1983,33 +1996,18 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         title=title_text,
         xaxis_title="Wavelength (µm)",
         yaxis_title="Normalized Flux",
-        margin=dict(t=40, b=120),
+        margin=dict(t=40),
         xaxis=dict(range=[x_min - x_margin, x_max + x_margin]),
         yaxis=dict(range=[y_min - y_margin, y_max + y_margin])
     )
 
-    # Add standard metadata at the bottom of the plot
+    # Build standard metadata for separate div (below plots)
     meta_lines = []
     if std_object_designation:
-        meta_lines.append(f"<b>Standard:</b> {std_object_designation}")
+        meta_lines.append(f"Standard: {std_object_designation}")
     if std_comments:
-        meta_lines.append(f"<b>Comments:</b> {std_comments}")
-    if std_bibcode:
-        bib_url = f"https://ui.adsabs.harvard.edu/abs/{std_bibcode}/abstract"
-        meta_lines.append(f"<b>Bibcode:</b> <a href=\"{bib_url}\" target=\"_blank\">{std_bibcode}</a>")
-    if meta_lines:
-        fig.add_annotation(
-            xref="paper",
-            yref="paper",
-            x=0,
-            y=-0.22,
-            xanchor="left",
-            yanchor="top",
-            align="left",
-            showarrow=False,
-            text="<br>".join(meta_lines),
-            font=dict(size=12, color="#333")
-        )
+        meta_lines.append(f"Comments: {std_comments}")
+    # Bibcode handled as link below (if present)
 
     reduced_chi2 = std_entry.get("reduced_chi2", np.nan)
     #mad = std_entry.get("mad", np.nan)
@@ -2062,7 +2060,21 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     updated_config['toImageButtonOptions'] = updated_config['toImageButtonOptions'].copy()
     updated_config['toImageButtonOptions']['filename'] = f"sptype_specid_{int(comp_id)}_{std_entry['spectral_type']}_{selected_grid}{der_tag}_{date_str}"
 
-    return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, updated_config, prev_disabled, next_disabled
+    std_meta_children = []
+    if meta_lines:
+        std_meta_children = [html.Div(meta_lines[0], style={"fontWeight": "bold"})]
+        for line in meta_lines[1:]:
+            std_meta_children.append(html.Div(line))
+    if std_bibcode:
+        bib_url = f"https://ui.adsabs.harvard.edu/abs/{std_bibcode}/abstract"
+        std_meta_children.append(
+            html.Div([
+                html.Span("Bibcode: "),
+                html.A(std_bibcode, href=bib_url, target="_blank")
+            ])
+        )
+
+    return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, updated_config, std_meta_children, prev_disabled, next_disabled
 
 @dash.callback(
     Output("sp-typing-bins-input", "value"),
