@@ -37,6 +37,17 @@ try:
                 # Focus on Dash update traffic + this page
                 if path.startswith("/_dash") or "astrometry" in path:
                     import sys
+
+                    # For Dash update requests, log which output(s) are being updated.
+                    if path == "/_dash-update-component" and request.method == "POST":
+                        try:
+                            payload = request.get_json(silent=True) or {}
+                            out = payload.get("output")
+                            outs = payload.get("outputs")
+                            sys.stderr.write(f"[mocaviz:dash] outputs={out or outs}\n")
+                        except Exception:
+                            pass
+
                     sys.stderr.write(
                         f"[mocaviz:req] {request.method} {path} len={request.content_length} remote={request.remote_addr}\n"
                     )
