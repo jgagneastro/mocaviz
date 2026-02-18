@@ -8,35 +8,20 @@ load_dotenv()  # take environment variables from .env.
 
 app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
 
-# ---- Preload astrometry page at startup (safe now that it registers after layout) ----
-try:
-    importlib.import_module("pages.astrometry")
-except Exception as e:
-    try:
-        import sys
-        sys.stderr.write(f"[mocaviz:init] astrometry preload failed: {e}\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
+# ---- Ensure astrometry page is imported before handling any request (per worker) ----
+_ASTRO_WARMED = False
 
-# ---- Ensure astrometry callbacks exist before serving layout/dependencies ----
 @app.server.before_request
-def _mocaviz_ensure_astrometry_callbacks():
+def _mocaviz_warm_pages():
+    global _ASTRO_WARMED
+    if _ASTRO_WARMED:
+        return
     try:
-        from flask import request
-        path = request.path or ""
-        if path in ("/_dash-layout", "/_dash-dependencies"):
-            cb_keys = list(getattr(app, "callback_map", {}).keys())
-            has_ast = any("astrometry-plot-ra" in k or "astrometry-plot-dec" in k for k in cb_keys)
-            if not has_ast:
-                try:
-                    importlib.import_module("pages.astrometry")
-                except Exception as e:
-                    import sys
-                    sys.stderr.write(f"[mocaviz:init] astrometry import before {path} failed: {e}\n")
-                    sys.stderr.flush()
+        importlib.import_module("pages.astrometry")
+        _ASTRO_WARMED = True
     except Exception:
-        pass
+        # Keep trying on subsequent requests if it failed.
+        _ASTRO_WARMED = False
 
 # ---- Diagnostics: log app identity + callback count at startup ----
 try:
