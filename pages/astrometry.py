@@ -1274,10 +1274,6 @@ layout = html.Div([
                " with their best-available proper motion and parallax solutions."
                ),
     ], style={'width': '100%', 'display': 'inline-block'}),
-    html.Div(
-        f"Astrometry page version: {ASTROMETRY_PAGE_VERSION}",
-        style={"fontSize": "12px", "opacity": 0.7, "marginBottom": "10px"}
-    ),
     
     dcc.Input(
         id="astrometry-dropdown-search",
