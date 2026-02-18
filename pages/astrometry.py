@@ -1378,7 +1378,12 @@ layout = html.Div([
                 }],
                 value=[],
                 inline=True,
-                style={'margin-bottom': '10px', 'font-size': '16px', 'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5)}
+                style={
+                    'margin-bottom': '10px',
+                    'font-size': '16px',
+                    'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5),
+                    'pointerEvents': ('auto' if _ULTRANEST_AVAILABLE else 'none')
+                }
             ),
             dcc.Checklist(
                 id="inflate-errors-checkbox",
