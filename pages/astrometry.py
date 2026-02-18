@@ -1204,8 +1204,7 @@ def wrap_text(text, width=50):
 layout = html.Div([
     dcc.Location(id="url", refresh=False),
     html.Div([
-        #html.H1("Astrometric Explorer"),
-        html.H1(f"Astrometric Explorer — {ASTROMETRY_PAGE_VERSION}"),
+        html.H1("Astrometric Explorer"),
         html.P("This page allows to compare the individual-epoch astrometry of MOCAdb entries "
                " with their best-available proper motion and parallax solutions."
                ),
@@ -1577,21 +1576,9 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     if not selected_dataset:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # --- DEBUG: prove callback is firing on server ---
-    try:
-        debug_title = f"DEBUG: update_scatter_plot fired | oid={selected_dataset} | missions={'None' if selected_missions is None else len(selected_missions)} | {ASTROMETRY_PAGE_VERSION} | {datetime.utcnow().isoformat()}Z"
-        print(debug_title)
-        dbg_fig = go.Figure()
-        dbg_fig.update_layout(
-            title=debug_title,
-            xaxis_title="Epoch (Year)",
-            yaxis_title="Offset (mas)",
-        )
-        # If running on the server and the callback is firing, you will see this title.
-        # Remove this return once debugging is complete.
-        return dbg_fig, figure_export_config, dbg_fig, figure_export_config
-    except Exception:
-        pass
+    # --- DEBUG only: log that the callback fired, but do NOT return early. ---
+    # (Returning here prevents any real data from being plotted.)
+    pass
 
     # Make selected_missions robust if None
     if selected_missions is None:
@@ -1614,7 +1601,16 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     triggered_by_selection = ('selectedData_ra' in ctx.triggered[0]['prop_id']) or ('selectedData_dec' in ctx.triggered[0]['prop_id'])
 
     if triggered_by_selection and ((selectedData_ra is None and selectedData_dec is None) or (not selectedData_ra.get('points') and not selectedData_dec.get('points'))):
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        diag_fig = go.Figure()
+        diag_fig.update_layout(
+            title=(
+                "Selection-triggered update but no points selected; skipping update. "
+                f"oid={selected_dataset} | missions={'ALL' if not selected_missions else len(selected_missions)}"
+            ),
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+        )
+        return diag_fig, figure_export_config, diag_fig, figure_export_config
     
     try:
         moca_oid = selected_dataset
@@ -1624,6 +1620,9 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
 
     try:
         engine = get_engine_from_url(url_search)
+        import sys
+        sys.stderr.write(f"[astrometry.update_scatter_plot] fired oid={moca_oid} missions={'ALL' if not selected_missions else len(selected_missions)}\n")
+        sys.stderr.flush()
         connection = engine.connect()
         metadata = MetaData()
 
