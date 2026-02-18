@@ -41,6 +41,78 @@ query_e = """
 unselected_opacity = 0.1
 selected_opacity = 1
 
+# Subtle background chemical/atomic features (µm). Ranges are approximate and easy to tweak.
+FEATURE_BANDS = [
+    # Y/J band (~0.9–1.35 µm)
+    {"name": "H₂O", "rng": (0.92, 0.96)},     # H2O feature near 0.95 µm
+    {"name": "FeH", "rng": (0.985, 1.005)},     # Wing–Ford band
+    {"name": "VO",  "rng": (1.045, 1.080)},     # VO band
+    {"name": "H₂O", "rng": (1.130, 1.170)},     # H2O feature near 1.15 µm
+    {"name": "VO",  "rng": (1.170, 1.200)},     # VO feature near 1.18–1.20 µm
+    {"name": "FeH", "rng": (1.190, 1.240)},     # FeH feature around 1.2 µm
+    {"name": "Na",  "rng": (1.137, 1.142), "ion": True},  # Na I doublet
+    {"name": "K",   "rng": (1.169, 1.181), "ion": True},  # K I doublet (~1.177 µm)
+    {"name": "K",   "rng": (1.243, 1.253), "ion": True},  # K I doublet
+    {"name": "H₂O", "rng": (1.320, 1.350)},     # water edge into 1.4 µm band
+    # H band (~1.45–1.80 µm)
+    {"name": "H₂O", "rng": (1.500, 1.620)},
+    {"name": "FeH", "rng": (1.583, 1.620)},
+    # CH4 (from comparison figure): H-band and K-band features
+    {"name": "CH₄", "rng": (1.60, 1.68)},     # H-band methane
+    {"name": "CH₄", "rng": (1.72, 1.78)},     # H-band methane
+    {"name": "CH₄", "rng": (2.20, 2.27)},     # K-band methane onset
+    # K band (~2.00–2.40 µm)
+    {"name": "H₂O", "rng": (1.950, 2.11)},
+    # Single lines/features
+    {"name": "Na", "rng": (2.200-0.005, 2.200+0.005), "ion": True},       # Na I near 2.20 µm
+    {"name": "CO",  "rng": (2.293, 2.400)},     # CO (2-0) bandheads and beyond
+]
+
+def _add_feature_bands(fig, ypad_frac=0.04):
+    """
+    Add subtle shaded bands and labels for common features in the background.
+    ypad_frac controls top/bottom padding in 'paper' coords to keep labels inside.
+    """
+    # Define ion and neutral colors
+    ion_fill = "rgba(139,100,0,0.10)"      # gold, subtle
+    ion_text = "rgba(139,100,0,0.65)"
+    vo_fill = "rgba(0,139,0,0.10)" #dark green, subtle
+    vo_text = "rgba(0,139,0,0.65)"
+    ch4_fill = "rgba(139,69,139,0.10)" #pink, subtle
+    ch4_text = "rgba(139,69,139,0.65)"
+    h2o_fill = "rgba(0,0,139,0.10)"      # dark blue, subtle
+    h2o_text = "rgba(0,0,139,0.65)"
+    neutral_fill = "rgba(100,100,100,0.06)"
+    neutral_text = "rgba(60,60,60,0.65)"
+    
+    for fb in FEATURE_BANDS:
+        is_ion = fb.get("ion", False) or fb["name"] in ("Na", "K", "Ca")
+        is_h2o = fb["name"] in ("H₂O", "H2O")
+        is_ch4 = fb["name"] in ("CH₄", "CH4")
+        is_vo = fb["name"] in ("VO")
+
+        fillcolor = ch4_fill if is_ch4 else (h2o_fill if is_h2o else (ion_fill if is_ion else (vo_fill if is_vo else neutral_fill)))
+        textcolor = ch4_text if is_ch4 else (h2o_text if is_h2o else (ion_text if is_ion else (vo_text if is_vo else neutral_text)))
+
+        x0, x1 = fb["rng"]
+        fig.add_shape(
+            type="rect",
+            x0=x0, x1=x1,
+            y0=0 + ypad_frac, y1=1 - ypad_frac,
+            xref="x", yref="paper",
+            fillcolor=fillcolor,
+            line=dict(width=0),
+            layer="below",
+        )
+        fig.add_annotation(
+            x=(x0 + x1) / 2,
+            y=1 - ypad_frac*0.5,
+            xref="x", yref="paper",
+            text=fb["name"],
+            showarrow=False,
+            font=dict(size=11, color=textcolor),
+            yanchor="top"
+        )
 # Empty dataframe used when no spectra are selected (avoid DB calls at import-time)
 EMPTY_SPECTRA_DF = pd.DataFrame(
     columns=[
@@ -238,7 +310,7 @@ def insert_nans_in_gaps(x_array, y_array, threshold_factor=10, ey_array=None):
         return np.array(x_with_nans), np.array(y_with_nans)
 
 # Eventually move this to a subroutine
-def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
+def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, self_figure):
 
     # Read layer properties
     hover = "closest"
@@ -416,6 +488,8 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, self_figure):
     layout.yaxis.range = yrange
 
     fig = go.Figure(data=data,layout=layout)
+    if showfeatures:
+        _add_feature_bands(fig, ypad_frac=0.05)
                      
     return fig
 
@@ -496,6 +570,16 @@ layout = html.Div(
                                 },
                             ],
                             value=[],
+                        ),
+                        dcc.Checklist(
+                            id="spectram-showfeatures-spectrapage",
+                            options=[
+                                {
+                                    "label": "Show chemical features",
+                                    "value": "showfeatures",
+                                },
+                            ],
+                            value=['showfeatures'],
                         ),
                     ],
                 ),
@@ -639,12 +723,13 @@ def update_specid_select_spectrapage(
         selections=selections,
         jsonified_db_data=Input("db-data-spectrapage", "data"),
         spectra_view=Input("spectram-view-selector-spectrapage", "value"),
+        spectra_features=Input("spectram-showfeatures-spectrapage", "value"),
     ),
     state=dict(specid_select=State("specid-select-spectrapage", "value"), self_figure=State("spectra-map-spectrapage", "figure")),
 )
 def update_spectrum_spectrapage(
     selections, 
-    jsonified_db_data, spectra_view
+    jsonified_db_data, spectra_view, spectra_features
     , specid_select, self_figure
 ):
     
@@ -658,7 +743,8 @@ def update_spectrum_spectrapage(
     df = pd.read_json(jsonified_db_data[0], orient='split')
     df_aids = pd.read_json(jsonified_db_data[1], orient='split')
 
-    return generate_spectrum(df, df_aids, processed_data, spectra_view, self_figure)
+    showfeatures = 'showfeatures' in (spectra_features or [])
+    return generate_spectrum(df, df_aids, processed_data, spectra_view, showfeatures, self_figure)
 
 @dash.callback(
     Output("download-links-container", "children"),
