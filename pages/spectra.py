@@ -428,12 +428,10 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         e_t = df_tgt['esp'].replace(0, np.nan).values[mask]
         y_r = np.interp(x_t, df_ref['lam'].values, df_ref['sp'].values)
         e_r = np.interp(x_t, df_ref['lam'].values, df_ref['esp'].replace(0, np.nan).values)
-        denom1 = np.sqrt(e_r**2 + e_t**2)
-        denom2 = np.sqrt(y_t**2 + e_t**2)
-        denom1 = np.where(np.isfinite(denom1) & (denom1 > 0), denom1, np.nan)
-        denom2 = np.where(np.isfinite(denom2) & (denom2 > 0), denom2, np.nan)
-        num = np.nansum((y_r * y_t) / denom1)
-        den = np.nansum((y_r * y_t) / denom2)
+        denom = np.sqrt(e_r**2 + e_t**2)
+        denom = np.where(np.isfinite(denom) & (denom > 0), denom, np.nan)
+        num = np.nansum((y_r * y_t) / denom)
+        den = np.nansum((y_t * y_t) / denom)
         if not np.isfinite(den) or den == 0:
             return None
         return num / den
