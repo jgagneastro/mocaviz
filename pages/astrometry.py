@@ -1371,8 +1371,7 @@ layout = html.Div([
                 options=[{'label': 'Fit using ultranest (slow)', 'value': 'ultranest'}],
                 value=[],
                 inline=True,
-                style={'margin-bottom': '10px', 'font-size': '16px', 'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5)},
-                disabled=(not _ULTRANEST_AVAILABLE)
+                style={'margin-bottom': '10px', 'font-size': '16px', 'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5)}
             ),
             dcc.Checklist(
                 id="inflate-errors-checkbox",
