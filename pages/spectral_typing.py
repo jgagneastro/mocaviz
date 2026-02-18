@@ -2003,10 +2003,9 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
 
     # Build standard metadata for separate div (below plots)
     meta_lines = []
-    if std_object_designation:
-        meta_lines.append(f"Standard: {std_object_designation}")
-    if std_comments:
-        meta_lines.append(f"Comments: {std_comments}")
+    meta_lines.append(f"{std_entry.get('spectral_type', 'Standard')} standard:")
+    meta_lines.append(f"Standard: {std_object_designation if std_object_designation else 'None'}")
+    meta_lines.append(f"Comments: {std_comments if std_comments else 'None'}")
     # Bibcode handled as link below (if present)
 
     reduced_chi2 = std_entry.get("reduced_chi2", np.nan)
@@ -2073,6 +2072,8 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
                 html.A(std_bibcode, href=bib_url, target="_blank")
             ])
         )
+    else:
+        std_meta_children.append(html.Div("Bibcode: None"))
 
     return current_sptnum, new_index, new_index, slider_max, slider_marks, fig, updated_config, std_meta_children, prev_disabled, next_disabled
 
