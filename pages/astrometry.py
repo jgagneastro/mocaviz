@@ -1573,9 +1573,25 @@ def update_mission_dropdown(selected_dataset, url_search):
 )
 def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
+    def _diag(reason: str):
+        fig = go.Figure()
+        fig.update_layout(
+            title=(
+                f"ASTROMETRY DIAG | {reason} | "
+                f"oid={selected_dataset} | "
+                f"missions={'None' if selected_missions is None else (len(selected_missions) if isinstance(selected_missions, list) else selected_missions)} | "
+                f"triggered={(ctx.triggered[0]['prop_id'] if ctx and ctx.triggered else 'none')} | "
+                f"{ASTROMETRY_PAGE_VERSION} | {datetime.utcnow().isoformat()}Z"
+            ),
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+        )
+        return fig, figure_export_config, fig, figure_export_config
     
     if not selected_dataset:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return _diag("EARLY EXIT: no selected_dataset")
+    #if not selected_dataset:
+    #    return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     # If URL contains ?debug_astrometry=1, return a tiny figure immediately.
     # This helps diagnose server timeouts / response-size issues.
@@ -1614,25 +1630,17 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     triggered_by_selection = triggered_prop.endswith(".selectedData")
 
     if triggered_by_selection:
-        pts_ra = (selectedData_ra or {}).get('points') or []
-        pts_dec = (selectedData_dec or {}).get('points') or []
+        pts_ra = (selectedData_ra or {}).get("points") or []
+        pts_dec = (selectedData_dec or {}).get("points") or []
         if (len(pts_ra) == 0) and (len(pts_dec) == 0):
-            diag_fig = go.Figure()
-            diag_fig.update_layout(
-                title=(
-                    "Selection-triggered update but no points selected; skipping update. "
-                    f"oid={selected_dataset} | missions={'ALL' if not selected_missions else len(selected_missions)}"
-                ),
-                xaxis_title="Epoch (Year)",
-                yaxis_title="Offset (mas)",
-            )
-            return diag_fig, figure_export_config, diag_fig, figure_export_config
+            return _diag("EARLY EXIT: triggered_by_selection but no points selected")
+        # Otherwise, allow the callback to proceed and use the selection downstream.
     
     try:
         moca_oid = selected_dataset
         #moca_oid, designation = selected_dataset.split('|')
-    except ValueError:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    except ValueError as e:
+        return _diag(f"EARLY EXIT: ValueError: {e}")
 
     try:
         engine = get_engine_from_url(url_search)
