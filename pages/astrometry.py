@@ -1568,7 +1568,6 @@ def update_mission_dropdown(selected_dataset, url_search):
      Input("astrometry-plot-ra", "selectedData"),
      Input("astrometry-plot-dec", "selectedData"),
      State("url", "search")],
-     prevent_initial_call=True,
 )
 def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
@@ -1576,9 +1575,22 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     if not selected_dataset:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # --- DEBUG only: log that the callback fired, but do NOT return early. ---
-    # (Returning here prevents any real data from being plotted.)
-    pass
+    # If URL contains ?debug_astrometry=1, return a tiny figure immediately.
+    # This helps diagnose server timeouts / response-size issues.
+    parsed_url = _parse_url_search(url_search)
+    if str(parsed_url.get('debug_astrometry', [None])[0]).strip() == '1':
+        dbg = go.Figure()
+        dbg.update_layout(
+            title=(
+                f"DEBUG_ASTROMETRY=1 | callback reached | oid={selected_dataset} | "
+                f"missions={'None' if selected_missions is None else (len(selected_missions) if isinstance(selected_missions, list) else selected_missions)} | "
+                f"{ASTROMETRY_PAGE_VERSION} | {datetime.utcnow().isoformat()}Z"
+            ),
+            xaxis_title="Epoch (Year)",
+            yaxis_title="Offset (mas)",
+        )
+        dbg.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', name='ping'))
+        return dbg, figure_export_config, dbg, figure_export_config
 
     # Make selected_missions robust if None
     if selected_missions is None:
@@ -1881,6 +1893,11 @@ def update_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values,
     # Calculate relative offsets
     data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
     data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
+    # Cap number of points to keep Dash response sizes reasonable on the server
+    MAX_PLOT_POINTS = 4000
+    if len(data_df) > MAX_PLOT_POINTS:
+        # Keep a deterministic subset (by epoch) to avoid randomness across updates
+        data_df = data_df.sort_values('measurement_epoch_yr').iloc[::max(1, len(data_df)//MAX_PLOT_POINTS)].copy()
 
     if fit_plx:
         # Always run EM mixture fit first
