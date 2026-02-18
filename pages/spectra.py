@@ -30,9 +30,6 @@ figure_export_config = {
   }
 }
 
-# Load data
-moca_vanilla = MocaEngine()
-moca = MocaEngine()
 
 
 query_e = """
@@ -44,9 +41,17 @@ query_e = """
 unselected_opacity = 0.1
 selected_opacity = 1
 
-df_all_spectra = moca.query("SELECT moca_specid, CONCAT(ms.moca_specid,': ',COALESCE(CONCAT(mo.designation, ' (',spt.spectral_type, ') with ', ms.moca_instid,COALESCE(CONCAT(' in ', ms.instrument_mode_name,' mode'),''),COALESCE(CONCAT(' (', ms.data_collection_date,')'),'')),ms.spectrum_name)) AS spectrum_name FROM moca_spectra ms LEFT JOIN moca_objects mo USING(moca_oid) LEFT JOIN (SELECT moca_oid, spectral_type FROM data_spectral_types WHERE adopted=1) spt USING(moca_oid)")
-
-dfe = moca_vanilla.query("SELECT ds.moca_specid, ms.spectrum_name, ms.flux_units, ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp FROM moca_spectra ms JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.ignored=0) LIMIT 0")
+# Empty dataframe used when no spectra are selected (avoid DB calls at import-time)
+EMPTY_SPECTRA_DF = pd.DataFrame(
+    columns=[
+        "moca_specid",
+        "spectrum_name",
+        "flux_units",
+        "lam",
+        "sp",
+        "esp",
+    ]
+)
 
 #To make hex colors more transparent
 def hex_to_rgba(hex_color, alpha=0.5):
@@ -607,8 +612,8 @@ def update_specid_select_spectrapage(
     #Prevent app from crashing if no spectra are selected
     #import pdb; pdb.set_trace()
     if len(specid_select) == 0:
-        df = dfe
-    else: 
+        df = EMPTY_SPECTRA_DF.copy()
+    else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["ms.moca_specid='"+str(stri)+"'" for stri in specid_select])
         df = moca.query(query_e+" WHERE ("+aid_query+")")
