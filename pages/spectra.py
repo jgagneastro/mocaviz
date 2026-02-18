@@ -135,6 +135,27 @@ def weighted_median(values, weights):
     c = np.cumsum(weights[i])
     return values[i[np.searchsorted(c, 0.5 * c[-1])]]
 
+# Normalize range parser: accepts "0.95-1.35" or "0.95,1.35"
+def parse_norm_range(text_val):
+    if not text_val:
+        return None
+    s = str(text_val).strip()
+    if not s:
+        return None
+    s = s.replace(",", "-")
+    parts = [p for p in s.split("-") if p.strip()]
+    if len(parts) != 2:
+        return None
+    try:
+        a = float(parts[0])
+        b = float(parts[1])
+    except Exception:
+        return None
+    if not np.isfinite(a) or not np.isfinite(b):
+        return None
+    lo, hi = (a, b) if a <= b else (b, a)
+    return (lo, hi)
+
 # Assign color to legend
 # Eventually move this to a subroutine
 def colormap_picker_spectra(aid_list):
@@ -310,7 +331,7 @@ def insert_nans_in_gaps(x_array, y_array, threshold_factor=10, ey_array=None):
         return np.array(x_with_nans), np.array(y_with_nans)
 
 # Eventually move this to a subroutine
-def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, self_figure):
+def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, norm_range, self_figure):
 
     # Read layer properties
     hover = "closest"
@@ -333,6 +354,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, s
         legend=dict(
             orientation = 'h', xanchor = "right", x = 1, y = 0, yanchor="bottom",
         ),
+        meta={}
     )
 
     #layout['xaxis']['titlefont'] = dict(size=18)  # Adjust the size as needed
@@ -350,30 +372,144 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, s
     data = []
     alpha = 0.2
 
+    normalize = "normalize" in (style or [])
+
+    # Build per-spectrum dataframes and convert to W/m^2/um
+    spec_map = {}
+    for specid in unique_specids:
+        dfi = df_spectra[df_spectra['moca_specid'] == specid].dropna(subset=['sp', 'lam']).copy()
+        if dfi.empty:
+            continue
+        dfi['sp'] = dfi['sp'] * 10000.0
+        dfi['esp'] = dfi['esp'] * 10000.0
+        spec_map[specid] = dfi
+
+    # Update y-axis title for absolute flux mode
+    if not normalize:
+        ytitle = "Absolute spectral flux density <i>F<sub>λ</sub></i> (W/m<sup>2</sup>/μm)"
+
+    # Normalization helpers
+    def _get_overlap_mask(df_ref, df_tgt, rng):
+        x = df_tgt['lam'].values
+        lo = df_ref['lam'].min()
+        hi = df_ref['lam'].max()
+        mask = (x >= lo) & (x <= hi)
+        if rng is not None:
+            mask &= (x >= rng[0]) & (x <= rng[1])
+        return mask
+
+    def _calc_snr(df, rng):
+        if rng is not None:
+            dfr = df[(df['lam'] >= rng[0]) & (df['lam'] <= rng[1])]
+        else:
+            dfr = df
+        if dfr.empty:
+            return -np.inf
+        sp = dfr['sp'].values
+        esp = dfr['esp'].replace(0, np.nan).values
+        snr = np.nanmedian(sp / esp) if np.isfinite(np.nanmedian(sp / esp)) else -np.inf
+        return snr
+
+    def _median_norm(df, rng):
+        if rng is not None:
+            dfr = df[(df['lam'] >= rng[0]) & (df['lam'] <= rng[1])]
+        else:
+            dfr = df
+        if dfr.empty:
+            return 1.0
+        return float(np.nanmedian(dfr['sp'].values))
+
+    def _scale_to_ref(df_ref, df_tgt, rng):
+        mask = _get_overlap_mask(df_ref, df_tgt, rng)
+        if not np.any(mask):
+            return None
+        x_t = df_tgt['lam'].values[mask]
+        y_t = df_tgt['sp'].values[mask]
+        e_t = df_tgt['esp'].replace(0, np.nan).values[mask]
+        y_r = np.interp(x_t, df_ref['lam'].values, df_ref['sp'].values)
+        e_r = np.interp(x_t, df_ref['lam'].values, df_ref['esp'].replace(0, np.nan).values)
+        denom1 = np.sqrt(e_r**2 + e_t**2)
+        denom2 = np.sqrt(y_t**2 + e_t**2)
+        denom1 = np.where(np.isfinite(denom1) & (denom1 > 0), denom1, np.nan)
+        denom2 = np.where(np.isfinite(denom2) & (denom2 > 0), denom2, np.nan)
+        num = np.nansum((y_r * y_t) / denom1)
+        den = np.nansum((y_r * y_t) / denom2)
+        if not np.isfinite(den) or den == 0:
+            return None
+        return num / den
+
+    # Apply normalization if enabled
+    if normalize and spec_map:
+        # pick highest SNR spectrum as seed
+        seed_specid = max(spec_map.keys(), key=lambda sid: _calc_snr(spec_map[sid], norm_range))
+        seed_df = spec_map[seed_specid]
+        seed_norm = _median_norm(seed_df, norm_range)
+        if seed_norm != 0 and np.isfinite(seed_norm):
+            seed_df['sp'] /= seed_norm
+            seed_df['esp'] /= seed_norm
+        normalized = {seed_specid}
+
+        # Orphan normalization for spectra with no overlap with any normalized spectrum
+        changed = True
+        while changed:
+            changed = False
+            for sid, df in spec_map.items():
+                if sid in normalized:
+                    continue
+                # If it doesn't overlap norm range at all, normalize to median=1 and mark normalized
+                if norm_range is not None:
+                    if df[(df['lam'] >= norm_range[0]) & (df['lam'] <= norm_range[1])].empty:
+                        n = _median_norm(df, None)
+                        if n != 0 and np.isfinite(n):
+                            df['sp'] /= n
+                            df['esp'] /= n
+                        normalized.add(sid)
+                        changed = True
+                        continue
+                # Try to scale to any normalized spectrum
+                best_ref = None
+                best_n = 0
+                for rid in normalized:
+                    ref_df = spec_map[rid]
+                    mask = _get_overlap_mask(ref_df, df, norm_range)
+                    npts = int(np.sum(mask))
+                    if npts > best_n:
+                        best_n = npts
+                        best_ref = rid
+                if best_ref is not None and best_n > 0:
+                    s = _scale_to_ref(spec_map[best_ref], df, norm_range)
+                    if s is None or not np.isfinite(s):
+                        continue
+                    df['sp'] *= s
+                    df['esp'] *= s
+                    normalized.add(sid)
+                    changed = True
+                else:
+                    # Orphan: normalize to median=1 and add to normalized set
+                    n = _median_norm(df, norm_range if norm_range is not None else None)
+                    if n != 0 and np.isfinite(n):
+                        df['sp'] /= n
+                        df['esp'] /= n
+                    normalized.add(sid)
+                    changed = True
+
+        # Normalize any remaining orphan spectra to median=1
+        for sid, df in spec_map.items():
+            if sid in normalized:
+                continue
+            n = _median_norm(df, None)
+            if n != 0 and np.isfinite(n):
+                df['sp'] /= n
+                df['esp'] /= n
+            normalized.add(sid)
+
     for i in range(nspectra):
+        if unique_specids[i] not in spec_map:
+            continue
         labeli = df_aids.loc[df_aids['moca_specid'] == unique_specids[i], 'spectrum_name'].values[0]
         colori = colormap[unique_specids[i]]
 
-        #import pdb; pdb.set_trace()
-        dfi = df_spectra[df_spectra['moca_specid'] == unique_specids[i]].dropna(subset=['sp', 'lam']).copy()
-
-        #Normalize the spectrum with a weighted median, weight = SNR^2 if ESP is defined, SP^2 otherwise
-        #if not dfi['esp'].replace(0, pd.NA).isna().all():
-        #    signal_values = dfi['sp'].fillna(0).values / dfi['esp'].replace(0, pd.NA).fillna(dfi['esp'].median()).fillna(1).values
-        #else:
-        #    signal_values = dfi['sp'].fillna(0).values
-        
-        #Using a simpler way to normalize because errors often misbehave
-
-        smoothed_signal = dfi['sp'].rolling(window=50).median().values
-        
-        weights = np.nan_to_num(smoothed_signal ** 2)
-        smoothed_signal = np.nan_to_num(smoothed_signal, nan=np.nanmedian(smoothed_signal))
-        
-        norm = weighted_median(smoothed_signal, weights/np.sum(weights))
-
-        dfi.loc[:, 'esp'] = dfi['esp'] / norm
-        dfi.loc[:, 'sp'] = dfi['sp'] / norm
+        dfi = spec_map[unique_specids[i]].copy()
 
         x_array = dfi['lam'].values
         y_array = dfi['sp'].values
@@ -491,6 +627,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, s
     if showfeatures:
         _add_feature_bands(fig, ypad_frac=0.05)
                      
+    fig.update_layout(yaxis={'title': ytitle})
     return fig
 
 layout = html.Div(
@@ -570,6 +707,23 @@ layout = html.Div(
                                 },
                             ],
                             value=[],
+                        ),
+                        dcc.Checklist(
+                            id="spectram-normalize-spectrapage",
+                            options=[
+                                {
+                                    "label": "Normalize spectra",
+                                    "value": "normalize",
+                                },
+                            ],
+                            value=['normalize'],
+                        ),
+                        dcc.Input(
+                            id="spectram-normrange-spectrapage",
+                            type="text",
+                            placeholder="Norm range (e.g. 0.95-1.35)",
+                            value="0.95-1.35",
+                            style={"width": "100%", "marginTop": "6px"}
                         ),
                         dcc.Checklist(
                             id="spectram-showfeatures-spectrapage",
@@ -724,12 +878,14 @@ def update_specid_select_spectrapage(
         jsonified_db_data=Input("db-data-spectrapage", "data"),
         spectra_view=Input("spectram-view-selector-spectrapage", "value"),
         spectra_features=Input("spectram-showfeatures-spectrapage", "value"),
+        spectra_norm=Input("spectram-normalize-spectrapage", "value"),
+        spectra_normrange=Input("spectram-normrange-spectrapage", "value"),
     ),
     state=dict(specid_select=State("specid-select-spectrapage", "value"), self_figure=State("spectra-map-spectrapage", "figure")),
 )
 def update_spectrum_spectrapage(
     selections, 
-    jsonified_db_data, spectra_view, spectra_features
+    jsonified_db_data, spectra_view, spectra_features, spectra_norm, spectra_normrange
     , specid_select, self_figure
 ):
     
@@ -744,7 +900,19 @@ def update_spectrum_spectrapage(
     df_aids = pd.read_json(jsonified_db_data[1], orient='split')
 
     showfeatures = 'showfeatures' in (spectra_features or [])
-    return generate_spectrum(df, df_aids, processed_data, spectra_view, showfeatures, self_figure)
+    fig = self_figure if self_figure is not None else go.Figure()
+    style = spectra_view or []
+    if 'normalize' in (spectra_norm or []):
+        style = list(set(style + ['normalize']))
+    norm_range = parse_norm_range(spectra_normrange)
+    return generate_spectrum(df, df_aids, processed_data, style, showfeatures, norm_range, fig)
+
+@dash.callback(
+    Output("spectram-normrange-spectrapage", "disabled"),
+    Input("spectram-normalize-spectrapage", "value"),
+)
+def toggle_normrange_disabled(norm_values):
+    return 'normalize' not in (norm_values or [])
 
 @dash.callback(
     Output("download-links-container", "children"),
