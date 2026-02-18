@@ -18,9 +18,7 @@ from datetime import datetime
 # ---- Astrometry page version stamp ----
 ASTROMETRY_PAGE_VERSION = "2026-02-17-debug-v1"
 
-# Register the page in the Dash app
-
-dash.register_page(__name__)
+# Register the page after layout is defined (see below).
 
 # ---- Server-side request logging (helps debug when you can't access browser DevTools) ----
 try:
@@ -1434,6 +1432,9 @@ layout = html.Div([
     }),
 
 ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
+
+# Register the page now that layout is defined (helps with eager imports).
+dash.register_page(__name__, layout=layout)
 
 @dash.callback(
     output=[
