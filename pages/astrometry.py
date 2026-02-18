@@ -1410,6 +1410,12 @@ layout = html.Div([
         ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
 
     html.Div([
+        html.Button("Push PM fit", id="astrometry-push-pm", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px', 'display': 'none'}),
+        html.Button("Push PM+PLX fit", id="astrometry-push-pmplx", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'display': 'none'}),
+        html.Div(id="astrometry-push-output", style={'display': 'none', 'marginTop': '10px'})
+    ], style={'marginTop': '10px', 'marginBottom': '10px'}),
+
+    html.Div([
         dcc.Graph(id="astrometry-plot-ra"),
     ], style={'width': '100%', 'display': 'inline-block', 'margin-bottom': '20px'}),
     
@@ -1442,12 +1448,6 @@ layout = html.Div([
         "marginBottom": "6px",
         "lineHeight": 1.5
     }),
-
-    html.Div([
-        html.Button("Push PM fit", id="astrometry-push-pm", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px', 'display': 'none'}),
-        html.Button("Push PM+PLX fit", id="astrometry-push-pmplx", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'display': 'none'}),
-        html.Div(id="astrometry-push-output", style={'display': 'none', 'marginTop': '10px'})
-    ], style={'marginTop': '10px', 'marginBottom': '10px'}),
 
     dcc.Store(id='astrometry-fit-store'),
 
