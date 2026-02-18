@@ -15,6 +15,9 @@ import numpy.core.defchararray as np_f
 import pandas as pd
 import numpy as np
 
+import sys
+from functools import lru_cache
+
 import plotly.graph_objs as go
 from dash.dependencies import Input, Output, State
 
@@ -107,18 +110,26 @@ query_oe = f"""
     LEFT JOIN data_proper_motions dpm ON(dpm.moca_oid=mo.moca_oid AND dpm.adopted=1)
 """
 
-dfe = moca_vanilla.query(query_e+" LIMIT 0")
-dfoe = moca_vanilla.query(query_oe+" LIMIT 0")
-dfme = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
-
 unselected_opacity = 0.1
 selected_opacity = 1
 
-# Load a list of all associations for the Dropdown menu
-#TMP FIX BELOW
-df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM mocadb.summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
+# Load MTIDs lazily (do NOT query the DB at import-time; it can block worker startup on the server)
+_MTID_QUERY = (
+    "SELECT moca_mtid, name, description "
+    "FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt "
+    "JOIN (SELECT DISTINCT moca_mtid FROM mocadb.summary_all_members) dm "
+    "ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC"
+)
 
-text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
+@lru_cache(maxsize=1)
+def _get_mtids_vanilla_cached():
+    try:
+        m = MocaEngine()
+        return m.query(_MTID_QUERY)
+    except Exception as e:
+        sys.stderr.write(f"[xyzuvw] failed to load mtids (vanilla): {e}\n")
+        sys.stderr.flush()
+        return pd.DataFrame(columns=["moca_mtid", "name", "description"])
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -771,12 +782,11 @@ layout = html.Div(
                             ),
                         html.Br(),
                         dcc.Markdown(children=["Select membership types"]),
+                        # Seed options with defaults so Dash can accept the default value before
+                        # the async options callback populates the full MTID list.
                         dcc.Dropdown(
                             id="mtid-select-xupage",
-                            options=[
-                                {"label": " "+i, "value": i}
-                                for i in df_mtids["moca_mtid"].unique().tolist()
-                            ],
+                            options=[{"label": " " + i, "value": i} for i in initial_mtids],
                             multi=True,
                             value=None,
                             style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
@@ -911,6 +921,7 @@ def update_axes_from_url_xupage(url_search):
     return "X", "Y", "Z"
 
 # Update checkboxes from URL
+# Update checkboxes from URL
 @dash.callback(
     Output("xymap-view-selector-xupage", "value"),
     Input("url", "search")
@@ -923,6 +934,39 @@ def update_checklist_from_url(url_search):
         if "checkbox" in parsed_url_data:
             return parsed_url_data["checkbox"][0].split(",")  # Use URL values
     return default_checkboxes  # Use defaults if no parameter is found
+
+
+# Populate MTID options on page load using URL creds if provided
+@dash.callback(
+    Output("mtid-select-xupage", "options"),
+    Input("url", "search"),
+)
+def populate_mtid_options_xupage(url_search):
+    """Populate membership-type dropdown options lazily (avoids DB calls at import-time)."""
+    url_search = url_search or ""
+    parsed_url_data = parse_qs(url_search.lstrip("?"))
+
+    user = parsed_url_data.get("user", [None])[0]
+    pwd = parsed_url_data.get("pwd", [None])[0]
+    dbase = parsed_url_data.get("dbase", [None])[0]
+
+    try:
+        # Use user-provided creds if present; otherwise use cached vanilla list
+        if user and pwd and dbase:
+            moca = MocaEngine()
+            engine = create_engine('mysql+pymysql://' + user + ':' + urlquote(pwd) + '@104.248.106.21/' + dbase)
+            moca.connection = engine.connect()
+            df_mtids_local = moca.query(_MTID_QUERY)
+        else:
+            df_mtids_local = _get_mtids_vanilla_cached()
+
+        mtids = df_mtids_local.get("moca_mtid", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+        return [{"label": " " + i, "value": i} for i in mtids]
+
+    except Exception as e:
+        sys.stderr.write(f"[xyzuvw] populate_mtid_options_xupage error: {e}\n")
+        sys.stderr.flush()
+        return []
 
 # Update BSMDID dropdown from URL and read credentials
 @dash.callback(
@@ -1048,8 +1092,8 @@ def update_aid_select_xupage(
 
     #Prevent app from crashing if no associations are selected
     if len(aid_select) == 0 or not mtid_select:
-        df = dfe
-        dfm = dfme
+        df = moca_vanilla.query(query_e+" LIMIT 0")
+        dfm = moca_vanilla.query("SELECT dbs.* FROM moca_banyan_sigma_models mbs LEFT JOIN data_banyan_sigma_models dbs USING(moca_bsmdid) WHERE mbs.adopted=1 LIMIT 0")
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         aid_query = " OR ".join(["mv.moca_aid='"+stri+"'" for stri in aid_select])
@@ -1086,7 +1130,7 @@ def update_aid_select_xupage(
             oid_set = True
     
     if not oid_set:
-        dfo = dfoe
+        dfo = moca_vanilla.query(query_oe+" LIMIT 0")
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
         oid_query = " OR ".join(["mo.moca_oid='"+stri+"'" for stri in oid_select.split(',')])
