@@ -1366,13 +1366,14 @@ layout = html.Div([
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px'}
             ),
-            (dcc.Checklist(
+            dcc.Checklist(
                 id="fit-ultranest-checkbox",
                 options=[{'label': 'Fit using ultranest (slow)', 'value': 'ultranest'}],
                 value=[],
                 inline=True,
-                style={'margin-bottom': '10px', 'font-size': '16px'}
-            ) if _ULTRANEST_AVAILABLE else html.Div()),
+                style={'margin-bottom': '10px', 'font-size': '16px', 'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5)},
+                disabled=(not _ULTRANEST_AVAILABLE)
+            ),
             dcc.Checklist(
                 id="inflate-errors-checkbox",
                 options=[{'label': 'Back propagate residuals into measurement errors during fit', 'value': 'inflate'}],
