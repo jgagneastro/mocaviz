@@ -2355,10 +2355,11 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         else:
             expected_rel_ra = (t_abs - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
             expected_rel_dec = (t_abs - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
-            if (not subtract_plx) and len(plx_df) != 0:
-                plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
-                expected_rel_ra += plxm_model["plx_motion_racosdec"] * plx_df.iloc[0]["parallax_mas"]
-                expected_rel_dec += plxm_model["plx_motion_dec"] * plx_df.iloc[0]["parallax_mas"]
+        # Add parallax term if not subtracted (even when PM is subtracted)
+        if (not subtract_plx) and len(plx_df) != 0:
+            plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
+            expected_rel_ra += plxm_model["plx_motion_racosdec"] * plx_df.iloc[0]["parallax_mas"]
+            expected_rel_dec += plxm_model["plx_motion_dec"] * plx_df.iloc[0]["parallax_mas"]
 
     # === Compute 1-sigma model envelopes from parameter uncertainties ===
     # Pull uncertainties (0 if missing); zero them if subtract_pm
