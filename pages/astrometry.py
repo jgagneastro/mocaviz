@@ -5,7 +5,7 @@ import decimal
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objs as go
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
-from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case, Column, Integer, Float, Text
+from sqlalchemy import create_engine, select, MetaData, Table, func, and_, or_, cast, String, case, Column, Integer, Float, Text, text
 import pandas as pd
 import os
 from utils.plx_motion import parallax_motion
@@ -1443,6 +1443,14 @@ layout = html.Div([
         "lineHeight": 1.5
     }),
 
+    html.Div([
+        html.Button("Push PM fit", id="astrometry-push-pm", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px', 'display': 'none'}),
+        html.Button("Push PM+PLX fit", id="astrometry-push-pmplx", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'display': 'none'}),
+        html.Div(id="astrometry-push-output", style={'display': 'none', 'marginTop': '10px'})
+    ], style={'marginTop': '10px', 'marginBottom': '10px'}),
+
+    dcc.Store(id='astrometry-fit-store'),
+
 ], style={'width': '65%', 'display': 'inline-block','padding-left': '15px'})
 
 # Register the page now that layout is defined (helps with eager imports).
@@ -1644,6 +1652,7 @@ except Exception:
         Output("astrometry-plot-ra", "config"),
         Output("astrometry-plot-dec", "figure"),
         Output("astrometry-plot-dec", "config"),
+        Output("astrometry-fit-store", "data"),
     ],
     [
         Input("astrometry-filtered-dropdown", "value"),
@@ -1666,6 +1675,14 @@ except Exception:
 )
 def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_checkbox_values, plx_checkbox_values, phase_checkbox_values, adjust_ref_checkbox_values, only_recalibrated_checkbox_values, revert_raw_checkbox_values, bin_checkbox_values, fit_pm_values, fit_plx_values, ultranest_values, inflate_err_values, selectedData_ra, selectedData_dec, url_search):
     ctx = dash.callback_context
+    fit_payload = None
+    fit_mode = None
+    fit_ultranest = False
+    fit_ra0_mov = None
+    fit_dec0_mov = None
+    fit_ra_unc_mas = None
+    fit_dec_unc_mas = None
+    fit_epoch_ref = None
     try:
         import sys
         sys.stderr.write(
@@ -1687,7 +1704,7 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
             xaxis_title="Epoch (Year)",
             yaxis_title="Offset (mas)",
         )
-        return fig, figure_export_config, fig, figure_export_config
+        return fig, figure_export_config, fig, figure_export_config, None
     
     if not selected_dataset:
         return _diag("EARLY EXIT: no selected_dataset")
@@ -1709,7 +1726,7 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
             yaxis_title="Offset (mas)",
         )
         dbg.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', name='ping'))
-        return dbg, figure_export_config, dbg, figure_export_config
+        return dbg, figure_export_config, dbg, figure_export_config, None
 
     # Make selected_missions robust if None
     if selected_missions is None:
@@ -1792,8 +1809,24 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
                 xaxis_title="Epoch (Year)",
                 yaxis_title="Offset (mas)",
             )
-            return empty_figure, figure_export_config, empty_figure, figure_export_config
+            return empty_figure, figure_export_config, empty_figure, figure_export_config, None
         ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
+        fit_epoch_ref = epoch_ref
+
+        def _pick_unc(primary_val, series_fallback):
+            try:
+                if primary_val is not None and np.isfinite(primary_val):
+                    return float(primary_val)
+            except Exception:
+                pass
+            try:
+                arr = pd.to_numeric(series_fallback, errors='coerce')
+                finite = arr[np.isfinite(arr)]
+                if finite.size > 0:
+                    return float(np.nanmedian(finite))
+            except Exception:
+                pass
+            return None
 
         #Query PM
         data_proper_motions = Table(
@@ -1955,7 +1988,7 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
                     f"only_recalibrated={only_recalibrated} | revert_raw={revert_raw}"
                 )
             )
-            return empty_fig, figure_export_config, empty_fig, figure_export_config
+            return empty_fig, figure_export_config, empty_fig, figure_export_config, None
     
         # NOTE: connection is closed in the finally block below
     
@@ -1971,7 +2004,7 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
             xaxis_title="Epoch (Year)",
             yaxis_title="Offset (mas)",
         )
-        return err_fig, figure_export_config, err_fig, figure_export_config
+        return err_fig, figure_export_config, err_fig, figure_export_config, None
     finally:
         try:
             connection.close()
@@ -1998,7 +2031,7 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
                 )
             ]
         )
-        return empty_figure, figure_export_config, empty_figure, figure_export_config
+        return empty_figure, figure_export_config, empty_figure, figure_export_config, None
 
     if selected_missions:
         data_df = data_df[data_df["mission"].isin(selected_missions)]
@@ -2092,6 +2125,13 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         data_df["rel_ra"] = data_df["rel_ra"] - ra0_mov
         data_df["rel_dec"] = data_df["rel_dec"] - dec0_mov
 
+        fit_mode = "pm_plx"
+        fit_ultranest = bool(use_ultranest and _ULTRANEST_AVAILABLE)
+        fit_ra0_mov = float(ra0_mov) if np.isfinite(ra0_mov) else None
+        fit_dec0_mov = float(dec0_mov) if np.isfinite(dec0_mov) else None
+        fit_ra_unc_mas = _pick_unc(s_add_ra, data_df.get("ra_unc_mas", pd.Series(dtype=float)))
+        fit_dec_unc_mas = _pick_unc(s_add_dec, data_df.get("dec_unc_mas", pd.Series(dtype=float)))
+
     if fit_pm and not fit_plx:
         # Always run EM mixture fit first
         (pmra, pmdec, epmra, epmdec,
@@ -2163,6 +2203,13 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         dec0_mov = pm_df.iloc[0]["pmdec_masyr"] * (epoch_ref - t0_fit) + pos_dec_m
         data_df["rel_ra"] = data_df["rel_ra"] - ra0_mov
         data_df["rel_dec"] = data_df["rel_dec"] - dec0_mov
+
+        fit_mode = "pm"
+        fit_ultranest = bool(use_ultranest and _ULTRANEST_AVAILABLE)
+        fit_ra0_mov = float(ra0_mov) if np.isfinite(ra0_mov) else None
+        fit_dec0_mov = float(dec0_mov) if np.isfinite(dec0_mov) else None
+        fit_ra_unc_mas = _pick_unc(s_add_ra, data_df.get("ra_unc_mas", pd.Series(dtype=float)))
+        fit_dec_unc_mas = _pick_unc(s_add_dec, data_df.get("dec_unc_mas", pd.Series(dtype=float)))
 
     # Default additive error inflations (mas) if not set by fitting blocks
     if 's_add_ra' not in locals():
@@ -2788,7 +2835,251 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         f"astrometry_global_chi2_dec_mocaoid_{int(moca_oid)}_{date_str}"
     )
 
-    return fig_ra, config_ra, fig_dec, config_dec
+    # Package fit payload for management push (if available)
+    def _to_float_or_none(val):
+        try:
+            if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+                return None
+            return float(val)
+        except Exception:
+            return None
+
+    if fit_mode in ("pm", "pm_plx"):
+        fit_payload = {
+            "moca_oid": int(moca_oid),
+            "fit_mode": fit_mode,
+            "fit_ultranest": bool(fit_ultranest),
+            "pmra_masyr": _to_float_or_none(pm_df.iloc[0]["pmra_masyr"]) if len(pm_df) else None,
+            "pmdec_masyr": _to_float_or_none(pm_df.iloc[0]["pmdec_masyr"]) if len(pm_df) else None,
+            "pmra_masyr_unc": _to_float_or_none(pm_df.iloc[0]["pmra_masyr_unc"]) if len(pm_df) else None,
+            "pmdec_masyr_unc": _to_float_or_none(pm_df.iloc[0]["pmdec_masyr_unc"]) if len(pm_df) else None,
+            "plx_mas": _to_float_or_none(plx_df.iloc[0]["parallax_mas"]) if (fit_mode == "pm_plx" and len(plx_df)) else None,
+            "plx_mas_unc": _to_float_or_none(plx_df.iloc[0]["parallax_mas_unc"]) if (fit_mode == "pm_plx" and len(plx_df)) else None,
+            "ra_ref_deg": _to_float_or_none(ra_ref),
+            "dec_ref_deg": _to_float_or_none(dec_ref),
+            "epoch_ref": _to_float_or_none(fit_epoch_ref),
+            "ra0_mov_mas": _to_float_or_none(fit_ra0_mov),
+            "dec0_mov_mas": _to_float_or_none(fit_dec0_mov),
+            "ra_unc_mas": _to_float_or_none(fit_ra_unc_mas),
+            "dec_unc_mas": _to_float_or_none(fit_dec_unc_mas),
+            "selected_missions": selected_missions or [],
+        }
+
+    return fig_ra, config_ra, fig_dec, config_dec, fit_payload
+
+# =============================================================================
+# Management-only push of PM / PM+PLX fits to the database
+# =============================================================================
+@dash.callback(
+    Output("astrometry-push-pm", "style"),
+    Output("astrometry-push-pmplx", "style"),
+    Output("astrometry-push-output", "style"),
+    Input("url", "search"),
+)
+def _toggle_astrometry_push_controls(url_search):
+    style_btn = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px'}
+    style_btn2 = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle'}
+    style_out = {'marginTop': '10px'}
+    try:
+        parsed = parse_qs((url_search or "").lstrip("?"))
+        username_param = (parsed.get('user', [None])[0] or '').strip().lower()
+    except Exception:
+        username_param = ''
+    if username_param == 'management':
+        return style_btn, style_btn2, style_out
+    style_btn['display'] = 'none'
+    style_btn2['display'] = 'none'
+    style_out['display'] = 'none'
+    return style_btn, style_btn2, style_out
+
+
+@dash.callback(
+    Output("astrometry-push-output", "children"),
+    Input("astrometry-push-pm", "n_clicks"),
+    Input("astrometry-push-pmplx", "n_clicks"),
+    State("astrometry-fit-store", "data"),
+    State("url", "search"),
+    prevent_initial_call=True
+)
+def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    try:
+        parsed = parse_qs((url_search or "").lstrip("?"))
+        username_param = (parsed.get('user', [None])[0] or '').strip().lower()
+    except Exception:
+        username_param = ''
+
+    if username_param != 'management':
+        return "Not authorized."
+
+    if not fit_data:
+        return "No fit results available. Run a PM or PM+PLX fit first."
+
+    triggered = ctx.triggered[0]["prop_id"].split(".")[0]
+    if triggered == "astrometry-push-pm" and fit_data.get("fit_mode") != "pm":
+        return "Current fit is not PM-only."
+    if triggered == "astrometry-push-pmplx" and fit_data.get("fit_mode") != "pm_plx":
+        return "Current fit is not PM+PLX."
+
+    def _num(val):
+        try:
+            if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+                return None
+            return float(val)
+        except Exception:
+            return None
+
+    def _parse_mission(label):
+        if not label or label.strip().lower() == "no mission":
+            return None, None
+        parts = str(label).strip().split()
+        if len(parts) >= 2:
+            return " ".join(parts[:-1]), parts[-1]
+        return parts[0], None
+
+    selected_missions = fit_data.get("selected_missions") or []
+    mission_name = None
+    data_release = None
+    if len(selected_missions) == 1:
+        mission_name, data_release = _parse_mission(selected_missions[0])
+
+    # Fallback for data_equatorial_coordinates (data_release is NOT NULL)
+    if data_release is None:
+        data_release = "mocaviz_fit"
+        if mission_name is None:
+            mission_name = "MOCAVIZ"
+
+    fit_mode = fit_data.get("fit_mode")
+    fit_ultranest = bool(fit_data.get("fit_ultranest"))
+    origin_base = "mocaviz_astrometry_pm_fit" if fit_mode == "pm" else "mocaviz_astrometry_pm_plx_fit"
+    calc_method = "mocaviz_pm_fit" if fit_mode == "pm" else "mocaviz_pm_plx_fit"
+    if fit_ultranest:
+        origin_base = origin_base + "_ultranest"
+        calc_method = calc_method + "_ultranest"
+    comments = f"{origin_base} (management push)"
+
+    moca_oid = int(fit_data.get("moca_oid"))
+    pmra = _num(fit_data.get("pmra_masyr"))
+    pmdec = _num(fit_data.get("pmdec_masyr"))
+    pmra_unc = _num(fit_data.get("pmra_masyr_unc"))
+    pmdec_unc = _num(fit_data.get("pmdec_masyr_unc"))
+    plx = _num(fit_data.get("plx_mas"))
+    plx_unc = _num(fit_data.get("plx_mas_unc"))
+    ra_ref = _num(fit_data.get("ra_ref_deg"))
+    dec_ref = _num(fit_data.get("dec_ref_deg"))
+    epoch_ref = _num(fit_data.get("epoch_ref"))
+    ra0_mov = _num(fit_data.get("ra0_mov_mas"))
+    dec0_mov = _num(fit_data.get("dec0_mov_mas"))
+    ra_unc_mas = _num(fit_data.get("ra_unc_mas"))
+    dec_unc_mas = _num(fit_data.get("dec_unc_mas"))
+
+    if any(v is None for v in [ra_ref, dec_ref, epoch_ref, ra0_mov, dec0_mov, pmra, pmdec]):
+        return "Fit payload missing required values."
+
+    cos_dec = np.cos(np.radians(dec_ref))
+    ra_fit = ra_ref + (ra0_mov / (cos_dec * 3600.0 * 1000.0))
+    dec_fit = dec_ref + (dec0_mov / (3600.0 * 1000.0))
+
+    pm_corrected = 1
+    plx_corrected = 1 if fit_mode == "pm_plx" else 0
+
+    engine = get_engine_from_url(url_search)
+    conn = engine.connect()
+    try:
+        # Insert PM
+        pm_sql = text("""
+            INSERT INTO data_proper_motions
+            (moca_oid, moca_pid, pmra_masyr, pmdec_masyr, pmra_masyr_unc, pmdec_masyr_unc,
+             mission_name, data_release, origin, ignored, adopt_asis, adopted, is_public,
+             public_adopt_asis, public_adopted, comments, rls, calculation_method)
+            VALUES
+            (:moca_oid, NULL, :pmra, :pmdec, :pmra_unc, :pmdec_unc,
+             :mission_name, :data_release, :origin, 0, 0, 0, 1,
+             0, 0, :comments, :rls, :calc_method)
+        """)
+        conn.execute(pm_sql, {
+            "moca_oid": moca_oid,
+            "pmra": pmra,
+            "pmdec": pmdec,
+            "pmra_unc": pmra_unc,
+            "pmdec_unc": pmdec_unc,
+            "mission_name": mission_name,
+            "data_release": data_release,
+            "origin": origin_base,
+            "comments": comments,
+            "rls": "public",
+            "calc_method": calc_method
+        })
+
+        # Insert PLX (if PM+PLX)
+        if fit_mode == "pm_plx":
+            plx_sql = text("""
+                INSERT INTO data_parallaxes
+                (moca_oid, moca_pid, parallax_mas, parallax_mas_unc,
+                 mission_name, data_release, origin, ignored, adopt_asis, adopted, is_public,
+                 public_adopt_asis, public_adopted, comments, rls)
+                VALUES
+                (:moca_oid, NULL, :plx, :plx_unc,
+                 :mission_name, :data_release, :origin, 0, 0, 0, 1,
+                 0, 0, :comments, :rls)
+            """)
+            conn.execute(plx_sql, {
+                "moca_oid": moca_oid,
+                "plx": plx,
+                "plx_unc": plx_unc,
+                "mission_name": mission_name,
+                "data_release": data_release,
+                "origin": origin_base,
+                "comments": comments,
+                "rls": "public"
+            })
+
+        # Insert equatorial coordinates row
+        eq_sql = text("""
+            INSERT INTO data_equatorial_coordinates
+            (moca_oid, moca_pid, ra, dec, ra_unc_mas, dec_unc_mas,
+             measurement_epoch_yr, measurement_epoch_yr_unc, frame_equinox, coord_frame,
+             mission_name, data_release, origin, ignored, adopt_asis, is_public,
+             public_adopt_asis, adopt_as_reference, public_adopt_as_reference, single_epoch,
+             pm_corrected, plx_corrected, point_of_view, comments, rls)
+            VALUES
+            (:moca_oid, NULL, :ra, :dec, :ra_unc, :dec_unc,
+             :epoch, :epoch_unc, :frame_equinox, :coord_frame,
+             :mission_name, :data_release, :origin, 0, 0, 1,
+             0, 0, 0, 0,
+             :pm_corrected, :plx_corrected, :point_of_view, :comments, :rls)
+        """)
+        conn.execute(eq_sql, {
+            "moca_oid": moca_oid,
+            "ra": ra_fit,
+            "dec": dec_fit,
+            "ra_unc": ra_unc_mas,
+            "dec_unc": dec_unc_mas,
+            "epoch": epoch_ref,
+            "epoch_unc": 0.0,
+            "frame_equinox": "J2000",
+            "coord_frame": "ICRS",
+            "mission_name": mission_name,
+            "data_release": data_release,
+            "origin": origin_base,
+            "pm_corrected": pm_corrected,
+            "plx_corrected": plx_corrected,
+            "point_of_view": "earth",
+            "comments": comments,
+            "rls": "public"
+        })
+
+        return f"Inserted PM{' + PLX' if fit_mode == 'pm_plx' else ''} and equatorial coordinates for moca_oid={moca_oid}."
+    except Exception as e:
+        return f"ERROR: {e}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # --- Ensure astrometry callbacks are registered under Passenger/Gunicorn ---
 try:
