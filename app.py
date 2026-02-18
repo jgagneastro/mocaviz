@@ -1,18 +1,11 @@
 from dash import Dash, html, dcc, page_registry
 import dash
-import importlib
 
 #conda install python-dotenv or pip install python-dotenv
 from dotenv import load_dotenv
 load_dotenv()  # take environment variables from .env.
 
 app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
-
-# ---- Preload astrometry page only (avoid full pages preload on server) ----
-try:
-    importlib.import_module("pages.astrometry")
-except Exception:
-    pass
 
 # ---- Diagnostics: log app identity + callback count at startup ----
 try:
