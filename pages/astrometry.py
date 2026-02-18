@@ -26,15 +26,6 @@ dash.register_page(__name__)
 try:
     _app = dash.get_app()
     _server = _app.server
-    # One-time: confirm callback registration for the astrometry plots
-    try:
-        import sys
-        cb_keys = list(getattr(_app, "callback_map", {}).keys())
-        ast_keys = [k for k in cb_keys if "astrometry-plot-ra" in k or "astrometry-plot-dec" in k]
-        sys.stderr.write(f"[mocaviz:init] astrometry plot callback keys: {ast_keys}\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
     if not getattr(_server, "_mocaviz_request_logger", False):
         _server._mocaviz_request_logger = True
 
@@ -43,6 +34,17 @@ try:
             try:
                 from flask import request
                 path = request.path or ""
+                # One-time: log whether astrometry plot callbacks are registered (runs after module import)
+                if not getattr(_server, "_mocaviz_logged_astrometry_callbacks", False):
+                    try:
+                        import sys
+                        cb_keys = list(getattr(_app, "callback_map", {}).keys())
+                        ast_keys = [k for k in cb_keys if "astrometry-plot-ra" in k or "astrometry-plot-dec" in k]
+                        sys.stderr.write(f"[mocaviz:init] astrometry plot callback keys (first request): {ast_keys}\n")
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    _server._mocaviz_logged_astrometry_callbacks = True
                 # Focus on Dash update traffic + this page
                 if path.startswith("/_dash") or "astrometry" in path:
                     import sys
