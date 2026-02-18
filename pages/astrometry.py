@@ -2747,3 +2747,30 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
     )
 
     return fig_ra, config_ra, fig_dec, config_dec
+
+# --- Ensure astrometry callbacks are registered under Passenger/Gunicorn ---
+try:
+    import sys
+    import dash
+
+    _app_for_cb = dash.get_app()
+
+    if not globals().get("_ASTROMETRY_CALLBACKS_REGISTERED", False):
+        globals()["_ASTROMETRY_CALLBACKS_REGISTERED"] = True
+
+        if "register_callbacks" in globals() and callable(globals()["register_callbacks"]):
+            sys.stderr.write("[astrometry:init] calling register_callbacks()\n")
+            sys.stderr.flush()
+            globals()["register_callbacks"]()
+
+    cb_keys = list(getattr(_app_for_cb, "callback_map", {}).keys())
+    ast_keys = [k for k in cb_keys if "astrometry-plot-ra" in k or "astrometry-plot-dec" in k]
+    sys.stderr.write(f"[astrometry:init] astrometry plot callback keys after register: {ast_keys}\n")
+    sys.stderr.flush()
+except Exception as e:
+    try:
+        import sys
+        sys.stderr.write(f"[astrometry:init] callback registration block failed: {e}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
