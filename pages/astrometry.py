@@ -1372,7 +1372,14 @@ layout = html.Div([
             ),
             dcc.Checklist(
                 id="fit-ultranest-checkbox",
-                options=[{'label': 'Fit using ultranest (slow)', 'value': 'ultranest'}],
+                options=[{
+                    'label': (
+                        'Fit using ultranest (slow)'
+                        if _ULTRANEST_AVAILABLE
+                        else 'Fit using ultranest (slow): requires local mocaviz install'
+                    ),
+                    'value': 'ultranest'
+                }],
                 value=[],
                 inline=True,
                 style={'margin-bottom': '10px', 'font-size': '16px', 'opacity': (1.0 if _ULTRANEST_AVAILABLE else 0.5)}
