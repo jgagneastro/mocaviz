@@ -2882,9 +2882,10 @@ def _toggle_astrometry_push_controls(url_search):
     style_out = {'marginTop': '10px'}
     try:
         parsed = parse_qs((url_search or "").lstrip("?"))
-        username_param = (parsed.get('user', [None])[0] or '').strip().lower()
+        env_username = os.environ.get('MOCA_USERNAME', '')
+        username_param = (parsed.get('user', [env_username])[0] or '').strip().lower()
     except Exception:
-        username_param = ''
+        username_param = (os.environ.get('MOCA_USERNAME', '') or '').strip().lower()
     if username_param == 'management':
         return style_btn, style_btn2, style_out
     style_btn['display'] = 'none'
@@ -2908,9 +2909,10 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
 
     try:
         parsed = parse_qs((url_search or "").lstrip("?"))
-        username_param = (parsed.get('user', [None])[0] or '').strip().lower()
+        env_username = os.environ.get('MOCA_USERNAME', '')
+        username_param = (parsed.get('user', [env_username])[0] or '').strip().lower()
     except Exception:
-        username_param = ''
+        username_param = (os.environ.get('MOCA_USERNAME', '') or '').strip().lower()
 
     if username_param != 'management':
         return "Not authorized."
