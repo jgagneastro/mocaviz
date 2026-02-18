@@ -1,7 +1,6 @@
 from dash import Dash, html, dcc, page_registry
 import dash
 import importlib
-from pathlib import Path
 
 #conda install python-dotenv or pip install python-dotenv
 from dotenv import load_dotenv
@@ -9,16 +8,10 @@ load_dotenv()  # take environment variables from .env.
 
 app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
 
-# ---- Preload all page modules to ensure callbacks are registered in every worker ----
+# ---- Preload astrometry page only (avoid full pages preload on server) ----
 try:
-    pages_dir = Path(__file__).parent / "pages"
-    if pages_dir.is_dir():
-        for py_file in sorted(pages_dir.glob("*.py")):
-            if py_file.name.startswith("_") or py_file.name == "__init__.py":
-                continue
-            importlib.import_module(f"pages.{py_file.stem}")
+    importlib.import_module("pages.astrometry")
 except Exception:
-    # If anything goes wrong, fall back to Dash's lazy discovery.
     pass
 
 # ---- Diagnostics: log app identity + callback count at startup ----
