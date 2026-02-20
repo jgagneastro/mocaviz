@@ -21,7 +21,7 @@ from mocapy import *
 
 bcg_color = 'rgb(255,255,255)'
 
-initial_specids = [12384,1602,2284]
+initial_specids = [59595,13510,8168]
 
 figure_export_config = {
   'toImageButtonOptions': {
