@@ -1122,7 +1122,9 @@ def update_download_links(json_data, url_search):
     # Group the dataframe by moca_specid
     for specid, group in df.groupby('moca_specid'):
         # Select only the relevant columns and rename them
-        csv_df = group[['lam', 'sp', 'esp']].rename(
+        csv_df = group[['lam', 'sp', 'esp']].copy()
+        csv_df = csv_df[pd.notna(csv_df['sp'])]
+        csv_df = csv_df.rename(
             columns={'lam': 'wavelength_microns', 'sp': 'flux_flambda', 'esp': 'flux_error_flambda'}
         )
         header_lines = disclaimer_lines + ["# moca_spectra metadata"]
