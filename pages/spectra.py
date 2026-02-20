@@ -822,7 +822,7 @@ layout = html.Div(
                             id="spectram-lowres-toggle-spectrapage",
                             options=[
                                 {
-                                    "label": "deactivate low-resolution display mode",
+                                    "label": "Deactivate low-resolution display mode",
                                     "value": "disable_lowres_display",
                                     "disabled": True,
                                 },
@@ -1042,7 +1042,7 @@ def update_lowres_toggle_state(jsonified_db_data, current_values):
 
     options = [
         {
-            "label": "deactivate low-resolution display mode",
+            "label": "Deactivate low-resolution display mode",
             "value": "disable_lowres_display",
             "disabled": not has_lowres,
         },
