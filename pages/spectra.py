@@ -8,6 +8,7 @@ dash.register_page(__name__)
 import pathlib, os
 import colorsys
 import numpy.core.defchararray as np_f
+from datetime import datetime, timezone
 
 import pandas as pd
 import numpy as np
@@ -959,7 +960,7 @@ def update_specid_select_spectrapage(
         moca.connection = con
 
     # Query for AID list here
-    df_aids = moca.query("SELECT moca_specid, CONCAT(ms.moca_specid,': ',COALESCE(CONCAT(mo.designation, ' (',spt.spectral_type, ') with ', ms.moca_instid,COALESCE(CONCAT(' in ', ms.instrument_mode_name,' mode'),''),COALESCE(CONCAT(' (', ms.data_collection_date,')'),'')),ms.spectrum_name)) AS spectrum_name FROM moca_spectra ms LEFT JOIN moca_objects mo USING(moca_oid) LEFT JOIN (SELECT moca_oid, spectral_type FROM data_spectral_types WHERE adopted=1) spt USING(moca_oid)")
+    df_aids = moca.query("SELECT moca_specid, CONCAT(ms.moca_specid,': ',COALESCE(CONCAT(mo.designation, ' (',spt.spectral_type, ') with ', ms.moca_instid,COALESCE(CONCAT(' in ', ms.instrument_mode_name,' mode'),''),COALESCE(CONCAT(' (', ms.data_collection_date,')'),'')),ms.spectrum_name)) AS spectrum_name FROM moca_spectra ms LEFT JOIN moca_objects mo USING(moca_oid) LEFT JOIN (SELECT moca_oid, spectral_type FROM data_spectral_types WHERE adopted=1) spt USING(moca_oid) WHERE COALESCE(ms.ignored,0)=0")
     aid_options = [{"label": row["spectrum_name"], "value": row["moca_specid"]} for index, row in df_aids.iterrows()]
 
     #Prevent app from crashing if no spectra are selected
@@ -1110,13 +1111,21 @@ def update_download_links(json_data, url_search):
             return "NULL"
         return str(value).replace("\r\n", "\n").replace("\r", "\n")
 
+    datestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    disclaimer_lines = [
+        f"# This spectrum was downloaded from the Montreal Open Clusters and Associations (MOCA) database on {datestamp} using the MOCA Spectral Explorer.",
+        "# Please cite Gagné et al. (2026) and the relevant references shown below (e.g., see the bibcode metadata).",
+        '# For spectra with "simple" in the name, please cite the SIMPLE Archive of low-mass stars, brown dwarfs, and directly imaged exoplanets: 10.5281/zenodo.13937301.',
+        "#",
+    ]
+
     # Group the dataframe by moca_specid
     for specid, group in df.groupby('moca_specid'):
         # Select only the relevant columns and rename them
         csv_df = group[['lam', 'sp', 'esp']].rename(
             columns={'lam': 'wavelength_microns', 'sp': 'flux_flambda', 'esp': 'flux_error_flambda'}
         )
-        header_lines = ["# moca_spectra metadata"]
+        header_lines = disclaimer_lines + ["# moca_spectra metadata"]
         text_columns = {'comments', 'fits_header'}
         meta_row = metadata_by_specid.get(int(specid))
         if meta_row is not None:
