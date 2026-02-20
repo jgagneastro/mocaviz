@@ -82,7 +82,7 @@ FEATURE_BANDS = [
     {"name": "H₂O", "rng": (15.00, 20.00)},
 ]
 
-def _add_feature_bands(fig, ypad_frac=0.04):
+def _add_feature_bands(fig, ypad_frac=0.04, x_is_log=False):
     """
     Add subtle shaded bands and labels for common features in the background.
     ypad_frac controls top/bottom padding in 'paper' coords to keep labels inside.
@@ -118,8 +118,13 @@ def _add_feature_bands(fig, ypad_frac=0.04):
             line=dict(width=0),
             layer="below",
         )
+        if x_is_log and x0 > 0 and x1 > 0:
+            x_annot = float(np.sqrt(x0 * x1))
+        else:
+            x_annot = (x0 + x1) / 2
+
         fig.add_annotation(
-            x=(x0 + x1) / 2,
+            x=x_annot,
             y=1 - ypad_frac*0.5,
             xref="x", yref="paper",
             text=fb["name"],
@@ -739,7 +744,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
 
     fig = go.Figure(data=data,layout=layout)
     if showfeatures:
-        _add_feature_bands(fig, ypad_frac=0.05)
+        _add_feature_bands(fig, ypad_frac=0.05, x_is_log=xlog)
                      
     fig.update_layout(yaxis={'title': ytitle})
     return fig
