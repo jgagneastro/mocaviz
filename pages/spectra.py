@@ -120,6 +120,7 @@ def _add_feature_bands(fig, ypad_frac=0.04, x_is_log=False):
         )
         if x_is_log and x0 > 0 and x1 > 0:
             x_annot = float(np.sqrt(x0 * x1))
+            x_annot = float(np.log10(x_annot))
         else:
             x_annot = (x0 + x1) / 2
 
