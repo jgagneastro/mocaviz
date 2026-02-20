@@ -518,84 +518,42 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         new_trace = go.Scattergl(x=x_with_nans,y=y_with_nans,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'),connectgaps=False)
 
         if not dfi['esp'].isna().all():
-            
-            #dfi_filtered = dfi[['lam', 'sp', 'esp']].dropna()
+            valid = np.isfinite(x_with_nans) & np.isfinite(y_with_nans) & np.isfinite(ey_with_nans)
+            valid_idx = np.where(valid)[0]
 
-            # Upper bound trace
-            # Upper bound trace
-            # Find the indices where NaNs occur in x_with_nans
-            # Find the indices where NaNs occur in x_with_nans
-            nan_indices = np.where(np.isnan(y_with_nans))[0]
+            if valid_idx.size > 0:
+                split_points = np.where(np.diff(valid_idx) > 1)[0] + 1
+                valid_segments = np.split(valid_idx, split_points)
 
-            # Initialize start_idx at 0
-            start_idx = 0
+                for seg_idx in valid_segments:
+                    if seg_idx.size < 2:
+                        continue
 
-            # Loop over the nan_indices to handle each segment
-            for nan_idx in nan_indices:
-                #if start_idx !=0:
-                #    continue
-                # Only plot valid segments (ignore consecutive NaNs)
-                if nan_idx > start_idx:
-                    # Upper bound trace for the current segment
                     upper_bound_trace = go.Scatter(
-                        x=x_with_nans[start_idx:nan_idx],  # Plot until nan_idx-1
-                        y=y_with_nans[start_idx:nan_idx] + ey_with_nans[start_idx:nan_idx],
+                        x=x_with_nans[seg_idx],
+                        y=y_with_nans[seg_idx] + ey_with_nans[seg_idx],
                         mode='lines',
-                        line=dict(width=0),  # No line for the upper bound
+                        line=dict(width=0, shape='hv'),
                         hoverinfo='none',
+                        connectgaps=False,
                         fill=None,
                         showlegend=False
                     )
 
-                    # Lower bound trace with fill='tonexty' for the current segment
                     lower_bound_trace = go.Scatter(
-                        x=x_with_nans[start_idx:nan_idx],  # Plot until nan_idx-1
-                        y=y_with_nans[start_idx:nan_idx] - ey_with_nans[start_idx:nan_idx],
+                        x=x_with_nans[seg_idx],
+                        y=y_with_nans[seg_idx] - ey_with_nans[seg_idx],
                         mode='lines',
-                        line=dict(width=0),  # No line for the lower bound
-                        fill='tonexty',  # Fill between lower and upper bound
-                        fillcolor=hex_to_rgba(colori, alpha),  # Set the fill color
+                        line=dict(width=0, shape='hv'),
+                        fill='tonexty',
+                        fillcolor=hex_to_rgba(colori, alpha),
                         hoverinfo='none',
+                        connectgaps=False,
                         showlegend=False
                     )
 
-                    # Append traces to data
                     data.append(upper_bound_trace)
                     data.append(lower_bound_trace)
-
-                # Move the start index to the point after the current NaN
-                start_idx = nan_idx + 1
-
-            # Handle the last segment after the last NaN
-            if start_idx < len(x_with_nans):
-                upper_bound_trace = go.Scatter(
-                    x=x_with_nans[start_idx:],  # Plot remaining segment
-                    y=y_with_nans[start_idx:] + ey_with_nans[start_idx:],
-                    mode='lines',
-                    line=dict(width=0),
-                    hoverinfo='none',
-                    fill=None,
-                    showlegend=False
-                )
-
-                lower_bound_trace = go.Scatter(
-                    x=x_with_nans[start_idx:],  # Plot remaining segment
-                    y=y_with_nans[start_idx:] - ey_with_nans[start_idx:],
-                    mode='lines',
-                    line=dict(width=0),
-                    fill='tonexty',
-                    fillcolor=hex_to_rgba(colori, alpha),
-                    hoverinfo='none',
-                    showlegend=False
-                )
-
-                # Append final segment traces to data
-                data.append(upper_bound_trace)
-                data.append(lower_bound_trace)
-
-
-            #data.append(upper_bound_trace)
-            #data.append(lower_bound_trace)
         
         data.append(new_trace)
 
