@@ -567,7 +567,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                         x=dense_x,
                         y=dense_y,
                         mode='lines',
-                        line=dict(color=hex_to_rgba(colori, 0.7), width=2.8),
+                        line=dict(color=hex_to_rgba(colori, 0.5), width=2.8),
                         hoverinfo='none',
                         showlegend=False
                     )
@@ -577,7 +577,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                         x=unique_x,
                         y=unique_y,
                         mode='lines',
-                        line=dict(color=hex_to_rgba(colori, 0.7), width=2.8),
+                        line=dict(color=hex_to_rgba(colori, 0.5), width=2.8),
                         hoverinfo='none',
                         showlegend=False
                     )
