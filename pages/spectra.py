@@ -11,6 +11,7 @@ import numpy.core.defchararray as np_f
 
 import pandas as pd
 import numpy as np
+from scipy.interpolate import PchipInterpolator
 
 import plotly.graph_objs as go
 from dash.dependencies import Input, Output, State
@@ -550,6 +551,38 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             ey_lowres = dfi['esp'].values[valid_lowres]
 
             if x_lowres.size > 0:
+                x_sort_idx = np.argsort(x_lowres)
+                x_lowres = x_lowres[x_sort_idx]
+                y_lowres = y_lowres[x_sort_idx]
+                ey_lowres = ey_lowres[x_sort_idx]
+
+                unique_x, unique_idx = np.unique(x_lowres, return_index=True)
+                unique_y = y_lowres[unique_idx]
+
+                if unique_x.size >= 3:
+                    dense_x = np.linspace(unique_x[0], unique_x[-1], max(300, 8 * unique_x.size))
+                    spline = PchipInterpolator(unique_x, unique_y, extrapolate=False)
+                    dense_y = spline(dense_x)
+                    spline_trace = go.Scatter(
+                        x=dense_x,
+                        y=dense_y,
+                        mode='lines',
+                        line=dict(color=hex_to_rgba(colori, 0.7), width=2.8),
+                        hoverinfo='none',
+                        showlegend=False
+                    )
+                    data.append(spline_trace)
+                elif unique_x.size >= 2:
+                    spline_trace = go.Scatter(
+                        x=unique_x,
+                        y=unique_y,
+                        mode='lines',
+                        line=dict(color=hex_to_rgba(colori, 0.7), width=2.8),
+                        hoverinfo='none',
+                        showlegend=False
+                    )
+                    data.append(spline_trace)
+
                 if np.any(np.isfinite(ey_lowres)):
                     error_trace = go.Scatter(
                         x=x_lowres,
