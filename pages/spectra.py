@@ -1018,6 +1018,7 @@ def update_spectrum_spectrapage(
 @dash.callback(
     Output("spectram-lowres-toggle-spectrapage", "options"),
     Output("spectram-lowres-toggle-spectrapage", "value"),
+    Output("spectram-lowres-toggle-spectrapage", "style"),
     Input("db-data-spectrapage", "data"),
     State("spectram-lowres-toggle-spectrapage", "value"),
 )
@@ -1040,8 +1041,8 @@ def update_lowres_toggle_state(jsonified_db_data, current_values):
         },
     ]
     if has_lowres:
-        return options, (current_values or [])
-    return options, []
+        return options, (current_values or []), {}
+    return options, [], {"color": "#9aa0a6"}
 
 @dash.callback(
     Output("spectram-normrange-spectrapage", "disabled"),
