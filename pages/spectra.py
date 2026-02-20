@@ -274,6 +274,13 @@ def build_banner_spectra():
                 "MOCAdb are not currently calibrated in absolute flux.",
                 style={"fontSize": "16px", "marginTop": "6px", "marginBottom": "0px"},
             ),
+            html.P(
+                "By default, low-resolution spectra are shown with circles and a spline to guide the eye, "
+                "but this can be turned off in the options below the plotting region. A simple CSV file can "
+                "also be downloaded for each spectrum at the bottom, but please cite the original papers "
+                "when publishing these data.",
+                style={"fontSize": "16px", "marginTop": "6px", "marginBottom": "0px"},
+            ),
         ],
         style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
     )
