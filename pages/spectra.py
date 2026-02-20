@@ -911,36 +911,28 @@ def update_specid_select_spectrapage(
 ):
     
     #print("DBQUERY callback-spectrapage")
+    parsed_url_data = {}
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+
+    # Read credentials
+    user = parsed_url_data.get('user', [None])[0]
+    pwd = parsed_url_data.get('pwd', [None])[0]
+    dbase = parsed_url_data.get('dbase', [None])[0]
+    is_public_creds = (
+        isinstance(user, str) and isinstance(pwd, str) and isinstance(dbase, str) and
+        user.lower() == 'public' and pwd.lower() == 'public' and dbase.lower() == 'public'
+    )
     
     # Read default spectra from URL if none are selected
     # Example query type '?moca_specid=203,212'
     if specid_select is None:
-        #Default values without URL variables
-        if url_search == "":
-            specid_select = initial_specids
+        if 'moca_specid' in parsed_url_data.keys() or 'specid' in parsed_url_data.keys():
+            raw_specids = parsed_url_data.get('moca_specid', parsed_url_data.get('specid', ['']))[0]
+            specid_select = [int(x) for x in raw_specids.split(',') if x.strip()]
         else:
-            parsed_url = urlparse(url_search)
-            parsed_url_data = parse_qs(parsed_url.query)
-            if 'moca_specid' in parsed_url_data.keys() or 'specid' in parsed_url_data.keys():
-                raw_specids = parsed_url_data.get('moca_specid', parsed_url_data.get('specid', ['']))[0]
-                specid_select = [int(x) for x in raw_specids.split(',') if x.strip()]
-            else:
-                if specid_select is None:
-                    specid_select = initial_specids
-
-    # Read credentials
-    user = None
-    pwd = None
-    dbase = None
-    if url_search != "":
-        parsed_url = urlparse(url_search)
-        parsed_url_data = parse_qs(parsed_url.query)
-        if 'user' in parsed_url_data.keys():
-            user = parsed_url_data['user'][0]
-        if 'pwd' in parsed_url_data.keys():
-            pwd = parsed_url_data['pwd'][0]
-        if 'dbase' in parsed_url_data.keys():
-            dbase = parsed_url_data['dbase'][0]
+            specid_select = [2522, 8172] if is_public_creds else initial_specids
 
     # Load MOCA engine for this user
     moca = MocaEngine()
