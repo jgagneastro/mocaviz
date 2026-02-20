@@ -20,7 +20,7 @@ from mocapy import *
 
 bcg_color = 'rgb(255,255,255)'
 
-initial_specids = [683,2105,1954]
+initial_specids = [12384,1602,2284]
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -815,11 +815,11 @@ layout = html.Div(
                                     "value": "ylog",
                                 },
                                 {
-                                    "label": "F_nu instead (Jy) of F_lambda (W/m/$\\mu$m)",
+                                    "label": "F_nu instead (Jy) of F_lambda (W/m/μm)",
                                     "value": "fnu_jy",
                                 },
                             ],
-                            value=[],
+                            value=['xlog', 'ylog'],
                         ),
                         dcc.Checklist(
                             id="spectram-showfeatures-spectrapage",
@@ -933,10 +933,6 @@ def update_specid_select_spectrapage(
     user = parsed_url_data.get('user', [None])[0]
     pwd = parsed_url_data.get('pwd', [None])[0]
     dbase = parsed_url_data.get('dbase', [None])[0]
-    is_public_creds = (
-        isinstance(user, str) and isinstance(pwd, str) and isinstance(dbase, str) and
-        user.lower() == 'public' and pwd.lower() == 'public' and dbase.lower() == 'public'
-    )
     
     # Read default spectra from URL if none are selected
     # Example query type '?moca_specid=203,212'
@@ -945,7 +941,7 @@ def update_specid_select_spectrapage(
             raw_specids = parsed_url_data.get('moca_specid', parsed_url_data.get('specid', ['']))[0]
             specid_select = [int(x) for x in raw_specids.split(',') if x.strip()]
         else:
-            specid_select = [2522, 8172] if is_public_creds else initial_specids
+            specid_select = initial_specids
 
     # Load MOCA engine for this user
     moca = MocaEngine()
@@ -1066,21 +1062,83 @@ def toggle_normrange_disabled(norm_values):
 
 @dash.callback(
     Output("download-links-container", "children"),
-    Input("db-data-spectrapage", "data")
+    Input("db-data-spectrapage", "data"),
+    State("url", "search"),
 )
-def update_download_links(json_data):
+def update_download_links(json_data, url_search):
     if json_data is None or len(json_data) == 0:
         return []
     # The first element in json_data is the main dataframe
     df = pd.read_json(json_data[0], orient='split')
     download_links = []
+
+    parsed_url_data = {}
+    if url_search:
+        parsed_url = urlparse(url_search)
+        parsed_url_data = parse_qs(parsed_url.query)
+    user = parsed_url_data.get('user', [None])[0]
+    pwd = parsed_url_data.get('pwd', [None])[0]
+    dbase = parsed_url_data.get('dbase', [None])[0]
+
+    # Load MOCA engine for this user
+    moca = MocaEngine()
+
+    # Substitute MOCA engine's connection if credentials are provided
+    if user is not None and pwd is not None and dbase is not None:
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+
+        raw_con = engine.raw_connection()
+        moca.raw_connection = raw_con
+
+        con = engine.connect()
+        moca.connection = con
+
+    metadata_by_specid = {}
+    specids = [int(v) for v in pd.to_numeric(df['moca_specid'], errors='coerce').dropna().unique().tolist()]
+    if len(specids) > 0:
+        specid_csv = ",".join([str(v) for v in specids])
+        try:
+            meta_df = moca.query(f"SELECT * FROM moca_spectra WHERE moca_specid IN ({specid_csv})")
+            if meta_df is not None and not meta_df.empty and 'moca_specid' in meta_df.columns:
+                for _, row in meta_df.iterrows():
+                    metadata_by_specid[int(row['moca_specid'])] = row
+        except Exception:
+            metadata_by_specid = {}
+
+    def _format_meta_value(value):
+        if pd.isna(value):
+            return "NULL"
+        return str(value).replace("\r\n", "\n").replace("\r", "\n")
+
     # Group the dataframe by moca_specid
     for specid, group in df.groupby('moca_specid'):
         # Select only the relevant columns and rename them
         csv_df = group[['lam', 'sp', 'esp']].rename(
             columns={'lam': 'wavelength_microns', 'sp': 'flux_flambda', 'esp': 'flux_error_flambda'}
         )
-        csv_str = csv_df.to_csv(index=False)
+        header_lines = ["# moca_spectra metadata"]
+        text_columns = {'comments', 'fits_header'}
+        meta_row = metadata_by_specid.get(int(specid))
+        if meta_row is not None:
+            for col in meta_row.index:
+                val = _format_meta_value(meta_row[col])
+                if col in text_columns:
+                    header_lines.append(f"# {col}: [see commented block below]")
+                else:
+                    header_lines.append(f"# {col}: {val}")
+            for col in ['comments', 'fits_header']:
+                if col in meta_row.index:
+                    raw_text = _format_meta_value(meta_row[col])
+                    header_lines.append(f"# {col}:")
+                    if raw_text == "NULL" or raw_text.strip() == "":
+                        header_lines.append("# (empty)")
+                    else:
+                        for line in raw_text.split("\n"):
+                            header_lines.append(f"# {line}")
+        else:
+            header_lines.append("# metadata: unavailable")
+
+        csv_str = "\n".join(header_lines) + "\n" + csv_df.to_csv(index=False)
         # Encode CSV content for a data URI
         href = "data:text/csv;charset=utf-8," + quote(csv_str)
         # Create a download link (styled as a button if desired)
