@@ -268,6 +268,12 @@ def build_banner_spectra():
         children=[
             #html.Img(src=get_asset_url("dash-logo.png")),
             html.H2("MOCA SPECTRAL EXPLORER"),
+            html.P(
+                "This tool allows to quickly display spectra available in the MOCA database. "
+                "Note that some spectra can appear off in absolute flux mode, as many spectra in the "
+                "MOCAdb are not currently calibrated in absolute flux.",
+                style={"fontSize": "16px", "marginTop": "6px", "marginBottom": "0px"},
+            ),
         ],
         style={"width": "100%", "whiteSpace": "pre-wrap", "backgroundColor":"white"},
     )
