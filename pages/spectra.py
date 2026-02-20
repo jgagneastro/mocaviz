@@ -704,15 +704,15 @@ layout = html.Div(
                                     "value": "hover",
                                 },
                                 {
-                                    "label": "xlog",
+                                    "label": "Log X axis",
                                     "value": "xlog",
                                 },
                                 {
-                                    "label": "ylog",
+                                    "label": "Log Y axis",
                                     "value": "ylog",
                                 },
                                 {
-                                    "label": "F_nu instead of F_lambda (Jy)",
+                                    "label": "F_nu instead (Jy) of F_lambda (W/m/$\\mu$m)",
                                     "value": "fnu_jy",
                                 },
                             ],
