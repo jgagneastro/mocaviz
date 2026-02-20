@@ -156,6 +156,21 @@ def parse_norm_range(text_val):
     lo, hi = (a, b) if a <= b else (b, a)
     return (lo, hi)
 
+def average_resolving_power(lam_array):
+    lam = np.asarray(lam_array, dtype=float)
+    lam = lam[np.isfinite(lam)]
+    if lam.size < 2:
+        return np.nan
+    lam = np.unique(np.sort(lam))
+    if lam.size < 2:
+        return np.nan
+    dlam = np.diff(lam)
+    lam_mid = 0.5 * (lam[1:] + lam[:-1])
+    valid = np.isfinite(dlam) & (dlam > 0) & np.isfinite(lam_mid) & (lam_mid > 0)
+    if not np.any(valid):
+        return np.nan
+    return float(np.nanmean(lam_mid[valid] / dlam[valid]))
+
 # Assign color to legend
 # Eventually move this to a subroutine
 def colormap_picker_spectra(aid_list):
@@ -340,6 +355,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
     ylog = "ylog" in style
     use_fnu_jy = "fnu_jy" in style
     normalize = "normalize" in style
+    disable_lowres_display = "disable_lowres_display" in style
     c_light_m_s = 299792458.0
 
     if "hover" not in style:
@@ -524,54 +540,95 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         colori = colormap[unique_specids[i]]
 
         dfi = spec_map[unique_specids[i]].copy()
+        avg_resolving_power = average_resolving_power(dfi['lam'].values)
+        use_lowres_display = (not disable_lowres_display) and np.isfinite(avg_resolving_power) and (avg_resolving_power < 100.0)
 
-        x_array = dfi['lam'].values
-        y_array = dfi['sp'].values
+        if use_lowres_display:
+            valid_lowres = np.isfinite(dfi['lam'].values) & np.isfinite(dfi['sp'].values)
+            x_lowres = dfi['lam'].values[valid_lowres]
+            y_lowres = dfi['sp'].values[valid_lowres]
+            ey_lowres = dfi['esp'].values[valid_lowres]
 
-        # Insert NaNs in the gaps larger than 10x the median spacing
-        x_with_nans, y_with_nans, ey_with_nans = insert_nans_in_gaps(dfi['lam'].values, dfi['sp'].values, ey_array=dfi['esp'].values, threshold_factor=10)
-
-        new_trace = go.Scattergl(x=x_with_nans,y=y_with_nans,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'),connectgaps=False)
-
-        if not dfi['esp'].isna().all():
-            valid = np.isfinite(x_with_nans) & np.isfinite(y_with_nans) & np.isfinite(ey_with_nans)
-            valid_idx = np.where(valid)[0]
-
-            if valid_idx.size > 0:
-                split_points = np.where(np.diff(valid_idx) > 1)[0] + 1
-                valid_segments = np.split(valid_idx, split_points)
-
-                for seg_idx in valid_segments:
-                    if seg_idx.size < 2:
-                        continue
-
-                    upper_bound_trace = go.Scatter(
-                        x=x_with_nans[seg_idx],
-                        y=y_with_nans[seg_idx] + ey_with_nans[seg_idx],
-                        mode='lines',
-                        line=dict(width=0, shape='hv'),
+            if x_lowres.size > 0:
+                if np.any(np.isfinite(ey_lowres)):
+                    error_trace = go.Scatter(
+                        x=x_lowres,
+                        y=y_lowres,
+                        mode='markers',
+                        marker=dict(size=1, color='rgba(0,0,0,0)'),
+                        error_y=dict(
+                            type='data',
+                            array=np.where(np.isfinite(ey_lowres), ey_lowres, 0.0),
+                            visible=True,
+                            color=hex_to_rgba(colori, 0.45),
+                            thickness=2.5,
+                            width=0,
+                        ),
                         hoverinfo='none',
-                        connectgaps=False,
-                        fill=None,
                         showlegend=False
                     )
+                    data.append(error_trace)
 
-                    lower_bound_trace = go.Scatter(
-                        x=x_with_nans[seg_idx],
-                        y=y_with_nans[seg_idx] - ey_with_nans[seg_idx],
-                        mode='lines',
-                        line=dict(width=0, shape='hv'),
-                        fill='tonexty',
-                        fillcolor=hex_to_rgba(colori, alpha),
-                        hoverinfo='none',
-                        connectgaps=False,
-                        showlegend=False
-                    )
+                marker_trace = go.Scattergl(
+                    x=x_lowres,
+                    y=y_lowres,
+                    opacity=1.0,
+                    mode='markers',
+                    name=labeli,
+                    marker=dict(
+                        symbol='circle',
+                        size=8,
+                        color='white',
+                        line=dict(color=colori, width=3),
+                    ),
+                    connectgaps=False,
+                )
+                data.append(marker_trace)
+        else:
+            # Insert NaNs in the gaps larger than 10x the median spacing
+            x_with_nans, y_with_nans, ey_with_nans = insert_nans_in_gaps(dfi['lam'].values, dfi['sp'].values, ey_array=dfi['esp'].values, threshold_factor=10)
 
-                    data.append(upper_bound_trace)
-                    data.append(lower_bound_trace)
-        
-        data.append(new_trace)
+            new_trace = go.Scattergl(x=x_with_nans,y=y_with_nans,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'),connectgaps=False)
+
+            if not dfi['esp'].isna().all():
+                valid = np.isfinite(x_with_nans) & np.isfinite(y_with_nans) & np.isfinite(ey_with_nans)
+                valid_idx = np.where(valid)[0]
+
+                if valid_idx.size > 0:
+                    split_points = np.where(np.diff(valid_idx) > 1)[0] + 1
+                    valid_segments = np.split(valid_idx, split_points)
+
+                    for seg_idx in valid_segments:
+                        if seg_idx.size < 2:
+                            continue
+
+                        upper_bound_trace = go.Scatter(
+                            x=x_with_nans[seg_idx],
+                            y=y_with_nans[seg_idx] + ey_with_nans[seg_idx],
+                            mode='lines',
+                            line=dict(width=0, shape='hv'),
+                            hoverinfo='none',
+                            connectgaps=False,
+                            fill=None,
+                            showlegend=False
+                        )
+
+                        lower_bound_trace = go.Scatter(
+                            x=x_with_nans[seg_idx],
+                            y=y_with_nans[seg_idx] - ey_with_nans[seg_idx],
+                            mode='lines',
+                            line=dict(width=0, shape='hv'),
+                            fill='tonexty',
+                            fillcolor=hex_to_rgba(colori, alpha),
+                            hoverinfo='none',
+                            connectgaps=False,
+                            showlegend=False
+                        )
+
+                        data.append(upper_bound_trace)
+                        data.append(lower_bound_trace)
+            
+            data.append(new_trace)
 
         min_lam = np.nanmin(dfi['lam'])
         max_lam = np.nanmax(dfi['lam'])
@@ -727,6 +784,17 @@ layout = html.Div(
                                 },
                             ],
                             value=['showfeatures'],
+                        ),
+                        dcc.Checklist(
+                            id="spectram-lowres-toggle-spectrapage",
+                            options=[
+                                {
+                                    "label": "deactivate low-resolution display mode",
+                                    "value": "disable_lowres_display",
+                                    "disabled": True,
+                                },
+                            ],
+                            value=[],
                         ),
                     ],
                 ),
@@ -890,6 +958,7 @@ def update_specid_select_spectrapage(
         jsonified_db_data=Input("db-data-spectrapage", "data"),
         spectra_view=Input("spectram-view-selector-spectrapage", "value"),
         spectra_features=Input("spectram-showfeatures-spectrapage", "value"),
+        spectra_lowres_toggle=Input("spectram-lowres-toggle-spectrapage", "value"),
         spectra_norm=Input("spectram-normalize-spectrapage", "value"),
         spectra_normrange=Input("spectram-normrange-spectrapage", "value"),
     ),
@@ -897,7 +966,7 @@ def update_specid_select_spectrapage(
 )
 def update_spectrum_spectrapage(
     selections, 
-    jsonified_db_data, spectra_view, spectra_features, spectra_norm, spectra_normrange
+    jsonified_db_data, spectra_view, spectra_features, spectra_lowres_toggle, spectra_norm, spectra_normrange
     , specid_select, self_figure
 ):
     
@@ -914,10 +983,40 @@ def update_spectrum_spectrapage(
     showfeatures = 'showfeatures' in (spectra_features or [])
     fig = self_figure if self_figure is not None else go.Figure()
     style = spectra_view or []
+    if 'disable_lowres_display' in (spectra_lowres_toggle or []):
+        style = list(set(style + ['disable_lowres_display']))
     if 'normalize' in (spectra_norm or []):
         style = list(set(style + ['normalize']))
     norm_range = parse_norm_range(spectra_normrange)
     return generate_spectrum(df, df_aids, processed_data, style, showfeatures, norm_range, fig)
+
+@dash.callback(
+    Output("spectram-lowres-toggle-spectrapage", "options"),
+    Output("spectram-lowres-toggle-spectrapage", "value"),
+    Input("db-data-spectrapage", "data"),
+    State("spectram-lowres-toggle-spectrapage", "value"),
+)
+def update_lowres_toggle_state(jsonified_db_data, current_values):
+    has_lowres = False
+    if jsonified_db_data is not None and len(jsonified_db_data) > 0:
+        df = pd.read_json(jsonified_db_data[0], orient='split')
+        if not df.empty:
+            for _, dfi in df.groupby('moca_specid'):
+                avg_r = average_resolving_power(dfi['lam'].values)
+                if np.isfinite(avg_r) and avg_r < 100.0:
+                    has_lowres = True
+                    break
+
+    options = [
+        {
+            "label": "deactivate low-resolution display mode",
+            "value": "disable_lowres_display",
+            "disabled": not has_lowres,
+        },
+    ]
+    if has_lowres:
+        return options, (current_values or [])
+    return options, []
 
 @dash.callback(
     Output("spectram-normrange-spectrapage", "disabled"),
