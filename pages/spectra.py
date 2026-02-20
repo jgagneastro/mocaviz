@@ -334,13 +334,21 @@ def insert_nans_in_gaps(x_array, y_array, threshold_factor=10, ey_array=None):
 def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, norm_range, self_figure):
 
     # Read layer properties
+    style = style or []
     hover = "closest"
+    xlog = "xlog" in style
+    ylog = "ylog" in style
+    use_fnu_jy = "fnu_jy" in style
+    normalize = "normalize" in style
+    c_light_m_s = 299792458.0
 
     if "hover" not in style:
         hover = False
     
     xtitle  = "Wavelength (μm)"
     ytitle  = "Relative spectral flux density <i>F<sub>λ</sub></i>"
+    if use_fnu_jy:
+        ytitle = "Relative spectral flux density <i>F<sub>ν</sub></i>"
     
     layout = go.Layout(
         height=850,
@@ -369,10 +377,10 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
 
     xrange = np.array([float('inf'), float('-inf')])
     yrange = np.array([float('inf'), float('-inf')])
+    xlog_range = np.array([float('inf'), float('-inf')])
+    ylog_range = np.array([float('inf'), float('-inf')])
     data = []
     alpha = 0.2
-
-    normalize = "normalize" in (style or [])
 
     # Build per-spectrum dataframes and convert to W/m^2/um
     spec_map = {}
@@ -382,11 +390,19 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             continue
         dfi['sp'] = dfi['sp'] * 10000.0
         dfi['esp'] = dfi['esp'] * 10000.0
+        if use_fnu_jy:
+            lam_um = dfi['lam'].values
+            conversion = (lam_um ** 2) * (1e20 / c_light_m_s)
+            dfi['sp'] = dfi['sp'].values * conversion
+            dfi['esp'] = dfi['esp'].values * conversion
         spec_map[specid] = dfi
 
     # Update y-axis title for absolute flux mode
     if not normalize:
-        ytitle = "Absolute spectral flux density <i>F<sub>λ</sub></i> (W/m<sup>2</sup>/μm)"
+        if use_fnu_jy:
+            ytitle = "Flux density <i>F<sub>ν</sub></i> (Jy)"
+        else:
+            ytitle = "Absolute spectral flux density <i>F<sub>λ</sub></i> (W/m<sup>2</sup>/μm)"
 
     # Normalization helpers
     def _get_overlap_mask(df_ref, df_tgt, rng):
@@ -561,6 +577,10 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         max_lam = np.nanmax(dfi['lam'])
         xrange[0] = min(xrange[0], min_lam)
         xrange[1] = max(xrange[1], max_lam)
+        positive_x = dfi['lam'].values[np.isfinite(dfi['lam'].values) & (dfi['lam'].values > 0)]
+        if positive_x.size > 0:
+            xlog_range[0] = min(xlog_range[0], float(np.nanmin(positive_x)))
+            xlog_range[1] = max(xlog_range[1], float(np.nanmax(positive_x)))
 
         # Calculate the IQR of 'sp' + 'esp' values
         Q1 = np.nanpercentile(dfi['sp'] + dfi['esp'].fillna(0), 5)
@@ -573,11 +593,33 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
 
         yrange[0] = min(yrange[0], min_y)
         yrange[1] = max(yrange[1], max_y)
+        positive_y = dfi['sp'].values[np.isfinite(dfi['sp'].values) & (dfi['sp'].values > 0)]
+        if positive_y.size > 0:
+            ylog_range[0] = min(ylog_range[0], float(np.nanmin(positive_y)))
+            ylog_range[1] = max(ylog_range[1], float(np.nanmax(positive_y)))
 
-    xrange += np.array([-1, 1]) * (xrange[1] - xrange[0]) * 0.02
-    yrange += np.array([-1,1])*(yrange[1]-yrange[0])*0.1
-    layout.xaxis.range = xrange
-    layout.yaxis.range = yrange
+    if np.isfinite(xrange).all() and xrange[1] > xrange[0]:
+        xrange += np.array([-1, 1]) * (xrange[1] - xrange[0]) * 0.02
+        layout.xaxis.range = xrange
+    if np.isfinite(yrange).all() and yrange[1] > yrange[0]:
+        yrange += np.array([-1,1])*(yrange[1]-yrange[0])*0.1
+        layout.yaxis.range = yrange
+
+    if xlog:
+        layout.xaxis.type = 'log'
+        if np.isfinite(xlog_range).all() and xlog_range[1] > xlog_range[0]:
+            xlo, xhi = xlog_range
+            layout.xaxis.range = [np.log10(xlo / 1.05), np.log10(xhi * 1.05)]
+    else:
+        layout.xaxis.type = 'linear'
+
+    if ylog:
+        layout.yaxis.type = 'log'
+        if np.isfinite(ylog_range).all() and ylog_range[1] > ylog_range[0]:
+            ylo, yhi = ylog_range
+            layout.yaxis.range = [np.log10(ylo / 1.2), np.log10(yhi * 1.2)]
+    else:
+        layout.yaxis.type = 'linear'
 
     fig = go.Figure(data=data,layout=layout)
     if showfeatures:
@@ -660,6 +702,18 @@ layout = html.Div(
                                 {
                                     "label": "Enable Hover Properties",
                                     "value": "hover",
+                                },
+                                {
+                                    "label": "xlog",
+                                    "value": "xlog",
+                                },
+                                {
+                                    "label": "ylog",
+                                    "value": "ylog",
+                                },
+                                {
+                                    "label": "F_nu instead of F_lambda (Jy)",
+                                    "value": "fnu_jy",
                                 },
                             ],
                             value=[],
