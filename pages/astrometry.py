@@ -1,4 +1,9 @@
 import dash
+import io
+import contextlib
+import logging
+from collections import deque
+import threading
 from math import floor, log10
 import numpy as np
 import decimal
@@ -137,6 +142,70 @@ try:
         _ULTRANEST_AVAILABLE = False
 except Exception:
     _ULTRANEST_AVAILABLE = False
+
+# ---- UltraNest log buffer (in-memory, polled by Interval) ----
+_ULTRANEST_LOG_BUFFER = deque(maxlen=200)
+_ULTRANEST_LOG_LOCK = threading.Lock()
+_ULTRANEST_LOG_RUNNING = False
+_ULTRANEST_LOG_TOKEN = 0
+
+def _ultra_log_reset(header):
+    global _ULTRANEST_LOG_RUNNING, _ULTRANEST_LOG_TOKEN
+    with _ULTRANEST_LOG_LOCK:
+        _ULTRANEST_LOG_TOKEN += 1
+        _ULTRANEST_LOG_BUFFER.clear()
+        if header:
+            _ULTRANEST_LOG_BUFFER.append(header)
+        _ULTRANEST_LOG_RUNNING = True
+    return _ULTRANEST_LOG_TOKEN
+
+def _ultra_log_append(text):
+    if text is None:
+        return
+    lines = str(text).splitlines()
+    if not lines:
+        return
+    with _ULTRANEST_LOG_LOCK:
+        for line in lines:
+            if line is not None and str(line).strip() != "":
+                _ULTRANEST_LOG_BUFFER.append(str(line))
+
+def _ultra_log_finish():
+    global _ULTRANEST_LOG_RUNNING
+    with _ULTRANEST_LOG_LOCK:
+        _ULTRANEST_LOG_RUNNING = False
+
+def _ultra_log_snapshot():
+    with _ULTRANEST_LOG_LOCK:
+        return _ULTRANEST_LOG_TOKEN, _ULTRANEST_LOG_RUNNING, list(_ULTRANEST_LOG_BUFFER)
+
+class _UltraStream:
+    def __init__(self):
+        self._buffer = ""
+    def write(self, s):
+        if s is None:
+            return 0
+        self._buffer += str(s)
+        if "\n" in self._buffer:
+            parts = self._buffer.split("\n")
+            for line in parts[:-1]:
+                _ultra_log_append(line)
+            self._buffer = parts[-1]
+        return len(s)
+    def flush(self):
+        if self._buffer:
+            _ultra_log_append(self._buffer)
+            self._buffer = ""
+    def isatty(self):
+        return False
+
+class _UltraLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        _ultra_log_append(msg)
 
 # ===== UltraNest refinement AFTER EM (keeps EM mixture/inlier logic) =====
 
@@ -1410,9 +1479,11 @@ layout = html.Div([
         ], style={'display': 'flex', 'width': '100%', 'margin-bottom': '20px'}),
 
     html.Div([
-        html.Button("Push PM fit", id="astrometry-push-pm", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px', 'display': 'none'}),
-        html.Button("Push PM+PLX fit", id="astrometry-push-pmplx", n_clicks=0, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'display': 'none'}),
-        html.Div(id="astrometry-push-output", style={'display': 'none', 'marginTop': '10px'})
+        html.Button("Push PM fit", id="astrometry-push-pm", n_clicks=0, disabled=True, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px', 'display': 'none'}),
+        html.Button("Push PM+PLX fit", id="astrometry-push-pmplx", n_clicks=0, disabled=True, style={'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'display': 'none'}),
+        html.Div(id="astrometry-push-output", style={'display': 'none', 'marginTop': '10px'}),
+        html.Pre(id="astrometry-ultranest-output", style={'display': 'none', 'marginTop': '10px', 'fontSize': '11px', 'whiteSpace': 'pre-wrap'}),
+        dcc.Interval(id="astrometry-ultranest-interval", interval=1500, n_intervals=0),
     ], style={'marginTop': '10px', 'marginBottom': '10px'}),
 
     html.Div([
@@ -2061,23 +2132,57 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         ultranest_flag = ""
         if use_ultranest and _ULTRANEST_AVAILABLE:
             ultranest_flag = " with UltraNest"
+            _ultra_log_reset("UltraNest PM+PLX: starting")
+            ultra_stream = _UltraStream()
+            logger_ultra = logging.getLogger("ultranest")
+            logger_root = logging.getLogger()
+            handler_ultra = _UltraLogHandler()
+            handler_root = _UltraLogHandler()
+            prev_ultra_level = logger_ultra.level
+            prev_root_level = logger_root.level
             try:
-                print(f"[UltraNest PM+PLX] BEFORE: EM reference epoch t0_ref_plx = {t0_ref_plx:.6f} yr")
-                print(f"[UltraNest PM+PLX] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, plx={plx:.3f}, posRA={pos_ra_fit:.3f}, posDEC={pos_dec_fit:.3f}")
-                plx, pmra, pmdec, eplx, epmra, epmdec, pos_ra_fit, pos_dec_fit, t0_ultra = _ultranest_refine_pm_plx(
-                    data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
-                    data_df['ra_unc_mas'], data_df['dec_unc_mas'], plx_inlier_mask,
-                    ra_ref, dec_ref,
-                    pmra, pmdec, plx, pos_ra_fit, pos_dec_fit,
-                    s_add_ra=s_add_ra, s_add_dec=s_add_dec,
-                    mission_labels=data_df['mission'],
-                    s_add_ra_by_mission=s_add_ra_by_mission,
-                    s_add_dec_by_mission=s_add_dec_by_mission,
-                    t0_ref=t0_ref_plx,
-                )
-                print(f"[UltraNest PM+PLX] AFTER: UltraNest reference epoch t0_ultra = {t0_ultra:.6f} yr")
-            except Exception as e:
-                print("[Astrometric Explorer] UltraNest refinement failed (PM+PLX). Using EM results.", e)
+                handler_ultra.setLevel(logging.INFO)
+                handler_root.setLevel(logging.INFO)
+                logger_ultra.addHandler(handler_ultra)
+                logger_root.addHandler(handler_root)
+                logger_ultra.setLevel(logging.INFO)
+                logger_root.setLevel(logging.INFO)
+                with contextlib.redirect_stdout(ultra_stream), contextlib.redirect_stderr(ultra_stream):
+                    try:
+                        print(f"[UltraNest PM+PLX] BEFORE: EM reference epoch t0_ref_plx = {t0_ref_plx:.6f} yr")
+                        print(f"[UltraNest PM+PLX] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, plx={plx:.3f}, posRA={pos_ra_fit:.3f}, posDEC={pos_dec_fit:.3f}")
+                        plx, pmra, pmdec, eplx, epmra, epmdec, pos_ra_fit, pos_dec_fit, t0_ultra = _ultranest_refine_pm_plx(
+                            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+                            data_df['ra_unc_mas'], data_df['dec_unc_mas'], plx_inlier_mask,
+                            ra_ref, dec_ref,
+                            pmra, pmdec, plx, pos_ra_fit, pos_dec_fit,
+                            s_add_ra=s_add_ra, s_add_dec=s_add_dec,
+                            mission_labels=data_df['mission'],
+                            s_add_ra_by_mission=s_add_ra_by_mission,
+                            s_add_dec_by_mission=s_add_dec_by_mission,
+                            t0_ref=t0_ref_plx,
+                        )
+                        print(f"[UltraNest PM+PLX] AFTER: UltraNest reference epoch t0_ultra = {t0_ultra:.6f} yr")
+                    except Exception as e:
+                        print("[Astrometric Explorer] UltraNest refinement failed (PM+PLX). Using EM results.", e)
+            finally:
+                try:
+                    logger_ultra.removeHandler(handler_ultra)
+                except Exception:
+                    pass
+                try:
+                    logger_root.removeHandler(handler_root)
+                except Exception:
+                    pass
+                try:
+                    logger_ultra.setLevel(prev_ultra_level)
+                except Exception:
+                    pass
+                try:
+                    logger_root.setLevel(prev_root_level)
+                except Exception:
+                    pass
+                _ultra_log_finish()
         # Ensure t0_ultra is defined even if UltraNest wasn't used
         t0_ultra = locals().get('t0_ultra', None)
         # Rebuild plx_df and pm_df
@@ -2153,22 +2258,56 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         ultranest_flag = ""
         if use_ultranest and _ULTRANEST_AVAILABLE:
             ultranest_flag = " with UltraNest"
+            _ultra_log_reset("UltraNest PM-only: starting")
+            ultra_stream = _UltraStream()
+            logger_ultra = logging.getLogger("ultranest")
+            logger_root = logging.getLogger()
+            handler_ultra = _UltraLogHandler()
+            handler_root = _UltraLogHandler()
+            prev_ultra_level = logger_ultra.level
+            prev_root_level = logger_root.level
             try:
-                print(f"[UltraNest PM-only] BEFORE: EM reference epoch t0_ref_em = {t0_ref_em:.6f} yr")
-                print(f"[UltraNest PM-only] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, posRA={pos_ra_m:.3f}, posDEC={pos_dec_m:.3f}")
-                pmra, pmdec, epmra, epmdec, pos_ra_m, pos_dec_m = _ultranest_refine_pm_only(
-                    data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
-                    data_df['ra_unc_mas'], data_df['dec_unc_mas'], pm_inlier_mask,
-                    pmra, pmdec, pos_ra_m, pos_dec_m,
-                    s_add_ra=s_add_ra, s_add_dec=s_add_dec,
-                    mission_labels=data_df['mission'],
-                    s_add_ra_by_mission=s_add_ra_by_mission,
-                    s_add_dec_by_mission=s_add_dec_by_mission,
-                    t0_ref=t0_ref_em,
-                )
-                print(f"[UltraNest PM-only] AFTER: UltraNest reference epoch t0_ref (passed) = {t0_ref_em:.6f} yr")
-            except Exception as e:
-                print("[Astrometric Explorer] UltraNest refinement failed (PM-only). Using EM results.", e)
+                handler_ultra.setLevel(logging.INFO)
+                handler_root.setLevel(logging.INFO)
+                logger_ultra.addHandler(handler_ultra)
+                logger_root.addHandler(handler_root)
+                logger_ultra.setLevel(logging.INFO)
+                logger_root.setLevel(logging.INFO)
+                with contextlib.redirect_stdout(ultra_stream), contextlib.redirect_stderr(ultra_stream):
+                    try:
+                        print(f"[UltraNest PM-only] BEFORE: EM reference epoch t0_ref_em = {t0_ref_em:.6f} yr")
+                        print(f"[UltraNest PM-only] Seed params from EM: pmRA={pmra:.3f}, pmDEC={pmdec:.3f}, posRA={pos_ra_m:.3f}, posDEC={pos_dec_m:.3f}")
+                        pmra, pmdec, epmra, epmdec, pos_ra_m, pos_dec_m = _ultranest_refine_pm_only(
+                            data_df['measurement_epoch_yr'], data_df['rel_ra'], data_df['rel_dec'],
+                            data_df['ra_unc_mas'], data_df['dec_unc_mas'], pm_inlier_mask,
+                            pmra, pmdec, pos_ra_m, pos_dec_m,
+                            s_add_ra=s_add_ra, s_add_dec=s_add_dec,
+                            mission_labels=data_df['mission'],
+                            s_add_ra_by_mission=s_add_ra_by_mission,
+                            s_add_dec_by_mission=s_add_dec_by_mission,
+                            t0_ref=t0_ref_em,
+                        )
+                        print(f"[UltraNest PM-only] AFTER: UltraNest reference epoch t0_ref (passed) = {t0_ref_em:.6f} yr")
+                    except Exception as e:
+                        print("[Astrometric Explorer] UltraNest refinement failed (PM-only). Using EM results.", e)
+            finally:
+                try:
+                    logger_ultra.removeHandler(handler_ultra)
+                except Exception:
+                    pass
+                try:
+                    logger_root.removeHandler(handler_root)
+                except Exception:
+                    pass
+                try:
+                    logger_ultra.setLevel(prev_ultra_level)
+                except Exception:
+                    pass
+                try:
+                    logger_root.setLevel(prev_root_level)
+                except Exception:
+                    pass
+                _ultra_log_finish()
 
         # For downstream display logic expecting per-axis masks, reuse the joint mask:
         pmra_inlier_mask = pm_inlier_mask
@@ -2868,17 +3007,49 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
     return fig_ra, config_ra, fig_dec, config_dec, fit_payload
 
 # =============================================================================
+# UltraNest log polling
+# =============================================================================
+@dash.callback(
+    Output("astrometry-ultranest-output", "children"),
+    Output("astrometry-ultranest-output", "style"),
+    Input("astrometry-ultranest-interval", "n_intervals"),
+    State("fit-ultranest-checkbox", "value"),
+)
+def _poll_ultranest_output(n_intervals, ultranest_values):
+    style = {'display': 'none', 'marginTop': '10px', 'fontSize': '11px', 'whiteSpace': 'pre-wrap'}
+    if not ultranest_values or 'ultranest' not in ultranest_values:
+        return "", style
+
+    style = {'display': 'block', 'marginTop': '10px', 'fontSize': '11px', 'whiteSpace': 'pre-wrap'}
+    if not _ULTRANEST_AVAILABLE:
+        return "UltraNest output: unavailable (package not installed)", style
+
+    _token, running, lines = _ultra_log_snapshot()
+    if lines:
+        text = "\n".join(lines[-12:])
+    else:
+        text = "UltraNest output: (none yet)"
+    if running:
+        text = text + "\n[UltraNest running...]"
+    return text, style
+
+# =============================================================================
 # Management-only push of PM / PM+PLX fits to the database
 # =============================================================================
 @dash.callback(
     Output("astrometry-push-pm", "style"),
     Output("astrometry-push-pmplx", "style"),
     Output("astrometry-push-output", "style"),
+    Output("astrometry-push-pm", "disabled"),
+    Output("astrometry-push-pmplx", "disabled"),
+    Output("astrometry-push-pm", "children"),
+    Output("astrometry-push-pmplx", "children"),
     Input("url", "search"),
+    Input("astrometry-fit-store", "data"),
 )
-def _toggle_astrometry_push_controls(url_search):
-    style_btn = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px'}
-    style_btn2 = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle'}
+def _toggle_astrometry_push_controls(url_search, fit_data):
+    base_btn = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle', 'marginRight': '12px'}
+    base_btn2 = {'fontSize': '12px', 'border': '3px solid black', 'verticalAlign': 'middle'}
     style_out = {'marginTop': '10px'}
     try:
         parsed = parse_qs((url_search or "").lstrip("?"))
@@ -2886,12 +3057,33 @@ def _toggle_astrometry_push_controls(url_search):
         username_param = (parsed.get('user', [env_username])[0] or '').strip().lower()
     except Exception:
         username_param = (os.environ.get('MOCA_USERNAME', '') or '').strip().lower()
-    if username_param == 'management':
-        return style_btn, style_btn2, style_out
-    style_btn['display'] = 'none'
-    style_btn2['display'] = 'none'
-    style_out['display'] = 'none'
-    return style_btn, style_btn2, style_out
+
+    if username_param != 'management':
+        base_btn['display'] = 'none'
+        base_btn2['display'] = 'none'
+        style_out['display'] = 'none'
+        return base_btn, base_btn2, style_out, True, True, "Push PM fit", "Push PM+PLX fit"
+
+    fit_mode = (fit_data or {}).get("fit_mode")
+    fit_ultranest = bool((fit_data or {}).get("fit_ultranest"))
+    suffix = " (ultranest)" if fit_ultranest else " (no ultranest)"
+    pm_label = f"Push PM fit{suffix}"
+    pmplx_label = f"Push PM+PLX fit{suffix}"
+    style_btn = dict(base_btn)
+    style_btn2 = dict(base_btn2)
+    pm_disabled = True
+    pmplx_disabled = True
+    if fit_mode != "pm":
+        style_btn.update({'opacity': 0.5, 'pointerEvents': 'none'})
+        pm_disabled = True
+    else:
+        pm_disabled = False
+    if fit_mode != "pm_plx":
+        style_btn2.update({'opacity': 0.5, 'pointerEvents': 'none'})
+        pmplx_disabled = True
+    else:
+        pmplx_disabled = False
+    return style_btn, style_btn2, style_out, pm_disabled, pmplx_disabled, pm_label, pmplx_label
 
 
 @dash.callback(
@@ -2944,9 +3136,11 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
 
     selected_missions = fit_data.get("selected_missions") or []
     mission_name = None
-    data_release = None
+    data_release = ""
     if len(selected_missions) == 1:
         mission_name, data_release = _parse_mission(selected_missions[0])
+        if data_release is None:
+            data_release = ""
 
     fit_mode = fit_data.get("fit_mode")
     fit_ultranest = bool(fit_data.get("fit_ultranest"))
@@ -2982,6 +3176,97 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
     pm_corrected = 1
     plx_corrected = 1 if fit_mode == "pm_plx" else 0
 
+    pm_params = {
+        "moca_oid": moca_oid,
+        "pmra": pmra,
+        "pmdec": pmdec,
+        "pmra_unc": pmra_unc,
+        "pmdec_unc": pmdec_unc,
+        "mission_name": mission_name,
+        "data_release": data_release,
+        "origin": origin_base,
+        "comments": comments,
+        "rls": "gagne",
+        "calc_method": calc_method
+    }
+    plx_params = {
+        "moca_oid": moca_oid,
+        "plx": plx,
+        "plx_unc": plx_unc,
+        "mission_name": mission_name,
+        "data_release": data_release,
+        "origin": origin_base,
+        "comments": comments,
+        "rls": "gagne"
+    }
+    eq_params = {
+        "moca_oid": moca_oid,
+        "ra": ra_fit,
+        "dec": dec_fit,
+        "ra_unc": ra_unc_mas,
+        "dec_unc": dec_unc_mas,
+        "epoch": epoch_ref,
+        "epoch_unc": 0.0,
+        "frame_equinox": "J2000",
+        "coord_frame": "ICRS",
+        "mission_name": mission_name,
+        "data_release": data_release,
+        "origin": origin_base,
+        "pm_corrected": pm_corrected,
+        "plx_corrected": plx_corrected,
+        "point_of_view": "earth",
+        "comments": comments,
+        "rls": "gagne"
+    }
+
+    dry_run_push = False
+    if dry_run_push:
+        import sys
+        sys.stderr.write("[astrometry:push] DRY RUN enabled. SQL statements and params:\n")
+        sys.stderr.write("PM SQL:\n")
+        sys.stderr.write("""
+            INSERT INTO data_proper_motions
+            (moca_oid, moca_pid, pmra_masyr, pmdec_masyr, pmra_masyr_unc, pmdec_masyr_unc,
+             mission_name, data_release, origin, ignored, adopt_asis, adopted, is_public,
+             public_adopt_asis, public_adopted, comments, rls, calculation_method)
+            VALUES
+            (:moca_oid, NULL, :pmra, :pmdec, :pmra_unc, :pmdec_unc,
+             :mission_name, :data_release, :origin, 0, 0, 0, 0,
+             0, 0, :comments, :rls, :calc_method)
+        """)
+        sys.stderr.write(f"PM params: {pm_params}\n")
+        if fit_mode == "pm_plx":
+            sys.stderr.write("PLX SQL:\n")
+            sys.stderr.write("""
+                INSERT INTO data_parallaxes
+                (moca_oid, moca_pid, parallax_mas, parallax_mas_unc,
+                 mission_name, data_release, origin, ignored, adopt_asis, adopted, is_public,
+                 public_adopt_asis, public_adopted, comments, rls)
+                VALUES
+                (:moca_oid, NULL, :plx, :plx_unc,
+                 :mission_name, :data_release, :origin, 0, 0, 0, 0,
+                 0, 0, :comments, :rls)
+            """)
+            sys.stderr.write(f"PLX params: {plx_params}\n")
+        sys.stderr.write("EQ SQL:\n")
+        sys.stderr.write("""
+            INSERT INTO data_equatorial_coordinates
+            (moca_oid, moca_pid, ra, `dec`, ra_unc_mas, dec_unc_mas,
+             measurement_epoch_yr, measurement_epoch_yr_unc, frame_equinox, coord_frame,
+             mission_name, data_release, origin, ignored, adopt_asis, is_public,
+             public_adopt_asis, adopt_as_reference, public_adopt_as_reference, single_epoch,
+             pm_corrected, plx_corrected, point_of_view, comments, rls)
+            VALUES
+            (:moca_oid, NULL, :ra, :dec, :ra_unc, :dec_unc,
+             :epoch, :epoch_unc, :frame_equinox, :coord_frame,
+             :mission_name, :data_release, :origin, 0, 0, 0,
+             0, 0, 0, 0,
+             :pm_corrected, :plx_corrected, :point_of_view, :comments, :rls)
+        """)
+        sys.stderr.write(f"EQ params: {eq_params}\n")
+        sys.stderr.flush()
+        return "DRY RUN: SQL printed to server log."
+
     engine = get_engine_from_url(url_search)
     conn = engine.connect()
     try:
@@ -2993,22 +3278,10 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
              public_adopt_asis, public_adopted, comments, rls, calculation_method)
             VALUES
             (:moca_oid, NULL, :pmra, :pmdec, :pmra_unc, :pmdec_unc,
-             :mission_name, :data_release, :origin, 0, 0, 0, 1,
+             :mission_name, :data_release, :origin, 0, 0, 0, 0,
              0, 0, :comments, :rls, :calc_method)
         """)
-        conn.execute(pm_sql, {
-            "moca_oid": moca_oid,
-            "pmra": pmra,
-            "pmdec": pmdec,
-            "pmra_unc": pmra_unc,
-            "pmdec_unc": pmdec_unc,
-            "mission_name": mission_name,
-            "data_release": data_release,
-            "origin": origin_base,
-            "comments": comments,
-            "rls": "public",
-            "calc_method": calc_method
-        })
+        conn.execute(pm_sql, pm_params)
 
         # Insert PLX (if PM+PLX)
         if fit_mode == "pm_plx":
@@ -3019,24 +3292,15 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
                  public_adopt_asis, public_adopted, comments, rls)
                 VALUES
                 (:moca_oid, NULL, :plx, :plx_unc,
-                 :mission_name, :data_release, :origin, 0, 0, 0, 1,
+                 :mission_name, :data_release, :origin, 0, 0, 0, 0,
                  0, 0, :comments, :rls)
             """)
-            conn.execute(plx_sql, {
-                "moca_oid": moca_oid,
-                "plx": plx,
-                "plx_unc": plx_unc,
-                "mission_name": mission_name,
-                "data_release": data_release,
-                "origin": origin_base,
-                "comments": comments,
-                "rls": "public"
-            })
+            conn.execute(plx_sql, plx_params)
 
         # Insert equatorial coordinates row
         eq_sql = text("""
             INSERT INTO data_equatorial_coordinates
-            (moca_oid, moca_pid, ra, dec, ra_unc_mas, dec_unc_mas,
+            (moca_oid, moca_pid, ra, `dec`, ra_unc_mas, dec_unc_mas,
              measurement_epoch_yr, measurement_epoch_yr_unc, frame_equinox, coord_frame,
              mission_name, data_release, origin, ignored, adopt_asis, is_public,
              public_adopt_asis, adopt_as_reference, public_adopt_as_reference, single_epoch,
@@ -3044,29 +3308,11 @@ def push_astrometry_fit(n_clicks_pm, n_clicks_pmplx, fit_data, url_search):
             VALUES
             (:moca_oid, NULL, :ra, :dec, :ra_unc, :dec_unc,
              :epoch, :epoch_unc, :frame_equinox, :coord_frame,
-             :mission_name, :data_release, :origin, 0, 0, 1,
+             :mission_name, :data_release, :origin, 0, 0, 0,
              0, 0, 0, 0,
              :pm_corrected, :plx_corrected, :point_of_view, :comments, :rls)
         """)
-        conn.execute(eq_sql, {
-            "moca_oid": moca_oid,
-            "ra": ra_fit,
-            "dec": dec_fit,
-            "ra_unc": ra_unc_mas,
-            "dec_unc": dec_unc_mas,
-            "epoch": epoch_ref,
-            "epoch_unc": 0.0,
-            "frame_equinox": "J2000",
-            "coord_frame": "ICRS",
-            "mission_name": mission_name,
-            "data_release": data_release,
-            "origin": origin_base,
-            "pm_corrected": pm_corrected,
-            "plx_corrected": plx_corrected,
-            "point_of_view": "earth",
-            "comments": comments,
-            "rls": "public"
-        })
+        conn.execute(eq_sql, eq_params)
 
         return f"Inserted PM{' + PLX' if fit_mode == 'pm_plx' else ''} and equatorial coordinates for moca_oid={moca_oid}."
     except Exception as e:
