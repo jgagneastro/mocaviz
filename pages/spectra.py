@@ -1138,6 +1138,8 @@ def update_download_links(json_data, url_search):
             for col in ['comments', 'fits_header']:
                 if col in meta_row.index:
                     raw_text = _format_meta_value(meta_row[col])
+                    if col == 'fits_header' and raw_text not in ("NULL", ""):
+                        raw_text = raw_text.replace("/", "/\n")
                     header_lines.append(f"# {col}:")
                     if raw_text == "NULL" or raw_text.strip() == "":
                         header_lines.append("# (empty)")
