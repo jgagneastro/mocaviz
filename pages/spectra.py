@@ -68,6 +68,18 @@ FEATURE_BANDS = [
     # Single lines/features
     {"name": "Na", "rng": (2.200-0.005, 2.200+0.005), "ion": True},       # Na I near 2.20 µm
     {"name": "CO",  "rng": (2.293, 2.400)},     # CO (2-0) bandheads and beyond
+    # Mid-IR bands (µm)
+    {"name": "H₂O", "rng": (2.50, 3.10)},
+    {"name": "CH₄", "rng": (3.15, 3.45)},
+    {"name": "NH₃", "rng": (3.90, 4.50)},
+    {"name": "PH₃", "rng": (4.20, 4.35)},
+    {"name": "CO", "rng": (4.55, 4.95)},
+    {"name": "H₂O", "rng": (5.00, 7.00)},
+    {"name": "CH₄", "rng": (7.00, 9.20)},
+    {"name": "Silicates", "rng": (9.00, 13.00)},
+    {"name": "NH₃", "rng": (10.00, 11.00)},
+    {"name": "CO₂", "rng": (14.70, 15.30)},
+    {"name": "H₂O", "rng": (15.00, 20.00)},
 ]
 
 def _add_feature_bands(fig, ypad_frac=0.04):
