@@ -77,6 +77,21 @@ def generate_spectral_type_label(value):
     # Fallback for out-of-range values
     return f"{value}"
 
+def average_resolving_power(wv_array):
+    wv = np.asarray(wv_array, dtype=float)
+    wv = wv[np.isfinite(wv)]
+    if wv.size < 2:
+        return np.nan
+    wv = np.unique(np.sort(wv))
+    if wv.size < 2:
+        return np.nan
+    dwv = np.diff(wv)
+    wv_mid = 0.5 * (wv[1:] + wv[:-1])
+    valid = np.isfinite(dwv) & (dwv > 0) & np.isfinite(wv_mid) & (wv_mid > 0)
+    if not np.any(valid):
+        return np.nan
+    return float(np.nanmean(wv_mid[valid] / dwv[valid]))
+
 # =============================================================================
 # Constants for spectral processing
 # =============================================================================
@@ -674,7 +689,7 @@ layout = html.Div([
               ], id='sp-typing-showfeatures-div', style={'margin-bottom': '15px'}),
               html.Div([
                    dcc.Checklist(
-                       options=[{'label': 'Low-resolution data', 'value': 'lowres'}],
+                       options=[{'label': 'Deactivate low-resolution display mode', 'value': 'disable_lowres'}],
                        value=[],
                        id='sp-typing-lowres-checklist',
                    )
@@ -1660,6 +1675,36 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
 # Callback: Navigation and graph update (using Prev/Next buttons)
 # =============================================================================
 @dash.callback(
+    Output('sp-typing-lowres-checklist', 'options'),
+    Output('sp-typing-lowres-checklist', 'value'),
+    Output('sp-typing-lowres-checklist', 'style'),
+    Input('sp-typing-comparison-raw-spectrum', 'data'),
+    State('sp-typing-lowres-checklist', 'value'),
+)
+def update_lowres_mode_checkbox(comparison_raw_spectrum, current_values):
+    has_lowres = False
+    if comparison_raw_spectrum:
+        try:
+            comparison_df_raw = pd.read_json(comparison_raw_spectrum, orient='split')
+            avg_r = average_resolving_power(comparison_df_raw.get('wv', pd.Series(dtype=float)).values)
+            has_lowres = np.isfinite(avg_r) and avg_r < 100.0
+        except Exception:
+            has_lowres = False
+
+    options = [{
+        'label': 'Deactivate low-resolution display mode',
+        'value': 'disable_lowres',
+        'disabled': not has_lowres
+    }]
+
+    if has_lowres:
+        return options, (current_values or []), {}
+    return options, [], {'color': '#9aa0a6'}
+
+# =============================================================================
+# Callback: Navigation and graph update (using Prev/Next buttons)
+# =============================================================================
+@dash.callback(
     Output('sp-typing-current-sptnum', 'data'),
     Output('sp-typing-current-index', 'data'),
     Output('sp-typing-index-slider', 'value'),
@@ -1686,9 +1731,10 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     State('sp-typing-deredden-checklist', 'value'),
     State('sp-typing-allred-checklist', 'value'),
     State('sp-typing-db-data', 'data'),
+    State('sp-typing-comparison-raw-spectrum', 'data'),
     State('sp-typing-url', 'search')
 )
-def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, showfeatures_value, lowres_value, previous_sptnum, current_index, precomputed, deredden_value, allred_value, df_data, url_search):
+def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, selected_grid, comparison_designation, chi2_clickData, norm_regions_store, showfeatures_value, lowres_value, previous_sptnum, current_index, precomputed, deredden_value, allred_value, df_data, comparison_raw_spectrum, url_search):
     if debug_printing:
         print("Update graph was triggered with sptnum state value:", previous_sptnum)
     ctx = callback_context
@@ -1747,7 +1793,16 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         print(f"[Spectral Typing] Could not compute effective χ² for grid {selected_grid}: {_e}")
     local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
     showfeatures = 'showfeatures' in (showfeatures_value or [])
-    lowres = 'lowres' in (lowres_value or [])
+    lowres_auto = False
+    if comparison_raw_spectrum:
+        try:
+            comparison_df_raw = pd.read_json(comparison_raw_spectrum, orient='split')
+            avg_r = average_resolving_power(comparison_df_raw.get('wv', pd.Series(dtype=float)).values)
+            lowres_auto = np.isfinite(avg_r) and avg_r < 100.0
+        except Exception:
+            lowres_auto = False
+    force_disable_lowres = 'disable_lowres' in (lowres_value or [])
+    lowres = lowres_auto and (not force_disable_lowres)
     
     triggered_ids = [t['prop_id'].split('.')[0] for t in ctx.triggered]
     if 'sp-typing-chi2-graph' in triggered_ids and chi2_clickData:
