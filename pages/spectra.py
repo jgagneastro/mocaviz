@@ -437,6 +437,8 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         dfi = df_spectra[df_spectra['moca_specid'] == specid].dropna(subset=['sp', 'lam']).copy()
         if dfi.empty:
             continue
+        # Ensure monotonic wavelength ordering before gap handling/step rendering.
+        dfi = dfi.sort_values('lam', kind='mergesort')
         dfi['sp'] = dfi['sp'] * 10000.0
         dfi['esp'] = dfi['esp'] * 10000.0
         if use_fnu_jy:
