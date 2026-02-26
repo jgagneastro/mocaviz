@@ -990,10 +990,13 @@ def update_specid_select_spectrapage(
         aid_query = " OR ".join(["ms.moca_specid='"+str(stri)+"'" for stri in specid_select])
         df = moca.query(query_e+" WHERE ("+aid_query+")")
         
-        #Normalize spectra before jsonifying to avoid memory problems
+        # Normalize safely before jsonifying to avoid memory problems.
+        # Some spectra (e.g., certain low-SNR MIRI products) can have median
+        # flux ~0, which would create inf/NaN and make traces disappear.
         norm = df['moca_specid'].map(df.groupby('moca_specid')['sp'].median())
-        df['esp'] /= norm
-        df['sp'] /= norm
+        safe_norm = norm.where(np.isfinite(norm) & (np.abs(norm) > 0), 1.0)
+        df['esp'] /= safe_norm
+        df['sp'] /= safe_norm
 
     #Object-based selections
     oid_set = False
