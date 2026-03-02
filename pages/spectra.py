@@ -456,6 +456,24 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             ytitle = "Absolute spectral flux density <i>F<sub>λ</sub></i> (W/m<sup>2</sup>/μm)"
 
     # Normalization helpers
+    def _safe_errors_for_norm(sp_vals, esp_vals):
+        sp = np.asarray(sp_vals, dtype=float)
+        esp = np.asarray(esp_vals, dtype=float)
+        e = np.where(np.isfinite(esp), np.abs(esp), np.nan)
+
+        # Floor 1: at least 0.01% of |flux| at each wavelength.
+        floor_flux = 1e-4 * np.abs(sp)
+        e = np.where(np.isfinite(floor_flux), np.fmax(e, floor_flux), e)
+
+        # Floor 2: at least 0.8 * median(error) for each spectrum.
+        finite_pos = e[np.isfinite(e) & (e > 0)]
+        if finite_pos.size > 0:
+            median_e = float(np.nanmedian(finite_pos))
+            floor_med = 0.8 * median_e
+            if np.isfinite(floor_med) and floor_med > 0:
+                e = np.where(np.isfinite(e), np.fmax(e, floor_med), e)
+        return e
+
     def _get_overlap_mask(df_ref, df_tgt, rng):
         x = df_tgt['lam'].values
         lo = df_ref['lam'].min()
@@ -473,7 +491,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         if dfr.empty:
             return -np.inf
         sp = dfr['sp'].values
-        esp = dfr['esp'].replace(0, np.nan).values
+        esp = _safe_errors_for_norm(sp, dfr['esp'].values)
         snr = np.nanmedian(sp / esp) if np.isfinite(np.nanmedian(sp / esp)) else -np.inf
         return snr
 
@@ -492,9 +510,11 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             return None
         x_t = df_tgt['lam'].values[mask]
         y_t = df_tgt['sp'].values[mask]
-        e_t = df_tgt['esp'].replace(0, np.nan).values[mask]
+        e_t_all = _safe_errors_for_norm(df_tgt['sp'].values, df_tgt['esp'].values)
+        e_t = e_t_all[mask]
         y_r = np.interp(x_t, df_ref['lam'].values, df_ref['sp'].values)
-        e_r = np.interp(x_t, df_ref['lam'].values, df_ref['esp'].replace(0, np.nan).values)
+        e_r_ref = _safe_errors_for_norm(df_ref['sp'].values, df_ref['esp'].values)
+        e_r = np.interp(x_t, df_ref['lam'].values, e_r_ref)
         denom = np.sqrt(e_r**2 + e_t**2)
         denom = np.where(np.isfinite(denom) & (denom > 0), denom, np.nan)
         num = np.nansum((y_r * y_t) / denom)
