@@ -1698,21 +1698,18 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
                 if not comp_seg.empty and not std_seg.empty:
                     interp_std = np.interp(comp_seg['wv'], std_seg['wv'], std_seg['spn'], left=np.nan, right=np.nan)
-                    interp_std_err = np.interp(comp_seg['wv'], std_seg['wv'], std_seg['esp_calc'], left=np.nan, right=np.nan)
-                    comp_err = comp_seg['esp_calc'].values
-                    sigma = np.sqrt(interp_std_err**2 + comp_err**2)
-                    diff = comp_seg['spn'].values - interp_std
-                    valid = np.isfinite(diff) & np.isfinite(sigma) & (sigma > 0)
-                    if np.any(valid):
-                        residual_list.append(diff[valid] / sigma[valid])
+                    diff = comp_seg['spn'] - interp_std
+                    valid = diff[~np.isnan(diff)]
+                    if not valid.empty:
+                        residual_list.append(valid)
             if residual_list:
                 n_bands = len(local_norm_regions)
-                all_residuals = np.concatenate(residual_list)
+                all_residuals = np.concatenate([r.to_numpy() for r in residual_list])
                 N = len(all_residuals)
                 p = 3*n_bands if deredden else n_bands
                 dof = N - p if N > p else N
-                reduced_chi2 = np.sum(all_residuals**2) / dof if dof > 0 else np.nan
-                mad = np.median(np.abs(all_residuals))
+                reduced_chi2 = 1e3 * np.sum(all_residuals**2) / dof if dof > 0 else np.nan
+                mad = 1e3 * np.median(np.abs(all_residuals))
             else:
                 reduced_chi2 = np.nan
                 mad = np.nan
