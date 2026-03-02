@@ -276,6 +276,65 @@ def weighted_median(values, weights):
     c = np.cumsum(weights[i])
     return values[i[np.searchsorted(c, 0.5 * c[-1])]]
 
+def _mad_shifted_flux(flux_vals):
+    flux = np.asarray(flux_vals, dtype=float)
+    flux = flux[np.isfinite(flux)]
+    if flux.size < 2:
+        return np.nan
+    dif = flux[1:] - flux[:-1]
+    if dif.size == 0:
+        return np.nan
+    med_dif = np.nanmedian(dif)
+    mad = np.nanmedian(np.abs(dif - med_dif))
+    return float(mad) if np.isfinite(mad) and mad > 0 else np.nan
+
+def _prepare_errors_for_metrics(flux_vals, err_vals):
+    flux = np.asarray(flux_vals, dtype=float)
+    if err_vals is None:
+        err = np.full_like(flux, np.nan, dtype=float)
+    else:
+        err = np.asarray(err_vals, dtype=float)
+        if err.shape != flux.shape:
+            err = np.full_like(flux, np.nan, dtype=float)
+    err = np.where(np.isfinite(err), np.abs(err), np.nan)
+
+    finite_err = np.isfinite(err) & (err > 0)
+    # If a spectrum has no finite errors at all, estimate from MAD(flux - shift(flux,1)).
+    if not np.any(finite_err):
+        mad_est = _mad_shifted_flux(flux)
+        if np.isfinite(mad_est) and mad_est > 0:
+            err = np.where(np.isfinite(flux), mad_est, np.nan)
+            finite_err = np.isfinite(err) & (err > 0)
+
+    # Floor 1: 0.01% of |flux| at each wavelength.
+    floor_flux = 1e-4 * np.abs(flux)
+    err = np.where(finite_err, np.fmax(err, floor_flux), err)
+
+    # Floor 2: 0.8 * median(error) within each spectrum.
+    finite_pos = err[np.isfinite(err) & (err > 0)]
+    if finite_pos.size > 0:
+        floor_med = 0.8 * float(np.nanmedian(finite_pos))
+        if np.isfinite(floor_med) and floor_med > 0:
+            err = np.where(np.isfinite(err), np.fmax(err, floor_med), err)
+    return err
+
+def _weighted_scale_chi2_minimization(x_ref, y_ref, e_ref, x_tgt, y_tgt, e_tgt):
+    y_ref_i = np.interp(x_tgt, x_ref, y_ref, left=np.nan, right=np.nan)
+    e_ref_i = np.interp(x_tgt, x_ref, e_ref, left=np.nan, right=np.nan)
+    denom = np.sqrt(e_ref_i**2 + e_tgt**2)
+    valid = (
+        np.isfinite(y_ref_i) &
+        np.isfinite(y_tgt) &
+        np.isfinite(denom) & (denom > 0)
+    )
+    if np.sum(valid) == 0:
+        return np.nan
+    num = np.nansum((y_ref_i[valid] * y_tgt[valid]) / denom[valid])
+    den = np.nansum((y_tgt[valid] * y_tgt[valid]) / denom[valid])
+    if not np.isfinite(den) or den == 0:
+        return np.nan
+    return float(num / den)
+
 def cardelli_extinction_law(wavelength, R_V):
     """
     Computes the extinction curve A(λ)/A(V) using the Cardelli, Clayton, & Mathis (1989) law.
@@ -1435,6 +1494,10 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
 
     # Bin comparison spectrum
     comparison_df = process_spectrum(comparison_df_raw, bins_per_micron=bins, norm_regions_param=local_norm_regions)
+    comparison_df['esp_calc'] = _prepare_errors_for_metrics(
+        comparison_df['spn'].values,
+        comparison_df['esp'].values if 'esp' in comparison_df.columns else None
+    )
     
     # Define a wavelength grid on which to bin the standard spectral grid
     common_wv = np.sort(comparison_df['wv'].unique())
@@ -1472,6 +1535,10 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
         if debug_printing:
             print('Rebinning standard spectrum...')
         std_df = process_spectrum(std_df_raw, common_wv=common_wv, norm_regions_param=local_norm_regions)
+        std_df['esp_calc'] = _prepare_errors_for_metrics(
+            std_df['spn'].values,
+            std_df['esp'].values if 'esp' in std_df.columns else None
+        )
         if debug_printing:
             print('Rebinning complete')
         std_data_dered = None
@@ -1491,14 +1558,24 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 valid = (
                     np.isfinite(comp_seg['spn'].values) &
                     np.isfinite(std_seg['spn'].values) &
-                    (~np.isnan(comp_seg['spn'].values)) &
-                    (~np.isnan(std_seg['spn'].values))
+                    np.isfinite(comp_seg['esp_calc'].values) & (comp_seg['esp_calc'].values > 0) &
+                    np.isfinite(std_seg['esp_calc'].values) & (std_seg['esp_calc'].values > 0)
                 )
                 if np.sum(valid) > 0:
-                    ratio = np.nanmedian(comp_seg['spn'].values[valid] / std_seg['spn'].values[valid])
-                    # Normalize the original standard spectrum
-                    std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'spn'] *= ratio
-                    std_df.loc[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max), 'esp'] *= ratio
+                    ratio = _weighted_scale_chi2_minimization(
+                        comp_seg['wv'].values[valid],
+                        comp_seg['spn'].values[valid],
+                        comp_seg['esp_calc'].values[valid],
+                        std_seg['wv'].values[valid],
+                        std_seg['spn'].values[valid],
+                        std_seg['esp_calc'].values[valid],
+                    )
+                    if np.isfinite(ratio):
+                        # Normalize the original standard spectrum
+                        mask_region = (std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)
+                        std_df.loc[mask_region, 'spn'] *= ratio
+                        std_df.loc[mask_region, 'esp'] *= ratio
+                        std_df.loc[mask_region, 'esp_calc'] *= ratio
         if debug_printing:
             print('Normalizing complete')
 
@@ -1537,6 +1614,11 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 if debug_printing:
                     print('Optimizing complete')
                 
+                std_df_dered['esp_calc'] = _prepare_errors_for_metrics(
+                    std_df_dered['spn'].values,
+                    std_df_dered['esp'].values if 'esp' in std_df_dered.columns else None
+                )
+
                 # Normalize the dereddened standard spectrum using the median ratio (comparison / standard), per region.
                 if debug_printing:
                     print('Normalizing dereddened standard spectrum...')
@@ -1547,14 +1629,24 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                         valid = (
                             np.isfinite(comp_seg['spn'].values) &
                             np.isfinite(std_seg_dered['spn'].values) &
-                            (~np.isnan(comp_seg['spn'].values)) &
-                            (~np.isnan(std_seg_dered['spn'].values))
+                            np.isfinite(comp_seg['esp_calc'].values) & (comp_seg['esp_calc'].values > 0) &
+                            np.isfinite(std_seg_dered['esp_calc'].values) & (std_seg_dered['esp_calc'].values > 0)
                         )
                         if np.sum(valid) > 0:
-                            ratio = np.nanmedian(comp_seg['spn'].values[valid] / std_seg_dered['spn'].values[valid])
-                            # Normalize the original standard spectrum
-                            std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'spn'] *= ratio
-                            std_df_dered.loc[(std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max), 'esp'] *= ratio
+                            ratio = _weighted_scale_chi2_minimization(
+                                comp_seg['wv'].values[valid],
+                                comp_seg['spn'].values[valid],
+                                comp_seg['esp_calc'].values[valid],
+                                std_seg_dered['wv'].values[valid],
+                                std_seg_dered['spn'].values[valid],
+                                std_seg_dered['esp_calc'].values[valid],
+                            )
+                            if np.isfinite(ratio):
+                                # Normalize the original standard spectrum
+                                mask_region = (std_df_dered['wv'] >= region_min) & (std_df_dered['wv'] <= region_max)
+                                std_df_dered.loc[mask_region, 'spn'] *= ratio
+                                std_df_dered.loc[mask_region, 'esp'] *= ratio
+                                std_df_dered.loc[mask_region, 'esp_calc'] *= ratio
                 if debug_printing:
                     print('Normalizing complete...')
 
@@ -1606,18 +1698,21 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                 std_seg = std_df[(std_df['wv'] >= region_min) & (std_df['wv'] <= region_max)]
                 if not comp_seg.empty and not std_seg.empty:
                     interp_std = np.interp(comp_seg['wv'], std_seg['wv'], std_seg['spn'], left=np.nan, right=np.nan)
-                    diff = comp_seg['spn'] - interp_std
-                    valid = diff[~np.isnan(diff)]
-                    if not valid.empty:
-                        residual_list.append(valid)
+                    interp_std_err = np.interp(comp_seg['wv'], std_seg['wv'], std_seg['esp_calc'], left=np.nan, right=np.nan)
+                    comp_err = comp_seg['esp_calc'].values
+                    sigma = np.sqrt(interp_std_err**2 + comp_err**2)
+                    diff = comp_seg['spn'].values - interp_std
+                    valid = np.isfinite(diff) & np.isfinite(sigma) & (sigma > 0)
+                    if np.any(valid):
+                        residual_list.append(diff[valid] / sigma[valid])
             if residual_list:
                 n_bands = len(local_norm_regions)
-                all_residuals = np.concatenate([r.to_numpy() for r in residual_list])
+                all_residuals = np.concatenate(residual_list)
                 N = len(all_residuals)
                 p = 3*n_bands if deredden else n_bands
                 dof = N - p if N > p else N
-                reduced_chi2 = 1e3 * np.sum(all_residuals**2) / dof if dof > 0 else np.nan
-                mad = 1e3 * np.median(np.abs(all_residuals))
+                reduced_chi2 = np.sum(all_residuals**2) / dof if dof > 0 else np.nan
+                mad = np.median(np.abs(all_residuals))
             else:
                 reduced_chi2 = np.nan
                 mad = np.nan
