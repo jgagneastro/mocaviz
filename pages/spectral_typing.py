@@ -1249,7 +1249,20 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL
+            WHERE dstg.ignored=0
+              AND mstg.ignored=0
+              AND dstg.moca_specid IS NOT NULL
+              AND COALESCE(dstg.is_public, 1) IN (0, 1)
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM data_spectral_typing_grids dstg2
+                    WHERE dstg2.ignored=0
+                      AND dstg2.moca_specid IS NOT NULL
+                      AND dstg2.moca_sptgridid = dstg.moca_sptgridid
+                      AND dstg2.grid_index = dstg.grid_index
+                      AND COALESCE(dstg2.is_public, 1) IN (0, 1)
+                      AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
+              )
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
@@ -1265,7 +1278,23 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
             JOIN data_spectra ds USING(moca_specid)
-            WHERE dstg.ignored=0 AND mstg.ignored=0 AND dstg.moca_specid IS NOT NULL AND ds.ignored=0 AND ds.flux_flambda IS NOT NULL AND ds.wavelength_angstrom IS NOT NULL
+            WHERE dstg.ignored=0
+              AND mstg.ignored=0
+              AND dstg.moca_specid IS NOT NULL
+              AND ds.ignored=0
+              AND ds.flux_flambda IS NOT NULL
+              AND ds.wavelength_angstrom IS NOT NULL
+              AND COALESCE(dstg.is_public, 1) IN (0, 1)
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM data_spectral_typing_grids dstg2
+                    WHERE dstg2.ignored=0
+                      AND dstg2.moca_specid IS NOT NULL
+                      AND dstg2.moca_sptgridid = dstg.moca_sptgridid
+                      AND dstg2.grid_index = dstg.grid_index
+                      AND COALESCE(dstg2.is_public, 1) IN (0, 1)
+                      AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
+              )
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
