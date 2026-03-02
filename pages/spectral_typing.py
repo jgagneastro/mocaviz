@@ -1227,8 +1227,29 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             print("Downloading grid data")
         connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
+        parsed = urlparse(url_search) if url_search else None
+        qs = parse_qs(parsed.query) if parsed else {}
+        dbname_param = (qs.get("dbase", [env_dbname])[0] or "").strip().lower()
+        apply_private_public_precedence = (dbname_param == "mocadb_private_tables")
+
+        private_public_clause = ""
+        if apply_private_public_precedence:
+            private_public_clause = """
+              AND COALESCE(dstg.is_public, 1) IN (0, 1)
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM data_spectral_typing_grids dstg2
+                    WHERE dstg2.ignored=0
+                      AND dstg2.moca_specid IS NOT NULL
+                      AND dstg2.moca_sptgridid = dstg.moca_sptgridid
+                      AND dstg2.grid_index = dstg.grid_index
+                      AND COALESCE(dstg2.is_public, 1) IN (0, 1)
+                      AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
+              )
+            """
+
         # SQL Query to populate the dropdown options
-        query_options = """
+        query_options = f"""
             SELECT
               dstg.moca_sptgridid AS grid,
               dstg.moca_sptgridhid,
@@ -1252,17 +1273,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             WHERE dstg.ignored=0
               AND mstg.ignored=0
               AND dstg.moca_specid IS NOT NULL
-              AND COALESCE(dstg.is_public, 1) IN (0, 1)
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM data_spectral_typing_grids dstg2
-                    WHERE dstg2.ignored=0
-                      AND dstg2.moca_specid IS NOT NULL
-                      AND dstg2.moca_sptgridid = dstg.moca_sptgridid
-                      AND dstg2.grid_index = dstg.grid_index
-                      AND COALESCE(dstg2.is_public, 1) IN (0, 1)
-                      AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
-              )
+              {private_public_clause}
             ORDER BY mstg.display_order, dstg.grid_index
         """
         df_options = pd.read_sql(query_options, engine)
@@ -1273,7 +1284,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             return dash.no_update, dash.no_update, dash.no_update
         
         # SQL Query to download the standard grid of spectra
-        query_std_data = """
+        query_std_data = f"""
             SELECT ds.moca_specid, ds.wavelength_angstrom * 1e-4 AS wv, ds.flux_flambda sp, ds.flux_flambda_unc esp
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
@@ -1284,17 +1295,7 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               AND ds.ignored=0
               AND ds.flux_flambda IS NOT NULL
               AND ds.wavelength_angstrom IS NOT NULL
-              AND COALESCE(dstg.is_public, 1) IN (0, 1)
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM data_spectral_typing_grids dstg2
-                    WHERE dstg2.ignored=0
-                      AND dstg2.moca_specid IS NOT NULL
-                      AND dstg2.moca_sptgridid = dstg.moca_sptgridid
-                      AND dstg2.grid_index = dstg.grid_index
-                      AND COALESCE(dstg2.is_public, 1) IN (0, 1)
-                      AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
-              )
+              {private_public_clause}
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
