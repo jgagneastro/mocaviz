@@ -410,6 +410,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         margin=dict(l=3, r=3, t=3, b=0),
         legend=dict(
             orientation = 'h', xanchor = "right", x = 1, y = 0, yanchor="bottom",
+            groupclick='togglegroup',
         ),
         meta={}
     )
@@ -593,6 +594,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             continue
         labeli = df_aids.loc[df_aids['moca_specid'] == unique_specids[i], 'spectrum_name'].values[0]
         colori = colormap[unique_specids[i]]
+        legend_group = f"spec_{unique_specids[i]}"
 
         dfi = spec_map[unique_specids[i]].copy()
         avg_resolving_power = average_resolving_power(dfi['lam'].values)
@@ -623,6 +625,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                         mode='lines',
                         line=dict(color=hex_to_rgba(colori, 0.3), width=2.8),
                         hoverinfo='none',
+                        legendgroup=legend_group,
                         showlegend=False
                     )
                     data.append(spline_trace)
@@ -633,6 +636,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                         mode='lines',
                         line=dict(color=hex_to_rgba(colori, 0.3), width=2.8),
                         hoverinfo='none',
+                        legendgroup=legend_group,
                         showlegend=False
                     )
                     data.append(spline_trace)
@@ -652,6 +656,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                             width=0,
                         ),
                         hoverinfo='none',
+                        legendgroup=legend_group,
                         showlegend=False
                     )
                     data.append(error_trace)
@@ -662,6 +667,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                     opacity=1.0,
                     mode='markers',
                     name=labeli,
+                    legendgroup=legend_group,
                     marker=dict(
                         symbol='circle',
                         size=8,
@@ -675,7 +681,16 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
             # Insert NaNs in the gaps larger than 10x the median spacing
             x_with_nans, y_with_nans, ey_with_nans = insert_nans_in_gaps(dfi['lam'].values, dfi['sp'].values, ey_array=dfi['esp'].values, threshold_factor=10)
 
-            new_trace = go.Scattergl(x=x_with_nans,y=y_with_nans,opacity=0.8,mode='lines',name=labeli,line=dict(color=colori, width=2, shape='hv'),connectgaps=False)
+            new_trace = go.Scattergl(
+                x=x_with_nans,
+                y=y_with_nans,
+                opacity=0.8,
+                mode='lines',
+                name=labeli,
+                line=dict(color=colori, width=2, shape='hv'),
+                legendgroup=legend_group,
+                connectgaps=False
+            )
 
             if not dfi['esp'].isna().all():
                 valid = np.isfinite(x_with_nans) & np.isfinite(y_with_nans) & np.isfinite(ey_with_nans)
@@ -697,6 +712,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                             hoverinfo='none',
                             connectgaps=False,
                             fill=None,
+                            legendgroup=legend_group,
                             showlegend=False
                         )
 
@@ -709,6 +725,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
                             fillcolor=hex_to_rgba(colori, alpha),
                             hoverinfo='none',
                             connectgaps=False,
+                            legendgroup=legend_group,
                             showlegend=False
                         )
 
