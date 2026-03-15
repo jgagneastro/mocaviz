@@ -1882,6 +1882,8 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
             )
             return empty_figure, figure_export_config, empty_figure, figure_export_config, None
         ra_ref, dec_ref, epoch_ref = ref_df.iloc[0]["ra"], ref_df.iloc[0]["dec"], ref_df.iloc[0]["measurement_epoch_yr"]
+        if not np.isfinite(epoch_ref):
+            epoch_ref = np.nan
         fit_epoch_ref = epoch_ref
 
         def _pick_unc(primary_val, series_fallback):
@@ -2106,6 +2108,14 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
 
     if selected_missions:
         data_df = data_df[data_df["mission"].isin(selected_missions)]
+
+    # If adopted reference epoch is missing, fall back to the median finite epoch from points.
+    if not np.isfinite(epoch_ref):
+        epoch_vals = pd.to_numeric(data_df["measurement_epoch_yr"], errors='coerce').values
+        finite_epoch_vals = epoch_vals[np.isfinite(epoch_vals)]
+        if finite_epoch_vals.size > 0:
+            epoch_ref = float(np.nanmedian(finite_epoch_vals))
+            fit_epoch_ref = epoch_ref
 
     # Calculate relative offsets
     data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
@@ -2394,43 +2404,62 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         parallax_display = format_value_with_error(plx_df.iloc[0]["parallax_mas"], plx_df.iloc[0]["parallax_mas_unc"], "mas")+" ("+plx_df["plx_ref"].fillna('No reference').str.replace(r'[()]', '', regex=True).iloc[0]+")"
     else:
         parallax_display = "N/A"
+
+    pmra_val = float(pm_df.iloc[0]["pmra_masyr"]) if (len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr"])) else np.nan
+    pmdec_val = float(pm_df.iloc[0]["pmdec_masyr"]) if (len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr"])) else np.nan
+    plx_val = float(plx_df.iloc[0]["parallax_mas"]) if (len(plx_df) != 0 and pd.notna(plx_df.iloc[0]["parallax_mas"])) else np.nan
+    pmra_unc_val = float(pm_df.iloc[0]["pmra_masyr_unc"]) if (len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr_unc"])) else 0.0
+    pmdec_unc_val = float(pm_df.iloc[0]["pmdec_masyr_unc"]) if (len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr_unc"])) else 0.0
+    plx_unc_val = float(plx_df.iloc[0]["parallax_mas_unc"]) if (len(plx_df) != 0 and pd.notna(plx_df.iloc[0]["parallax_mas_unc"])) else 0.0
+    has_pm_vals = np.isfinite(pmra_val) and np.isfinite(pmdec_val)
+    has_plx_val = np.isfinite(plx_val)
+    plx_for_model = plx_val if has_plx_val else 0.0
     
     if adjust_reference_epoch and (not fit_plx) and (not fit_pm):
         epochs = data_df["measurement_epoch_yr"].values
-        epoch_ref = np.nanmean(epochs)
-        rel_ra_observed = (data_df["ra"]) * np.cos(np.radians(data_df["dec"])) * 3600 * 1000
-        rel_dec_observed = (data_df["dec"]) * 3600 * 1000
+        finite_epochs = epochs[np.isfinite(epochs)]
+        if finite_epochs.size > 0:
+            epoch_ref_candidate = float(np.nanmean(finite_epochs))
+            if np.isfinite(epoch_ref_candidate):
+                epoch_ref = epoch_ref_candidate
+                rel_ra_observed = (data_df["ra"]) * np.cos(np.radians(data_df["dec"])) * 3600 * 1000
+                rel_dec_observed = (data_df["dec"]) * 3600 * 1000
 
-        if len(pm_df) != 0:
-            rel_ra_observed -= (epochs - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
-            rel_dec_observed -= (epochs - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
+                if has_pm_vals:
+                    rel_ra_observed -= (epochs - epoch_ref) * pmra_val
+                    rel_dec_observed -= (epochs - epoch_ref) * pmdec_val
 
-        if len(plx_df) != 0:
-            plxm = parallax_motion(np.nanmean(data_df["ra"]), np.nanmean(data_df["dec"]), epochs)
-            rel_ra_observed -= plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
-            rel_dec_observed -= plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
-        
-        ra_ref = np.nanmedian(rel_ra_observed/(np.cos(np.radians(data_df["dec"])) * 3600 * 1000))
-        dec_ref = np.nanmedian(rel_dec_observed/(3600 * 1000))
-
-        # Recalculate relative offsets
-        data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
-        data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
+                if has_plx_val:
+                    ra_vals = pd.to_numeric(data_df["ra"], errors='coerce').values
+                    dec_vals = pd.to_numeric(data_df["dec"], errors='coerce').values
+                    ra_finite = ra_vals[np.isfinite(ra_vals)]
+                    dec_finite = dec_vals[np.isfinite(dec_vals)]
+                    if ra_finite.size > 0 and dec_finite.size > 0:
+                        plxm = parallax_motion(float(np.nanmean(ra_finite)), float(np.nanmean(dec_finite)), epochs)
+                        rel_ra_observed -= plxm["plx_motion_racosdec"] * plx_for_model
+                        rel_dec_observed -= plxm["plx_motion_dec"] * plx_for_model
+                
+                ra_ref_candidate = np.nanmedian(rel_ra_observed / (np.cos(np.radians(data_df["dec"])) * 3600 * 1000))
+                dec_ref_candidate = np.nanmedian(rel_dec_observed / (3600 * 1000))
+                if np.isfinite(ra_ref_candidate) and np.isfinite(dec_ref_candidate):
+                    ra_ref = float(ra_ref_candidate)
+                    dec_ref = float(dec_ref_candidate)
+                    # Recalculate relative offsets
+                    data_df["rel_ra"] = (data_df["ra"] - ra_ref) * np.cos(np.radians(dec_ref)) * 3600 * 1000
+                    data_df["rel_dec"] = (data_df["dec"] - dec_ref) * 3600 * 1000
 
     # Subtract proper motion if checkbox is checked
-    if subtract_pm and len(pm_df) != 0:
-        pmra = pm_df.iloc[0]["pmra_masyr"]
-        pmdec = pm_df.iloc[0]["pmdec_masyr"]
+    if subtract_pm and has_pm_vals:
         epochs = data_df["measurement_epoch_yr"].values
 
-        data_df["rel_ra"] -= (epochs - epoch_ref) * pmra
-        data_df["rel_dec"] -= (epochs - epoch_ref) * pmdec
+        data_df["rel_ra"] -= (epochs - epoch_ref) * pmra_val
+        data_df["rel_dec"] -= (epochs - epoch_ref) * pmdec_val
     
-    if subtract_plx and len(plx_df) != 0:
+    if subtract_plx:
         epochs = data_df["measurement_epoch_yr"].values
         plxm = parallax_motion(ra_ref, dec_ref, epochs)
-        data_df["rel_ra"] -= plxm["plx_motion_racosdec"]*plx_df.iloc[0]["parallax_mas"]
-        data_df["rel_dec"] -= plxm["plx_motion_dec"]*plx_df.iloc[0]["parallax_mas"]
+        data_df["rel_ra"] -= plxm["plx_motion_racosdec"] * plx_for_model
+        data_df["rel_dec"] -= plxm["plx_motion_dec"] * plx_for_model
 
     # If binning is enabled, compute bin indices now (grouping happens after we know outliers)
     if bin_activated:
@@ -2494,22 +2523,24 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
 
     # Build model using best-fitting moving-component reference when available
     # Absolute time values for modeling (phase uses wrapped x but absolute calendar year for PM/PLX terms)
-    t_abs = time_values + np.round(np.mean(data_df["measurement_epoch_yr"])) if phase_yearly else time_values
+    if phase_yearly:
+        epochs_for_phase = pd.to_numeric(data_df["measurement_epoch_yr"], errors='coerce').values
+        finite_epochs_phase = epochs_for_phase[np.isfinite(epochs_for_phase)]
+        epoch_phase_center = float(np.nanmean(finite_epochs_phase)) if finite_epochs_phase.size > 0 else 0.0
+        t_abs = time_values + np.round(epoch_phase_center)
+    else:
+        t_abs = time_values
 
     if fit_plx:
         # Anchor model to epoch_ref and then optionally subtract PM/PLX exactly like the data
         plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
         plxm_ref   = parallax_motion(ra_ref, dec_ref, epoch_ref)
         # Base anchored components
-        pm_ra_term  = pm_df.iloc[0]["pmra_masyr"] * (t_abs - epoch_ref)
-        pm_dec_term = pm_df.iloc[0]["pmdec_masyr"] * (t_abs - epoch_ref)
+        pm_ra_term  = (pmra_val * (t_abs - epoch_ref)) if has_pm_vals else np.zeros_like(time_values)
+        pm_dec_term = (pmdec_val * (t_abs - epoch_ref)) if has_pm_vals else np.zeros_like(time_values)
         # Parallax term (array); if not available, zero array with correct shape
-        if len(plx_df) != 0:
-            plx_ra_term = plx * (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"]) 
-            plx_dec_term = plx * (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"]) 
-        else:
-            plx_ra_term = np.zeros_like(time_values)
-            plx_dec_term = np.zeros_like(time_values)
+        plx_ra_term = plx_for_model * (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"])
+        plx_dec_term = plx_for_model * (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"])
         # Apply the same subtractions as done to the data (preserve array shapes)
         if subtract_pm:
             pm_ra_term = np.zeros_like(time_values)
@@ -2521,48 +2552,48 @@ def update_astrometry_scatter_plot(selected_dataset, selected_missions, pm_check
         expected_rel_dec = pm_dec_term + plx_dec_term
     elif fit_pm:
         # PM-only anchored to epoch_ref; optionally add DB parallax as differential
-        pm_ra_term  = pm_df.iloc[0]["pmra_masyr"] * (t_abs - epoch_ref)
-        pm_dec_term = pm_df.iloc[0]["pmdec_masyr"] * (t_abs - epoch_ref)
+        pm_ra_term  = (pmra_val * (t_abs - epoch_ref)) if has_pm_vals else np.zeros_like(time_values)
+        pm_dec_term = (pmdec_val * (t_abs - epoch_ref)) if has_pm_vals else np.zeros_like(time_values)
         if subtract_pm:
             pm_ra_term = np.zeros_like(time_values)
             pm_dec_term = np.zeros_like(time_values)
         expected_rel_ra = pm_ra_term
         expected_rel_dec = pm_dec_term
-        if (not subtract_plx) and len(plx_df) != 0:
+        if not subtract_plx:
             plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
             plxm_ref   = parallax_motion(ra_ref, dec_ref, epoch_ref)
-            expected_rel_ra += (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"]) * plx_df.iloc[0]["parallax_mas"]
-            expected_rel_dec += (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"]) * plx_df.iloc[0]["parallax_mas"]
+            expected_rel_ra += (plxm_model["plx_motion_racosdec"] - plxm_ref["plx_motion_racosdec"]) * plx_for_model
+            expected_rel_dec += (plxm_model["plx_motion_dec"] - plxm_ref["plx_motion_dec"]) * plx_for_model
     else:
         # No fresh fit: fall back to MOCAdb solution relative to the chosen reference epoch
-        if subtract_pm or len(pm_df) == 0:
+        if subtract_pm or (not has_pm_vals):
             expected_rel_ra = np.zeros_like(time_values)
             expected_rel_dec = np.zeros_like(time_values)
         else:
-            expected_rel_ra = (t_abs - epoch_ref) * pm_df.iloc[0]["pmra_masyr"]
-            expected_rel_dec = (t_abs - epoch_ref) * pm_df.iloc[0]["pmdec_masyr"]
+            expected_rel_ra = (t_abs - epoch_ref) * pmra_val
+            expected_rel_dec = (t_abs - epoch_ref) * pmdec_val
         # Add parallax term if not subtracted (even when PM is subtracted)
-        if (not subtract_plx) and len(plx_df) != 0:
+        if not subtract_plx:
             plxm_model = parallax_motion(ra_ref, dec_ref, t_abs)
-            expected_rel_ra += plxm_model["plx_motion_racosdec"] * plx_df.iloc[0]["parallax_mas"]
-            expected_rel_dec += plxm_model["plx_motion_dec"] * plx_df.iloc[0]["parallax_mas"]
+            expected_rel_ra += plxm_model["plx_motion_racosdec"] * plx_for_model
+            expected_rel_dec += plxm_model["plx_motion_dec"] * plx_for_model
 
     # === Compute 1-sigma model envelopes from parameter uncertainties ===
     # Pull uncertainties (0 if missing); zero them if subtract_pm
-    pmra_unc = 0.0 if subtract_pm else (float(pm_df.iloc[0]["pmra_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmra_masyr_unc"]) else 0.0)
-    pmdec_unc = 0.0 if subtract_pm else (float(pm_df.iloc[0]["pmdec_masyr_unc"]) if len(pm_df) != 0 and pd.notna(pm_df.iloc[0]["pmdec_masyr_unc"]) else 0.0)
-    plx_unc  = float(plx_df.iloc[0]["parallax_mas_unc"]) if len(plx_df) != 0 and pd.notna(plx_df.iloc[0]["parallax_mas_unc"]) else 0.0
+    pmra_unc = 0.0 if subtract_pm else pmra_unc_val
+    pmdec_unc = 0.0 if subtract_pm else pmdec_unc_val
+    plx_unc  = plx_unc_val
 
     # Time factor for PM contribution; zero if subtract_pm
     if phase_yearly:
-        dt_vals = (time_values + np.round(np.mean(data_df["measurement_epoch_yr"])) - epoch_ref)
+        dt_vals = (time_values + np.round(epoch_phase_center) - epoch_ref)
     else:
         dt_vals = (time_values - epoch_ref)
     if subtract_pm:
         dt_vals = np.zeros_like(dt_vals)
 
     # Parallax motion terms for the envelope (zeroed if subtract_plx or no parallax)
-    if (not subtract_plx) and (len(plx_df) != 0):
+    if not subtract_plx:
         plxm_env = parallax_motion(ra_ref, dec_ref, t_abs)
         plx_ra_term = plxm_env["plx_motion_racosdec"]
         plx_dec_term = plxm_env["plx_motion_dec"]
