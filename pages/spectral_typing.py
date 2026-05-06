@@ -5,10 +5,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
 from sqlalchemy import create_engine, MetaData, Table, select, Float, text
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from math import floor, ceil, log10
 import os
 import re
+import json
+import gzip
+import hashlib
+from pathlib import Path
 from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
 
 debug_printing = True
@@ -36,6 +40,9 @@ env_host = os.environ.get('MOCA_HOST', default_host)
 env_username = os.environ.get('MOCA_USERNAME', default_username)
 env_password = os.environ.get('MOCA_PASSWORD', default_password)
 env_dbname = os.environ.get('MOCA_DBNAME', default_dbname)
+repo_root = Path(__file__).resolve().parents[1]
+spectral_typing_cache_dir = repo_root / '.cache' / 'spectral_typing'
+spectral_typing_grid_cache_version = 1
 
 def get_connection_string_sptype(url_search=None):
     # Use defaults as fallback
@@ -54,6 +61,65 @@ def get_connection_string_sptype(url_search=None):
         host     = qs.get("host", [host])[0]
 
     return f'mysql+pymysql://{username}:{urlquote(password)}@{host}/{dbname}'
+
+def _url_flag_is_true(url_search, flag_name):
+    if not url_search:
+        return False
+    parsed = urlparse(url_search)
+    qs = parse_qs(parsed.query)
+    value = qs.get(flag_name, [None])[0]
+    if value is None:
+        return False
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+def _get_query_float_param(url_search, param_name):
+    if not url_search:
+        return None
+    parsed = urlparse(url_search)
+    qs = parse_qs(parsed.query)
+    value = qs.get(param_name, [None])[0]
+    if value is None:
+        return None
+    try:
+        parsed_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed_value if np.isfinite(parsed_value) else None
+
+def _spectral_typing_grid_cache_file(url_search):
+    parsed = urlparse(url_search) if url_search else None
+    qs = parse_qs(parsed.query) if parsed else {}
+    username = (qs.get("user", [env_username])[0] or "").strip()
+    dbname = (qs.get("dbase", [env_dbname])[0] or "").strip()
+    host = (qs.get("host", [env_host])[0] or "").strip()
+    cache_key_src = f"{host}|{dbname}|{username}|grid_cache_v{spectral_typing_grid_cache_version}"
+    cache_key = hashlib.sha256(cache_key_src.encode("utf-8")).hexdigest()[:16]
+    return spectral_typing_cache_dir / f"{cache_key}.json.gz"
+
+def _load_spectral_typing_grid_cache(url_search):
+    cache_file = _spectral_typing_grid_cache_file(url_search)
+    if not cache_file.exists():
+        return None
+    try:
+        with gzip.open(cache_file, "rt", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if payload.get("version") != spectral_typing_grid_cache_version:
+            return None
+        return payload
+    except Exception:
+        return None
+
+def _save_spectral_typing_grid_cache(url_search, options, grid_data, grid_spectra):
+    spectral_typing_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = _spectral_typing_grid_cache_file(url_search)
+    payload = {
+        "version": spectral_typing_grid_cache_version,
+        "options": options,
+        "grid_data": grid_data,
+        "grid_spectra": grid_spectra,
+    }
+    with gzip.open(cache_file, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh)
 
 def generate_spectral_type_label(value):
     """
@@ -388,7 +454,7 @@ def deredden_spectrum(observed_spectrum, A_V, R_V):
     dereddened_flux = (flux * extinction_factor) / np.nanmedian(extinction_factor)
     return observed_spectrum.assign(spn=dereddened_flux)  # Preserve DataFrame structure
 
-def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
+def optimize_A_V_R_V(observed_spectrum, reference_spectrum, fixed_r_v=None):
     """
     Optimizes A(V) and R(V) to best match the observed spectrum (after de-reddening) to the reference spectrum.
     
@@ -399,8 +465,7 @@ def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
     Returns:
         tuple: Best-fit (A_V, R_V).
     """
-    def loss(params):
-        A_V, R_V = params
+    def loss_with_params(A_V, R_V):
         dereddened_spectrum = deredden_spectrum(observed_spectrum, A_V, R_V)
     
         # Extract flux values
@@ -431,6 +496,10 @@ def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
 
         # Compute and return the loss (sum of squared differences)
         return np.sum((dereddened_sp_valid_norm - ref_sp_valid) ** 2)
+
+    def loss(params):
+        A_V, R_V = params
+        return loss_with_params(A_V, R_V)
     
     def grad_loss(params):
         A_V, R_V = params
@@ -468,6 +537,14 @@ def optimize_A_V_R_V(observed_spectrum, reference_spectrum):
         grad_R_V = -2 * m * c * A_V * np.sum(residual * (b / (R_V**2)) * D)
         
         return np.array([grad_A_V, grad_R_V])
+
+    if fixed_r_v is not None and np.isfinite(fixed_r_v) and fixed_r_v > 0:
+        result = minimize_scalar(
+            lambda a_v: loss_with_params(a_v, float(fixed_r_v)),
+            bounds=(-50, 50),
+            method='bounded'
+        )
+        return float(result.x), float(fixed_r_v)
 
     # Initial guesses: A_V = 1.0, R_V = 3.1
     initial_guess = [1.0, 3.1]
@@ -695,7 +772,10 @@ layout = html.Div([
                    html.Label("Select Comparison Spectrum:", style={"fontWeight": "bold"}),
                    dcc.Dropdown(
                        id='sp-typing-comparison-dropdown',
-                       options=[],  # Populated via callback
+                        options=[],  # Populated via callback
+                        searchable=True,
+                        clearable=True,
+                        placeholder='Type a specid, oid, designation, or instrument...'
                    )
               ], id='sp-typing-comparison-div', style={'margin-bottom': '15px'}),
               html.Div([
@@ -703,6 +783,12 @@ layout = html.Div([
                         html.Div([
                              html.Label("Select Spectral Grid:", style={"fontWeight": "bold"}),
                              dcc.Dropdown(id='sp-typing-grid-dropdown', options=[]),
+                             html.Button(
+                                 "Reset cache",
+                                 id='sp-typing-reset-cache-button',
+                                 n_clicks=0,
+                                 style={'display': 'none', 'marginTop': '6px'}
+                             ),
                         ], id='sp-typing-grid-div', style={'margin-bottom': '15px'}),
                         html.Div([
                              html.Label("Bins per Micron:", style={"fontWeight": "bold"}),
@@ -857,10 +943,11 @@ layout = html.Div([
                 - **bins**: Set the number of bins per micron (e.g., `bins=20`).
                 - **deredden**: Apply dereddening if set to True (e.g., `deredden=True`).
                 - **grid_index**: Set the starting display index for the grid (e.g., `grid_index=2`).
+                - **fix_rv**: If provided, hold `R(V)` fixed during dereddening and optimize only `A(V)` (e.g., `fix_rv=3.1`). This is only used when `deredden=True`.
                 - **norm**: Custom normalization regions in microns. Accepts flexible separators like commas or semicolons and `-`, `:`, or whitespace between bounds. Example: `norm=0.850-1.395,1.395-1.930,1.930-2.400`.
                 
                 ### Example URL:  
-                - `https://dataviz.mocadb.ca/spectral-typing?specid=1&grid=field&bins=20&deredden=True&grid_index=2&norm=0.850-1.395,1.395-1.930,1.930-2.400`
+                - `https://dataviz.mocadb.ca/spectral-typing?specid=1&grid=field&bins=20&deredden=True&fix_rv=3.1&grid_index=2&norm=0.850-1.395,1.395-1.930,1.930-2.400`
                 
                 *Tip:* If you include spaces, your browser will URL-encode them automatically. The app also accepts semicolons and colons as separators.
                   """
@@ -890,19 +977,33 @@ layout = html.Div([
     Output('sp-typing-comparison-dropdown', 'value'),
     Output('sp-typing-comparison-designation', 'data'),
     Output('sp-typing-db-data', 'data'),
-    Input('sp-typing-url', 'search')
+    Input('sp-typing-url', 'search'),
+    Input('sp-typing-comparison-dropdown', 'search_value'),
+    State('sp-typing-comparison-dropdown', 'value')
 )
-def update_comparison_options(search):
+def update_comparison_options(search, search_value, current_value):
     if search:
         parsed = urlparse(search)
         qs = parse_qs(parsed.query)
         specid = qs.get("moca_specid", qs.get("specid", [None]))[0]
     else:
         specid = None
-    
+
+    try:
+        requested_specid = int(specid) if specid is not None else None
+    except (TypeError, ValueError):
+        requested_specid = None
+
+    selected_specid = requested_specid if requested_specid is not None else current_value
+    search_text = (search_value or '').strip()
+    empty_df = pd.DataFrame(columns=['moca_specid', 'moca_oid', 'moca_instid', 'spectrum_name', 'designation'])
+
+    if not search_text and selected_specid is None:
+        return [], None, {}, empty_df.to_json(date_format='iso', orient='split')
+
     connection_string = get_connection_string_sptype(url_search=search)
     engine = create_engine(connection_string)
-    query = """
+    base_query = """
         SELECT ms.moca_specid,
                ms.moca_oid,
                ms.moca_instid,
@@ -922,16 +1023,54 @@ def update_comparison_options(search):
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
         LEFT JOIN (SELECT moca_oid, spectral_type FROM data_spectral_types WHERE adopted=1) spt USING(moca_oid)
-        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL) AND ms.ignored=0
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+          AND COALESCE(ms.ignored, 0)=0
     """
-    df = pd.read_sql(query, engine)
+
+    df = empty_df.copy()
+    if search_text:
+        search_query = text(base_query + """
+            AND (
+                CAST(ms.moca_specid AS CHAR) = :search_exact
+                OR CAST(ms.moca_oid AS CHAR) = :search_exact
+                OR CONCAT('specid', ms.moca_specid) LIKE :search_like
+                OR CONCAT('oid', ms.moca_oid) LIKE :search_like
+                OR COALESCE(mo.designation, '') LIKE :search_like
+                OR COALESCE(ms.spectrum_name, '') LIKE :search_like
+                OR COALESCE(ms.moca_instid, '') LIKE :search_like
+                OR COALESCE(ms.instrument_mode_name, '') LIKE :search_like
+            )
+            ORDER BY ms.moca_specid
+            LIMIT 100
+        """)
+        df = pd.read_sql(
+            search_query,
+            engine,
+            params={
+                'search_exact': search_text,
+                'search_like': f'%{search_text}%'
+            }
+        )
+
+    if selected_specid is not None and (df.empty or int(selected_specid) not in set(df['moca_specid'].astype(int))):
+        selected_query = text(base_query + """
+            AND ms.moca_specid = :specid
+            LIMIT 1
+        """)
+        df_selected = pd.read_sql(selected_query, engine, params={'specid': int(selected_specid)})
+        if not df_selected.empty:
+            df = pd.concat([df_selected, df], ignore_index=True)
+
+    if not df.empty:
+        df = df.drop_duplicates(subset=['moca_specid']).sort_values('moca_specid')
+
     options = [{'label': row["spectrum_name"], 'value': row["moca_specid"]} for index, row in df.iterrows()]
     designation_map = {row["moca_specid"]: row["spectrum_name"].split(': ')[1].split(' with ')[0] for index, row in df.iterrows()}
-    
-    valid_specids = [str(opt['value']) for opt in options]
-    default_value = specid if specid in valid_specids else None
-    
-    return options, int(default_value) if default_value is not None else None, designation_map, df.to_json(date_format='iso', orient='split')
+
+    valid_specids = {int(opt['value']) for opt in options}
+    default_value = int(selected_specid) if selected_specid is not None and int(selected_specid) in valid_specids else None
+
+    return options, default_value, designation_map, df.to_json(date_format='iso', orient='split')
 
 # =============================================================================
 # SQL Output Button Helper Functions and Callbacks
@@ -1210,21 +1349,48 @@ def generate_sql(n_clicks, n_clicks_adopt, sqlout_enabled, current_index, select
 # Callback: Define spectral grid options and download grid spectra
 # =============================================================================
 @dash.callback(
+    Output('sp-typing-reset-cache-button', 'style'),
+    Input('sp-typing-url', 'search')
+)
+def toggle_grid_cache_button(url_search):
+    if _url_flag_is_true(url_search, 'local_cache'):
+        return {'display': 'inline-block', 'marginTop': '6px'}
+    return {'display': 'none', 'marginTop': '6px'}
+
+@dash.callback(
     Output('sp-typing-grid-dropdown', 'options'),
     Output('sp-typing-grid-data', 'data'),
     Output('sp-typing-grid-raw-spectra', 'data'),
     Input('sp-typing-url', 'search'),
+    Input('sp-typing-reset-cache-button', 'n_clicks'),
     State('sp-typing-grid-dropdown', 'options'),
     State('sp-typing-grid-data', 'data'),
     State('sp-typing-grid-raw-spectra', 'data'),
 )
-def grid_data_download(url_search, current_options, current_grid_data, current_grid_spectra):
+def grid_data_download(url_search, reset_cache_clicks, current_options, current_grid_data, current_grid_spectra):
     if debug_printing:
         print("Triggered grid data download callback")
+    triggered_ids = [t['prop_id'].split('.')[0] for t in callback_context.triggered]
+    use_local_cache = _url_flag_is_true(url_search, 'local_cache')
+    force_refresh = (
+        use_local_cache and
+        'sp-typing-reset-cache-button' in triggered_ids and
+        (reset_cache_clicks or 0) > 0
+    )
     # If the dropdown options are empty (initial call) then run the update_spectral_grids logic.
-    if not current_options or current_options == [] or not current_grid_data or not current_grid_spectra:
+    if force_refresh or not current_options or current_options == [] or not current_grid_data or not current_grid_spectra:
         if debug_printing:
             print("Downloading grid data")
+        if use_local_cache and not force_refresh:
+            cached_payload = _load_spectral_typing_grid_cache(url_search)
+            if cached_payload is not None:
+                if debug_printing:
+                    print("Loading grid data from local cache")
+                return (
+                    cached_payload.get("options", []),
+                    cached_payload.get("grid_data"),
+                    cached_payload.get("grid_spectra")
+                )
         connection_string = get_connection_string_sptype(url_search=url_search)
         engine = create_engine(connection_string)
         parsed = urlparse(url_search) if url_search else None
@@ -1270,9 +1436,11 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
               END AS gravity_class
             FROM data_spectral_typing_grids dstg
             JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+            JOIN moca_spectra ms ON ms.moca_specid = dstg.moca_specid
             WHERE dstg.ignored=0
               AND mstg.ignored=0
               AND dstg.moca_specid IS NOT NULL
+              AND COALESCE(ms.ignored, 0)=0
               {private_public_clause}
             ORDER BY mstg.display_order, dstg.grid_index
         """
@@ -1282,20 +1450,28 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
             if debug_printing:
                 print("Encountered empty standard grid header")
             return dash.no_update, dash.no_update, dash.no_update
+
+        grid_specids = (
+            df_options['moca_specid']
+            .dropna()
+            .astype(int)
+            .drop_duplicates()
+            .tolist()
+        )
+        if not grid_specids:
+            if debug_printing:
+                print("Encountered empty standard grid specid list")
+            return dash.no_update, dash.no_update, dash.no_update
         
         # SQL Query to download the standard grid of spectra
+        grid_specid_clause = ",".join(str(specid) for specid in grid_specids)
         query_std_data = f"""
             SELECT ds.moca_specid, ds.wavelength_angstrom * 1e-4 AS wv, ds.flux_flambda sp, ds.flux_flambda_unc esp
-            FROM data_spectral_typing_grids dstg
-            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            JOIN data_spectra ds USING(moca_specid)
-            WHERE dstg.ignored=0
-              AND mstg.ignored=0
-              AND dstg.moca_specid IS NOT NULL
+            FROM data_spectra ds
+            WHERE ds.moca_specid IN ({grid_specid_clause})
               AND ds.ignored=0
               AND ds.flux_flambda IS NOT NULL
               AND ds.wavelength_angstrom IS NOT NULL
-              {private_public_clause}
         """
         df_std_data = pd.read_sql(query_std_data, engine)
         if df_std_data.empty:
@@ -1319,6 +1495,8 @@ def grid_data_download(url_search, current_options, current_grid_data, current_g
         # Encode stored data
         grid_data = df_options.to_json(date_format='iso', orient='split')
         grid_spectra = df_std_data.to_json(date_format='iso', orient='split')
+        if use_local_cache:
+            _save_spectral_typing_grid_cache(url_search, options, grid_data, grid_spectra)
     else:
         if debug_printing:
             print("Grid data already in store")
@@ -1468,6 +1646,7 @@ def download_comparison_spectrum(comparison_specid, url_search):
         FROM moca_spectra ms
         JOIN data_spectra ds ON (ds.moca_specid = ms.moca_specid AND ds.ignored = 0)
         WHERE ds.moca_specid = {comparison_specid}
+          AND COALESCE(ms.ignored, 0)=0
     """
 
     comparison_df = pd.read_sql(comparison_query, engine)
@@ -1499,10 +1678,10 @@ def download_comparison_spectrum(comparison_specid, url_search):
     Input('sp-typing-grid-raw-spectra', 'data'), # If the grid raw spectra gets updated we also re-bin all spectra
     Input('sp-typing-norm-regions-store', 'data'),
     State('sp-typing-grid-data', 'data'), # This encodes the list of standard spectra and their header properties
-    #State('sp-typing-url', 'search'),
+    State('sp-typing-url', 'search'),
     prevent_initial_call = True
 )
-def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, norm_regions_store, grid_data):
+def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_value, grid_raw_spectra, norm_regions_store, grid_data, url_search):
     if debug_printing:
         print('precompute_comparisons callback being triggered')
     if not comparison_raw_spectrum or not grid_raw_spectra:
@@ -1512,6 +1691,9 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
     
     bins = bins_per_micron if bins_per_micron is not None else default_bins_per_micron
     deredden = 'deredden' in (deredden_value or [])
+    fixed_r_v = _get_query_float_param(url_search, 'fix_rv')
+    if fixed_r_v is not None and fixed_r_v <= 0:
+        fixed_r_v = None
     local_norm_regions = [(float(a), float(b)) for (a, b) in (norm_regions_store or norm_regions)]
 
     # Read the comparison spectrum and the grid spectra
@@ -1632,7 +1814,11 @@ def precompute_comparisons(comparison_raw_spectrum, bins_per_micron, deredden_va
                         else:
                             std_seg_valid = std_seg_interp[mask]
                             comp_seg_valid = comp_seg[mask]
-                            A_V_i, R_V_i = optimize_A_V_R_V(std_seg_valid[['wv', 'spn']], comp_seg_valid[['wv', 'spn']])
+                            A_V_i, R_V_i = optimize_A_V_R_V(
+                                std_seg_valid[['wv', 'spn']],
+                                comp_seg_valid[['wv', 'spn']],
+                                fixed_r_v=fixed_r_v
+                            )
                         av_list.append(A_V_i)
                         rv_list.append(R_V_i)
                         # Apply de-reddening for this region and update the corresponding part in std_df_dered
