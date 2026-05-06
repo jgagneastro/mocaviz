@@ -384,6 +384,12 @@ def _prepare_errors_for_metrics(flux_vals, err_vals):
             err = np.where(np.isfinite(err), np.fmax(err, floor_med), err)
     return err
 
+def _finite_numeric_column(df, column):
+    if column not in df.columns:
+        return np.array([], dtype=float)
+    vals = pd.to_numeric(df[column], errors='coerce').to_numpy(dtype=float, copy=False)
+    return vals[np.isfinite(vals)]
+
 def _weighted_scale_chi2_minimization(x_ref, y_ref, e_ref, x_tgt, y_tgt, e_tgt):
     y_ref_i = np.interp(x_tgt, x_ref, y_ref, left=np.nan, right=np.nan)
     e_ref_i = np.interp(x_tgt, x_ref, e_ref, left=np.nan, right=np.nan)
@@ -2318,27 +2324,37 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
         for entry in precomputed:
             df_entry = pd.DataFrame(entry['spectrum'])
             if not df_entry.empty:
-                spn = df_entry['spn'].values.tolist()
-                y_min_values.append(np.nanquantile(spn,quantile_low))
-                y_max_values.append(np.nanquantile(spn,quantile_high))
-    y_min_values = [np.nanquantile(y_min_values, quantile_low)]
-    y_max_values = [np.nanquantile(y_max_values, quantile_high)]
+                spn = _finite_numeric_column(df_entry, 'spn')
+                if spn.size > 0:
+                    y_min_values.append(float(np.nanquantile(spn, quantile_low)))
+                    y_max_values.append(float(np.nanquantile(spn, quantile_high)))
+    if y_min_values:
+        y_min_values = [float(np.nanquantile(np.asarray(y_min_values, dtype=float), quantile_low))]
+    else:
+        y_min_values = []
+    if y_max_values:
+        y_max_values = [float(np.nanquantile(np.asarray(y_max_values, dtype=float), quantile_high))]
+    else:
+        y_max_values = []
     
     # Add currently displayed data
     if not std_df.empty:
-        spn = std_df['spn'].values.tolist()
-        y_min_values.append(np.nanmin(spn))
-        y_max_values.append(np.nanmax(spn))
+        spn = _finite_numeric_column(std_df, 'spn')
+        if spn.size > 0:
+            y_min_values.append(float(np.nanmin(spn)))
+            y_max_values.append(float(np.nanmax(spn)))
     if not comparison_df.empty:
-        spn = comparison_df['spn'].values.tolist()
-        y_min_values.append(np.nanmin(spn))
-        y_max_values.append(np.nanmax(spn))
+        spn = _finite_numeric_column(comparison_df, 'spn')
+        if spn.size > 0:
+            y_min_values.append(float(np.nanmin(spn)))
+            y_max_values.append(float(np.nanmax(spn)))
     if 'deredden' in (deredden_value or []):
         std_df_dered = pd.DataFrame(std_entry['spectrum_dered'])
         if not std_df_dered.empty:
-            spn = std_df_dered['spn'].values.tolist()
-            y_min_values.append(np.nanmin(spn))
-            y_max_values.append(np.nanmax(spn))
+            spn = _finite_numeric_column(std_df_dered, 'spn')
+            if spn.size > 0:
+                y_min_values.append(float(np.nanmin(spn)))
+                y_max_values.append(float(np.nanmax(spn)))
 
     if y_min_values:
         y_min = np.nanmin(y_min_values)
@@ -2354,11 +2370,15 @@ def update_graph(prev_clicks, next_clicks, slider_value, comparison_data, select
     for entry in precomputed:
         df_entry = pd.DataFrame(entry['spectrum'])
         if not df_entry.empty:
-            global_wv.extend(df_entry['wv'].values.tolist())
+            global_wv.extend(_finite_numeric_column(df_entry, 'wv').tolist())
     if not comparison_df.empty:
-        global_wv.extend(comparison_df['wv'].values.tolist())
-    x_min = np.nanmin(global_wv)
-    x_max = np.nanmax(global_wv)
+        global_wv.extend(_finite_numeric_column(comparison_df, 'wv').tolist())
+    if global_wv:
+        x_min = float(np.nanmin(np.asarray(global_wv, dtype=float)))
+        x_max = float(np.nanmax(np.asarray(global_wv, dtype=float)))
+    else:
+        x_min = wv_min
+        x_max = wv_max
     
     y_margin = 0.05 * (y_max - y_min)
     x_margin = 0.015 * (x_max - x_min)
