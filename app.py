@@ -1,6 +1,8 @@
 from dash import Dash, html, dcc, page_registry
 import dash
 import importlib
+import sys
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 #conda install python-dotenv or pip install python-dotenv
 from dotenv import load_dotenv
@@ -25,7 +27,6 @@ def _mocaviz_warm_pages():
 
 # ---- Diagnostics: log app identity + callback count at startup ----
 try:
-    import sys
     sys.stderr.write(
         f"[mocaviz:init] app id={id(app)} callbacks={len(getattr(app, 'callback_map', {}) or {})}\n"
     )
@@ -46,10 +47,24 @@ for page in page_registry.values():
     print(f"  Keys: {list(page.keys())}")
     print() """
 
-if __name__ == '__main__':
-	app.run_server(debug=True)
-
 # The following line is required by Phusion Passenger.
 # It exposes the WSGI App using the application variable.
 # by jmcouillard using this reference : https://community.plotly.com/t/deploying-dash-app-on-a-wsgi-service/57867
-application = app.server
+server = app.server
+
+try:
+    from bd_colors_fast.app import app as bd_colors_fast_app
+
+    server.wsgi_app = DispatcherMiddleware(server.wsgi_app, {
+        "/bd-colors-fast": bd_colors_fast_app,
+    })
+    sys.stderr.write("[mocaviz:init] mounted bd_colors_fast at /bd-colors-fast\n")
+    sys.stderr.flush()
+except Exception as exc:
+    sys.stderr.write(f"[mocaviz:init] bd_colors_fast mount failed: {type(exc).__name__}: {exc}\n")
+    sys.stderr.flush()
+
+application = server
+
+if __name__ == '__main__':
+	app.run_server(debug=True)

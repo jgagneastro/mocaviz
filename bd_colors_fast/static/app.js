@@ -1,0 +1,2577 @@
+const axisTypes = [
+  { value: "spectral_type", label: "Spectral Type" },
+  { value: "color", label: "Color" },
+  { value: "absolute_magnitude", label: "Absolute Magnitude" },
+  { value: "spectral_index", label: "Spectral Index" },
+  { value: "equivalent_width", label: "Equivalent Width" },
+];
+
+const classColors = {
+  O: "purple",
+  B: "darkblue",
+  A: "blue",
+  F: "#68a6d9",
+  G: "#72b85f",
+  K: "darkgreen",
+  M: "#E69F00",
+  L: "#009E73",
+  T: "#0072B2",
+  Y: "#CC79A7",
+};
+
+const spectralClassLegendOrder = ["M", "L", "T", "Y"];
+const broadSampleMaxObjects = 1000000;
+const spectralTypeJitterAmplitude = 0.3;
+const yDwarfRangePaddingFraction = 0.05;
+const ageColorbarLength = 0.7371;
+const ageColorbarBinaryLengthMultiplier = 0.95;
+const ageColorbarPhotdistLengthMultiplier = 0.95;
+const ageColorbarAllOptionalLengthMultiplier = 0.95;
+const noAgeMarkerColor = "#8d8d8d";
+const ageColorscale = [
+  [0, "rgb(150,0,90)"],
+  [0.125, "rgb(0,0,200)"],
+  [0.25, "rgb(0,25,255)"],
+  [0.375, "rgb(0,152,255)"],
+  [0.5, "rgb(44,255,150)"],
+  [0.625, "rgb(151,255,0)"],
+  [0.75, "rgb(255,234,0)"],
+  [0.875, "rgb(255,111,0)"],
+  [1, "rgb(255,0,0)"],
+];
+const plotAspectRatio = 16 / 9;
+const minPlotHeight = 420;
+
+const sampleSymbols = {
+  field: "circle",
+  low_gravity: "triangle-up",
+  subdwarf: "square",
+};
+
+const sampleLegendLabels = {
+  field: "Field",
+  low_gravity: "Low-gravity",
+  subdwarf: "Subdwarf",
+};
+const binaryLegendColor = "#6f7472";
+const photometricSptLegendColor = "#8a8f8d";
+const photometricSptEdgeColor = "#111";
+const photometricSptEdgeWidth = 2;
+
+const state = {
+  raw: null,
+  maps: null,
+  allRows: [],
+  rows: [],
+  selectedOids: [],
+  hiddenLegendClasses: new Set(),
+  hiddenLegendSamples: new Set(),
+  hiddenLegendBinaries: false,
+  hiddenLegendPhotdist: false,
+  legendClickTimer: null,
+  manualPhotdistChoice: false,
+  plotBound: false,
+  plotLoadReasons: new Set(),
+  autoErrorDefaults: { x: false, y: false },
+  manualErrorThresholds: { x: false, y: false },
+  axisRangeRevision: 0,
+  pendingInitialAxisRange: true,
+  lastAppliedAxisRangeSignature: "",
+  plotRenderToken: 0,
+  plotCanvasKey: "",
+  forceFreshPlot: false,
+  loadToken: 0,
+  reloadTimer: null,
+  plotResizeFrame: null,
+  plotResizeObserver: null,
+  featuresLoaded: {
+    spectralIndices: false,
+    equivalentWidths: false,
+    ages: false,
+  },
+  featureLoads: {},
+  photometryLoaded: new Set(),
+  photometricDistancesLoaded: false,
+  sequencesKey: "",
+};
+
+const appBaseUrl = (() => {
+  const scriptUrl = document.currentScript?.src;
+  if (scriptUrl) return new URL("../", scriptUrl).toString();
+  const path = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
+  return new URL(path, window.location.origin).toString();
+})();
+
+function appUrl(path) {
+  return new URL(String(path || "").replace(/^\/+/, ""), appBaseUrl).toString();
+}
+
+const el = {};
+
+document.addEventListener("DOMContentLoaded", init);
+
+async function init() {
+  collectElements();
+  fillAxisTypeSelects();
+  readInitialUrlState();
+  bindControls();
+  await loadBootstrap({ applyAxisDefaults: true, resetAxisRange: true });
+}
+
+function collectElements() {
+  [
+    "status",
+    "x-axis-type",
+    "x-value-1",
+    "x-value-2",
+    "x-value-1-wrap",
+    "x-value-2-wrap",
+    "x-value-1-label",
+    "x-value-2-label",
+    "y-axis-type",
+    "y-value-1",
+    "y-value-2",
+    "y-value-1-wrap",
+    "y-value-2-wrap",
+    "y-value-1-label",
+    "y-value-2-label",
+    "spt-range",
+    "highlight-oids",
+    "xerr-max",
+    "yerr-max",
+    "show-errors",
+    "include-photdist",
+    "include-binaries",
+    "include-photspt",
+    "color-by-age",
+    "visual-area",
+    "plot",
+    "plot-loader",
+    "count-summary",
+    "plot-hint",
+    "selection-table",
+    "missing-oids",
+    "export-csv",
+    "export-tsv",
+    "export-fits",
+    "export-votable",
+  ].forEach((id) => {
+    el[id] = document.getElementById(id);
+  });
+}
+
+function fillAxisTypeSelects() {
+  for (const id of ["x-axis-type", "y-axis-type"]) {
+    el[id].innerHTML = axisTypes.map((item) => optionHtml(item.value, item.label)).join("");
+  }
+}
+
+function readInitialUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const explicitErrorThresholds = {
+    x: params.has("xerr_max"),
+    y: params.has("yerr_max"),
+  };
+  state.manualErrorThresholds = { ...explicitErrorThresholds };
+  el["x-axis-type"].value = validAxisType(params.get("xaxis_type")) || "color";
+  el["y-axis-type"].value = validAxisType(params.get("yaxis_type")) || "absolute_magnitude";
+  el["spt-range"].value = params.get("spt_range") || "L2+";
+  el["highlight-oids"].value = params.get("moca_oid") || params.get("oid") || "";
+  el["xerr-max"].value = params.get("xerr_max") || "";
+  el["yerr-max"].value = params.get("yerr_max") || "";
+  el["show-errors"].checked = asBool(params.get("errors"));
+  el["include-photdist"].checked = asBool(params.get("photdist"));
+  state.manualPhotdistChoice = el["include-photdist"].checked;
+  el["include-binaries"].checked = asBool(params.get("binaries"));
+  el["include-photspt"].checked = asBool(params.get("photspt"));
+  el["color-by-age"].checked = asBool(params.get("agecolor"));
+  updatePhotdistControl();
+  if (applyAxisErrorDefaults(explicitErrorThresholds)) requestInitialAxisRange();
+}
+
+function validAxisType(value) {
+  return axisTypes.some((item) => item.value === value) ? value : null;
+}
+
+function asBool(value) {
+  return ["1", "true", "yes"].includes(String(value || "").toLowerCase());
+}
+
+function bindControls() {
+  const axisControls = new Set([
+    "x-axis-type",
+    "x-value-1",
+    "x-value-2",
+    "y-axis-type",
+    "y-value-1",
+    "y-value-2",
+  ]);
+  for (const id of axisControls) {
+    el[id].addEventListener("change", () => {
+      if (id.endsWith("axis-type")) {
+        refreshAxisValueControls(id[0], { preferDefaults: true });
+        applyAxisErrorDefaults();
+      }
+      updatePhotdistControl();
+      requestInitialAxisRange();
+      render();
+    });
+  }
+  for (const id of ["xerr-max", "yerr-max"]) {
+    el[id].addEventListener("input", () => {
+      state.autoErrorDefaults[id[0]] = false;
+      state.manualErrorThresholds[id[0]] = true;
+      requestInitialAxisRange();
+      render();
+    });
+    el[id].addEventListener("change", () => {
+      state.autoErrorDefaults[id[0]] = false;
+      state.manualErrorThresholds[id[0]] = true;
+      requestInitialAxisRange();
+      render();
+    });
+  }
+  for (const id of ["show-errors", "include-binaries", "color-by-age"]) {
+    el[id].addEventListener("input", render);
+    el[id].addEventListener("change", render);
+  }
+  el["include-photdist"].addEventListener("change", () => {
+    state.manualPhotdistChoice = el["include-photdist"].checked;
+    requestInitialAxisRange();
+    render();
+  });
+  el["spt-range"].addEventListener("input", () => {
+    requestInitialAxisRange();
+    render();
+    scheduleBootstrapReload({ resetAxisRange: true });
+  });
+  el["highlight-oids"].addEventListener("input", () => {
+    render();
+    scheduleBootstrapReload({ resetAxisRange: false });
+  });
+  el["include-photspt"].addEventListener("change", () => {
+    requestInitialAxisRange();
+    render();
+    scheduleBootstrapReload({ resetAxisRange: true });
+  });
+  el["export-csv"].addEventListener("click", exportCsv);
+  el["export-tsv"].addEventListener("click", exportTsv);
+  el["export-fits"].addEventListener("click", exportFits);
+  el["export-votable"].addEventListener("click", exportVotable);
+  window.addEventListener("resize", schedulePlotResize);
+  installPlotResizeObserver();
+}
+
+function requestInitialAxisRange() {
+  state.pendingInitialAxisRange = true;
+}
+
+function scheduleBootstrapReload(options = {}) {
+  window.clearTimeout(state.reloadTimer);
+  state.reloadTimer = window.setTimeout(() => loadBootstrap(options), 500);
+}
+
+function hasAbsoluteMagnitudeAxis() {
+  return el["x-axis-type"].value === "absolute_magnitude" || el["y-axis-type"].value === "absolute_magnitude";
+}
+
+function includePhotometricDistancesForAxes() {
+  return hasAbsoluteMagnitudeAxis() && el["include-photdist"].checked;
+}
+
+function applyAxisErrorDefaults(explicitErrorThresholds = {}) {
+  let changed = false;
+  for (const axis of ["x", "y"]) {
+    const input = el[`${axis}err-max`];
+    const defaultValue = defaultErrorThresholdForAxisType(el[`${axis}-axis-type`].value);
+    const hasManualThreshold = Boolean(explicitErrorThresholds[axis] || state.manualErrorThresholds[axis]);
+    if (defaultValue) {
+      if (!hasManualThreshold && (input.value === "" || state.autoErrorDefaults[axis])) {
+        if (input.value !== defaultValue) {
+          input.value = defaultValue;
+          changed = true;
+        }
+        state.autoErrorDefaults[axis] = true;
+      }
+    } else if (state.autoErrorDefaults[axis]) {
+      input.value = "";
+      state.autoErrorDefaults[axis] = false;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function defaultErrorThresholdForAxisType(type) {
+  if (type === "spectral_type") return "3";
+  if (type === "absolute_magnitude") return "0.5";
+  if (type === "color") return "0.2";
+  if (type === "equivalent_width") return "5";
+  return "";
+}
+
+function updatePhotdistControl() {
+  const checkbox = el["include-photdist"];
+  const hasAbsoluteAxis = hasAbsoluteMagnitudeAxis();
+  if (!hasAbsoluteAxis && !checkbox.disabled) {
+    state.manualPhotdistChoice = checkbox.checked;
+  }
+  checkbox.disabled = !hasAbsoluteAxis;
+  checkbox.checked = hasAbsoluteAxis ? state.manualPhotdistChoice : true;
+  checkbox.closest(".checkline")?.classList.toggle("is-disabled", !hasAbsoluteAxis);
+}
+
+function buildBootstrapParams() {
+  const params = new URLSearchParams(window.location.search);
+  params.set("spt_range", el["spt-range"].value || "L2+");
+  params.set("moca_oid", el["highlight-oids"].value || "");
+  params.set("photspt", el["include-photspt"].checked ? "1" : "0");
+  params.set("photdist", includePhotometricDistancesForAxes() ? "1" : "0");
+  params.set("xaxis_type", el["x-axis-type"].value || "color");
+  params.set("yaxis_type", el["y-axis-type"].value || "absolute_magnitude");
+  normalizeBroadSampleCap(params);
+  for (const axis of ["x", "y"]) {
+    const value1 = el[`${axis}-value-1`].value;
+    const value2 = el[`${axis}-value-2`].value;
+    if (value1) params.set(`${axis}axis_value_1`, value1);
+    if (value2) params.set(`${axis}axis_value_2`, value2);
+  }
+  return params;
+}
+
+function normalizeBroadSampleCap(params) {
+  if (!usesBroadSample()) return;
+  const current = String(params.get("max_objects") || "").trim().toLowerCase();
+  if (["0", "none", "uncapped", "all"].includes(current)) return;
+  const value = Number(current);
+  if (!Number.isFinite(value) || value < broadSampleMaxObjects) {
+    params.set("max_objects", String(broadSampleMaxObjects));
+  }
+}
+
+function usesBroadSample() {
+  const range = parseSptRange(el["spt-range"].value);
+  return el["include-photspt"].checked || (range && range.min < 10);
+}
+
+async function loadBootstrap(options = {}) {
+  const token = ++state.loadToken;
+  state.plotLoadReasons.clear();
+  setPlotLoading("catalog", true);
+  setStatus("Loading catalog");
+  try {
+    const params = buildBootstrapParams();
+    const response = await fetch(appUrl(`api/bootstrap?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken) return;
+    state.raw = payload;
+    state.maps = buildMaps(payload.catalog);
+    resetFeatureState(payload);
+    if (options.resetAxisRange) requestInitialAxisRange();
+    refreshAxisValueControls("x");
+    refreshAxisValueControls("y");
+    if (options.applyAxisDefaults) applyAxisDefaults(params);
+    if (applyAxisErrorDefaults()) requestInitialAxisRange();
+    state.sequencesKey = currentSequenceKey();
+
+    const count = payload.meta && payload.meta.object_count ? payload.meta.object_count : 0;
+    const capped = payload.meta && payload.meta.object_limit_applied ? `, capped at ${payload.meta.max_objects}` : "";
+    const sptMode = payload.meta && payload.meta.include_photometric_spt ? ", including photometric spectral types" : ", spectroscopic spectral types only";
+    if (payload.ok) {
+      setStatus(`${count.toLocaleString()} objects loaded from ${displaySource(payload.source)}${sptMode}${capped}`);
+    } else {
+      setStatus(`Using sample data: ${payload.error}`, true);
+    }
+    render();
+    loadPhotometryOptionCounts(token);
+  } finally {
+    if (token === state.loadToken) setPlotLoading("catalog", false);
+  }
+}
+
+function resetFeatureState(payload) {
+  const lazy = new Set(payload.meta?.lazy_features || []);
+  state.featuresLoaded = {
+    spectralIndices: !lazy.has("spectralIndices"),
+    equivalentWidths: !lazy.has("equivalentWidths"),
+    ages: !lazy.has("ages"),
+  };
+  state.photometryLoaded = new Set(payload.meta?.photometry_psids || (payload.catalog?.photometry || []).map((row) => row.moca_psid));
+  state.photometricDistancesLoaded = Boolean(payload.meta?.include_photometric_dist);
+  state.featureLoads = {};
+}
+
+function ensureNeededFeatures() {
+  if (!state.raw || !state.maps) return;
+  if (includePhotometricDistancesForAxes() && !state.photometricDistancesLoaded && !state.featureLoads.distances) {
+    loadDistances();
+  }
+  const sequenceKey = currentSequenceKey();
+  if (sequenceKey !== state.sequencesKey && !state.featureLoads.sequences) {
+    loadSequences(sequenceKey);
+  }
+
+  const missingPhotometry = neededPhotometryPsids().filter((psid) => !state.photometryLoaded.has(psid));
+  if (missingPhotometry.length && !state.featureLoads.photometry) {
+    loadPhotometry(missingPhotometry);
+  }
+
+  const needed = new Set();
+  for (const axis of ["x", "y"]) {
+    const type = el[`${axis}-axis-type`].value;
+    if (type === "spectral_index") needed.add("spectralIndices");
+    if (type === "equivalent_width") needed.add("equivalentWidths");
+  }
+  if (el["color-by-age"].checked) needed.add("ages");
+
+  for (const feature of needed) {
+    if (!state.featuresLoaded[feature] && !state.featureLoads[feature]) {
+      loadFeature(feature);
+    }
+  }
+}
+
+function currentSequenceKey() {
+  return ["x", "y"].map((axis) => {
+    const spec = axisSpec(axis);
+    return [spec.type, spec.value1 || "", spec.value2 || ""].join(",");
+  }).join("|");
+}
+
+async function loadSequences(sequenceKey) {
+  const token = state.loadToken;
+  state.featureLoads.sequences = true;
+  let shouldRender = false;
+  if (!hasActiveDataLoads(["sequences"])) setStatus("Loading sequence overlays");
+  try {
+    const params = buildBootstrapParams();
+    const response = await fetch(appUrl(`api/feature/sequences?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken || sequenceKey !== currentSequenceKey()) return;
+    if (!payload.ok) {
+      setStatus(`Could not load sequences: ${payload.error}`, true);
+      return;
+    }
+    state.raw.catalog.sequences = payload.rows || [];
+    state.sequencesKey = sequenceKey;
+    state.maps = buildMaps(state.raw.catalog);
+    const rowCount = payload.meta?.row_count || 0;
+    if (rowCount > 0 && !hasActiveDataLoads(["sequences"])) {
+      setStatus(`${rowCount.toLocaleString()} sequence rows loaded`);
+    }
+    shouldRender = true;
+  } finally {
+    delete state.featureLoads.sequences;
+    if (shouldRender) scheduleFreshRenderAfterDataLoad(token);
+  }
+}
+
+async function loadDistances() {
+  const token = state.loadToken;
+  state.featureLoads.distances = true;
+  let shouldRender = false;
+  setPlotLoading("distances", true);
+  setStatus("Loading photometric distances");
+  try {
+    const params = buildBootstrapParams();
+    params.set("photdist", "1");
+    const response = await fetch(appUrl(`api/feature/distances?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken) return;
+    if (!payload.ok) {
+      setStatus(`Could not load distances: ${payload.error}`, true);
+      return;
+    }
+    state.raw.catalog.distances = mergeRowsByKey(
+      state.raw.catalog.distances || [],
+      payload.rows || [],
+      (row) => row.id || `${row.moca_oid}|${row.photometric_estimate}|${row.distance_pc}`,
+    );
+    state.photometricDistancesLoaded = true;
+    state.maps = buildMaps(state.raw.catalog);
+    if (hasAbsoluteMagnitudeAxis()) requestInitialAxisRange();
+    setStatus(`${(payload.meta?.row_count || 0).toLocaleString()} distance rows loaded`);
+    shouldRender = true;
+  } finally {
+    delete state.featureLoads.distances;
+    setPlotLoading("distances", false);
+    if (shouldRender) scheduleFreshRenderAfterDataLoad(token);
+  }
+}
+
+function neededPhotometryPsids() {
+  const psids = [];
+  for (const axis of ["x", "y"]) {
+    const type = el[`${axis}-axis-type`].value;
+    const value1 = el[`${axis}-value-1`].value;
+    const value2 = el[`${axis}-value-2`].value;
+    if ((type === "color" || type === "absolute_magnitude") && value1) psids.push(value1);
+    if (type === "color" && value2) psids.push(value2);
+  }
+  return [...new Set(psids)];
+}
+
+async function loadPhotometry(psids) {
+  const token = state.loadToken;
+  state.featureLoads.photometry = true;
+  let shouldRender = false;
+  setPlotLoading("photometry", true);
+  setStatus(`Loading ${psids.join(", ")} photometry`);
+  try {
+    const params = buildBootstrapParams();
+    params.set("psids", psids.join(","));
+    const response = await fetch(appUrl(`api/feature/photometry?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken) return;
+    if (!payload.ok) {
+      setStatus(`Could not load photometry: ${payload.error}`, true);
+      return;
+    }
+    state.raw.catalog.photometry = mergeRowsByKey(
+      state.raw.catalog.photometry || [],
+      payload.rows || [],
+      (row) => `${row.moca_oid}|${row.moca_psid}`,
+    );
+    for (const psid of psids) state.photometryLoaded.add(psid);
+    state.maps = buildMaps(state.raw.catalog);
+    if (psids.some((psid) => neededPhotometryPsids().includes(psid))) requestInitialAxisRange();
+    setStatus(`${(payload.meta?.row_count || 0).toLocaleString()} photometry rows loaded`);
+    shouldRender = true;
+  } finally {
+    delete state.featureLoads.photometry;
+    setPlotLoading("photometry", false);
+    if (shouldRender) scheduleFreshRenderAfterDataLoad(token);
+  }
+}
+
+async function loadPhotometryOptionCounts(token) {
+  const params = buildBootstrapParams();
+  const response = await fetch(appUrl(`api/feature/photometry-options?${params.toString()}`));
+  const payload = await response.json();
+  if (token !== state.loadToken || !payload.ok) return;
+  state.raw.options.photometry = payload.rows || [];
+  const changedX = refreshAxisValueControls("x");
+  const changedY = refreshAxisValueControls("y");
+  if (changedX || changedY) requestInitialAxisRange();
+  render();
+}
+
+async function loadFeature(feature) {
+  const routes = {
+    spectralIndices: "spectral-indices",
+    equivalentWidths: "equivalent-widths",
+    ages: "ages",
+  };
+  const labels = {
+    spectralIndices: "spectral indices",
+    equivalentWidths: "equivalent widths",
+    ages: "ages",
+  };
+  const loadingLabels = {
+    spectralIndices: "spectral-index catalog data",
+    equivalentWidths: "equivalent-width catalog data",
+    ages: "age catalog data",
+  };
+  const route = routes[feature];
+  if (!route) return;
+
+  const token = state.loadToken;
+  state.featureLoads[feature] = true;
+  let shouldRender = false;
+  setPlotLoading(feature, true);
+  setStatus(`Loading ${loadingLabels[feature]}`);
+  try {
+    const params = buildBootstrapParams();
+    const response = await fetch(appUrl(`api/feature/${route}?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken) return;
+    if (!payload.ok) {
+      setStatus(`Could not load ${labels[feature]}: ${payload.error}`, true);
+      return;
+    }
+    state.raw.catalog[feature] = payload.rows || [];
+    state.maps = buildMaps(state.raw.catalog);
+    state.featuresLoaded[feature] = true;
+    const changedX = refreshAxisValueControls("x");
+    const changedY = refreshAxisValueControls("y");
+    if (changedX || changedY || currentAxesUseFeature(feature)) requestInitialAxisRange();
+    setStatus(`${(payload.meta?.row_count || 0).toLocaleString()} ${labels[feature]} rows loaded`);
+    shouldRender = true;
+  } finally {
+    delete state.featureLoads[feature];
+    setPlotLoading(feature, false);
+    if (shouldRender) scheduleFreshRenderAfterDataLoad(token);
+  }
+}
+
+function scheduleFreshRenderAfterDataLoad(token) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (token !== state.loadToken) return;
+      state.forceFreshPlot = true;
+      render();
+    });
+  });
+}
+
+function mergeRowsByKey(existing, incoming, keyFn) {
+  const rows = new Map();
+  for (const row of existing) rows.set(keyFn(row), row);
+  for (const row of incoming) rows.set(keyFn(row), row);
+  return [...rows.values()];
+}
+
+function setStatus(text, isError = false) {
+  el.status.textContent = text;
+  el.status.classList.toggle("error", isError);
+  el.status.classList.toggle("loading", !isError && text.startsWith("Loading"));
+}
+
+function setPlotLoading(reason, isLoading) {
+  if (!reason) return;
+  if (isLoading) {
+    state.plotLoadReasons.add(reason);
+  } else {
+    state.plotLoadReasons.delete(reason);
+  }
+  el["plot-loader"]?.classList.toggle("is-visible", state.plotLoadReasons.size > 0);
+}
+
+function hasActiveDataLoads(except = []) {
+  const ignored = new Set(except);
+  return Object.keys(state.featureLoads).some((key) => !ignored.has(key));
+}
+
+function buildMaps(catalog) {
+  const objectByOid = new Map();
+  const distanceByOid = new Map();
+  const photometryByOid = new Map();
+  const spectralIndexByOid = new Map();
+  const equivalentWidthByOid = new Map();
+  const ageByOid = new Map();
+
+  for (const object of catalog.objects || []) {
+    objectByOid.set(Number(object.moca_oid), object);
+  }
+  for (const distance of catalog.distances || []) {
+    const oid = Number(distance.moca_oid);
+    if (!distanceByOid.has(oid)) distanceByOid.set(oid, []);
+    distanceByOid.get(oid).push(distance);
+  }
+  for (const rows of distanceByOid.values()) {
+    rows.sort((a, b) => Number(a.photometric_estimate || 0) - Number(b.photometric_estimate || 0));
+  }
+  addNestedRows(photometryByOid, catalog.photometry || [], "moca_psid");
+  addNestedRows(spectralIndexByOid, catalog.spectralIndices || [], "moca_siid");
+  addNestedRows(equivalentWidthByOid, catalog.equivalentWidths || [], "moca_spid");
+  for (const age of catalog.ages || []) {
+    ageByOid.set(Number(age.moca_oid), Number(age.age_myr));
+  }
+
+  return {
+    objectByOid,
+    distanceByOid,
+    photometryByOid,
+    spectralIndexByOid,
+    equivalentWidthByOid,
+    ageByOid,
+  };
+}
+
+function addNestedRows(target, rows, keyField) {
+  for (const row of rows) {
+    const oid = Number(row.moca_oid);
+    if (!target.has(oid)) target.set(oid, new Map());
+    target.get(oid).set(row[keyField], row);
+  }
+}
+
+function dataCountBy(rows, keyField) {
+  const counts = new Map();
+  for (const row of rows || []) {
+    const key = row[keyField];
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function refreshAxisValueControls(axis, optionsConfig = {}) {
+  const type = el[`${axis}-axis-type`].value;
+  const value1 = el[`${axis}-value-1`];
+  const value2 = el[`${axis}-value-2`];
+  const wrap1 = el[`${axis}-value-1-wrap`];
+  const wrap2 = el[`${axis}-value-2-wrap`];
+  const label1 = el[`${axis}-value-1-label`];
+  const label2 = el[`${axis}-value-2-label`];
+
+  let options = [];
+  if (type === "color" || type === "absolute_magnitude") {
+    options = (state.raw?.options?.photometry || [])
+      .filter((row) => row.n_data === undefined || Number(row.n_data) > 0)
+      .map((row) => ({
+        value: row.moca_psid,
+        label: `${row.name} (${row.moca_psid})`,
+      }));
+  } else if (type === "spectral_index") {
+    const counts = state.featuresLoaded.spectralIndices ? dataCountBy(state.raw?.catalog?.spectralIndices, "moca_siid") : null;
+    options = (state.raw?.options?.spectralIndices || [])
+      .filter((row) => !counts || counts.has(row.moca_siid))
+      .map((row) => ({
+        value: row.moca_siid,
+        label: `${row.description} (${row.moca_siid})`,
+      }));
+  } else if (type === "equivalent_width") {
+    const counts = state.featuresLoaded.equivalentWidths ? dataCountBy(state.raw?.catalog?.equivalentWidths, "moca_spid") : null;
+    options = (state.raw?.options?.equivalentWidths || [])
+      .filter((row) => !counts || counts.has(row.moca_spid))
+      .map((row) => ({
+        value: row.moca_spid,
+        label: `${row.description} (${row.moca_spid})`,
+      }));
+  }
+
+  const old1 = value1.value;
+  const old2 = value2.value;
+  value1.innerHTML = options.map((item) => optionHtml(item.value, item.label)).join("");
+  value2.innerHTML = options.map((item) => optionHtml(item.value, item.label)).join("");
+  const default1 = preferredOptionValue(type, options, 0);
+  const default2 = preferredOptionValue(type, options, 1);
+  value1.value = optionsConfig.preferDefaults
+    ? default1
+    : (options.some((item) => item.value === old1) ? old1 : default1);
+  value2.value = optionsConfig.preferDefaults
+    ? default2
+    : (options.some((item) => item.value === old2) ? old2 : default2);
+  const changed = value1.value !== old1 || value2.value !== old2;
+
+  const needsOne = ["color", "absolute_magnitude", "spectral_index", "equivalent_width"].includes(type);
+  label1.textContent = type === "color" ? "Quantity 1" : "Quantity";
+  label2.textContent = "Quantity 2";
+  wrap1.style.display = needsOne && options.length ? "block" : "none";
+  wrap2.style.display = type === "color" && options.length > 1 ? "block" : "none";
+  return changed;
+}
+
+function preferredOptionValue(type, options, fallbackIndex = 0) {
+  if (type === "color") {
+    const preferred = fallbackIndex === 1 ? "mko_kmag" : "mko_jmag";
+    const match = options.find((item) => item.value === preferred);
+    if (match) return match.value;
+  } else if (type === "absolute_magnitude") {
+    const mkoJ = options.find((item) => item.value === "mko_jmag");
+    if (mkoJ) return mkoJ.value;
+  } else if (type === "spectral_index") {
+    const hcont = options.find((item) => item.value === "hcont" || /h-?cont/i.test(item.label));
+    if (hcont) return hcont.value;
+  } else if (type === "equivalent_width") {
+    const sodium1138 = options.find((item) => {
+      const normalized = normalizeOptionText(`${item.label} ${item.value}`);
+      return normalized.includes("na1138") || normalized.includes("nai1138");
+    });
+    if (sodium1138) return sodium1138.value;
+  }
+  return options[fallbackIndex]?.value || "";
+}
+
+function normalizeOptionText(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function applyAxisDefaults(params) {
+  const defaults = [
+    ["x", "xaxis_value_1", "mko_jmag"],
+    ["x", "xaxis_value_2", "mko_kmag"],
+    ["y", "yaxis_value_1", "mko_jmag"],
+    ["y", "yaxis_value_2", "mko_kmag"],
+  ];
+  for (const [axis, paramName, fallback] of defaults) {
+    const field = paramName.endsWith("_2") ? `${axis}-value-2` : `${axis}-value-1`;
+    const wanted = params.get(paramName) || fallback;
+    if ([...el[field].options].some((option) => option.value === wanted)) {
+      el[field].value = wanted;
+    }
+  }
+}
+
+function optionHtml(value, label) {
+  return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+}
+
+function render() {
+  if (!state.raw || !state.maps) return;
+  if (applyAxisErrorDefaults()) requestInitialAxisRange();
+  if (deferRenderUntilPhotometricDistancesLoaded()) return;
+  if (deferRenderUntilAgesLoaded()) return;
+  const rows = buildRows();
+  state.allRows = rows;
+  const plottedRows = legendFilteredRows(rows);
+  state.rows = plottedRows;
+  state.selectedOids = state.selectedOids.filter((oid) => plottedRows.some((row) => row.moca_oid === oid));
+  const rangeSignature = axisRangeSignature();
+  if (!state.pendingInitialAxisRange && rangeSignature !== state.lastAppliedAxisRangeSignature) {
+    requestInitialAxisRange();
+  }
+  const plotRanges = drawPlot(rows, plottedRows, {
+    keepPendingInitialRange: hasPendingCriticalPlotData(),
+    rangeSignature,
+  });
+  renderTable(state.selectedOids);
+  renderMissingHighlightedOids(rows);
+  renderCountSummary(plottedRows, plotRanges);
+  renderPlotHint();
+  schedulePlotResize();
+  ensureNeededFeatures();
+}
+
+function deferRenderUntilPhotometricDistancesLoaded() {
+  if (!includePhotometricDistancesForAxes() || state.photometricDistancesLoaded) return false;
+  if (!state.featureLoads.distances) loadDistances();
+  return true;
+}
+
+function deferRenderUntilAgesLoaded() {
+  if (!el["color-by-age"].checked || state.featuresLoaded.ages) return false;
+  if (!state.featureLoads.ages) loadFeature("ages");
+  return true;
+}
+
+function displaySource(source) {
+  return String(source || "").toLowerCase() === "mocadb" ? "MOCAdb" : String(source || "");
+}
+
+function renderCountSummary(rows, plotRanges = currentPlotRanges()) {
+  const plotted = rows.length;
+  const deEmphasized = rows.filter((row) => row.noisy).length;
+  const outsideRange = countRowsOutsideRange(rows, plotRanges);
+  const outsideText = outsideRange ? `, ${outsideRange.toLocaleString()} of which are outside the plotting range` : "";
+  if (plotted > 0 && deEmphasized === plotted) {
+    el["count-summary"].textContent = `${plotted.toLocaleString()} data points currently plotted and de-emphasized${outsideText}`;
+  } else if (deEmphasized) {
+    el["count-summary"].textContent = `${plotted.toLocaleString()} data points currently plotted, ${deEmphasized.toLocaleString()} of which are de-emphasized${outsideText}`;
+  } else {
+    el["count-summary"].textContent = `${plotted.toLocaleString()} data points currently plotted${outsideText}`;
+  }
+}
+
+function renderPlotHint() {
+  const jitterText = hasSpectralTypeAxis() ? " Spectral-type axes use ±0.3 subtype jitter." : "";
+  el["plot-hint"].textContent = `Click a data point to open its MOCAdb report${jitterText}`;
+}
+
+function hasSpectralTypeAxis() {
+  return el["x-axis-type"].value === "spectral_type" || el["y-axis-type"].value === "spectral_type";
+}
+
+function countRowsOutsideRange(rows, plotRanges) {
+  const xRange = orderedRange(plotRanges?.x);
+  const yRange = orderedRange(plotRanges?.y);
+  if (!xRange || !yRange) return 0;
+  return rows.filter((row) => (
+    Number.isFinite(plotX(row)) &&
+    Number.isFinite(plotY(row)) &&
+    (plotX(row) < xRange[0] || plotX(row) > xRange[1] || plotY(row) < yRange[0] || plotY(row) > yRange[1])
+  )).length;
+}
+
+function currentPlotRanges() {
+  return {
+    x: currentAxisRange("x"),
+    y: currentAxisRange("y"),
+  };
+}
+
+function legendFilteredRows(rows) {
+  const hideClasses = !el["color-by-age"].checked;
+  return rows.filter((row) => (
+    (!hideClasses || !state.hiddenLegendClasses.has(row.spectral_class)) &&
+    !state.hiddenLegendSamples.has(row.age_sample) &&
+    (!state.hiddenLegendBinaries || !row.is_binary) &&
+    (!state.hiddenLegendPhotdist || !row.is_photometric_distance)
+  ));
+}
+
+function buildRows() {
+  const range = parseSptRange(el["spt-range"].value);
+  const highlighted = parseOidSet(el["highlight-oids"].value);
+  const includePhotdist = includePhotometricDistancesForAxes();
+  const includeBinaries = el["include-binaries"].checked;
+  const includePhotspt = el["include-photspt"].checked;
+  const xSpec = axisSpec("x");
+  const ySpec = axisSpec("y");
+  const rows = [];
+
+  for (const object of state.raw.catalog.objects || []) {
+    const oid = Number(object.moca_oid);
+    const spt = Number(object.spectral_type_number);
+    const isHighlighted = highlighted.has(oid);
+    const binary = isBinary(object);
+    const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
+    if (!Number.isFinite(spt)) continue;
+    if (range && (spt < range.min || spt > range.max) && !isHighlighted) continue;
+    if (!includeBinaries && binary && !isHighlighted) continue;
+    if (!includePhotspt && photometricSpt && !isHighlighted) continue;
+
+    const x = axisValue(object, xSpec, includePhotdist);
+    const y = axisValue(object, ySpec, includePhotdist);
+    if (!x || !y || !Number.isFinite(x.value) || !Number.isFinite(y.value)) continue;
+
+    const age = state.maps.ageByOid.get(oid);
+    const ageSample = ageSampleFor(object);
+    const distance = bestDistance(oid, includePhotdist);
+    const row = {
+      moca_oid: oid,
+      designation: object.designation || "",
+      spectral_type_number: spt,
+      spectral_type: sptLabel(spt),
+      spectral_class: normalizedSpectralClass(object.spectral_class || classFromSpt(spt)),
+      complete_spectral_type: object.complete_spectral_type || sptLabel(spt),
+      distance_pc: distance?.distance_pc ?? null,
+      age_myr: Number.isFinite(age) ? age : null,
+      age_sample: ageSample,
+      is_binary: binary,
+      is_photometric_spt: photometricSpt,
+      is_photometric_distance: includePhotdist && Number(distance?.photometric_estimate || 0) === 1,
+      x: x.value,
+      y: y.value,
+      plot_x: jitteredAxisValue(x.value, oid, "x", xSpec.type),
+      plot_y: jitteredAxisValue(y.value, oid, "y", ySpec.type),
+      ex: x.error,
+      ey: y.error,
+      x_label: x.label,
+      y_label: y.label,
+      x_ref: x.ref,
+      y_ref: y.ref,
+      highlighted: isHighlighted,
+      noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
+    };
+    row.hover = hoverText(row);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function axisSpec(axis) {
+  return {
+    type: el[`${axis}-axis-type`].value,
+    value1: el[`${axis}-value-1`].value,
+    value2: el[`${axis}-value-2`].value,
+  };
+}
+
+function axisValue(object, spec, includePhotdist) {
+  const oid = Number(object.moca_oid);
+  if (spec.type === "spectral_type") {
+    return {
+      value: Number(object.spectral_type_number),
+      error: numericValue(object.spectral_type_unc),
+      label: "Spectral Type",
+      ref: object.spt_ref || "",
+    };
+  }
+  if (spec.type === "color") {
+    const phot1 = state.maps.photometryByOid.get(oid)?.get(spec.value1);
+    const phot2 = state.maps.photometryByOid.get(oid)?.get(spec.value2);
+    if (!phot1 || !phot2 || spec.value1 === spec.value2) return null;
+    return {
+      value: Number(phot1.magnitude) - Number(phot2.magnitude),
+      error: hypot(phot1.magnitude_unc, phot2.magnitude_unc),
+      label: `${bandAxisLabel(phot1, spec.value1)} \u2212 ${bandAxisLabel(phot2, spec.value2)}`,
+      ref: `${phot1.photometry_ref || ""}; ${phot2.photometry_ref || ""}`,
+    };
+  }
+  if (spec.type === "absolute_magnitude") {
+    const phot = state.maps.photometryByOid.get(oid)?.get(spec.value1);
+    const dist = bestDistance(oid, includePhotdist);
+    if (!phot || !dist || dist.dmod === null || dist.dmod === undefined) return null;
+    return {
+      value: Number(phot.magnitude) - Number(dist.dmod),
+      error: hypot(phot.magnitude_unc, dist.dmod_unc),
+      label: `Absolute ${bandAxisLabel(phot, spec.value1)}-band magnitude (mag)`,
+      ref: `${phot.photometry_ref || ""}; ${dist.distance_ref || ""}`,
+    };
+  }
+  if (spec.type === "spectral_index") {
+    const row = state.maps.spectralIndexByOid.get(oid)?.get(spec.value1);
+    if (!row) return null;
+    return {
+      value: Number(row.index_value),
+      error: numericValue(row.index_value_unc),
+      label: row.description || spec.value1,
+      ref: row.spectral_index_ref || "",
+    };
+  }
+  if (spec.type === "equivalent_width") {
+    const row = state.maps.equivalentWidthByOid.get(oid)?.get(spec.value1);
+    if (!row) return null;
+    const scale = spec.value1 === "li" ? 1000 : 1;
+    const unit = spec.value1 === "li" ? "mÅ" : "Å";
+    return {
+      value: Number(row.ew_angstrom) * scale,
+      error: numericValue(row.ew_angstrom_unc) * scale,
+      label: `${row.description || spec.value1} (${unit})`,
+      ref: row.equivalent_width_ref || "",
+    };
+  }
+  return null;
+}
+
+function jitteredAxisValue(value, oid, axis, axisType) {
+  if (axisType !== "spectral_type") return value;
+  return value + deterministicJitter(oid, axis);
+}
+
+function deterministicJitter(oid, axis) {
+  const seed = `${oid}:${axis}:spectral-type-jitter`;
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unit = (hash >>> 0) / 4294967295;
+  return (unit * 2 - 1) * spectralTypeJitterAmplitude;
+}
+
+function plotX(row) {
+  return Number.isFinite(row.plot_x) ? row.plot_x : row.x;
+}
+
+function plotY(row) {
+  return Number.isFinite(row.plot_y) ? row.plot_y : row.y;
+}
+
+function bandAxisLabel(photometryRow, fallbackId) {
+  const raw = String(photometryRow?.name || fallbackId || "");
+  const lower = `${raw} ${fallbackId || ""}`.toLowerCase();
+  if (/(^|[^a-z])ks([^a-z]|$)|ksmag|k_s/.test(lower)) return "<i>K</i><sub>S</sub>";
+  if (/(^|[^a-z])j([^a-z]|$)|jmag/.test(lower)) return "<i>J</i>";
+  if (/(^|[^a-z])h([^a-z]|$)|hmag/.test(lower)) return "<i>H</i>";
+  if (/(^|[^a-z])k([^a-z]|$)|kmag/.test(lower)) return "<i>K</i>";
+  const wMatch = lower.match(/(?:^|[^a-z0-9])w([1-4])(?:[^a-z0-9]|$)|wise[_ -]?w([1-4])/);
+  if (wMatch) return `<i>W</i>${wMatch[1] || wMatch[2]}`;
+  return escapeHtml(raw);
+}
+
+function bestDistance(oid, includePhotdist) {
+  const rows = state.maps.distanceByOid.get(Number(oid)) || [];
+  if (includePhotdist) return rows[0] || null;
+  return rows.find((row) => Number(row.photometric_estimate || 0) !== 1) || null;
+}
+
+function isBinary(object) {
+  const text = String(object.all_prop_confidences || "");
+  return text.includes("multiple_system:C") || text.includes("multiple_system:Y");
+}
+
+function ageSampleFor(object) {
+  const gravity = String(object.gravity_class || "").toLowerCase();
+  const suffix = String(object.suffix || "").toLowerCase();
+  const complete = String(object.complete_spectral_type || "").toLowerCase();
+  const lowGravityTokens = ["vl-g", "int-g", "low", "red", "gamma", "beta", "delta", "\u03b3", "\u03b2", "\u03b4"];
+  if (lowGravityTokens.some((token) => gravity.includes(token) || suffix.includes(token) || complete.includes(token))) {
+    return "low_gravity";
+  }
+  if (
+    suffix.startsWith("sd") ||
+    suffix.startsWith("esd") ||
+    suffix.startsWith("d/sd") ||
+    suffix.includes("blue") ||
+    complete.startsWith("sd") ||
+    complete.startsWith("esd") ||
+    complete.startsWith("d/sd") ||
+    complete.includes("blue")
+  ) {
+    return "subdwarf";
+  }
+  return "field";
+}
+
+function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
+  const renderToken = ++state.plotRenderToken;
+  const rangeSignature = options.rangeSignature || axisRangeSignature();
+  const xLabel = plottedRows[0]?.x_label || rows[0]?.x_label || axisTypes.find((item) => item.value === el["x-axis-type"].value)?.label || "X";
+  const yLabel = plottedRows[0]?.y_label || rows[0]?.y_label || axisTypes.find((item) => item.value === el["y-axis-type"].value)?.label || "Y";
+  const regularRows = plottedRows.filter((row) => !row.highlighted);
+  const highlightedRows = plottedRows.filter((row) => row.highlighted);
+  const legendRows = rows;
+  const pointOpacity = opacityForCount(regularRows.filter((row) => !row.noisy).length);
+  const wantsInitialRange = state.pendingInitialAxisRange;
+  const rangeRows = automaticRangeRows(plottedRows);
+  const candidateInitialRanges = wantsInitialRange ? {
+    x: percentileRange(rangeRows, "x"),
+    y: percentileRange(rangeRows, "y"),
+  } : { x: null, y: null };
+  const appliesInitialRange = Boolean(candidateInitialRanges.x && candidateInitialRanges.y);
+  const currentRanges = appliesInitialRange ? { x: null, y: null } : currentPlotRanges();
+  const layoutRanges = {
+    x: appliesInitialRange ? candidateInitialRanges.x : currentRanges.x,
+    y: appliesInitialRange ? candidateInitialRanges.y : currentRanges.y,
+  };
+  const densityRanges = densityPlotRanges(plottedRows, layoutRanges);
+  const summaryRanges = {
+    x: orderedRange(layoutRanges.x),
+    y: orderedRange(layoutRanges.y),
+  };
+  const opacityByOid = localOpacityMap(regularRows, pointOpacity, densityRanges);
+  const nextRangeRevision = appliesInitialRange ? state.axisRangeRevision + 1 : state.axisRangeRevision;
+  if (appliesInitialRange) {
+    state.axisRangeRevision = nextRangeRevision;
+  }
+  const traces = [];
+
+  if (el["color-by-age"].checked) {
+    traces.push(...ageColorTraces(regularRows, opacityByOid, pointOpacity));
+  } else {
+    const good = regularRows.filter((row) => !row.noisy);
+    traces.push(errorBarTrace(good, 0.2, "default-good-errors"));
+    traces.push(defaultTrace(good, "Objects", rowOpacities(good, opacityByOid, pointOpacity)));
+    const noisy = regularRows.filter((row) => row.noisy);
+    if (noisy.length) {
+      traces.push(errorBarTrace(noisy, 0.11, "default-noisy-errors"));
+      traces.push(defaultTrace(noisy, "Filtered by error", mutedRowOpacities(noisy, opacityByOid, pointOpacity), false));
+    }
+    traces.push(...legendTraces(legendRows));
+  }
+  traces.push(...sampleLegendTraces(legendRows));
+  traces.push(...binaryLegendTraces(legendRows));
+  traces.push(...photometricDistanceLegendTraces(legendRows));
+  traces.push(...photometricSptLegendTraces(legendRows));
+
+  traces.push(...medianColorTraces());
+  traces.push(...sequenceTraces());
+  traces.push(...binaryOverlayTraces(regularRows, opacityByOid, pointOpacity));
+
+  if (highlightedRows.length) {
+    traces.push(...highlightedPointTraces(highlightedRows));
+  }
+
+  const plotSize = syncPlotGeometry();
+  const layout = {
+    autosize: false,
+    width: plotSize?.width,
+    height: plotSize?.height,
+    margin: plotMargins(),
+    paper_bgcolor: "#f0f1f0",
+    plot_bgcolor: "#ffffff",
+    xaxis: axisLayout("x", xLabel, rows, layoutRanges.x),
+    yaxis: axisLayout("y", yLabel, rows, layoutRanges.y),
+    legend: {
+      orientation: "v",
+      bgcolor: "rgba(255,255,255,0.7)",
+      bordercolor: "#d7ddda",
+      borderwidth: 1,
+      x: 1.02,
+      y: 1,
+    },
+    dragmode: "select",
+    hovermode: "closest",
+    uirevision: `bd-colors-fast-${nextRangeRevision}`,
+  };
+
+  const plotCanvasKey = currentPlotCanvasKey();
+  const forceFreshPlot = state.forceFreshPlot && el.plot?._fullLayout;
+  const plotCanvasChanged = state.plotCanvasKey && state.plotCanvasKey !== plotCanvasKey && el.plot?._fullLayout;
+  if (plotCanvasChanged || forceFreshPlot) {
+    Plotly.purge(el.plot);
+    state.plotBound = false;
+  }
+  state.forceFreshPlot = false;
+  state.plotCanvasKey = plotCanvasKey;
+
+  const plotConfig = {
+    responsive: false,
+    displaylogo: false,
+    displayModeBar: true,
+    toImageButtonOptions: { format: "png", width: 900, height: 700, scale: 3 },
+  };
+  const shouldCreateNewPlot = plotCanvasChanged || forceFreshPlot || !el.plot?._fullLayout;
+  const plotPromise = shouldCreateNewPlot
+    ? Plotly.newPlot(el.plot, traces.filter(Boolean), layout, plotConfig)
+    : Plotly.react(el.plot, traces.filter(Boolean), layout, plotConfig);
+  plotPromise.then(() => {
+    bindPlotEvents();
+    schedulePlotResize();
+    if (renderToken === state.plotRenderToken && appliesInitialRange && !options.keepPendingInitialRange) {
+      state.pendingInitialAxisRange = false;
+      state.lastAppliedAxisRangeSignature = rangeSignature;
+    }
+  });
+  return summaryRanges;
+}
+
+function currentPlotCanvasKey() {
+  const axes = ["x", "y"].map((axis) => {
+    const spec = axisSpec(axis);
+    return [axis, spec.type, spec.value1 || "", spec.value2 || ""].join(":");
+  }).join("|");
+  return [
+    el["color-by-age"].checked ? "age-color" : "class-color",
+    includePhotometricDistancesForAxes() ? "photdist" : "spectrodist",
+    el["include-binaries"].checked ? "binaries" : "singles",
+    el["include-photspt"].checked ? "photspt" : "spectrospt",
+    axes,
+  ].join("|");
+}
+
+function plotMargins() {
+  return {
+    l: 78,
+    r: 28,
+    t: 34,
+    b: 86,
+  };
+}
+
+function syncPlotGeometry() {
+  const frame = el.plot?.parentElement;
+  const visualArea = el["visual-area"];
+  if (!frame || !visualArea) return null;
+
+  const visualRect = visualArea.getBoundingClientRect();
+  const toolbar = document.querySelector(".table-toolbar");
+  const toolbarHeight = toolbar?.getBoundingClientRect().height || 104;
+  const style = getComputedStyle(visualArea);
+  const rowGap = Number.parseFloat(style.rowGap) || 0;
+  const minSelectionHeight = window.matchMedia("(max-width: 820px)").matches ? 120 : 92;
+  const availableWidth = Math.max(320, visualArea.clientWidth);
+  const availableHeight = Math.max(
+    minPlotHeight,
+    window.innerHeight - visualRect.top - toolbarHeight - minSelectionHeight - rowGap * 2,
+  );
+  const height = Math.round(Math.max(minPlotHeight, Math.min(availableWidth / plotAspectRatio, availableHeight)));
+  const width = Math.round(Math.min(availableWidth, height * plotAspectRatio));
+
+  frame.style.width = `${width}px`;
+  frame.style.height = `${height}px`;
+  return { width, height };
+}
+
+function schedulePlotResize() {
+  if (!el.plot) return;
+  if (state.plotResizeFrame) cancelAnimationFrame(state.plotResizeFrame);
+  state.plotResizeFrame = requestAnimationFrame(() => {
+    state.plotResizeFrame = null;
+    resizePlotToGeometry();
+  });
+}
+
+function resizePlotToGeometry() {
+  const plotSize = syncPlotGeometry();
+  if (!plotSize || !el.plot?._fullLayout) return;
+  Plotly.relayout(el.plot, {
+    autosize: false,
+    width: plotSize.width,
+    height: plotSize.height,
+  });
+}
+
+function installPlotResizeObserver() {
+  if (!("ResizeObserver" in window) || !el["visual-area"]) return;
+  state.plotResizeObserver = new ResizeObserver(schedulePlotResize);
+  state.plotResizeObserver.observe(el["visual-area"]);
+  const toolbar = document.querySelector(".table-toolbar");
+  if (toolbar) state.plotResizeObserver.observe(toolbar);
+}
+
+function hasPendingCriticalPlotData() {
+  if (includePhotometricDistancesForAxes() && !state.photometricDistancesLoaded) return true;
+  if (neededPhotometryPsids().some((psid) => !state.photometryLoaded.has(psid))) return true;
+  for (const axis of ["x", "y"]) {
+    const type = el[`${axis}-axis-type`].value;
+    if (type === "spectral_index" && !state.featuresLoaded.spectralIndices) return true;
+    if (type === "equivalent_width" && !state.featuresLoaded.equivalentWidths) return true;
+  }
+  return false;
+}
+
+function currentAxesUseFeature(feature) {
+  const featureTypes = {
+    spectralIndices: "spectral_index",
+    equivalentWidths: "equivalent_width",
+  };
+  const axisType = featureTypes[feature];
+  return Boolean(axisType && ["x", "y"].some((axis) => el[`${axis}-axis-type`].value === axisType));
+}
+
+function axisRangeSignature() {
+  return ["x", "y"].map((axis) => {
+    const spec = axisSpec(axis);
+    return [
+      axis,
+      spec.type,
+      spec.value1 || "",
+      spec.value2 || "",
+      el[`${axis}err-max`].value || "",
+      axisDataReadySignature(spec),
+    ].join(":");
+  }).join("|");
+}
+
+function axisDataReadySignature(spec) {
+  if (spec.type === "spectral_index") return state.featuresLoaded.spectralIndices ? "loaded" : "loading";
+  if (spec.type === "equivalent_width") return state.featuresLoaded.equivalentWidths ? "loaded" : "loading";
+  if (spec.type === "absolute_magnitude") {
+    const photometryReady = state.photometryLoaded.has(spec.value1) ? "phot-loaded" : "phot-loading";
+    const distanceReady = includePhotometricDistancesForAxes() ? (state.photometricDistancesLoaded ? "dist-loaded" : "dist-loading") : "dist-spectro";
+    return `${photometryReady}:${distanceReady}`;
+  }
+  if (spec.type === "color") {
+    const oneReady = state.photometryLoaded.has(spec.value1) ? "p1-loaded" : "p1-loading";
+    const twoReady = state.photometryLoaded.has(spec.value2) ? "p2-loaded" : "p2-loading";
+    return `${oneReady}:${twoReady}`;
+  }
+  return "ready";
+}
+
+function automaticRangeRows(rows) {
+  const good = rows.filter((row) => !row.noisy);
+  return errorThresholdsActive() && good.length ? good : rows;
+}
+
+function errorThresholdsActive() {
+  return numericValue(el["xerr-max"].value) !== null || numericValue(el["yerr-max"].value) !== null;
+}
+
+function percentileRange(rows, field) {
+  const values = rows.map((row) => Number(plotValue(row, field))).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!values.length) return null;
+  const p2 = quantile(values, 0.02);
+  const p98 = quantile(values, 0.98);
+  const hasValuesOutsideCentiles = values[0] < p2 || values[values.length - 1] > p98;
+  let span = p98 - p2;
+  if (!Number.isFinite(span) || span <= 0) {
+    const min = values[0];
+    const max = values[values.length - 1];
+    span = max - min;
+    if (!Number.isFinite(span) || span <= 0) span = Math.max(Math.abs(p2) * 0.1, 1);
+  }
+  const paddingFraction = el[`${field}-axis-type`]?.value === "spectral_type"
+    ? 0.05
+    : (hasValuesOutsideCentiles ? 0.2 : 0.05);
+  const padding = span * paddingFraction;
+  return rangeWithAbsoluteMagnitudeYDwarfs([p2 - padding, p98 + padding], rows, field);
+}
+
+function rangeWithAbsoluteMagnitudeYDwarfs(range, rows, field) {
+  if (el[`${field}-axis-type`]?.value !== "absolute_magnitude") return range;
+  const yDwarfValues = rows
+    .filter((row) => isNonDeemphasizedYDwarf(row))
+    .map((row) => Number(plotValue(row, field)))
+    .filter(Number.isFinite);
+  if (!yDwarfValues.length) return range;
+
+  const yMin = Math.min(...yDwarfValues);
+  const yMax = Math.max(...yDwarfValues);
+  const span = Math.max(range[1] - range[0], yMax - yMin, 1);
+  const padding = span * yDwarfRangePaddingFraction;
+  return [
+    Math.min(range[0], yMin - padding),
+    Math.max(range[1], yMax + padding),
+  ];
+}
+
+function isNonDeemphasizedYDwarf(row) {
+  if (row.noisy) return false;
+  const klass = String(row.spectral_class || "").trim().toUpperCase();
+  if (klass.startsWith("Y")) return true;
+  const spt = Number(row.spectral_type_number);
+  return Number.isFinite(spt) && spt >= 30 && spt < 40;
+}
+
+function plotValue(row, field) {
+  if (field === "x") return plotX(row);
+  if (field === "y") return plotY(row);
+  return row[field];
+}
+
+function quantile(values, q) {
+  if (values.length === 1) return values[0];
+  const index = (values.length - 1) * q;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return values[lower];
+  const weight = index - lower;
+  return values[lower] * (1 - weight) + values[upper] * weight;
+}
+
+function opacityForCount(count) {
+  if (count <= 300) return 0.94;
+  if (count <= 1000) return 0.93;
+  if (count <= 3000) return 0.91;
+  if (count <= 8000) return 0.88;
+  if (count <= 20000) return 0.82;
+  return 0.74;
+}
+
+function mutedOpacityFor(opacity) {
+  return Math.max(0.06, opacity * 0.18);
+}
+
+function densityPlotRanges(rows, initialRanges) {
+  return {
+    x: orderedRange(initialRanges.x) || currentAxisRange("x") || dataRange(rows, "x"),
+    y: orderedRange(initialRanges.y) || currentAxisRange("y") || dataRange(rows, "y"),
+  };
+}
+
+function currentAxisRange(axis) {
+  return orderedRange(el.plot?.layout?.[`${axis}axis`]?.range);
+}
+
+function dataRange(rows, field) {
+  const values = rows.map((row) => Number(plotValue(row, field))).filter(Number.isFinite);
+  if (!values.length) return null;
+  return [Math.min(...values), Math.max(...values)];
+}
+
+function orderedRange(range) {
+  if (!Array.isArray(range) || range.length < 2) return null;
+  const a = Number(range[0]);
+  const b = Number(range[1]);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return null;
+  return [Math.min(a, b), Math.max(a, b)];
+}
+
+function localOpacityMap(rows, baseOpacity, ranges) {
+  const output = new Map();
+  if (!rows.length) return output;
+  const xRange = orderedRange(ranges.x);
+  const yRange = orderedRange(ranges.y);
+  if (!xRange || !yRange) {
+    rows.forEach((row) => output.set(row.moca_oid, baseOpacity));
+    return output;
+  }
+  const xSpan = xRange[1] - xRange[0];
+  const ySpan = yRange[1] - yRange[0];
+  const binCount = Math.max(18, Math.min(72, Math.round(Math.sqrt(rows.length) * 1.35)));
+  const densityRadius = rows.length > 500 ? 2 : 1;
+  const counts = new Map();
+  const bins = rows.map((row) => {
+    const x = Number(plotX(row));
+    const y = Number(plotY(row));
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < xRange[0] || x > xRange[1] || y < yRange[0] || y > yRange[1]) return null;
+    const bx = clamp(Math.floor(((x - xRange[0]) / xSpan) * binCount), 0, binCount - 1);
+    const by = clamp(Math.floor(((y - yRange[0]) / ySpan) * binCount), 0, binCount - 1);
+    const key = `${bx},${by}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    return [bx, by];
+  });
+  const densityByBin = new Map();
+  const densities = bins.map((bin) => {
+    if (!bin) return 0;
+    const key = `${bin[0]},${bin[1]}`;
+    if (!densityByBin.has(key)) densityByBin.set(key, neighborDensity(bin, counts, densityRadius));
+    return densityByBin.get(key);
+  });
+  const visibleDensities = densities.filter((density) => density > 0).sort((a, b) => a - b);
+  if (!visibleDensities.length) {
+    rows.forEach((row) => output.set(row.moca_oid, baseOpacity));
+    return output;
+  }
+  const sparseDensity = quantile(visibleDensities, 0.35);
+  const denseDensity = quantile(visibleDensities, 0.95);
+  const denseOpacity = denseOpacityFloor(baseOpacity, visibleDensities.length);
+  rows.forEach((row, index) => {
+    output.set(row.moca_oid, opacityForDensity(densities[index], sparseDensity, denseDensity, baseOpacity, denseOpacity));
+  });
+  return output;
+}
+
+function neighborDensity(bin, counts, radius = 1) {
+  let total = 0;
+  for (let dx = -radius; dx <= radius; dx += 1) {
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      total += counts.get(`${bin[0] + dx},${bin[1] + dy}`) || 0;
+    }
+  }
+  return total;
+}
+
+function denseOpacityFloor(baseOpacity, count) {
+  let floor = 0.22;
+  if (count <= 300) floor = 0.72;
+  else if (count <= 1000) floor = 0.56;
+  else if (count <= 3000) floor = 0.42;
+  else if (count <= 8000) floor = 0.3;
+  else if (count <= 20000) floor = 0.24;
+  return Math.min(baseOpacity, floor);
+}
+
+function opacityForDensity(density, sparseDensity, denseDensity, baseOpacity, denseOpacity) {
+  if (density <= 0 || denseDensity <= sparseDensity) return baseOpacity;
+  const raw = (Math.log1p(density) - Math.log1p(sparseDensity)) / (Math.log1p(denseDensity) - Math.log1p(sparseDensity));
+  const t = Math.pow(clamp(raw, 0, 1), 0.62);
+  return baseOpacity - t * (baseOpacity - denseOpacity);
+}
+
+function rowOpacities(rows, opacityByOid, fallback) {
+  return rows.map((row) => opacityByOid.get(row.moca_oid) ?? fallback);
+}
+
+function mutedRowOpacities(rows, opacityByOid, fallback) {
+  return rows.map((row) => mutedOpacityFor(opacityByOid.get(row.moca_oid) ?? fallback));
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function defaultTrace(rows, name, opacity, showlegend = name !== "Objects") {
+  if (!rows.length) return null;
+  const markerLine = markerLineForRows(rows);
+  return {
+    type: "scattergl",
+    uid: `default-${name.toLowerCase().replace(/\W+/g, "-")}`,
+    mode: "markers",
+    x: rows.map(plotX),
+    y: rows.map(plotY),
+    text: rows.map((row) => row.hover),
+    customdata: rows.map((row) => row.moca_oid),
+    hoverinfo: "text",
+    marker: {
+      size: markerSizesForRows(rows, 9),
+      color: rows.map((row) => classColors[row.spectral_class] || "#1da6b8"),
+      symbol: rows.map(markerSymbolForRow),
+      opacity,
+      ...(markerLine ? { line: markerLine } : {}),
+    },
+    name,
+    showlegend,
+  };
+}
+
+function highlightedPointTraces(rows) {
+  return [
+    errorBarTrace(rows, 0.2, "highlighted-errors"),
+    {
+      type: "scattergl",
+      uid: "highlighted-halo",
+      mode: "markers",
+      x: rows.map(plotX),
+      y: rows.map(plotY),
+      customdata: rows.map((row) => row.moca_oid),
+      hoverinfo: "skip",
+      marker: {
+        symbol: "circle",
+        size: 28,
+        color: "#ffffff",
+        opacity: 0.94,
+        line: { color: "#111", width: 1.2 },
+      },
+      name: "Highlighted halo",
+      showlegend: false,
+    },
+    {
+      type: "scattergl",
+      uid: "highlighted-points",
+      mode: "markers",
+      x: rows.map(plotX),
+      y: rows.map(plotY),
+      text: rows.map((row) => row.hover),
+      customdata: rows.map((row) => row.moca_oid),
+      hoverinfo: "text",
+      marker: {
+        symbol: "star",
+        size: 20,
+        color: "#ffe66d",
+        opacity: 1,
+        line: { color: "#111", width: 2.5 },
+      },
+      name: "Highlighted",
+    },
+  ].filter(Boolean);
+}
+
+function binaryOverlayTraces(rows, opacityByOid, pointOpacity) {
+  const binaryRows = rows.filter((row) => row.is_binary);
+  if (!binaryRows.length) return [];
+  const colorDomain = ageColorDomain(rows);
+  const edgeColors = el["color-by-age"].checked
+    ? binaryRows.map((row) => ageColorForRow(row, colorDomain))
+    : binaryRows.map((row) => classColors[row.spectral_class] || "#1da6b8");
+  return [{
+    type: "scattergl",
+    uid: "binary-overlay",
+    mode: "markers",
+    x: binaryRows.map(plotX),
+    y: binaryRows.map(plotY),
+    text: binaryRows.map((row) => row.hover),
+    customdata: binaryRows.map((row) => row.moca_oid),
+    hoverinfo: "text",
+    marker: {
+      size: markerSizesForRows(binaryRows, 9),
+      color: edgeColors,
+      symbol: binaryRows.map(binaryOverlaySymbolForRow),
+      opacity: displayRowOpacities(binaryRows, opacityByOid, pointOpacity),
+      line: { color: edgeColors, width: 2 },
+    },
+    name: "Binaries",
+    showlegend: false,
+  }];
+}
+
+function binaryOverlaySymbolForRow(row) {
+  return openMarkerSymbol(sampleSymbols[row.age_sample] || "circle");
+}
+
+function markerSizesForRows(rows, baseSize) {
+  // Array sizes keep scattergl on the antialiased marker path even when sizes match.
+  return rows.map((row) => row.is_photometric_distance ? baseSize * 0.8 : baseSize);
+}
+
+function ageColorTraces(rows, opacityByOid, pointOpacity) {
+  const traces = [];
+  const noAge = rows.filter((row) => !Number.isFinite(row.age_myr) || row.age_myr <= 0);
+  const withAge = rows.filter((row) => Number.isFinite(row.age_myr) && row.age_myr > 0);
+  const colorDomain = ageColorDomain(rows);
+  if (noAge.length) {
+    traces.push(errorBarTrace(noAge, 0.1, "age-no-age-errors"));
+    for (const group of markerStyleGroups(noAge)) {
+      const marker = {
+        size: markerSizeForRow(group.rows[0], 7),
+        color: noAgeMarkerColor,
+        symbol: group.symbol,
+        opacity: noAgeOpacityForGroup(group, pointOpacity),
+      };
+      if (group.photometricSpt) {
+        marker.line = { color: photometricSptEdgeColor, width: photometricSptEdgeWidth };
+      }
+      traces.push({
+        type: "scattergl",
+        uid: `age-no-age-${group.key}`,
+        mode: "markers",
+        x: group.rows.map(plotX),
+        y: group.rows.map(plotY),
+        ids: group.rows.map((row) => `no-age-${row.moca_oid}`),
+        text: group.rows.map((row) => row.hover),
+        customdata: group.rows.map((row) => row.moca_oid),
+        hoverinfo: "text",
+        marker,
+        name: "No age",
+        showlegend: false,
+      });
+    }
+  }
+  if (withAge.length) {
+    const markerLine = markerLineForRows(withAge);
+    traces.push(errorBarTrace(withAge, 0.2, "age-with-age-errors"));
+    traces.push({
+      type: "scattergl",
+      uid: "age-with-age",
+      mode: "markers",
+      x: withAge.map(plotX),
+      y: withAge.map(plotY),
+      ids: withAge.map((row) => `with-age-${row.moca_oid}`),
+      text: withAge.map((row) => row.hover),
+      customdata: withAge.map((row) => row.moca_oid),
+      hoverinfo: "text",
+      marker: {
+        size: markerSizesForRows(withAge, 9),
+        color: withAge.map((row) => Math.log10(row.age_myr)),
+        colorscale: ageColorscale,
+        reversescale: false,
+        ...(colorDomain ? { cmin: colorDomain.min, cmax: colorDomain.max } : {}),
+        showscale: true,
+        colorbar: ageColorbar(withAge),
+        symbol: withAge.map(markerSymbolForRow),
+        opacity: displayRowOpacities(withAge, opacityByOid, pointOpacity),
+        ...(markerLine ? { line: markerLine } : {}),
+      },
+      name: "Age",
+      showlegend: false,
+    });
+  }
+  return traces;
+}
+
+function markerSymbolForRow(row) {
+  const symbol = sampleSymbols[row.age_sample] || "circle";
+  return row.is_binary ? openMarkerSymbol(symbol) : symbol;
+}
+
+function openMarkerSymbol(symbol) {
+  return String(symbol || "circle").endsWith("-open") ? symbol : `${symbol}-open`;
+}
+
+function markerLineForRows(rows) {
+  if (!rows.some((row) => row.is_photometric_spt)) return null;
+  return {
+    color: rows.map((row) => row.is_photometric_spt ? photometricSptEdgeColor : "rgba(0,0,0,0)"),
+    width: rows.map((row) => row.is_photometric_spt ? photometricSptEdgeWidth : 0),
+  };
+}
+
+function markerStyleGroups(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const symbol = markerSymbolForRow(row);
+    const photometricSpt = Boolean(row.is_photometric_spt);
+    const photometricDistance = Boolean(row.is_photometric_distance);
+    const noisy = Boolean(row.noisy);
+    const key = [
+      symbol,
+      photometricSpt ? "photspt" : "spt",
+      photometricDistance ? "photdist" : "distance",
+      noisy ? "noisy" : "clean",
+    ].join("-");
+    if (!groups.has(key)) {
+      groups.set(key, { key, symbol, photometricSpt, photometricDistance, noisy, rows: [] });
+    }
+    groups.get(key).rows.push(row);
+  }
+  return [...groups.values()];
+}
+
+function markerSizeForRow(row, baseSize) {
+  return row.is_photometric_distance ? baseSize * 0.8 : baseSize;
+}
+
+function noAgeOpacityForGroup(group, fallback) {
+  const opacity = Math.min(fallback, 0.72);
+  if (group.noisy) return clamp(opacity * 0.55, 0.08, 0.14);
+  return clamp(opacity * 0.55, 0.28, 0.46);
+}
+
+function ageColorDomain(rows) {
+  const values = rows
+    .map((row) => Number(row.age_myr))
+    .filter((age) => Number.isFinite(age) && age > 0)
+    .map((age) => Math.log10(age));
+  if (!values.length) return null;
+  values.push(0, 3);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    min -= 0.5;
+    max += 0.5;
+  }
+  return { min, max };
+}
+
+function ageColorForRow(row, domain) {
+  const age = Number(row.age_myr);
+  if (!domain || !Number.isFinite(age) || age <= 0) return noAgeMarkerColor;
+  const t = clamp((Math.log10(age) - domain.min) / (domain.max - domain.min), 0, 1);
+  return interpolateColorscale(ageColorscale, t);
+}
+
+function interpolateColorscale(colorscale, t) {
+  for (let index = 1; index < colorscale.length; index += 1) {
+    const [rightStop, rightColor] = colorscale[index];
+    const [leftStop, leftColor] = colorscale[index - 1];
+    if (t <= rightStop) {
+      const localT = rightStop === leftStop ? 0 : (t - leftStop) / (rightStop - leftStop);
+      return interpolateRgb(parseRgb(leftColor), parseRgb(rightColor), localT);
+    }
+  }
+  return colorscale[colorscale.length - 1][1];
+}
+
+function parseRgb(color) {
+  const match = String(color).match(/^rgb\((\d+),(\d+),(\d+)\)$/);
+  return match ? match.slice(1).map(Number) : [141, 141, 141];
+}
+
+function interpolateRgb(left, right, t) {
+  const values = left.map((value, index) => Math.round(value + (right[index] - value) * t));
+  return `rgb(${values[0]},${values[1]},${values[2]})`;
+}
+
+function displayRowOpacities(rows, opacityByOid, fallback) {
+  return rows.map((row) => {
+    const opacity = opacityByOid.get(row.moca_oid) ?? fallback;
+    return row.noisy ? mutedOpacityFor(opacity) : opacity;
+  });
+}
+
+function noAgeBackgroundOpacities(rows, opacityByOid, fallback) {
+  return rows.map((row) => {
+    const opacity = opacityByOid.get(row.moca_oid) ?? fallback;
+    if (row.noisy) return clamp(opacity * 0.55, 0.08, 0.14);
+    return clamp(opacity * 0.55, 0.24, 0.46);
+  });
+}
+
+function ageColorbar(rows) {
+  const ages = rows.map((row) => Number(row.age_myr)).filter((age) => Number.isFinite(age) && age > 0);
+  let length = ageColorbarLength;
+  if (el["include-binaries"].checked) length *= ageColorbarBinaryLengthMultiplier;
+  if (includePhotometricDistancesForAxes()) length *= ageColorbarPhotdistLengthMultiplier;
+  if (includePhotometricDistancesForAxes() && el["include-binaries"].checked && el["include-photspt"].checked) {
+    length *= ageColorbarAllOptionalLengthMultiplier;
+  }
+  const out = {
+    title: "<b>Age (Myr)</b>",
+    ticks: "outside",
+    ticklen: 5,
+    tickwidth: 2,
+    x: 1.02,
+    y: 0.02,
+    yanchor: "bottom",
+    lenmode: "fraction",
+    len: length,
+    thickness: 15,
+    xpad: 0,
+    ypad: 0,
+    outlinecolor: "black",
+    outlinewidth: 3,
+  };
+  if (!ages.length) return out;
+  const domain = ageColorDomain(rows);
+  const kmin = Math.floor(domain?.min ?? 0);
+  const kmax = Math.ceil(domain?.max ?? 3);
+  const tickAges = [];
+  for (let k = kmin; k <= kmax; k += 1) tickAges.push(10 ** k);
+  if (tickAges.length) {
+    out.tickmode = "array";
+    out.tickvals = tickAges.map((age) => Math.log10(age));
+    out.ticktext = tickAges.map((age) => age >= 1 ? String(Math.round(age)) : String(age));
+  }
+  return out;
+}
+
+function legendTraces(rows) {
+  const classes = orderedSpectralClasses(rows.map((row) => row.spectral_class));
+  return classes.map((klass) => ({
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: { size: 9, color: classColors[klass] || "#1da6b8" },
+    name: `${klass} class`,
+    legendgroup: `class:${klass}`,
+    visible: state.hiddenLegendClasses.has(klass) ? "legendonly" : true,
+  }));
+}
+
+function sampleLegendTraces(rows) {
+  const samples = ["field", "low_gravity", "subdwarf"].filter((sample) => rows.some((row) => row.age_sample === sample));
+  return samples.map((sample) => ({
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: {
+      size: 10,
+      color: "#5f5864",
+      symbol: sampleSymbols[sample],
+      line: { color: "#252329", width: 1 },
+    },
+    name: sampleLegendLabels[sample],
+    legendgroup: `sample:${sample}`,
+    visible: state.hiddenLegendSamples.has(sample) ? "legendonly" : true,
+  }));
+}
+
+function binaryLegendTraces(rows) {
+  if (!el["include-binaries"].checked || !rows.some((row) => row.is_binary)) return [];
+  return [{
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: {
+      size: 10,
+      color: binaryLegendColor,
+      symbol: "circle-open",
+      line: { color: binaryLegendColor, width: 2 },
+    },
+    name: "Binaries",
+    legendgroup: "binary:known",
+    visible: state.hiddenLegendBinaries ? "legendonly" : true,
+  }];
+}
+
+function photometricDistanceLegendTraces(rows) {
+  if (!includePhotometricDistancesForAxes() || !rows.some((row) => row.is_photometric_distance)) return [];
+  return [{
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: {
+      size: 6,
+      color: "#8a8f8d",
+      symbol: "circle",
+      line: { color: "#6f7472", width: 1 },
+    },
+    name: "Photo. dist.",
+    legendgroup: "photdist:known",
+    visible: state.hiddenLegendPhotdist ? "legendonly" : true,
+  }];
+}
+
+function photometricSptLegendTraces(rows) {
+  if (!el["include-photspt"].checked || !rows.some((row) => row.is_photometric_spt)) return [];
+  return [{
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: {
+      size: 10,
+      color: photometricSptLegendColor,
+      symbol: "circle",
+      line: { color: photometricSptEdgeColor, width: photometricSptEdgeWidth },
+    },
+    name: "Photometric SPT",
+    legendgroup: "photspt:known",
+  }];
+}
+
+function medianColorTraces() {
+  const x = axisSpec("x");
+  const y = axisSpec("y");
+  const out = [];
+  const rows = state.raw.catalog.medianColors || [];
+  let axisForColor = null;
+  let psid1 = null;
+  let psid2 = null;
+  if (x.type === "spectral_type" && y.type === "color") {
+    axisForColor = "y";
+    psid1 = y.value1;
+    psid2 = y.value2;
+  } else if (x.type === "color" && y.type === "spectral_type") {
+    axisForColor = "x";
+    psid1 = x.value1;
+    psid2 = x.value2;
+  }
+  if (!axisForColor) return out;
+  const matching = rows.filter((row) => row.moca_psid1 === psid1 && row.moca_psid2 === psid2);
+  if (!matching.length) return out;
+  out.push({
+    type: "scatter",
+    mode: "markers+text",
+    x: matching.map((row) => axisForColor === "y" ? row.spectral_type_number : row.color_mag),
+    y: matching.map((row) => axisForColor === "y" ? row.color_mag : row.spectral_type_number),
+    text: matching.map((row) => sptLabel(Number(row.spectral_type_number)).replace(".0", "")),
+    textposition: "middle center",
+    marker: { size: 24, color: "rgba(255,255,255,0)", line: { color: "#111", width: 1.8 } },
+    textfont: { size: 10, color: "#111" },
+    hoverinfo: "skip",
+    name: "Best18 median",
+  });
+  return out;
+}
+
+function sequenceTraces() {
+  const rows = state.raw.catalog.sequences || [];
+  if (!rows.length) return [];
+  const x = axisSpec("x");
+  const y = axisSpec("y");
+  const grouped = new Map();
+  for (const row of rows) {
+    if (!sequenceMatches(row, x, y)) continue;
+    if (!grouped.has(row.moca_seqid)) grouped.set(row.moca_seqid, []);
+    grouped.get(row.moca_seqid).push(row);
+  }
+  const colors = ["#111", "#7c5a20", "#0c7a75", "#8a3d55"];
+  return [...grouped.entries()].map(([seqid, seqRows], index) => ({
+    type: "scatter",
+    mode: "lines",
+    x: seqRows.map((row) => Number(row.xdata)),
+    y: seqRows.map((row) => Number(row.ydata)),
+    line: { width: 2.5, color: colors[index % colors.length] },
+    hoverinfo: "x+y+name",
+    name: seqRows[0].name_bdcolapp || seqid,
+  }));
+}
+
+function sequenceMatches(row, x, y) {
+  return (
+    axisMatchesRule(x, row.xaxis_type_bdcolapp, row.xaxis_value_1_bdcolapp, row.xaxis_value_2_bdcolapp) &&
+    axisMatchesRule(y, row.yaxis_type_bdcolapp, row.yaxis_value_1_bdcolapp, row.yaxis_value_2_bdcolapp)
+  );
+}
+
+function axisMatchesRule(axis, type, value1, value2) {
+  if (axis.type !== type) return false;
+  if (type === "spectral_type") return true;
+  if (type === "color") return axis.value1 === value1 && axis.value2 === value2;
+  return axis.value1 === value1;
+}
+
+function axisLayout(axis, label, rows, initialRange) {
+  const layout = {
+    title: {
+      text: label,
+      font: { size: 18 },
+      standoff: axis === "x" ? 14 : 12,
+    },
+    automargin: false,
+    tickfont: { size: 13 },
+    gridcolor: "rgba(215,221,218,0.8)",
+    zeroline: false,
+    showline: true,
+    linewidth: 2.2,
+    linecolor: "#1f2524",
+    mirror: true,
+    ticks: "outside",
+  };
+  const type = el[`${axis}-axis-type`].value;
+  if (type === "spectral_type") {
+    const values = rows.map((row) => axis === "x" ? row.x : row.y).filter(Number.isFinite);
+    if (values.length) {
+      const min = Math.floor(Math.min(...values));
+      const max = Math.ceil(Math.max(...values));
+      const ticks = [];
+      for (let value = Math.ceil(min / 2) * 2; value <= max; value += 2) ticks.push(value);
+      layout.tickvals = ticks;
+      layout.ticktext = ticks.map(sptLabel);
+    }
+  }
+  const isAbsoluteMagnitudeY = axis === "y" && el["y-axis-type"].value === "absolute_magnitude";
+  if (initialRange) {
+    const reversed = isAbsoluteMagnitudeY;
+    layout.range = reversed ? [initialRange[1], initialRange[0]] : initialRange;
+    layout.autorange = false;
+  } else if (isAbsoluteMagnitudeY) {
+    layout.autorange = "reversed";
+  }
+  return layout;
+}
+
+function errorBarTrace(rows, opacity = 0.2, uid = "error-bars") {
+  if (!el["show-errors"].checked || !rows.length || !rows.some(hasFiniteError)) return null;
+  return {
+    type: "scattergl",
+    uid,
+    mode: "markers",
+    x: rows.map(plotX),
+    y: rows.map(plotY),
+    hoverinfo: "skip",
+    showlegend: false,
+    marker: {
+      size: 1,
+      color: "rgba(0,0,0,0)",
+      opacity: 0,
+    },
+    error_x: errorSpec(rows, "ex", opacity),
+    error_y: errorSpec(rows, "ey", opacity),
+    name: "Error bars",
+  };
+}
+
+function hasFiniteError(row) {
+  return (Number.isFinite(row.ex) && row.ex > 0) || (Number.isFinite(row.ey) && row.ey > 0);
+}
+
+function errorSpec(rows, field, opacity = 0.2) {
+  if (!el["show-errors"].checked) return { visible: false };
+  return {
+    type: "data",
+    array: rows.map((row) => Number.isFinite(row[field]) ? row[field] : 0),
+    visible: true,
+    thickness: 0.75,
+    width: 0,
+    color: `rgba(55,55,55,${opacity})`,
+  };
+}
+
+function bindPlotEvents() {
+  if (state.plotBound && el.plot.removeAllListeners) {
+    el.plot.removeAllListeners("plotly_selected");
+    el.plot.removeAllListeners("plotly_deselect");
+    el.plot.removeAllListeners("plotly_click");
+    el.plot.removeAllListeners("plotly_legendclick");
+    el.plot.removeAllListeners("plotly_legenddoubleclick");
+    el.plot.removeAllListeners("plotly_relayout");
+  }
+  el.plot.on("plotly_selected", (event) => {
+    state.selectedOids = event?.points?.map((point) => Number(point.customdata)).filter(Number.isFinite) || [];
+    renderTable(state.selectedOids);
+  });
+  el.plot.on("plotly_deselect", () => {
+    state.selectedOids = [];
+    renderTable([]);
+  });
+  el.plot.on("plotly_click", (event) => {
+    const oid = Number(event?.points?.[0]?.customdata);
+    if (Number.isFinite(oid)) {
+      window.open(`https://mocadb.ca/search/results?search-query=oid%28${oid}%29&search-type=star`, "_blank");
+    }
+  });
+  el.plot.on("plotly_legendclick", (event) => {
+    const trace = event?.fullData?.[event.curveNumber] || event?.data?.[event.curveNumber];
+    return handleLegendClick(trace);
+  });
+  el.plot.on("plotly_legenddoubleclick", (event) => {
+    const trace = event?.fullData?.[event.curveNumber] || event?.data?.[event.curveNumber];
+    return handleLegendDoubleClick(trace);
+  });
+  el.plot.on("plotly_relayout", () => {
+    renderCountSummary(state.rows);
+  });
+  state.plotBound = true;
+}
+
+function handleLegendClick(trace) {
+  const group = customLegendGroup(trace);
+  if (!group) return true;
+  if (isStaticLegendGroup(group)) return false;
+  window.clearTimeout(state.legendClickTimer);
+  state.legendClickTimer = window.setTimeout(() => {
+    toggleLegendGroup(group);
+    render();
+    state.legendClickTimer = null;
+  }, 350);
+  return false;
+}
+
+function handleLegendDoubleClick(trace) {
+  const group = customLegendGroup(trace);
+  if (!group) return true;
+  if (isStaticLegendGroup(group)) return false;
+  window.clearTimeout(state.legendClickTimer);
+  state.legendClickTimer = null;
+  isolateLegendGroup(group);
+  render();
+  return false;
+}
+
+function customLegendGroup(trace) {
+  const group = String(trace?.legendgroup || "");
+  return group.startsWith("class:") || group.startsWith("sample:") || group.startsWith("binary:") || group.startsWith("photdist:") || group.startsWith("photspt:") ? group : "";
+}
+
+function isStaticLegendGroup(group) {
+  return group.startsWith("photspt:");
+}
+
+function toggleLegendGroup(group) {
+  if (group.startsWith("class:")) {
+    toggleLegendValue(state.hiddenLegendClasses, group.slice("class:".length));
+  } else if (group.startsWith("sample:")) {
+    toggleLegendValue(state.hiddenLegendSamples, group.slice("sample:".length));
+  } else if (group.startsWith("binary:")) {
+    state.hiddenLegendBinaries = !state.hiddenLegendBinaries;
+  } else if (group.startsWith("photdist:")) {
+    state.hiddenLegendPhotdist = !state.hiddenLegendPhotdist;
+  }
+}
+
+function isolateLegendGroup(group) {
+  if (group.startsWith("class:")) {
+    const klass = group.slice("class:".length);
+    const classes = legendClassValues();
+    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendClasses, classes, klass) && state.hiddenLegendSamples.size === 0;
+    state.hiddenLegendClasses.clear();
+    state.hiddenLegendSamples.clear();
+    if (!alreadyIsolated) {
+      classes.filter((item) => item !== klass).forEach((item) => state.hiddenLegendClasses.add(item));
+    }
+  } else if (group.startsWith("sample:")) {
+    const sample = group.slice("sample:".length);
+    const samples = legendSampleValues();
+    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendSamples, samples, sample) && state.hiddenLegendClasses.size === 0;
+    state.hiddenLegendClasses.clear();
+    state.hiddenLegendSamples.clear();
+    if (!alreadyIsolated) {
+      samples.filter((item) => item !== sample).forEach((item) => state.hiddenLegendSamples.add(item));
+    }
+  }
+}
+
+function isLegendValueIsolated(hiddenValues, availableValues, value) {
+  const others = availableValues.filter((item) => item !== value);
+  return availableValues.includes(value) && !hiddenValues.has(value) && others.length > 0 && others.every((item) => hiddenValues.has(item));
+}
+
+function legendClassValues() {
+  return orderedSpectralClasses(state.allRows.map((row) => row.spectral_class));
+}
+
+function legendSampleValues() {
+  return ["field", "low_gravity", "subdwarf"].filter((sample) => state.allRows.some((row) => row.age_sample === sample));
+}
+
+function orderedSpectralClasses(classes) {
+  const unique = [...new Set(classes.filter(Boolean))];
+  return unique.sort((a, b) => {
+    const ai = spectralClassLegendOrder.indexOf(a);
+    const bi = spectralClassLegendOrder.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function toggleLegendValue(hiddenValues, value) {
+  if (!value) return;
+  if (hiddenValues.has(value)) {
+    hiddenValues.delete(value);
+  } else {
+    hiddenValues.add(value);
+  }
+}
+
+function renderTable(oids) {
+  if (!oids.length) {
+    el["selection-table"].textContent = "No points selected.";
+    return;
+  }
+  const selected = state.rows.filter((row) => oids.includes(row.moca_oid));
+  const columns = ["moca_oid", "designation", "spectral_type", "x", "y", "distance_pc"];
+  if (el["color-by-age"].checked) columns.push("age_myr", "age_sample");
+  el["selection-table"].innerHTML = `
+    <table>
+      <thead><tr>${columns.map((col) => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>
+      <tbody>
+        ${selected.map((row) => `<tr>${columns.map((col) => `<td>${escapeHtml(formatCell(row[col]))}</td>`).join("")}</tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderMissingHighlightedOids(rows) {
+  const requested = parseOidList(el["highlight-oids"].value);
+  const plotted = new Set(rows.map((row) => row.moca_oid));
+  const missing = requested.filter((oid) => !plotted.has(oid));
+  el["missing-oids"].hidden = missing.length === 0;
+  el["missing-oids"].textContent = missing.length
+    ? `These OIDs were not found in the current dataset: ${missing.join(", ")}`
+    : "";
+}
+
+const exportColumns = [
+  "moca_oid",
+  "designation",
+  "spectral_type",
+  "spectral_type_number",
+  "x",
+  "ex",
+  "y",
+  "ey",
+  "x_label",
+  "y_label",
+  "distance_pc",
+  "age_myr",
+  "age_sample",
+  "x_ref",
+  "y_ref",
+];
+
+const numericExportColumns = new Set([
+  "moca_oid",
+  "spectral_type_number",
+  "x",
+  "ex",
+  "y",
+  "ey",
+  "distance_pc",
+  "age_myr",
+]);
+
+function exportRows() {
+  return state.selectedOids.length
+    ? state.rows.filter((row) => state.selectedOids.includes(row.moca_oid))
+    : state.rows;
+}
+
+function exportCsv() {
+  const selected = exportRows();
+  if (!selected.length) return;
+  const csv = [
+    exportColumns.join(","),
+    ...selected.map((row) => exportColumns.map((col) => csvCell(row[col], col)).join(",")),
+  ].join("\n");
+  downloadBlob(csv, "moca_colors_fast_dataset.csv", "text/csv;charset=utf-8");
+}
+
+function exportTsv() {
+  const selected = exportRows();
+  if (!selected.length) return;
+  const tsv = [
+    exportColumns.join("\t"),
+    ...selected.map((row) => exportColumns.map((col) => tsvCell(row[col], col)).join("\t")),
+  ].join("\n");
+  downloadBlob(tsv, "moca_colors_fast_dataset.tsv", "text/tab-separated-values;charset=utf-8");
+}
+
+function exportVotable() {
+  const selected = exportRows();
+  if (!selected.length) return;
+  const fields = exportColumns.map((column) => ({
+    name: column,
+    datatype: numericExportColumns.has(column) ? "double" : "char",
+  }));
+  const fieldXml = fields.map((field) => {
+    const arraysize = field.datatype === "char" ? ' arraysize="*"' : "";
+    return `      <FIELD name="${xmlEscape(field.name)}" datatype="${field.datatype}"${arraysize}/>`;
+  }).join("\n");
+  const rowsXml = selected.map((row) => {
+    const cells = exportColumns
+      .map((column) => `          <TD>${xmlEscape(votableCell(row[column], column))}</TD>`)
+      .join("\n");
+    return `        <TR>\n${cells}\n        </TR>`;
+  }).join("\n");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+  <RESOURCE name="MOCAdb Brown Dwarf Photometry Explorer">
+    <TABLE name="moca_colors_fast_dataset">
+${fieldXml}
+      <DATA>
+        <TABLEDATA>
+${rowsXml}
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>
+`;
+  downloadBlob(xml, "moca_colors_fast_dataset.vot", "application/x-votable+xml;charset=utf-8");
+}
+
+function exportFits() {
+  const selected = exportRows();
+  if (!selected.length) return;
+  const bytes = buildFitsTable(selected, exportColumns);
+  downloadBlob(bytes, "moca_colors_fast_dataset.fits", "application/fits");
+}
+
+function downloadBlob(content, filename, type) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildFitsTable(rows, columns) {
+  const specs = columns.map((name) => {
+    if (numericExportColumns.has(name)) return { name, form: "D", bytes: 8, numeric: true };
+    const width = Math.max(1, ...rows.map((row) => fitsAscii(exportCellText(row[name], name)).length));
+    return { name, form: `${Math.min(width, 1024)}A`, bytes: Math.min(width, 1024), numeric: false };
+  });
+  const rowLength = specs.reduce((total, spec) => total + spec.bytes, 0);
+  const primary = fitsHeader([
+    fitsCard("SIMPLE", true),
+    fitsCard("BITPIX", 8),
+    fitsCard("NAXIS", 0),
+    fitsCard("EXTEND", true),
+    fitsEndCard(),
+  ]);
+  const tableCards = [
+    fitsCard("XTENSION", "BINTABLE"),
+    fitsCard("BITPIX", 8),
+    fitsCard("NAXIS", 2),
+    fitsCard("NAXIS1", rowLength),
+    fitsCard("NAXIS2", rows.length),
+    fitsCard("PCOUNT", 0),
+    fitsCard("GCOUNT", 1),
+    fitsCard("TFIELDS", specs.length),
+  ];
+  specs.forEach((spec, index) => {
+    tableCards.push(fitsCard(`TTYPE${index + 1}`, spec.name));
+    tableCards.push(fitsCard(`TFORM${index + 1}`, spec.form));
+  });
+  tableCards.push(fitsCard("EXTNAME", "MOCA_COLORS"));
+  tableCards.push(fitsEndCard());
+
+  const data = new Uint8Array(paddedLength(rowLength * rows.length));
+  const view = new DataView(data.buffer);
+  rows.forEach((row, rowIndex) => {
+    let offset = rowIndex * rowLength;
+    specs.forEach((spec) => {
+      if (spec.numeric) {
+        const value = Number(row[spec.name]);
+        view.setFloat64(offset, Number.isFinite(value) ? value : NaN, false);
+      } else {
+        data.fill(32, offset, offset + spec.bytes);
+        const text = fitsAscii(exportCellText(row[spec.name], spec.name)).slice(0, spec.bytes);
+        for (let i = 0; i < text.length; i += 1) data[offset + i] = text.charCodeAt(i);
+      }
+      offset += spec.bytes;
+    });
+  });
+
+  return new Blob([primary, fitsHeader(tableCards), data], { type: "application/fits" });
+}
+
+function fitsHeader(cards) {
+  return asciiBytes(cards.join("").padEnd(paddedLength(cards.length * 80), " "));
+}
+
+function fitsCard(keyword, value) {
+  let textValue;
+  if (typeof value === "boolean") {
+    textValue = value ? "T" : "F";
+  } else if (typeof value === "number") {
+    textValue = String(value);
+  } else {
+    textValue = `'${fitsAscii(value).replace(/'/g, "''")}'`;
+  }
+  return `${keyword.padEnd(8)}= ${textValue.padStart(20)}`.padEnd(80, " ");
+}
+
+function fitsEndCard() {
+  return "END".padEnd(80, " ");
+}
+
+function paddedLength(length) {
+  return Math.ceil(length / 2880) * 2880;
+}
+
+function asciiBytes(text) {
+  const output = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i += 1) output[i] = text.charCodeAt(i) & 0x7f;
+  return output;
+}
+
+function fitsAscii(value) {
+  return String(value ?? "").replace(/[^\x20-\x7e]/g, "?");
+}
+
+function hoverText(row) {
+  return [
+    `<b>${escapeHtml(row.designation)}</b>`,
+    `MOCA OID: ${row.moca_oid}`,
+    `SpT: ${escapeHtml(row.complete_spectral_type || row.spectral_type)}`,
+    `X: ${formatCell(row.x)} +/- ${formatCell(row.ex)}`,
+    `Y: ${formatCell(row.y)} +/- ${formatCell(row.ey)}`,
+    row.distance_pc ? `Distance: ${formatCell(row.distance_pc)} pc` : null,
+    row.age_myr ? `Age: ${formatCell(row.age_myr)} Myr` : null,
+  ].filter(Boolean).join("<br>");
+}
+
+function parseSptRange(text) {
+  const raw = String(text || "").trim().toUpperCase().replace("_", "-").replace(/^>=\s*/, "");
+  if (raw.endsWith("+")) {
+    const min = parseSpt(raw.slice(0, -1).trim());
+    return Number.isFinite(min) ? { min, max: Infinity } : { min: 10, max: Infinity };
+  }
+  const parts = raw.split("-");
+  if (parts.length !== 2) {
+    const min = parseSpt(raw);
+    return Number.isFinite(min) ? { min, max: Infinity } : { min: 10, max: Infinity };
+  }
+  const min = parseSpt(parts[0].trim());
+  const max = parseSpt(parts[1].trim());
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return { min: 10, max: Infinity };
+  return { min, max };
+}
+
+function parseSpt(label) {
+  const match = String(label || "").trim().toUpperCase().match(/^([OBAFGKMLTY])\s*([0-9]+(?:\.[0-9]+)?)$/);
+  if (!match) return NaN;
+  const classes = { O: 0, B: 10, A: 20, F: 30, G: 40, K: 50, M: 60, L: 70, T: 80, Y: 90 };
+  return classes[match[1]] + Number(match[2]) - 60;
+}
+
+function sptLabel(value) {
+  const adjusted = Number(value) + 60;
+  const classes = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"];
+  const index = Math.floor(adjusted / 10);
+  const subclass = adjusted % 10;
+  if (index < 0 || index >= classes.length) return formatCell(value);
+  const rounded = Math.round(subclass * 10) / 10;
+  return `${classes[index]}${String(rounded).replace(/\.0$/, "")}`;
+}
+
+function classFromSpt(value) {
+  return sptLabel(value).charAt(0);
+}
+
+function normalizedSpectralClass(value) {
+  const cleaned = String(value || "").split("+")[0].replace(/\?/g, "").trim();
+  return cleaned || String(value || "");
+}
+
+function parseOidSet(text) {
+  return new Set(parseOidList(text));
+}
+
+function parseOidList(text) {
+  const seen = new Set();
+  return String(text || "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter((oid) => Number.isFinite(oid) && !seen.has(oid) && seen.add(oid));
+}
+
+function numericValue(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text || text === "none" || text === "null" || text === "nan") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function hypot(a, b) {
+  const aa = numericValue(a) || 0;
+  const bb = numericValue(b) || 0;
+  return Math.sqrt(aa * aa + bb * bb);
+}
+
+function isNoisy(error, threshold) {
+  return threshold !== null && Number.isFinite(error) && error > threshold;
+}
+
+function formatCell(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "";
+    if (Math.abs(value) >= 100) return value.toFixed(1);
+    if (Math.abs(value) >= 10) return value.toFixed(2);
+    return value.toFixed(3);
+  }
+  return String(value);
+}
+
+function csvCell(value, column = "") {
+  const text = exportCellText(value, column);
+  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function tsvCell(value, column = "") {
+  return exportCellText(value, column).replace(/[\t\r\n]+/g, " ");
+}
+
+function votableCell(value, column) {
+  if (numericExportColumns.has(column)) return numericExportText(value);
+  return exportCellText(value);
+}
+
+function exportCellText(value, column = "") {
+  if (numericExportColumns.has(column)) return numericExportText(value);
+  return plainText(formatCell(value));
+}
+
+function numericExportText(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "";
+}
+
+function plainText(value) {
+  return String(value ?? "")
+    .replace(/<sub>(.*?)<\/sub>/gi, "_$1")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\u2212/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function xmlEscape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}

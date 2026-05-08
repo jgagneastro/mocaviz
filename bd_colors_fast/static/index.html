@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Brown Dwarf Photometry Explorer</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Brown Dwarf Photometry Explorer</div>
+      <div id="status" class="status loading">Loading catalog</div>
+    </header>
+
+    <main class="workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <div class="axis-group">
+            <h3>X axis</h3>
+            <label>
+              <span class="field-label">Type</span>
+              <select id="x-axis-type" class="axis-type-select"></select>
+            </label>
+            <label id="x-value-1-wrap">
+              <span id="x-value-1-label" class="field-label">Quantity</span>
+              <select id="x-value-1"></select>
+            </label>
+            <label id="x-value-2-wrap">
+              <span id="x-value-2-label" class="field-label">Quantity 2</span>
+              <select id="x-value-2"></select>
+            </label>
+          </div>
+
+          <div class="axis-divider"></div>
+
+          <div class="axis-group">
+            <h3>Y axis</h3>
+            <label>
+              <span class="field-label">Type</span>
+              <select id="y-axis-type" class="axis-type-select"></select>
+            </label>
+            <label id="y-value-1-wrap">
+              <span id="y-value-1-label" class="field-label">Quantity</span>
+              <select id="y-value-1"></select>
+            </label>
+            <label id="y-value-2-wrap">
+              <span id="y-value-2-label" class="field-label">Quantity 2</span>
+              <select id="y-value-2"></select>
+            </label>
+          </div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Filters</h2>
+          <label>
+            Spectral range
+            <input id="spt-range" type="text" value="L0+">
+          </label>
+          <label>
+            Highlight OIDs
+            <input id="highlight-oids" type="text" placeholder="602, 10995">
+          </label>
+          <label>
+            De-emphasize data with X error larger than
+            <input id="xerr-max" type="number" step="0.01" placeholder="none">
+          </label>
+          <label>
+            De-emphasize data with Y error larger than
+            <input id="yerr-max" type="number" step="0.01" placeholder="none">
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Options</h2>
+          <label class="checkline">
+            <input id="show-errors" type="checkbox">
+            <span>Plot error bars</span>
+          </label>
+          <label class="checkline">
+            <input id="include-photdist" type="checkbox">
+            <span>Plot objects with photometric distances</span>
+          </label>
+          <label class="checkline">
+            <input id="include-binaries" type="checkbox">
+            <span>Plot known binaries</span>
+          </label>
+          <label class="checkline">
+            <input id="include-photspt" type="checkbox">
+            <span>Plot photometric spectral type estimates (slow)</span>
+          </label>
+          <label class="checkline">
+            <input id="color-by-age" type="checkbox">
+            <span>Color by age</span>
+          </label>
+        </section>
+      </aside>
+
+      <section id="visual-area" class="visual-area">
+        <div class="plot-frame">
+          <div id="plot"></div>
+          <div id="plot-loader" class="plot-loader is-visible" aria-label="Loading catalog">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="table-toolbar">
+          <div class="plot-summary">
+            <div id="count-summary">No data loaded</div>
+            <div id="plot-hint" class="plot-hint">Click a data point to open its MOCAdb report</div>
+          </div>
+          <div class="export-actions">
+            <button id="export-csv" type="button">Export CSV</button>
+            <button id="export-tsv" type="button">Export TSV</button>
+            <button id="export-fits" type="button">Export FITS table</button>
+            <button id="export-votable" type="button">Export VOTable</button>
+          </div>
+        </div>
+        <div class="selection-area">
+          <div id="selection-table" class="selection-table">No points selected.</div>
+          <div id="missing-oids" class="missing-oids" hidden></div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="url-help-section" class="url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        You can open this page with predefined controls by appending query-string
+        parameters to the URL. Use <code>?param=value</code> for the first option
+        and <code>&amp;param=value</code> for each additional option. For shared
+        links, prefer the canonical parameter names listed below.
+      </p>
+
+      <h3>Common examples</h3>
+      <ul>
+        <li><code>?xaxis_type=color&amp;yaxis_type=absolute_magnitude&amp;xaxis_value_1=mko_jmag&amp;xaxis_value_2=mko_kmag&amp;yaxis_value_1=mko_jmag&amp;moca_oid=602,10995</code></li>
+        <li><code>?xaxis_type=spectral_type&amp;yaxis_type=absolute_magnitude&amp;yaxis_value_1=mko_jmag&amp;moca_oid=602</code></li>
+        <li><code>?xaxis_type=spectral_type&amp;yaxis_type=spectral_index&amp;yaxis_value_1=h2o_j&amp;spt_range=L2+</code></li>
+        <li><code>?mock=1</code> for a network-free local sample dataset.</li>
+      </ul>
+
+      <h3>Axis parameters</h3>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Allowed values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>xaxis_type</code>, <code>yaxis_type</code></td>
+            <td><code>spectral_type</code>, <code>color</code>, <code>absolute_magnitude</code>, <code>spectral_index</code>, <code>equivalent_width</code></td>
+            <td>Chooses the observable shown on each axis. Defaults are <code>xaxis_type=color</code> and <code>yaxis_type=absolute_magnitude</code>.</td>
+          </tr>
+          <tr>
+            <td><code>xaxis_value_1</code>, <code>yaxis_value_1</code></td>
+            <td>Photometry system ID, spectral-index ID, or chemical-species ID</td>
+            <td>Chooses the main quantity for axes that need one. For photometry-based axes, examples include <code>mko_jmag</code>, <code>mko_hmag</code>, <code>mko_kmag</code>, <code>wise_w1</code>, and <code>wise_w2</code>. For spectral indices, use IDs such as <code>hcont</code> or <code>h2o_j</code>. For equivalent widths, use a chemical-species ID such as <code>li</code>.</td>
+          </tr>
+          <tr>
+            <td><code>xaxis_value_2</code>, <code>yaxis_value_2</code></td>
+            <td>Photometry system ID</td>
+            <td>Chooses the second band for <code>color</code> axes. For example, <code>xaxis_value_1=mko_jmag&amp;xaxis_value_2=mko_kmag</code> plots <code>J-K</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Catalog and filter parameters</h3>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>spt_range</code></td>
+            <td>Spectral type range such as <code>L2+</code>, <code>&gt;=L2</code>, or <code>M6-Y2</code></td>
+            <td>Limits the plotted catalog by adopted spectral type. An underscore may be used instead of a hyphen in ranges. Highlighted OIDs are still requested even when they fall outside the range. Default is <code>L2+</code>.</td>
+          </tr>
+          <tr>
+            <td><code>moca_oid</code></td>
+            <td>Comma-separated OIDs, for example <code>602,10995</code></td>
+            <td>Highlights specific objects and requests them from the backend even when they are outside the current spectral range or hidden optional filters.</td>
+          </tr>
+          <tr>
+            <td><code>oid</code></td>
+            <td>Comma-separated OIDs</td>
+            <td>Alias for <code>moca_oid</code>.</td>
+          </tr>
+          <tr>
+            <td><code>xerr_max</code>, <code>yerr_max</code></td>
+            <td>Number, or blank/<code>none</code>/<code>null</code>/<code>nan</code></td>
+            <td>De-emphasizes points whose propagated X or Y uncertainty exceeds the threshold and excludes those points from automatic axis limits. If omitted, the app applies axis-specific defaults where available.</td>
+          </tr>
+          <tr>
+            <td><code>max_objects</code></td>
+            <td>Positive integer, or <code>0</code>/<code>none</code>/<code>uncapped</code>/<code>all</code></td>
+            <td>Controls the safety cap for broad source queries, especially when including photometric spectral types or requesting spectral ranges earlier than L0. The default broad-query cap is 1,000,000 objects; <code>0</code>, <code>none</code>, <code>uncapped</code>, or <code>all</code> explicitly requests no cap.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Boolean display options</h3>
+      <p>
+        Boolean options are enabled with <code>1</code>, <code>true</code>, or
+        <code>yes</code>. Omit the parameter, or use <code>0</code> or
+        <code>false</code>, to leave the option off.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Default</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>errors</code></td>
+            <td><code>false</code></td>
+            <td>Shows propagated X and Y error bars.</td>
+          </tr>
+          <tr>
+            <td><code>photdist</code></td>
+            <td><code>false</code></td>
+            <td>Includes objects with photometric distance estimates when an absolute-magnitude axis is active.</td>
+          </tr>
+          <tr>
+            <td><code>binaries</code></td>
+            <td><code>false</code></td>
+            <td>Plots known binaries. They are drawn with open marker symbols and listed in the legend.</td>
+          </tr>
+          <tr>
+            <td><code>photspt</code></td>
+            <td><code>false</code></td>
+            <td>Includes photometric spectral type estimates. This can be slow because it broadens the source query.</td>
+          </tr>
+          <tr>
+            <td><code>agecolor</code></td>
+            <td><code>false</code></td>
+            <td>Colors objects with BANYAN association ages by age and shows objects without ages in gray.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Backend aliases</h3>
+      <p>
+        The backend also recognizes <code>include_photdist</code>,
+        <code>include_photometric_dist</code>, <code>include_photspt</code>, and
+        <code>include_photometric_spt</code>. The visible page controls are
+        synchronized to the canonical <code>photdist</code> and
+        <code>photspt</code> parameters, so those canonical names are preferred
+        for URLs you intend to share.
+      </p>
+    </footer>
+  </div>
+
+  <script src="static/app.js"></script>
+</body>
+</html>
