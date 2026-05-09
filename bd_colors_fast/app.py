@@ -47,7 +47,17 @@ app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
 _BOOTSTRAP_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FEATURE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPT_GRID_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPT_SPECTRUM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPT_COMPARE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _PLOTLY_JS: str | None = None
+
+SPT_WV_MIN = 0.85
+SPT_WV_MAX = 2.4
+SPT_MASKED_REGIONS = ((1.367, 1.424), (1.86, 2.0))
+SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
+SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
+SPT_DEFAULT_BINS_PER_MICRON = 200
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
@@ -124,10 +134,36 @@ def _as_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _request_host_name() -> str:
+    raw_host = (request.host or "").split(",", 1)[0].strip().lower()
+    if raw_host.startswith("[") and "]" in raw_host:
+        return raw_host[1:].split("]", 1)[0]
+    if raw_host.count(":") == 1:
+        return raw_host.rsplit(":", 1)[0]
+    return raw_host
+
+
+def _is_local_app_request() -> bool:
+    host = _request_host_name()
+    return (
+        host == "localhost"
+        or host == "::1"
+        or host.startswith("127.")
+        or host.endswith(".localhost")
+    )
+
+
 def _include_photometric_spt(args: dict[str, Any]) -> bool:
     return any(
         _as_bool(args.get(key))
         for key in ("photspt", "include_photspt", "include_photometric_spt")
+    )
+
+
+def _include_risky_photometric_spt(args: dict[str, Any]) -> bool:
+    return any(
+        _as_bool(args.get(key))
+        for key in ("risky_photspt", "include_risky_photspt", "include_risky_photometric_spt")
     )
 
 
@@ -166,7 +202,12 @@ def _range_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any], str, bool, fl
     else:
         spt_clause = "dst.spectral_type_number BETWEEN :spt_min AND :spt_max"
         params = {"spt_min": spt_min, "spt_max": spt_max}
-    phot_clause = "1 = 1" if include_photometric_spt else "dst.photometric_estimate = 0"
+    if include_photometric_spt and _is_private_db(args) and not _include_risky_photometric_spt(args):
+        phot_clause = "(dst.photometric_estimate = 0 OR (dst.photometric_estimate = 1 AND dst.public_adopted = 1))"
+    elif include_photometric_spt:
+        phot_clause = "1 = 1"
+    else:
+        phot_clause = "dst.photometric_estimate = 0"
     oid_clause = ""
     if oids:
         oid_clause = " OR dst.moca_oid IN (" + ",".join(str(oid) for oid in oids) + ")"
@@ -386,6 +427,7 @@ def _cache_key(args: dict[str, Any]) -> str:
         str(spt_min),
         str(spt_max),
         str(_include_photometric_spt(args)),
+        str(_is_private_db(args) and _include_risky_photometric_spt(args)),
         str(_include_photometric_dist(args)),
         str(limit),
         (
@@ -657,7 +699,9 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "spt_range": spt_label,
             "include_photometric_spt": include_photometric_spt,
+            "include_risky_photometric_spt": _is_private_db(args) and _include_risky_photometric_spt(args),
             "include_photometric_dist": include_photometric_dist,
+            "private_db": _is_private_db(args),
             "max_objects": object_limit,
             "object_limit_applied": object_limit is not None and len(objects) >= object_limit,
             "object_count": len(objects),
@@ -956,14 +1000,12 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
 
 def _preload_args(args: dict[str, Any]) -> dict[str, Any]:
     out = dict(args)
-    if _is_private_db(args):
-        out["photspt"] = "0"
-        out["include_photspt"] = "0"
-        out["include_photometric_spt"] = "0"
-    else:
-        out["photspt"] = "1"
-        out["include_photspt"] = "1"
-        out["include_photometric_spt"] = "1"
+    out["photspt"] = "1"
+    out["include_photspt"] = "1"
+    out["include_photometric_spt"] = "1"
+    out["risky_photspt"] = "0"
+    out["include_risky_photspt"] = "0"
+    out["include_risky_photometric_spt"] = "0"
     out["photdist"] = "1"
     out["include_photdist"] = "1"
     out["psids"] = "all"
@@ -1009,8 +1051,11 @@ def _load_preload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         **payload["meta"],
         "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "include_photometric_spt": include_photometric_spt,
+        "include_risky_photometric_spt": _include_risky_photometric_spt(bulk_args),
         "preload_omitted_photometric_spt": not include_photometric_spt,
+        "preload_omitted_risky_photometric_spt": _is_private_db(args),
         "include_photometric_dist": True,
+        "private_db": _is_private_db(args),
         "bulk_preloaded": True,
         "all_sequences_loaded": True,
         "lazy_features": [],
@@ -1059,6 +1104,7 @@ def _mock_payload() -> dict[str, Any]:
         gravity = "VL-G" if i % 17 == 0 else None
         suffix = "sd" if i % 29 == 0 else None
         binary_flag = "multiple_system:C" if i % 23 == 0 else None
+        photometric_spt = 1 if i % 31 == 0 else 0
         objects.append({
             "moca_oid": oid,
             "designation": f"MOCK J{i:04d}",
@@ -1068,7 +1114,8 @@ def _mock_payload() -> dict[str, Any]:
             "suffix": suffix,
             "gravity_class": gravity,
             "complete_spectral_type": f"{spectral_class}{subtype}{' VL-G' if gravity else ''}",
-            "spectral_type_photometric_estimate": 1 if i % 31 == 0 else 0,
+            "spectral_type_photometric_estimate": photometric_spt,
+            "spectral_type_public_adopted": 0 if photometric_spt and i % 2 else 1,
             "spt_ref": "mock",
             "all_prop_confidences": binary_flag,
         })
@@ -1194,14 +1241,1087 @@ def _mock_payload() -> dict[str, Any]:
             "object_count": len(objects),
             "photometry_count": len(photometry),
             "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
+            "include_photometric_spt": True,
+            "include_risky_photometric_spt": False,
+            "private_db": False,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
 
 
+def _spt_db_cache_key(args: dict[str, Any]) -> str:
+    cfg = _db_config(args)
+    return "|".join([cfg["host"], cfg["username"], cfg["dbname"]])
+
+
+def _spt_parse_norm_regions(raw: str | None) -> list[tuple[float, float]]:
+    if not raw:
+        return [tuple(region) for region in SPT_DEFAULT_NORM_REGIONS]
+    text_value = re.sub(r"[\[\](){}]", " ", str(raw).strip())
+    chunks = [chunk for chunk in re.split(r"[;,]+|\s{2,}", text_value) if chunk.strip()]
+    regions: list[tuple[float, float]] = []
+    for chunk in chunks:
+        parts = [part for part in re.split(r"\s*[-:,]\s*|\s+", chunk) if part.strip()]
+        if len(parts) < 2:
+            continue
+        try:
+            start = float(parts[0])
+            end = float(parts[1])
+        except ValueError:
+            continue
+        lo, hi = (start, end) if start <= end else (end, start)
+        lo = max(lo, SPT_WV_MIN)
+        hi = min(hi, SPT_WV_MAX)
+        if hi > lo:
+            regions.append((round(lo, 6), round(hi, 6)))
+    return regions or [tuple(region) for region in SPT_DEFAULT_NORM_REGIONS]
+
+
+def _spt_format_norm_regions(regions: list[tuple[float, float]] | tuple[tuple[float, float], ...]) -> str:
+    return ", ".join(f"{start:.3f}-{end:.3f}" for start, end in regions)
+
+
+def _spt_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _spt_average_resolving_power(wavelengths: Any) -> float | None:
+    wv = np.asarray(wavelengths, dtype=float)
+    wv = np.unique(np.sort(wv[np.isfinite(wv)]))
+    if wv.size < 2:
+        return None
+    dwv = np.diff(wv)
+    mid = 0.5 * (wv[1:] + wv[:-1])
+    valid = np.isfinite(dwv) & (dwv > 0) & np.isfinite(mid) & (mid > 0)
+    if not np.any(valid):
+        return None
+    return float(np.nanmean(mid[valid] / dwv[valid]))
+
+
+def _spt_weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+    if not np.any(valid):
+        finite = values[np.isfinite(values)]
+        return float(np.nanmedian(finite)) if finite.size else float("nan")
+    values = values[valid]
+    weights = weights[valid]
+    order = np.argsort(values)
+    cumulative = np.cumsum(weights[order])
+    return float(values[order[np.searchsorted(cumulative, 0.5 * cumulative[-1])]])
+
+
+def _spt_median_smooth(df: pd.DataFrame, bins_per_micron: int) -> pd.DataFrame:
+    if df.empty or bins_per_micron <= 0:
+        return df
+    wv_min = _spt_float(df["wv"].min())
+    wv_max = _spt_float(df["wv"].max())
+    if wv_min is None or wv_max is None or wv_max <= wv_min:
+        return df
+    bin_size = 1.0 / bins_per_micron
+    bins = np.arange(wv_min, wv_max + bin_size, bin_size)
+    if bins.size < 2:
+        return df
+    out = df.copy()
+    out["wv_bin"] = pd.cut(out["wv"], bins, labels=bins[:-1], include_lowest=True)
+    out = out.groupby("wv_bin", as_index=False, observed=True).median(numeric_only=True)
+    out = out.rename(columns={"wv_bin": "wv"})
+    out["wv"] = out["wv"].astype(float)
+    return out
+
+
+def _spt_apply_wavelength_mask(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for start, end in SPT_MASKED_REGIONS:
+        out.loc[out["wv"].between(start, end), "sp"] = np.nan
+    return out
+
+
+def _spt_prepare_errors(flux_values: Any, error_values: Any | None) -> np.ndarray:
+    flux = np.asarray(flux_values, dtype=float)
+    if error_values is None:
+        err = np.full_like(flux, np.nan, dtype=float)
+    else:
+        err = np.asarray(error_values, dtype=float)
+        if err.shape != flux.shape:
+            err = np.full_like(flux, np.nan, dtype=float)
+    err = np.where(np.isfinite(err), np.abs(err), np.nan)
+    finite_err = np.isfinite(err) & (err > 0)
+    if not np.any(finite_err):
+        finite_flux = flux[np.isfinite(flux)]
+        if finite_flux.size >= 2:
+            dif = finite_flux[1:] - finite_flux[:-1]
+            mad = np.nanmedian(np.abs(dif - np.nanmedian(dif))) if dif.size else np.nan
+            if np.isfinite(mad) and mad > 0:
+                err = np.where(np.isfinite(flux), mad, np.nan)
+                finite_err = np.isfinite(err) & (err > 0)
+    floor_flux = 1e-4 * np.abs(flux)
+    err = np.where(finite_err, np.fmax(err, floor_flux), err)
+    finite_pos = err[np.isfinite(err) & (err > 0)]
+    if finite_pos.size:
+        floor_med = 0.8 * float(np.nanmedian(finite_pos))
+        if np.isfinite(floor_med) and floor_med > 0:
+            err = np.where(np.isfinite(err), np.fmax(err, floor_med), err)
+    return err
+
+
+def _spt_scale_to_reference(
+    x_ref: Any,
+    y_ref: Any,
+    e_ref: Any,
+    x_target: Any,
+    y_target: Any,
+    e_target: Any,
+) -> float:
+    x_ref = np.asarray(x_ref, dtype=float)
+    y_ref = np.asarray(y_ref, dtype=float)
+    e_ref = np.asarray(e_ref, dtype=float)
+    x_target = np.asarray(x_target, dtype=float)
+    y_target = np.asarray(y_target, dtype=float)
+    e_target = np.asarray(e_target, dtype=float)
+    y_ref_interp = np.interp(x_target, x_ref, y_ref, left=np.nan, right=np.nan)
+    e_ref_interp = np.interp(x_target, x_ref, e_ref, left=np.nan, right=np.nan)
+    denom = np.sqrt(e_ref_interp**2 + e_target**2)
+    valid = (
+        np.isfinite(y_ref_interp)
+        & np.isfinite(y_target)
+        & np.isfinite(denom)
+        & (denom > 0)
+    )
+    if not np.any(valid):
+        return float("nan")
+    numerator = np.nansum((y_ref_interp[valid] * y_target[valid]) / denom[valid])
+    denominator = np.nansum((y_target[valid] * y_target[valid]) / denom[valid])
+    if not np.isfinite(denominator) or denominator == 0:
+        return float("nan")
+    return float(numerator / denominator)
+
+
+def _spt_interp_without_large_gaps(x_values: Any, y_values: Any, target_wv: Any) -> np.ndarray:
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    target = np.asarray(target_wv, dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+    if not np.any(valid):
+        return np.full_like(target, np.nan, dtype=float)
+    x = x[valid]
+    y = y[valid]
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    if x.size == 1:
+        return np.full_like(target, np.nan, dtype=float)
+    out = np.interp(target, x, y, left=np.nan, right=np.nan)
+    source_steps = np.diff(x)
+    source_steps = source_steps[np.isfinite(source_steps) & (source_steps > 0)]
+    target_steps = np.diff(np.sort(np.unique(target[np.isfinite(target)])))
+    target_steps = target_steps[np.isfinite(target_steps) & (target_steps > 0)]
+    if source_steps.size == 0:
+        return out
+    source_step = float(np.nanmedian(source_steps))
+    target_step = float(np.nanmedian(target_steps)) if target_steps.size else source_step
+    gap_limit = max(3.5 * source_step, 6.0 * target_step)
+    if not np.isfinite(gap_limit) or gap_limit <= 0:
+        return out
+    for left, right in zip(x[:-1], x[1:]):
+        if right - left > gap_limit:
+            out[(target > left) & (target < right)] = np.nan
+    return out
+
+
+def _spt_cardelli_extinction_law(wavelength: Any, r_v: float) -> np.ndarray:
+    wv = np.asarray(wavelength, dtype=float)
+    x = 1.0 / wv
+    a = np.zeros_like(x)
+    b = np.zeros_like(x)
+    opt_nir = (x >= 0.3) & (x < 3.3)
+    if np.any(opt_nir):
+        y = x[opt_nir]
+        a[opt_nir] = 0.574 * y**1.61
+        b[opt_nir] = -0.527 * y**1.61
+    mid_ir = x < 0.3
+    if np.any(mid_ir):
+        a[mid_ir] = 0.574 * (0.3**1.61)
+        b[mid_ir] = -0.527 * (0.3**1.61)
+    return a + b / r_v
+
+
+def _spt_deredden_spectrum(spectrum: pd.DataFrame, a_v: float, r_v: float) -> pd.DataFrame:
+    out = spectrum.copy()
+    extinction = _spt_cardelli_extinction_law(out["wv"].to_numpy(dtype=float), r_v)
+    factor = 10 ** (0.4 * a_v * extinction)
+    median_factor = np.nanmedian(factor)
+    if not np.isfinite(median_factor) or median_factor == 0:
+        return out
+    out["spn"] = (out["spn"].to_numpy(dtype=float) * factor) / median_factor
+    return out
+
+
+def _spt_optimize_av_rv(
+    observed_spectrum: pd.DataFrame,
+    reference_spectrum: pd.DataFrame,
+    fixed_r_v: float | None = None,
+) -> tuple[float, float]:
+    from scipy.optimize import minimize, minimize_scalar
+
+    def loss_for(a_v: float, r_v: float) -> float:
+        dereddened = _spt_deredden_spectrum(observed_spectrum, a_v, r_v)
+        ref = reference_spectrum["spn"].to_numpy(dtype=float)
+        der = dereddened["spn"].to_numpy(dtype=float)
+        valid = np.isfinite(ref) & np.isfinite(der)
+        if not np.any(valid):
+            return float("inf")
+        ratios = ref[valid] / der[valid]
+        ratios = ratios[np.isfinite(ratios)]
+        if ratios.size == 0:
+            return float("inf")
+        scale = np.nanmedian(ratios)
+        residual = scale * der[valid] - ref[valid]
+        return float(np.nansum(residual**2))
+
+    if fixed_r_v is not None and math.isfinite(fixed_r_v) and fixed_r_v > 0:
+        result = minimize_scalar(lambda a_v: loss_for(float(a_v), float(fixed_r_v)), bounds=(-50, 50), method="bounded")
+        return float(result.x), float(fixed_r_v)
+
+    result = minimize(
+        lambda params: loss_for(float(params[0]), float(params[1])),
+        [1.0, 3.1],
+        bounds=[(-50, 50), (0.01, 50.5)],
+        method="L-BFGS-B",
+    )
+    return float(result.x[0]), float(result.x[1])
+
+
+def _spt_bin_to_grid(region: pd.DataFrame, target_wv: np.ndarray) -> pd.DataFrame:
+    if region.empty or target_wv.size == 0:
+        return pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+    target_wv = np.asarray(target_wv, dtype=float)
+    if target_wv.size == 1:
+        width = 0.001
+        edges = np.asarray([target_wv[0] - width, target_wv[0] + width])
+    else:
+        half_steps = (target_wv[1:] - target_wv[:-1]) / 2.0
+        edges = np.concatenate([[target_wv[0] - half_steps[0]], target_wv[:-1] + half_steps, [target_wv[-1] + half_steps[-1]]])
+    work = region.copy()
+    work["wv_bin"] = pd.cut(work["wv"], bins=edges, labels=target_wv, include_lowest=True)
+    agg = {"spn": "median"}
+    if "espn" in work.columns:
+        agg["espn"] = lambda series: np.nan if len(series) == 0 else float(np.sqrt(np.nansum(np.asarray(series, dtype=float) ** 2)) / max(1, np.sqrt(len(series))))
+    if "moca_specid" in work.columns:
+        agg["moca_specid"] = "first"
+    out = work.groupby("wv_bin", as_index=False, observed=True).agg(agg)
+    out = out.rename(columns={"wv_bin": "wv"})
+    out["wv"] = out["wv"].astype(float)
+    return out.dropna(subset=["wv", "spn"])
+
+
+def _spt_process_spectrum(
+    df: pd.DataFrame,
+    bins_per_micron: int | None = None,
+    common_wv: np.ndarray | None = None,
+    norm_regions_param: list[tuple[float, float]] | None = None,
+) -> pd.DataFrame:
+    if df.empty or "wv" not in df.columns or "sp" not in df.columns:
+        return pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+    bins = int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON)
+    bins = max(1, bins)
+    norm_regions_local = norm_regions_param or [tuple(region) for region in SPT_DEFAULT_NORM_REGIONS]
+    work = df.copy()
+    for column in ("wv", "sp", "esp"):
+        if column in work.columns:
+            work[column] = pd.to_numeric(work[column], errors="coerce")
+    if "esp" not in work.columns:
+        work["esp"] = np.nan
+    work = _spt_apply_wavelength_mask(work)
+
+    normalized_parts: list[pd.DataFrame] = []
+    for region_min, region_max in norm_regions_local:
+        region = work[work["wv"].between(region_min, region_max)].copy()
+        region = region.dropna(subset=["wv", "sp"])
+        if region.empty:
+            continue
+        pre_bins = max(bins, SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON)
+        smoothed = _spt_median_smooth(region, pre_bins)
+        values = smoothed["sp"].to_numpy(dtype=float)
+        weights = np.nan_to_num(values**2, nan=0.0, posinf=0.0, neginf=0.0)
+        norm_value = _spt_weighted_median(values, weights)
+        if not np.isfinite(norm_value) or norm_value == 0:
+            continue
+        region["spn"] = region["sp"] / norm_value
+        region["espn"] = region["esp"] / norm_value
+        normalized_parts.append(region)
+
+    if not normalized_parts:
+        return pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+
+    processed = pd.concat(normalized_parts, ignore_index=True).dropna(subset=["wv", "spn"])
+    processed = processed.sort_values("wv")
+    finite_wv = np.unique(processed["wv"].to_numpy(dtype=float)[np.isfinite(processed["wv"].to_numpy(dtype=float))])
+    current_res = float(np.nanmedian(np.diff(finite_wv))) if finite_wv.size >= 2 else float("inf")
+
+    if common_wv is None:
+        bin_size = 1.0 / bins
+        if current_res >= bin_size:
+            return processed[["wv", "spn", "espn", "moca_specid"] if "moca_specid" in processed.columns else ["wv", "spn", "espn"]]
+        out_parts: list[pd.DataFrame] = []
+        for region_min, region_max in norm_regions_local:
+            region = processed[processed["wv"].between(region_min, region_max)].copy()
+            if region.empty:
+                continue
+            target = np.arange(float(region["wv"].min()), float(region["wv"].max()) + bin_size, bin_size)
+            out_parts.append(_spt_bin_to_grid(region, target))
+        return pd.concat(out_parts, ignore_index=True).sort_values("wv") if out_parts else pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+
+    common_wv = np.asarray(common_wv, dtype=float)
+    common_wv = np.sort(common_wv[np.isfinite(common_wv)])
+    if common_wv.size == 0:
+        return pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+    common_res = float(np.nanmedian(np.diff(common_wv))) if common_wv.size >= 2 else float("inf")
+    out_parts = []
+    for region_min, region_max in norm_regions_local:
+        target = common_wv[(common_wv >= region_min) & (common_wv <= region_max)]
+        region = processed[processed["wv"].between(region_min, region_max)].copy()
+        if target.size == 0 or region.empty:
+            continue
+        if current_res >= common_res:
+            interp_spn = _spt_interp_without_large_gaps(region["wv"], region["spn"], target)
+            interp_espn = _spt_interp_without_large_gaps(region["wv"], region["espn"], target)
+            part = pd.DataFrame({"wv": target, "spn": interp_spn, "espn": interp_espn})
+            if "moca_specid" in region.columns and not region["moca_specid"].empty:
+                part["moca_specid"] = region["moca_specid"].iloc[0]
+            out_parts.append(part.dropna(subset=["wv", "spn"]))
+        else:
+            out_parts.append(_spt_bin_to_grid(region, target))
+    return pd.concat(out_parts, ignore_index=True).sort_values("wv") if out_parts else pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
+
+
+def _spt_spectrum_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+    keep = [column for column in ("wv", "sp", "esp", "spn", "espn", "moca_specid") if column in df.columns]
+    clean = df[keep].replace({np.nan: None})
+    rows: list[dict[str, Any]] = []
+    for row in clean.to_dict(orient="records"):
+        compact: dict[str, Any] = {}
+        for key, value in row.items():
+            value = _pythonize(value)
+            if isinstance(value, float):
+                compact[key] = round(value, 8 if key != "wv" else 6)
+            else:
+                compact[key] = value
+        rows.append(compact)
+    return rows
+
+
+def _load_spt_grid_from_db(args: dict[str, Any], include_spectra: bool = True) -> dict[str, Any]:
+    cache_key = f"{_spt_db_cache_key(args)}|grid|spectra:{int(include_spectra)}"
+    now = time.time()
+    cached = _SPT_GRID_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    private_public_clause = ""
+    if _is_private_db(args):
+        private_public_clause = """
+            AND COALESCE(dstg.is_public, 1) IN (0, 1)
+            AND NOT EXISTS (
+                SELECT 1
+                FROM data_spectral_typing_grids dstg2
+                WHERE dstg2.ignored = 0
+                    AND dstg2.moca_specid IS NOT NULL
+                    AND dstg2.moca_sptgridid = dstg.moca_sptgridid
+                    AND dstg2.grid_index = dstg.grid_index
+                    AND COALESCE(dstg2.is_public, 1) IN (0, 1)
+                    AND COALESCE(dstg2.is_public, 1) < COALESCE(dstg.is_public, 1)
+            )
+        """
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        grid_rows = _records(_read_sql(conn, f"""
+            SELECT
+                dstg.moca_sptgridid AS grid,
+                dstg.moca_sptgridhid,
+                dstg.moca_specid,
+                dstg.moca_oid,
+                dstg.object_designation,
+                dstg.comments,
+                dstg.bibcode,
+                dstg.spectral_type,
+                dstg.spectral_type_number,
+                dstg.short_object_designation AS designation,
+                CONCAT(dstg.spectral_type, ' (', dstg.short_object_designation, ')') AS label,
+                CASE WHEN mstg.moca_sptgridid = 'extremely low gravity' THEN 'delta'
+                     WHEN mstg.moca_sptgridid = 'very low gravity' THEN 'gamma'
+                     WHEN mstg.moca_sptgridid = 'intermediate gravity' THEN 'beta'
+                     WHEN mstg.moca_sptgridid = 'field' THEN 'alpha'
+                     ELSE NULL
+                END AS gravity_class
+            FROM data_spectral_typing_grids dstg
+            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+            JOIN moca_spectra ms ON ms.moca_specid = dstg.moca_specid
+            WHERE dstg.ignored = 0
+                AND mstg.ignored = 0
+                AND dstg.moca_specid IS NOT NULL
+                AND COALESCE(ms.ignored, 0) = 0
+                {private_public_clause}
+            ORDER BY mstg.display_order, dstg.grid_index
+        """))
+        specids = sorted({
+            int(row["moca_specid"])
+            for row in grid_rows
+            if row.get("moca_specid") is not None
+        })
+        if include_spectra and specids:
+            specid_clause = ",".join(str(specid) for specid in specids)
+            spectra_df = _read_sql(conn, f"""
+                SELECT
+                    ds.moca_specid,
+                    ds.wavelength_angstrom * 1e-4 AS wv,
+                    ds.flux_flambda AS sp,
+                    ds.flux_flambda_unc AS esp
+                FROM data_spectra ds
+                WHERE ds.moca_specid IN ({specid_clause})
+                    AND ds.ignored = 0
+                    AND ds.flux_flambda IS NOT NULL
+                    AND ds.wavelength_angstrom IS NOT NULL
+                ORDER BY ds.moca_specid, ds.wavelength_angstrom
+            """)
+        else:
+            spectra_df = pd.DataFrame(columns=["moca_specid", "wv", "sp", "esp"])
+
+    if not spectra_df.empty:
+        spectra_df["sp_median"] = spectra_df.groupby("moca_specid")["sp"].transform("median")
+        spectra_df["sp_median"] = spectra_df["sp_median"].replace(0, np.nan)
+        spectra_df["esp"] = spectra_df["esp"] / spectra_df["sp_median"]
+        spectra_df["sp"] = spectra_df["sp"] / spectra_df["sp_median"]
+        spectra_df = spectra_df.drop(columns=["sp_median"])
+
+    grids = []
+    seen_grids: set[str] = set()
+    for row in grid_rows:
+        grid = str(row.get("grid") or "")
+        if grid and grid not in seen_grids:
+            seen_grids.add(grid)
+            grids.append({"label": grid, "value": grid})
+
+    payload = {
+        "options": grids,
+        "gridData": grid_rows,
+        "gridSpectra": _records(spectra_df),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "grid_count": len(grids),
+            "standard_count": len(grid_rows),
+            "spectrum_row_count": int(len(spectra_df)),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _SPT_GRID_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, Any]:
+    cache_key = f"{_spt_db_cache_key(args)}|spectrum|{int(specid)}"
+    now = time.time()
+    cached = _SPT_SPECTRUM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        metadata_rows = _records(_read_sql(conn, """
+            SELECT
+                ms.moca_specid,
+                ms.moca_oid,
+                ms.moca_instid,
+                ms.instrument_mode_name,
+                ms.spectrum_name,
+                ms.data_collection_date,
+                mo.designation,
+                spt.spectral_type
+            FROM moca_spectra ms
+            LEFT JOIN moca_objects mo USING(moca_oid)
+            LEFT JOIN (
+                SELECT moca_oid, spectral_type
+                FROM data_spectral_types
+                WHERE adopted = 1
+            ) spt USING(moca_oid)
+            WHERE ms.moca_specid = :specid
+                AND COALESCE(ms.ignored, 0) = 0
+            LIMIT 1
+        """, {"specid": int(specid)}))
+        rows_df = _read_sql(conn, """
+            SELECT
+                ds.moca_specid,
+                ds.wavelength_angstrom * 1e-4 AS wv,
+                ds.flux_flambda AS sp,
+                ds.flux_flambda_unc AS esp
+            FROM moca_spectra ms
+            JOIN data_spectra ds
+                ON ds.moca_specid = ms.moca_specid
+                AND ds.ignored = 0
+            WHERE ds.moca_specid = :specid
+                AND COALESCE(ms.ignored, 0) = 0
+                AND ds.flux_flambda IS NOT NULL
+                AND ds.wavelength_angstrom IS NOT NULL
+            ORDER BY ds.wavelength_angstrom
+        """, {"specid": int(specid)})
+
+    if not rows_df.empty:
+        median = float(np.nanmedian(rows_df["sp"].to_numpy(dtype=float)))
+        if np.isfinite(median) and median != 0:
+            rows_df["esp"] = rows_df["esp"] / median
+            rows_df["sp"] = rows_df["sp"] / median
+
+    meta = metadata_rows[0] if metadata_rows else {"moca_specid": int(specid)}
+    designation = meta.get("designation") or meta.get("spectrum_name") or f"specid{int(specid)}"
+    spt = meta.get("spectral_type")
+    inst = meta.get("moca_instid")
+    mode = meta.get("instrument_mode_name")
+    label = f"specid{int(specid)}"
+    if meta.get("moca_oid") is not None:
+        label += f",oid{int(meta['moca_oid'])}"
+    label += f": {designation}"
+    if spt:
+        label += f" ({spt})"
+    if inst:
+        label += f" with {inst}"
+    if mode:
+        label += f" in {mode} mode"
+
+    payload = {
+        "metadata": {**meta, "label": label},
+        "spectrum": _records(rows_df),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": int(len(rows_df)),
+            "average_resolving_power": _spt_average_resolving_power(rows_df["wv"].to_numpy(dtype=float)) if not rows_df.empty else None,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _SPT_SPECTRUM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selected_specid: int | None = None) -> dict[str, Any]:
+    search_text = (query or "").strip()
+    if not search_text and selected_specid is None:
+        return {"options": [], "value": None, "meta": {"row_count": 0}}
+    search_int: int | None = None
+    if search_text.isdigit():
+        search_int = int(search_text)
+    engine = _engine(_connection_string(args))
+    base_query = """
+        SELECT
+            ms.moca_specid,
+            ms.moca_oid,
+            ms.moca_instid,
+            ms.instrument_mode_name,
+            ms.spectrum_name,
+            ms.data_collection_date,
+            mo.designation,
+            spt.spectral_type,
+            CONCAT(
+                'specid', ms.moca_specid,
+                COALESCE(CONCAT(',oid', ms.moca_oid), ''),
+                ': ',
+                COALESCE(
+                    CONCAT(
+                        mo.designation,
+                        COALESCE(CONCAT(' (', spt.spectral_type, ')'), ''),
+                        COALESCE(CONCAT(' with ', ms.moca_instid), ''),
+                        COALESCE(CONCAT(' in ', ms.instrument_mode_name, ' mode'), ''),
+                        COALESCE(CONCAT(' (', ms.data_collection_date, ')'), '')
+                    ),
+                    ms.spectrum_name,
+                    CONCAT('specid', ms.moca_specid)
+                )
+            ) AS label
+        FROM moca_spectra ms
+        LEFT JOIN moca_objects mo USING(moca_oid)
+        LEFT JOIN (
+            SELECT moca_oid, spectral_type
+            FROM data_spectral_types
+            WHERE adopted = 1
+        ) spt USING(moca_oid)
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+            AND COALESCE(ms.ignored, 0) = 0
+    """
+    rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        if search_text:
+            rows = _records(_read_sql(conn, base_query + """
+                AND (
+                    (:search_int IS NOT NULL AND (ms.moca_specid = :search_int OR ms.moca_oid = :search_int))
+                    OR CONCAT('specid', ms.moca_specid) LIKE :search_prefix
+                    OR CONCAT('oid', ms.moca_oid) LIKE :search_prefix
+                    OR COALESCE(mo.designation, '') LIKE :search_prefix
+                    OR COALESCE(ms.spectrum_name, '') LIKE :search_like
+                    OR COALESCE(ms.moca_instid, '') LIKE :search_like
+                    OR COALESCE(ms.instrument_mode_name, '') LIKE :search_like
+                    OR EXISTS (
+                        SELECT 1
+                        FROM mechanics_all_designations mad
+                        WHERE mad.moca_oid = ms.moca_oid
+                            AND mad.designation LIKE :search_prefix
+                    )
+                )
+                ORDER BY
+                    CASE
+                        WHEN :search_int IS NOT NULL AND ms.moca_specid = :search_int THEN 0
+                        WHEN :search_int IS NOT NULL AND ms.moca_oid = :search_int THEN 1
+                        ELSE 2
+                    END,
+                    ms.moca_specid
+                LIMIT 100
+            """, {
+                "search_int": search_int,
+                "search_prefix": f"{search_text}%",
+                "search_like": f"%{search_text}%",
+            }))
+        if selected_specid is not None and all(int(row["moca_specid"]) != int(selected_specid) for row in rows if row.get("moca_specid") is not None):
+            selected_rows = _records(_read_sql(conn, base_query + """
+                AND ms.moca_specid = :specid
+                LIMIT 1
+            """, {"specid": int(selected_specid)}))
+            rows = selected_rows + rows
+
+    seen: set[int] = set()
+    options = []
+    for row in rows:
+        if row.get("moca_specid") is None:
+            continue
+        specid = int(row["moca_specid"])
+        if specid in seen:
+            continue
+        seen.add(specid)
+        options.append({**row, "value": specid, "label": row.get("label") or f"specid{specid}"})
+    value = int(selected_specid) if selected_specid is not None and int(selected_specid) in seen else None
+    return {"options": options, "value": value, "meta": {"row_count": len(options)}}
+
+
+def _precompute_spt_comparison(
+    args: dict[str, Any],
+    specid: int,
+    bins_per_micron: int,
+    norm_regions_param: list[tuple[float, float]],
+    deredden: bool,
+    fixed_r_v: float | None,
+) -> dict[str, Any]:
+    bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
+    norm_key = _spt_format_norm_regions(norm_regions_param)
+    fixed_key = "" if fixed_r_v is None else f"{fixed_r_v:.6g}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}"
+    now = time.time()
+    cached = _SPT_COMPARE_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    grid_payload = _load_spt_grid_from_db(args)
+    spectrum_payload = _load_spt_spectrum_from_db(args, specid)
+    comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
+    grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
+    grid_data = pd.DataFrame(grid_payload["gridData"])
+    if comparison_raw.empty:
+        raise ValueError(f"No spectrum data found for moca_specid={int(specid)}")
+    if grid_raw.empty or grid_data.empty:
+        raise ValueError("No spectral typing grid data found")
+
+    comparison_df = _spt_process_spectrum(
+        comparison_raw,
+        bins_per_micron=bins,
+        norm_regions_param=norm_regions_param,
+    )
+    if comparison_df.empty:
+        raise ValueError("Selected comparison spectrum has no usable data in the normalization regions")
+    comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
+    common_wv = np.sort(comparison_df["wv"].dropna().unique())
+
+    results: list[dict[str, Any]] = []
+    for _, row in grid_data.iterrows():
+        std_specid = row.get("moca_specid")
+        if pd.isna(std_specid):
+            continue
+        std_specid = int(std_specid)
+        std_raw = grid_raw[grid_raw["moca_specid"].astype(int) == std_specid]
+        if std_raw.empty or float(np.nansum(std_raw["sp"].to_numpy(dtype=float))) == 0:
+            continue
+        std_df = _spt_process_spectrum(
+            std_raw,
+            common_wv=common_wv,
+            norm_regions_param=norm_regions_param,
+        )
+        if std_df.empty:
+            continue
+        std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+
+        for region_min, region_max in norm_regions_param:
+            std_seg = std_df[std_df["wv"].between(region_min, region_max)]
+            comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
+            if std_seg.empty or comp_seg.empty:
+                continue
+            merged = comp_seg[["wv", "spn", "esp_calc"]].merge(
+                std_seg[["wv", "spn", "esp_calc"]],
+                on="wv",
+                suffixes=("_comp", "_std"),
+            )
+            if merged.empty:
+                continue
+            valid = (
+                np.isfinite(merged["spn_comp"].to_numpy(dtype=float))
+                & np.isfinite(merged["spn_std"].to_numpy(dtype=float))
+                & np.isfinite(merged["esp_calc_comp"].to_numpy(dtype=float))
+                & (merged["esp_calc_comp"].to_numpy(dtype=float) > 0)
+                & np.isfinite(merged["esp_calc_std"].to_numpy(dtype=float))
+                & (merged["esp_calc_std"].to_numpy(dtype=float) > 0)
+            )
+            if not np.any(valid):
+                continue
+            scale = _spt_scale_to_reference(
+                merged["wv"].to_numpy(dtype=float)[valid],
+                merged["spn_comp"].to_numpy(dtype=float)[valid],
+                merged["esp_calc_comp"].to_numpy(dtype=float)[valid],
+                merged["wv"].to_numpy(dtype=float)[valid],
+                merged["spn_std"].to_numpy(dtype=float)[valid],
+                merged["esp_calc_std"].to_numpy(dtype=float)[valid],
+            )
+            if np.isfinite(scale):
+                mask = std_df["wv"].between(region_min, region_max)
+                std_df.loc[mask, "spn"] *= scale
+                if "espn" in std_df.columns:
+                    std_df.loc[mask, "espn"] *= scale
+                std_df.loc[mask, "esp_calc"] *= scale
+
+        spectrum_original = _spt_spectrum_records(std_df)
+        spectrum_dereddened: list[dict[str, Any]] | None = None
+        av_list = [None] * len(norm_regions_param)
+        rv_list = [None] * len(norm_regions_param)
+        metric_df = std_df
+        if deredden:
+            std_df_dered = std_df.copy()
+            try:
+                for index, (region_min, region_max) in enumerate(norm_regions_param):
+                    std_seg = std_df[std_df["wv"].between(region_min, region_max)].copy()
+                    comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)].copy()
+                    if std_seg.empty or comp_seg.empty:
+                        continue
+                    interp_spn = np.interp(comp_seg["wv"], std_seg["wv"], std_seg["spn"], left=np.nan, right=np.nan)
+                    std_interp = pd.DataFrame({"wv": comp_seg["wv"].to_numpy(dtype=float), "spn": interp_spn})
+                    valid = np.isfinite(std_interp["spn"].to_numpy(dtype=float)) & np.isfinite(comp_seg["spn"].to_numpy(dtype=float))
+                    if not np.any(valid):
+                        continue
+                    a_v, r_v = _spt_optimize_av_rv(
+                        std_interp.loc[valid, ["wv", "spn"]],
+                        comp_seg.loc[valid, ["wv", "spn"]],
+                        fixed_r_v=fixed_r_v,
+                    )
+                    av_list[index] = a_v
+                    rv_list[index] = r_v
+                    dered_seg = _spt_deredden_spectrum(std_seg[["wv", "spn"]], a_v, r_v)
+                    mask = std_df_dered["wv"].between(region_min, region_max)
+                    std_df_dered.loc[mask, "spn"] = dered_seg["spn"].to_numpy(dtype=float)
+                std_df_dered["esp_calc"] = _spt_prepare_errors(std_df_dered["spn"], std_df_dered.get("espn"))
+                for region_min, region_max in norm_regions_param:
+                    std_seg = std_df_dered[std_df_dered["wv"].between(region_min, region_max)]
+                    comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
+                    if std_seg.empty or comp_seg.empty:
+                        continue
+                    merged = comp_seg[["wv", "spn", "esp_calc"]].merge(
+                        std_seg[["wv", "spn", "esp_calc"]],
+                        on="wv",
+                        suffixes=("_comp", "_std"),
+                    )
+                    if merged.empty:
+                        continue
+                    valid = (
+                        np.isfinite(merged["spn_comp"].to_numpy(dtype=float))
+                        & np.isfinite(merged["spn_std"].to_numpy(dtype=float))
+                        & np.isfinite(merged["esp_calc_comp"].to_numpy(dtype=float))
+                        & (merged["esp_calc_comp"].to_numpy(dtype=float) > 0)
+                        & np.isfinite(merged["esp_calc_std"].to_numpy(dtype=float))
+                        & (merged["esp_calc_std"].to_numpy(dtype=float) > 0)
+                    )
+                    if not np.any(valid):
+                        continue
+                    scale = _spt_scale_to_reference(
+                        merged["wv"].to_numpy(dtype=float)[valid],
+                        merged["spn_comp"].to_numpy(dtype=float)[valid],
+                        merged["esp_calc_comp"].to_numpy(dtype=float)[valid],
+                        merged["wv"].to_numpy(dtype=float)[valid],
+                        merged["spn_std"].to_numpy(dtype=float)[valid],
+                        merged["esp_calc_std"].to_numpy(dtype=float)[valid],
+                    )
+                    if np.isfinite(scale):
+                        mask = std_df_dered["wv"].between(region_min, region_max)
+                        std_df_dered.loc[mask, "spn"] *= scale
+                        if "espn" in std_df_dered.columns:
+                            std_df_dered.loc[mask, "espn"] *= scale
+                        std_df_dered.loc[mask, "esp_calc"] *= scale
+                metric_df = std_df_dered
+                spectrum_dereddened = _spt_spectrum_records(std_df_dered)
+            except Exception:
+                metric_df = std_df
+                spectrum_dereddened = None
+                av_list = [None] * len(norm_regions_param)
+                rv_list = [None] * len(norm_regions_param)
+
+        residuals: list[np.ndarray] = []
+        for region_min, region_max in norm_regions_param:
+            comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
+            std_seg = metric_df[metric_df["wv"].between(region_min, region_max)]
+            if comp_seg.empty or std_seg.empty:
+                continue
+            interp_std = np.interp(comp_seg["wv"], std_seg["wv"], std_seg["spn"], left=np.nan, right=np.nan)
+            diff = comp_seg["spn"].to_numpy(dtype=float) - interp_std
+            diff = diff[np.isfinite(diff)]
+            if diff.size:
+                residuals.append(diff)
+        if residuals:
+            all_residuals = np.concatenate(residuals)
+            n_bands = len(norm_regions_param)
+            params = 3 * n_bands if deredden else n_bands
+            dof = len(all_residuals) - params if len(all_residuals) > params else len(all_residuals)
+            reduced_chi2 = float(1e3 * np.nansum(all_residuals**2) / dof) if dof > 0 else None
+            mad = float(1e3 * np.nanmedian(np.abs(all_residuals)))
+        else:
+            reduced_chi2 = None
+            mad = None
+
+        results.append({
+            "grid": row.get("grid"),
+            "moca_sptgridhid": _pythonize(row.get("moca_sptgridhid")),
+            "moca_specid": std_specid,
+            "moca_oid": _pythonize(row.get("moca_oid")),
+            "label": row.get("label"),
+            "spectral_type": row.get("spectral_type"),
+            "spectral_type_number": _pythonize(row.get("spectral_type_number")),
+            "designation": row.get("designation"),
+            "object_designation": row.get("object_designation"),
+            "comments": row.get("comments"),
+            "bibcode": row.get("bibcode"),
+            "gravity_class": row.get("gravity_class"),
+            "spectrum": spectrum_original,
+            "spectrum_dered": spectrum_dereddened,
+            "A_V": [_pythonize(value) for value in av_list],
+            "R_V": [_pythonize(value) for value in rv_list],
+            "reduced_chi2": _pythonize(reduced_chi2),
+            "mad": _pythonize(mad),
+        })
+
+    payload = {
+        "comparison": _spt_spectrum_records(comparison_df),
+        "comparisonMetadata": spectrum_payload["metadata"],
+        "entries": results,
+        "options": grid_payload["options"],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "specid": int(specid),
+            "bins_per_micron": bins,
+            "norm_regions": norm_regions_param,
+            "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
+            "deredden": bool(deredden),
+            "fixed_r_v": fixed_r_v,
+            "average_resolving_power": spectrum_payload.get("meta", {}).get("average_resolving_power"),
+            "standard_count": len(results),
+            "grid_count": len(grid_payload["options"]),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _SPT_COMPARE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_spt_grid_payload() -> dict[str, Any]:
+    rows = []
+    spectra = []
+    grids = [
+        ("field", 0.0),
+        ("low gravity", -0.7),
+    ]
+    specid = 800000
+    for grid_name, offset in grids:
+        for index, sptn in enumerate(np.linspace(7, 30, 16)):
+            specid += 1
+            label = _spt_label_from_number(float(sptn))
+            designation = f"MOCK-{grid_name[:2].upper()}-{index:02d}"
+            rows.append({
+                "grid": grid_name,
+                "moca_sptgridhid": 9000 + index,
+                "moca_specid": specid,
+                "moca_oid": 990000 + index,
+                "object_designation": designation,
+                "comments": "mock standard",
+                "bibcode": None,
+                "spectral_type": label,
+                "spectral_type_number": round(float(sptn), 2),
+                "designation": designation,
+                "label": f"{label} ({designation})",
+                "gravity_class": "alpha" if grid_name == "field" else "beta",
+            })
+            wv = np.arange(0.82, 2.45, 0.002)
+            water = 0.18 * np.exp(-0.5 * ((wv - 1.4) / 0.04) ** 2) + 0.22 * np.exp(-0.5 * ((wv - 1.9) / 0.06) ** 2)
+            methane = max(0, (sptn - 18) / 14) * (0.18 * np.exp(-0.5 * ((wv - 1.63) / 0.06) ** 2) + 0.2 * np.exp(-0.5 * ((wv - 2.22) / 0.08) ** 2))
+            slope = 1.0 + 0.08 * np.sin(wv * 5 + sptn / 5) + 0.04 * (sptn - 18 + offset) * (wv - 1.55)
+            flux = np.clip(slope - water - methane, 0.02, None)
+            for x, y in zip(wv, flux):
+                spectra.append({"moca_specid": specid, "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.02})
+    return {
+        "options": [{"label": grid, "value": grid} for grid, _offset in grids],
+        "gridData": rows,
+        "gridSpectra": spectra,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "grid_count": len(grids),
+            "standard_count": len(rows),
+            "spectrum_row_count": len(spectra),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _spt_label_from_number(value: float) -> str:
+    adjusted = value + 60
+    classes = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"]
+    class_index = int(adjusted // 10)
+    subtype = adjusted % 10
+    if 0 <= class_index < len(classes):
+        return f"{classes[class_index]}{subtype:.1f}".rstrip("0").rstrip(".")
+    return f"{value:g}"
+
+
+def _mock_spt_spectrum_payload(specid: int) -> dict[str, Any]:
+    wv = np.arange(0.82, 2.45, 0.002)
+    sptn = 18.5
+    water = 0.18 * np.exp(-0.5 * ((wv - 1.4) / 0.04) ** 2) + 0.22 * np.exp(-0.5 * ((wv - 1.9) / 0.06) ** 2)
+    methane = 0.08 * np.exp(-0.5 * ((wv - 1.63) / 0.06) ** 2)
+    flux = np.clip(1.0 + 0.08 * np.sin(wv * 5 + 0.3) + 0.04 * (sptn - 18) * (wv - 1.55) - water - methane, 0.02, None)
+    rows = [{"moca_specid": int(specid), "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.025} for x, y in zip(wv, flux)]
+    return {
+        "metadata": {
+            "moca_specid": int(specid),
+            "moca_oid": 990602,
+            "designation": "MOCK comparison",
+            "spectral_type": "L8.5",
+            "label": f"specid{int(specid)},oid990602: MOCK comparison (L8.5)",
+        },
+        "spectrum": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "average_resolving_power": _spt_average_resolving_power(wv),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions_param: list[tuple[float, float]], deredden: bool, fixed_r_v: float | None) -> dict[str, Any]:
+    grid_payload = _mock_spt_grid_payload()
+    spectrum_payload = _mock_spt_spectrum_payload(specid)
+    temp_args = dict(args)
+    temp_args["mock"] = "0"
+    grid_cache_key = f"mock|grid"
+    spectrum_cache_key = f"mock|spectrum|{int(specid)}"
+    _SPT_GRID_CACHE[grid_cache_key] = (time.time(), grid_payload)
+    _SPT_SPECTRUM_CACHE[spectrum_cache_key] = (time.time(), spectrum_payload)
+
+    comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
+    grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
+    grid_data = pd.DataFrame(grid_payload["gridData"])
+    comparison_df = _spt_process_spectrum(comparison_raw, bins_per_micron=bins, norm_regions_param=norm_regions_param)
+    comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
+    common_wv = np.sort(comparison_df["wv"].dropna().unique())
+    results = []
+    for _, row in grid_data.iterrows():
+        std_raw = grid_raw[grid_raw["moca_specid"].astype(int) == int(row["moca_specid"])]
+        std_df = _spt_process_spectrum(std_raw, common_wv=common_wv, norm_regions_param=norm_regions_param)
+        if std_df.empty:
+            continue
+        std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+        residuals = []
+        for region_min, region_max in norm_regions_param:
+            comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
+            std_seg = std_df[std_df["wv"].between(region_min, region_max)]
+            if comp_seg.empty or std_seg.empty:
+                continue
+            scale = _spt_scale_to_reference(
+                comp_seg["wv"], comp_seg["spn"], comp_seg["esp_calc"],
+                std_seg["wv"], std_seg["spn"], std_seg["esp_calc"],
+            )
+            if np.isfinite(scale):
+                mask = std_df["wv"].between(region_min, region_max)
+                std_df.loc[mask, "spn"] *= scale
+            interp_std = np.interp(comp_seg["wv"], std_seg["wv"], std_seg["spn"], left=np.nan, right=np.nan)
+            diff = comp_seg["spn"].to_numpy(dtype=float) - interp_std
+            diff = diff[np.isfinite(diff)]
+            if diff.size:
+                residuals.append(diff)
+        if residuals:
+            all_residuals = np.concatenate(residuals)
+            reduced_chi2 = float(1e3 * np.nansum(all_residuals**2) / max(1, len(all_residuals) - len(norm_regions_param)))
+        else:
+            reduced_chi2 = None
+        results.append({
+            **row.to_dict(),
+            "spectrum": _spt_spectrum_records(std_df),
+            "spectrum_dered": None,
+            "A_V": [None] * len(norm_regions_param),
+            "R_V": [None] * len(norm_regions_param),
+            "reduced_chi2": _pythonize(reduced_chi2),
+            "mad": None,
+        })
+    return {
+        "comparison": _spt_spectrum_records(comparison_df),
+        "comparisonMetadata": spectrum_payload["metadata"],
+        "entries": _records(pd.DataFrame(results)) if results else [],
+        "options": grid_payload["options"],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "specid": int(specid),
+            "bins_per_micron": bins,
+            "norm_regions": norm_regions_param,
+            "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
+            "deredden": bool(deredden),
+            "fixed_r_v": fixed_r_v,
+            "average_resolving_power": spectrum_payload["meta"]["average_resolving_power"],
+            "standard_count": len(results),
+            "grid_count": len(grid_payload["options"]),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _spt_grid_response_payload(payload: dict[str, Any], include_spectra: bool) -> dict[str, Any]:
+    out = copy.deepcopy(payload)
+    if not include_spectra:
+        out["gridSpectra"] = []
+    return out
+
+
 @app.get("/")
 def index():
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/spectral-typing")
+@app.get("/spectral_typing")
+@app.get("/spectral-typing-fast")
+@app.get("/spectral_typing_fast")
+def spectral_typing_fast_page():
+    return send_from_directory(STATIC_DIR, "spectral_typing.html")
 
 
 @app.get("/plotly.min.js")
@@ -1236,16 +2356,32 @@ def bootstrap():
 
 @app.get("/api/preload")
 def preload():
+    if not _is_local_app_request():
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": "Bulk preload is only available when the app is served from localhost.",
+            "catalog": {},
+            "options": {},
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 403
+
     args = dict(request.args)
     if args.get("mock") in {"1", "true", "yes"}:
         payload = _mock_payload()
         catalog = payload["catalog"]
-        include_photometric_spt = not _is_private_db(args)
-        if not include_photometric_spt:
+        private_db = _is_private_db(args)
+        include_photometric_spt = True
+        include_risky_photometric_spt = False
+        if private_db:
             keep_oids = {
                 int(row["moca_oid"])
                 for row in catalog["objects"]
-                if int(row.get("spectral_type_photometric_estimate") or 0) != 1
+                if (
+                    int(row.get("spectral_type_photometric_estimate") or 0) != 1
+                    or int(row.get("spectral_type_public_adopted") or 0) == 1
+                )
             }
             catalog["objects"] = [row for row in catalog["objects"] if int(row["moca_oid"]) in keep_oids]
             for key in ("distances", "photometry", "designations", "spectralIndices", "equivalentWidths", "ages"):
@@ -1256,8 +2392,11 @@ def preload():
             "object_count": len(catalog["objects"]),
             "photometry_count": len(catalog["photometry"]),
             "include_photometric_spt": include_photometric_spt,
+            "include_risky_photometric_spt": include_risky_photometric_spt,
             "preload_omitted_photometric_spt": not include_photometric_spt,
+            "preload_omitted_risky_photometric_spt": private_db,
             "include_photometric_dist": True,
+            "private_db": private_db,
             "bulk_preloaded": True,
             "all_sequences_loaded": True,
             "lazy_features": [],
@@ -1292,17 +2431,174 @@ def preload():
         })
 
 
+@app.get("/api/spectral-typing/grid")
+def spectral_typing_grid():
+    args = dict(request.args)
+    include_spectra = _as_bool(args.get("include_spectra"))
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _spt_grid_response_payload(_mock_spt_grid_payload(), include_spectra)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _load_spt_grid_from_db(args, include_spectra=include_spectra)
+        payload = _spt_grid_response_payload(payload, include_spectra)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "gridData": [],
+            "gridSpectra": [],
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/spectral-typing/search")
+def spectral_typing_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    selected_specid = None
+    raw_specid = args.get("specid") or args.get("moca_specid")
+    if raw_specid is not None:
+        try:
+            selected_specid = int(raw_specid)
+        except (TypeError, ValueError):
+            selected_specid = None
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            options = [{
+                "moca_specid": 602,
+                "moca_oid": 990602,
+                "designation": "MOCK comparison",
+                "spectral_type": "L8.5",
+                "label": "specid602,oid990602: MOCK comparison (L8.5)",
+                "value": 602,
+            }]
+            value = selected_specid if selected_specid == 602 else None
+            return jsonify({"ok": True, "source": "mock", "options": options, "value": value, "meta": {"row_count": len(options)}})
+        payload = _search_spt_spectra_from_db(args, query, selected_specid)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": None,
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/spectral-typing/spectrum/<int:specid>")
+def spectral_typing_spectrum(specid: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_spt_spectrum_payload(specid)})
+        payload = _load_spt_spectrum_from_db(args, specid)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "metadata": {"moca_specid": specid},
+            "spectrum": [],
+            "meta": {"row_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/spectral-typing/compare")
+def spectral_typing_compare():
+    args = dict(request.args)
+    body = request.get_json(silent=True) or {}
+    raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
+    try:
+        specid = int(raw_specid)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "source": "none", "error": "A numeric specid is required"}), 400
+    try:
+        bins = int(body.get("bins") or body.get("bins_per_micron") or args.get("bins") or SPT_DEFAULT_BINS_PER_MICRON)
+    except (TypeError, ValueError):
+        bins = SPT_DEFAULT_BINS_PER_MICRON
+    bins = max(1, min(bins, 2000))
+    norm_text = body.get("norm") or body.get("norm_regions") or args.get("norm")
+    norm_regions_param = _spt_parse_norm_regions(norm_text)
+    deredden = _as_bool(body.get("deredden")) or _as_bool(args.get("deredden"))
+    fixed_r_v = _spt_float(body.get("fix_rv") if body.get("fix_rv") is not None else args.get("fix_rv"))
+    if fixed_r_v is not None and fixed_r_v <= 0:
+        fixed_r_v = None
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_spt_compare(args, specid, bins, norm_regions_param, deredden, fixed_r_v)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        started = time.time()
+        payload = _precompute_spt_comparison(args, specid, bins, norm_regions_param, deredden, fixed_r_v)
+        payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "comparison": [],
+            "comparisonMetadata": {"moca_specid": specid},
+            "entries": [],
+            "options": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "specid": specid,
+                "bins_per_micron": bins,
+                "norm_regions": norm_regions_param,
+                "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
+                "deredden": deredden,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/spectral-typing/cache/clear")
+def spectral_typing_clear_cache():
+    grid_count = len(_SPT_GRID_CACHE)
+    spectrum_count = len(_SPT_SPECTRUM_CACHE)
+    compare_count = len(_SPT_COMPARE_CACHE)
+    _SPT_GRID_CACHE.clear()
+    _SPT_SPECTRUM_CACHE.clear()
+    _SPT_COMPARE_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {
+            "spectralTypingGrid": grid_count,
+            "spectralTypingSpectra": spectrum_count,
+            "spectralTypingComparisons": compare_count,
+        },
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
 @app.post("/api/cache/clear")
 def clear_cache():
     bootstrap_count = len(_BOOTSTRAP_CACHE)
     feature_count = len(_FEATURE_CACHE)
+    spt_grid_count = len(_SPT_GRID_CACHE)
+    spt_spectrum_count = len(_SPT_SPECTRUM_CACHE)
+    spt_compare_count = len(_SPT_COMPARE_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
+    _SPT_GRID_CACHE.clear()
+    _SPT_SPECTRUM_CACHE.clear()
+    _SPT_COMPARE_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
             "bootstrap": bootstrap_count,
             "features": feature_count,
+            "spectralTypingGrid": spt_grid_count,
+            "spectralTypingSpectra": spt_spectrum_count,
+            "spectralTypingComparisons": spt_compare_count,
         },
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

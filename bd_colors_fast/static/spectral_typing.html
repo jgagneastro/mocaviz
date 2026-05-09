@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast Spectral Typing</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="spectral-typing-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast Spectral Typing</div>
+      <div id="spt-status" class="status loading">Loading standards grid</div>
+    </header>
+
+    <main class="workspace spectral-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Spectrum</h2>
+          <div class="designation-picker">
+            <label for="spt-comparison-search">Comparison spectrum</label>
+            <input id="spt-comparison-search" type="text" autocomplete="off" placeholder="Type a specid, oid, designation, or instrument">
+            <div id="spt-comparison-results" class="designation-results" hidden></div>
+          </div>
+          <div id="spt-selected-spectrum" class="selected-spectrum">
+            <span id="spt-selected-spectrum-text">No spectrum selected</span>
+            <button id="spt-clear-spectrum" type="button" aria-label="Clear selected comparison spectrum" hidden>x</button>
+          </div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Standards</h2>
+          <label>
+            Spectral grid
+            <select id="spt-grid-select"></select>
+          </label>
+          <div class="button-grid">
+            <button id="spt-prev-grid" type="button" disabled>Previous Grid</button>
+            <button id="spt-next-grid" type="button" disabled>Next Grid</button>
+          </div>
+          <label>
+            Standard
+            <input id="spt-standard-slider" type="range" min="0" max="0" value="0" step="1" disabled>
+          </label>
+          <div id="spt-standard-marks" class="standard-marks"></div>
+          <div class="button-grid">
+            <button id="spt-prev-standard" type="button" disabled>Previous Standard</button>
+            <button id="spt-next-standard" type="button" disabled>Next Standard</button>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Processing</h2>
+          <label>
+            Bins per micron
+            <input id="spt-bins" type="number" value="200" min="1" max="2000" step="1">
+          </label>
+          <label>
+            Normalization regions
+            <input id="spt-norm" type="text" value="0.860-1.350, 1.445-1.800, 2.010-2.400">
+          </label>
+          <button id="spt-reset-norm" type="button">Reset Norm</button>
+          <label class="checkline">
+            <input id="spt-deredden" type="checkbox">
+            <span>Apply dereddening (slow)</span>
+          </label>
+          <label id="spt-fix-rv-wrap">
+            Fixed R(V)
+            <input id="spt-fix-rv" type="number" step="0.01" placeholder="optional">
+          </label>
+          <label class="checkline">
+            <input id="spt-allred" type="checkbox" checked>
+            <span>All standards shown in red</span>
+          </label>
+          <label class="checkline">
+            <input id="spt-showfeatures" type="checkbox" checked>
+            <span>Show chemical features</span>
+          </label>
+          <label class="checkline">
+            <input id="spt-disable-lowres" type="checkbox">
+            <span>Deactivate low-resolution display mode</span>
+          </label>
+        </section>
+      </aside>
+
+      <section id="spt-visual-area" class="visual-area spectral-visual-area">
+        <div class="plot-frame spectral-plot-frame">
+          <div id="spt-plot"></div>
+          <div id="spt-plot-loader" class="plot-loader is-visible" aria-label="Loading spectral typing data">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="plot-frame spectral-chi2-frame">
+          <div id="spt-chi2-plot"></div>
+        </div>
+        <div class="spectral-toolbar">
+          <div class="spectral-summary">
+            <div id="spt-count-summary">No comparison loaded</div>
+            <div id="spt-standard-meta" class="plot-hint">Select a comparison spectrum to begin.</div>
+          </div>
+          <div class="export-actions spectral-report-actions">
+            <button id="spt-open-report" type="button" disabled>Open MOCAdb report for comparison spectrum</button>
+            <button id="spt-open-standard-report" type="button" disabled>Open MOCAdb report for standard</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="spt-url-help-section" class="url-help spectral-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The fast spectral typing page can be opened with predefined state by
+        appending query-string parameters to the URL.
+      </p>
+
+      <h3>Common examples</h3>
+      <ul>
+        <li><code>?specid=602&amp;grid=field&amp;bins=200</code></li>
+        <li><code>?specid=602&amp;grid=field&amp;grid_index=4&amp;norm=0.860-1.350,1.445-1.800,2.010-2.400</code></li>
+        <li><code>?specid=602&amp;deredden=1&amp;fix_rv=3.1</code></li>
+        <li><code>?mock=1&amp;specid=602</code> for a network-free local sample dataset.</li>
+      </ul>
+
+      <h3>Spectral typing parameters</h3>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>specid</code>, <code>moca_specid</code></td>
+            <td>Numeric MOCAdb spectrum ID</td>
+            <td>Preselects and computes the comparison spectrum.</td>
+          </tr>
+          <tr>
+            <td><code>grid</code></td>
+            <td>Spectral grid ID, such as <code>field</code></td>
+            <td>Selects the standards grid. If omitted, the page starts from the grid with the best finite chi2 value after a comparison is computed.</td>
+          </tr>
+          <tr>
+            <td><code>grid_index</code></td>
+            <td>Non-negative integer</td>
+            <td>Selects the starting standard within the chosen grid. If omitted, the best chi2 standard in the selected grid is shown.</td>
+          </tr>
+          <tr>
+            <td><code>bins</code></td>
+            <td>Integer from 1 to 2000</td>
+            <td>Sets the number of bins per micron used when processing spectra. Default is <code>200</code>.</td>
+          </tr>
+          <tr>
+            <td><code>norm</code></td>
+            <td>Comma-separated wavelength windows in microns</td>
+            <td>Sets the normalization regions. Separators like <code>0.860-1.350,1.445-1.800</code> are accepted.</td>
+          </tr>
+          <tr>
+            <td><code>deredden</code></td>
+            <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
+            <td>Fits and applies dereddening to the standards before computing the final displayed match. This is slower.</td>
+          </tr>
+          <tr>
+            <td><code>fix_rv</code></td>
+            <td>Positive number</td>
+            <td>When dereddening is active, holds <code>R(V)</code> fixed and optimizes only <code>A(V)</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Cache</h3>
+      <p>
+        This page keeps the standards grid, downloaded spectra, and computed
+        comparison payloads in server memory for a short period. Clearing the
+        cache forces the next interaction to redownload and recompute.
+      </p>
+      <div class="cache-actions">
+        <button id="spt-clear-cache" type="button">Clear cache</button>
+        <span id="spt-clear-cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/spectral_typing.js"></script>
+</body>
+</html>

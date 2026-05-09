@@ -18,6 +18,12 @@ Then open:
 http://127.0.0.1:8061/
 ```
 
+The fast spectral typing prototype is served by the same process:
+
+```text
+http://127.0.0.1:8061/spectral-typing
+```
+
 If another local copy is already using port 8061:
 
 ```bash
@@ -35,6 +41,7 @@ For a network-free smoke test, use:
 
 ```text
 http://127.0.0.1:8061/?mock=1
+http://127.0.0.1:8061/spectral-typing?mock=1&specid=602
 ```
 
 ## Design
@@ -58,6 +65,10 @@ http://127.0.0.1:8061/?mock=1
   objects by default. Override with `BD_COLORS_FAST_MAX_OBJECTS=300000` or a URL
   parameter such as `?max_objects=300000`; use `max_objects=0` for an explicit
   uncapped query.
+- The fast spectral typing page uses Flask JSON endpoints instead of Dash
+  callbacks. The server caches the standards grid, raw spectra, and computed
+  comparison payloads; the browser handles navigation, Plotly rendering, URL
+  state, and cache clearing.
 
 ## Database Indexes
 

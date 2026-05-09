@@ -121,10 +121,17 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   collectElements();
+  updateLocalOnlyControls();
   fillAxisTypeSelects();
   readInitialUrlState();
   bindControls();
   await loadBootstrap({ applyAxisDefaults: true, resetAxisRange: true });
+}
+
+function updateLocalOnlyControls() {
+  const host = window.location.hostname.toLowerCase();
+  const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+  if (el["bulk-preload-local-only"]) el["bulk-preload-local-only"].hidden = !isLocalHost;
 }
 
 function collectElements() {
@@ -155,6 +162,8 @@ function collectElements() {
     "include-photdist",
     "include-binaries",
     "include-photspt",
+    "include-risky-photspt",
+    "risky-photspt-line",
     "advanced-photometry",
     "color-by-age",
     "visual-area",
@@ -170,6 +179,7 @@ function collectElements() {
     "export-votable",
     "bulk-preload",
     "bulk-preload-status",
+    "bulk-preload-local-only",
     "clear-cache",
     "clear-cache-status",
   ].forEach((id) => {
@@ -202,6 +212,7 @@ function readInitialUrlState() {
   state.manualPhotdistChoice = el["include-photdist"].checked;
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
+  el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
   el["advanced-photometry"].checked = asBool(params.get("advanced_photometry"));
   el["color-by-age"].checked = asBool(params.get("agecolor"));
   updatePhotdistControl();
@@ -299,7 +310,15 @@ function bindControls() {
   el["include-photspt"].addEventListener("change", () => {
     requestInitialAxisRange();
     render();
-    if (!state.raw?.meta?.include_photometric_spt) {
+    if (!photometricSptCatalogReady()) {
+      scheduleBootstrapReload({ resetAxisRange: true });
+    }
+  });
+  el["include-risky-photspt"].addEventListener("change", () => {
+    updatePhotometricSptControl();
+    requestInitialAxisRange();
+    render();
+    if (el["include-photspt"].checked) {
       scheduleBootstrapReload({ resetAxisRange: true });
     }
   });
@@ -396,6 +415,37 @@ function updateAdvancedPhotometryControl() {
   checkbox.closest(".checkline")?.classList.toggle("is-disabled", !enabled);
 }
 
+function updatePhotometricSptControl() {
+  const checkbox = el["include-photspt"];
+  const riskyCheckbox = el["include-risky-photspt"];
+  const riskyLine = el["risky-photspt-line"];
+  if (!checkbox || !riskyCheckbox || !riskyLine) return;
+  checkbox.disabled = false;
+  const privateData = Boolean(state.raw?.meta?.private_db);
+  riskyLine.hidden = !privateData;
+  riskyCheckbox.disabled = !privateData;
+  if (!privateData) riskyCheckbox.checked = false;
+  const line = checkbox.closest(".checkline");
+  line?.classList.toggle("is-disabled", false);
+  if (line) line.title = "";
+  riskyLine.classList.toggle("is-disabled", !privateData);
+  riskyLine.title = privateData
+    ? "When enabled, this reloads all photometric spectral type estimates from the active private data source."
+    : "";
+}
+
+function riskyPhotometricSptRequested() {
+  return Boolean(el["include-risky-photspt"]?.checked);
+}
+
+function photometricSptCatalogReady() {
+  if (!el["include-photspt"].checked) return true;
+  if (!state.raw?.meta?.include_photometric_spt) return false;
+  if (riskyPhotometricSptRequested() && !state.raw?.meta?.include_risky_photometric_spt) return false;
+  if (!riskyPhotometricSptRequested() && state.raw?.meta?.include_risky_photometric_spt) return false;
+  return true;
+}
+
 function buildBootstrapParams() {
   const params = new URLSearchParams(window.location.search);
   params.set("spt_range", el["spt-range"].value || "L2+");
@@ -406,6 +456,7 @@ function buildBootstrapParams() {
     params.set("designation", state.selectedDesignations.join(","));
   }
   params.set("photspt", el["include-photspt"].checked ? "1" : "0");
+  params.set("risky_photspt", riskyPhotometricSptRequested() ? "1" : "0");
   params.set("advanced_photometry", useAdvancedPhotometrySystems() ? "1" : "0");
   params.set("photdist", includePhotometricDistancesForAxes() ? "1" : "0");
   params.set("xaxis_type", el["x-axis-type"].value || "color");
@@ -455,6 +506,8 @@ function buildBulkPreloadParams() {
   const params = buildBootstrapParams();
   params.set("photspt", "1");
   params.set("include_photspt", "1");
+  params.set("risky_photspt", "0");
+  params.set("include_risky_photspt", "0");
   params.set("photdist", "1");
   params.set("include_photdist", "1");
   params.set("psids", "all");
@@ -478,6 +531,7 @@ async function loadBootstrap(options = {}) {
     state.raw = payload;
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
+    updatePhotometricSptControl();
     if (options.resetAxisRange) requestInitialAxisRange();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
@@ -523,6 +577,7 @@ async function bulkPreloadAll() {
     state.raw = payload;
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
+    updatePhotometricSptControl();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
     requestInitialAxisRange();
@@ -530,8 +585,8 @@ async function bulkPreloadAll() {
     const counts = bulkPreloadCounts(payload);
     const elapsed = Number(payload.meta?.timings?.preload_total);
     const elapsedText = Number.isFinite(elapsed) ? ` in ${elapsed.toFixed(1)} s` : "";
-    const omissionText = payload.meta?.preload_omitted_photometric_spt
-      ? " Photometric SPT estimates were omitted for the private DB."
+    const omissionText = payload.meta?.preload_omitted_risky_photometric_spt
+      ? " Risky photometric SPT estimates were omitted from the bulk preload."
       : "";
     setStatus(`Bulk preload complete${elapsedText}: ${counts}.${omissionText}`);
     setBulkPreloadControls(false, `Loaded ${counts}${elapsedText}.${omissionText}`);
@@ -611,6 +666,7 @@ function clearClientData(options = {}) {
   state.pendingInitialAxisRange = true;
   state.lastAppliedAxisRangeSignature = "";
   state.forceFreshPlot = true;
+  updatePhotometricSptControl();
   if (el.plot && window.Plotly) Plotly.purge(el.plot);
   state.plotBound = false;
   if (el["selection-table"]) el["selection-table"].innerHTML = "";
@@ -1478,6 +1534,7 @@ function buildRows() {
       y_label: y.label,
       x_ref: x.ref,
       y_ref: y.ref,
+      input_data: mergeAxisInputs(x.inputs, y.inputs),
       highlighted: isHighlighted,
       noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
     };
@@ -1503,6 +1560,12 @@ function axisValue(object, spec, includePhotdist) {
       error: numericValue(object.spectral_type_unc),
       label: "Spectral Type",
       ref: object.spt_ref || "",
+      inputs: [{
+        key: "spectral_type",
+        label: "Spectral type number",
+        value: Number(object.spectral_type_number),
+        error: numericValue(object.spectral_type_unc),
+      }],
     };
   }
   if (spec.type === "color") {
@@ -1514,6 +1577,10 @@ function axisValue(object, spec, includePhotdist) {
       error: hypot(phot1.magnitude_unc, phot2.magnitude_unc),
       label: `${bandAxisLabel(phot1, spec.value1)} \u2212 ${bandAxisLabel(phot2, spec.value2)}`,
       ref: `${phot1.photometry_ref || ""}; ${phot2.photometry_ref || ""}`,
+      inputs: [
+        photometryInput(phot1, spec.value1),
+        photometryInput(phot2, spec.value2),
+      ],
     };
   }
   if (spec.type === "absolute_magnitude") {
@@ -1525,6 +1592,10 @@ function axisValue(object, spec, includePhotdist) {
       error: hypot(phot.magnitude_unc, dist.dmod_unc),
       label: `Absolute ${bandAxisLabel(phot, spec.value1)}-band magnitude (mag)`,
       ref: `${phot.photometry_ref || ""}; ${dist.distance_ref || ""}`,
+      inputs: [
+        photometryInput(phot, spec.value1),
+        distanceInput(dist),
+      ],
     };
   }
   if (spec.type === "spectral_index") {
@@ -1535,6 +1606,12 @@ function axisValue(object, spec, includePhotdist) {
       error: numericValue(row.index_value_unc),
       label: row.description || spec.value1,
       ref: row.spectral_index_ref || "",
+      inputs: [{
+        key: `spectral_index:${row.moca_siid}`,
+        label: row.description || spec.value1,
+        value: Number(row.index_value),
+        error: numericValue(row.index_value_unc),
+      }],
     };
   }
   if (spec.type === "equivalent_width") {
@@ -1547,9 +1624,51 @@ function axisValue(object, spec, includePhotdist) {
       error: numericValue(row.ew_angstrom_unc) * scale,
       label: `${row.description || spec.value1} (${unit})`,
       ref: row.equivalent_width_ref || "",
+      inputs: [{
+        key: `equivalent_width:${row.moca_spid}`,
+        label: row.description || spec.value1,
+        value: Number(row.ew_angstrom) * scale,
+        error: numericValue(row.ew_angstrom_unc) * scale,
+        unit,
+      }],
     };
   }
   return null;
+}
+
+function photometryInput(row, fallbackId) {
+  const simpleBand = simplePhotometryBand(fallbackId);
+  const key = simpleBand
+    ? `photometry:simple:${simpleBand}`
+    : `photometry:${row.moca_psid || fallbackId}`;
+  return {
+    key,
+    label: bandAxisLabel(row, fallbackId),
+    value: Number(row.magnitude),
+    error: numericValue(row.magnitude_unc),
+    unit: "mag",
+  };
+}
+
+function distanceInput(row) {
+  return {
+    key: "distance_pc",
+    label: "Distance",
+    value: Number(row.distance_pc),
+    error: numericValue(row.distance_pc_unc),
+    unit: "pc",
+  };
+}
+
+function mergeAxisInputs(...inputLists) {
+  const out = [];
+  const seen = new Set();
+  for (const input of inputLists.flat()) {
+    if (!input?.key || seen.has(input.key)) continue;
+    seen.add(input.key);
+    out.push(input);
+  }
+  return out;
 }
 
 function photometryForAxisValue(oid, value) {
@@ -2783,9 +2902,20 @@ function renderTable(oids) {
     return;
   }
   const selected = state.rows.filter((row) => oids.includes(row.moca_oid));
-  const columns = ["moca_oid", "designation", "spectral_type", "x", "y", "distance_pc"];
-  if (el["color-by-age"].checked) columns.push("age_myr", "age_sample");
-  const headerCells = ["report", ...columns].map((col) => `<th>${escapeHtml(col)}</th>`).join("");
+  const columns = [
+    tableColumn("moca_oid"),
+    tableColumn("designation"),
+    tableColumn("spectral_type"),
+    tableColumn("x"),
+    tableColumn("y"),
+    ...inputTableColumns(selected),
+  ];
+  if (el["color-by-age"].checked) {
+    columns.push(tableColumn("age_myr"), tableColumn("age_sample"));
+  }
+  const headerCells = ["report", ...columns.map((col) => col.label)]
+    .map((col) => `<th>${escapeHtml(plainText(col))}</th>`)
+    .join("");
   el["selection-table"].innerHTML = `
     <table>
       <thead><tr>${headerCells}</tr></thead>
@@ -2793,12 +2923,44 @@ function renderTable(oids) {
         ${selected.map((row) => `
           <tr>
             <td><a class="report-link" href="${escapeHtml(mocaReportUrl(row.moca_oid))}" target="_blank" rel="noopener">Report</a></td>
-            ${columns.map((col) => `<td>${escapeHtml(formatCell(row[col]))}</td>`).join("")}
+            ${columns.map((col) => `<td>${escapeHtml(col.value(row))}</td>`).join("")}
           </tr>
         `).join("")}
       </tbody>
     </table>
   `;
+}
+
+function tableColumn(key) {
+  return {
+    label: key,
+    value: (row) => key === "moca_oid" ? formatIntegerCell(row[key]) : formatCell(row[key]),
+  };
+}
+
+function formatIntegerCell(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(Math.trunc(number)) : "";
+}
+
+function inputTableColumns(rows) {
+  const columns = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const input of row.input_data || []) {
+      if (seen.has(input.key)) continue;
+      seen.add(input.key);
+      columns.push({
+        key: input.key,
+        label: plainText(input.label),
+        value: (targetRow) => {
+          const match = (targetRow.input_data || []).find((item) => item.key === input.key);
+          return match ? measurementText(match) : "";
+        },
+      });
+    }
+  }
+  return columns;
 }
 
 function mocaReportUrl(oid) {
@@ -3020,15 +3182,30 @@ function fitsAscii(value) {
 }
 
 function hoverText(row) {
+  const inputLines = (row.input_data || []).map((input) => (
+    `${escapeHtml(plainText(input.label))}: ${escapeHtml(measurementText(input))}`
+  ));
+  const hasDistanceInput = (row.input_data || []).some((input) => input.key === "distance_pc");
   return [
     `<b>${escapeHtml(row.designation)}</b>`,
     `MOCA OID: ${row.moca_oid}`,
     `SpT: ${escapeHtml(row.complete_spectral_type || row.spectral_type)}`,
-    `X: ${formatCell(row.x)} +/- ${formatCell(row.ex)}`,
-    `Y: ${formatCell(row.y)} +/- ${formatCell(row.ey)}`,
-    row.distance_pc ? `Distance: ${formatCell(row.distance_pc)} pc` : null,
+    `X (${escapeHtml(plainText(row.x_label))}): ${escapeHtml(measurementText({ value: row.x, error: row.ex }))}`,
+    `Y (${escapeHtml(plainText(row.y_label))}): ${escapeHtml(measurementText({ value: row.y, error: row.ey }))}`,
+    ...inputLines,
+    row.distance_pc && !hasDistanceInput ? `Distance: ${formatCell(row.distance_pc)} pc` : null,
     row.age_myr ? `Age: ${formatCell(row.age_myr)} Myr` : null,
   ].filter(Boolean).join("<br>");
+}
+
+function measurementText(measurement) {
+  if (!measurement) return "";
+  const parts = [formatCell(measurement.value)];
+  const error = numericValue(measurement.error);
+  if (Number.isFinite(error)) parts.push("+/-", formatCell(error));
+  const unit = String(measurement.unit || "").trim();
+  if (unit) parts.push(unit);
+  return parts.filter((part) => part !== "").join(" ");
 }
 
 function parseSptRange(text) {

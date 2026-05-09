@@ -98,7 +98,11 @@
           </label>
           <label class="checkline">
             <input id="include-photspt" type="checkbox">
-            <span>Plot photometric spectral type estimates (slow)</span>
+            <span>Plot photometric spectral type estimates</span>
+          </label>
+          <label id="risky-photspt-line" class="checkline" hidden>
+            <input id="include-risky-photspt" type="checkbox">
+            <span>Load risky photometric spectral types (slow)</span>
           </label>
           <label class="checkline">
             <input id="advanced-photometry" type="checkbox">
@@ -272,22 +276,22 @@
       </p>
 
       <section class="bulk-preload-panel">
-        <h2>Performance Preload</h2>
-        <p>
-          For the current spectral range and highlighted objects, this preloads
-          the full in-memory dataset: photometric spectral type estimates,
-          photometric distances, designations, all photometry bands, all
-          spectral indices, equivalent widths, age data, and sequence overlays.
-          This can take a
-          few minutes, but once it finishes the app can switch most axes and
-          display options much faster. When connected to
-          <code>mocadb_private_tables</code>, this preload intentionally omits
-          photometric spectral type estimates because that private dataset is
-          too large for the upfront load.
-        </p>
-        <div class="bulk-preload-actions">
-          <button id="bulk-preload" type="button">Bulk load all app data</button>
-          <span id="bulk-preload-status" class="bulk-preload-status">Not loaded.</span>
+        <div id="bulk-preload-local-only">
+          <h2>Performance Preload</h2>
+          <p>
+            For the current spectral range and highlighted objects, this preloads
+            the full in-memory dataset: photometric spectral type estimates,
+            photometric distances, designations, all photometry bands, all
+            spectral indices, equivalent widths, age data, and sequence overlays.
+            This can take a
+            few minutes, but once it finishes the app can switch most axes and
+            display options much faster. Some large optional private datasets may
+            be omitted from this upfront load to keep the preload practical.
+          </p>
+          <div class="bulk-preload-actions">
+            <button id="bulk-preload" type="button">Bulk load all app data</button>
+            <span id="bulk-preload-status" class="bulk-preload-status">Not loaded.</span>
+          </div>
         </div>
         <div class="cache-actions">
           <button id="clear-cache" type="button">Clear cache</button>
