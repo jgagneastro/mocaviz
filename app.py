@@ -57,8 +57,9 @@ try:
 
     server.wsgi_app = DispatcherMiddleware(server.wsgi_app, {
         "/bd-colors-fast": bd_colors_fast_app,
+        "/bd_colors_fast": bd_colors_fast_app,
     })
-    sys.stderr.write("[mocaviz:init] mounted bd_colors_fast at /bd-colors-fast\n")
+    sys.stderr.write("[mocaviz:init] mounted bd_colors_fast at /bd-colors-fast and /bd_colors_fast\n")
     sys.stderr.flush()
 except Exception as exc:
     sys.stderr.write(f"[mocaviz:init] bd_colors_fast mount failed: {type(exc).__name__}: {exc}\n")

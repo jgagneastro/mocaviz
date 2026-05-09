@@ -20,6 +20,8 @@ const classColors = {
 };
 
 const spectralClassLegendOrder = ["M", "L", "T", "Y"];
+const simplePhotometryPrefix = "simple:";
+const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
 const broadSampleMaxObjects = 1000000;
 const spectralTypeJitterAmplitude = 0.3;
 const yDwarfRangePaddingFraction = 0.05;
@@ -64,6 +66,7 @@ const state = {
   allRows: [],
   rows: [],
   selectedOids: [],
+  selectedDesignations: [],
   hiddenLegendClasses: new Set(),
   hiddenLegendSamples: new Set(),
   hiddenLegendBinaries: false,
@@ -85,14 +88,20 @@ const state = {
   plotResizeFrame: null,
   plotResizeObserver: null,
   featuresLoaded: {
+    designations: false,
     spectralIndices: false,
     equivalentWidths: false,
     ages: false,
   },
   featureLoads: {},
   photometryLoaded: new Set(),
+  spectralIndicesLoaded: new Set(),
   photometricDistancesLoaded: false,
   sequencesKey: "",
+  sequencesLoadedAll: false,
+  bulkPreloadActive: false,
+  cacheClearActive: false,
+  preservedDesignationOids: new Set(),
 };
 
 const appBaseUrl = (() => {
@@ -136,6 +145,9 @@ function collectElements() {
     "y-value-1-label",
     "y-value-2-label",
     "spt-range",
+    "highlight-designation-search",
+    "highlight-designation-results",
+    "highlight-designation-selected",
     "highlight-oids",
     "xerr-max",
     "yerr-max",
@@ -143,6 +155,7 @@ function collectElements() {
     "include-photdist",
     "include-binaries",
     "include-photspt",
+    "advanced-photometry",
     "color-by-age",
     "visual-area",
     "plot",
@@ -155,6 +168,10 @@ function collectElements() {
     "export-tsv",
     "export-fits",
     "export-votable",
+    "bulk-preload",
+    "bulk-preload-status",
+    "clear-cache",
+    "clear-cache-status",
   ].forEach((id) => {
     el[id] = document.getElementById(id);
   });
@@ -177,6 +194,7 @@ function readInitialUrlState() {
   el["y-axis-type"].value = validAxisType(params.get("yaxis_type")) || "absolute_magnitude";
   el["spt-range"].value = params.get("spt_range") || "L2+";
   el["highlight-oids"].value = params.get("moca_oid") || params.get("oid") || "";
+  state.selectedDesignations = parseDesignationParams(params);
   el["xerr-max"].value = params.get("xerr_max") || "";
   el["yerr-max"].value = params.get("yerr_max") || "";
   el["show-errors"].checked = asBool(params.get("errors"));
@@ -184,8 +202,10 @@ function readInitialUrlState() {
   state.manualPhotdistChoice = el["include-photdist"].checked;
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
+  el["advanced-photometry"].checked = asBool(params.get("advanced_photometry"));
   el["color-by-age"].checked = asBool(params.get("agecolor"));
   updatePhotdistControl();
+  updateAdvancedPhotometryControl();
   if (applyAxisErrorDefaults(explicitErrorThresholds)) requestInitialAxisRange();
 }
 
@@ -213,6 +233,7 @@ function bindControls() {
         applyAxisErrorDefaults();
       }
       updatePhotdistControl();
+      updateAdvancedPhotometryControl();
       requestInitialAxisRange();
       render();
     });
@@ -249,11 +270,47 @@ function bindControls() {
     render();
     scheduleBootstrapReload({ resetAxisRange: false });
   });
+  el["highlight-designation-search"].addEventListener("focus", () => {
+    ensureDesignationsLoaded();
+    renderDesignationPicker();
+  });
+  el["highlight-designation-search"].addEventListener("input", () => {
+    ensureDesignationsLoaded();
+    renderDesignationPicker();
+  });
+  el["highlight-designation-search"].addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const match = designationSearchMatches()[0];
+    if (!match) return;
+    event.preventDefault();
+    selectDesignation(match.designation);
+  });
+  el["highlight-designation-results"].addEventListener("mousedown", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-designation]") : null;
+    if (!button) return;
+    event.preventDefault();
+    selectDesignation(button.dataset.designation);
+  });
+  el["highlight-designation-selected"].addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-remove-designation]") : null;
+    if (!button) return;
+    removeDesignation(button.dataset.removeDesignation);
+  });
   el["include-photspt"].addEventListener("change", () => {
     requestInitialAxisRange();
     render();
-    scheduleBootstrapReload({ resetAxisRange: true });
+    if (!state.raw?.meta?.include_photometric_spt) {
+      scheduleBootstrapReload({ resetAxisRange: true });
+    }
   });
+  el["advanced-photometry"].addEventListener("change", () => {
+    refreshAxisValueControls("x", { preferDefaults: true });
+    refreshAxisValueControls("y", { preferDefaults: true });
+    requestInitialAxisRange();
+    render();
+  });
+  el["bulk-preload"]?.addEventListener("click", bulkPreloadAll);
+  el["clear-cache"]?.addEventListener("click", clearDownloadedCache);
   el["export-csv"].addEventListener("click", exportCsv);
   el["export-tsv"].addEventListener("click", exportTsv);
   el["export-fits"].addEventListener("click", exportFits);
@@ -321,11 +378,35 @@ function updatePhotdistControl() {
   checkbox.closest(".checkline")?.classList.toggle("is-disabled", !hasAbsoluteAxis);
 }
 
+function hasPhotometryAxis() {
+  return ["x", "y"].some((axis) => {
+    const type = el[`${axis}-axis-type`].value;
+    return type === "color" || type === "absolute_magnitude";
+  });
+}
+
+function useAdvancedPhotometrySystems() {
+  return hasPhotometryAxis() && el["advanced-photometry"].checked;
+}
+
+function updateAdvancedPhotometryControl() {
+  const checkbox = el["advanced-photometry"];
+  const enabled = hasPhotometryAxis();
+  checkbox.disabled = !enabled;
+  checkbox.closest(".checkline")?.classList.toggle("is-disabled", !enabled);
+}
+
 function buildBootstrapParams() {
   const params = new URLSearchParams(window.location.search);
   params.set("spt_range", el["spt-range"].value || "L2+");
-  params.set("moca_oid", el["highlight-oids"].value || "");
+  params.set("moca_oid", backendHighlightOidValue());
+  params.delete("designation");
+  params.delete("designations");
+  if (state.selectedDesignations.length) {
+    params.set("designation", state.selectedDesignations.join(","));
+  }
   params.set("photspt", el["include-photspt"].checked ? "1" : "0");
+  params.set("advanced_photometry", useAdvancedPhotometrySystems() ? "1" : "0");
   params.set("photdist", includePhotometricDistancesForAxes() ? "1" : "0");
   params.set("xaxis_type", el["x-axis-type"].value || "color");
   params.set("yaxis_type", el["y-axis-type"].value || "absolute_magnitude");
@@ -339,8 +420,24 @@ function buildBootstrapParams() {
   return params;
 }
 
-function normalizeBroadSampleCap(params) {
-  if (!usesBroadSample()) return;
+function backendHighlightOidValue() {
+  const oids = parseOidList(el["highlight-oids"].value);
+  const seen = new Set(oids);
+  for (const oid of state.preservedDesignationOids) {
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    oids.push(oid);
+  }
+  for (const oid of selectedDesignationOids()) {
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    oids.push(oid);
+  }
+  return oids.join(",");
+}
+
+function normalizeBroadSampleCap(params, forceBroad = usesBroadSample()) {
+  if (!forceBroad) return;
   const current = String(params.get("max_objects") || "").trim().toLowerCase();
   if (["0", "none", "uncapped", "all"].includes(current)) return;
   const value = Number(current);
@@ -352,6 +449,20 @@ function normalizeBroadSampleCap(params) {
 function usesBroadSample() {
   const range = parseSptRange(el["spt-range"].value);
   return el["include-photspt"].checked || (range && range.min < 10);
+}
+
+function buildBulkPreloadParams() {
+  const params = buildBootstrapParams();
+  params.set("photspt", "1");
+  params.set("include_photspt", "1");
+  params.set("photdist", "1");
+  params.set("include_photdist", "1");
+  params.set("psids", "all");
+  params.set("siids", "all");
+  params.set("sequences", "all");
+  params.set("bulk", "1");
+  normalizeBroadSampleCap(params, true);
+  return params;
 }
 
 async function loadBootstrap(options = {}) {
@@ -372,7 +483,7 @@ async function loadBootstrap(options = {}) {
     refreshAxisValueControls("y");
     if (options.applyAxisDefaults) applyAxisDefaults(params);
     if (applyAxisErrorDefaults()) requestInitialAxisRange();
-    state.sequencesKey = currentSequenceKey();
+    state.sequencesKey = state.sequencesLoadedAll ? "all" : currentSequenceKey();
 
     const count = payload.meta && payload.meta.object_count ? payload.meta.object_count : 0;
     const capped = payload.meta && payload.meta.object_limit_applied ? `, capped at ${payload.meta.max_objects}` : "";
@@ -389,25 +500,182 @@ async function loadBootstrap(options = {}) {
   }
 }
 
+async function bulkPreloadAll() {
+  if (state.bulkPreloadActive) return;
+  const token = ++state.loadToken;
+  window.clearTimeout(state.reloadTimer);
+  state.bulkPreloadActive = true;
+  state.plotLoadReasons.clear();
+  setPlotLoading("bulk-preload", true);
+  setBulkPreloadControls(true, "Bulk loading all app data. This can take a few minutes.");
+  setStatus("Bulk loading all app data");
+  try {
+    const params = buildBulkPreloadParams();
+    const response = await fetch(appUrl(`api/preload?${params.toString()}`));
+    const payload = await response.json();
+    if (token !== state.loadToken) return;
+    if (!payload.ok) {
+      const message = payload.error || "Unknown preload error";
+      setBulkPreloadControls(false, `Bulk load failed: ${message}`, true);
+      setStatus(`Bulk load failed: ${message}`, true);
+      return;
+    }
+    state.raw = payload;
+    state.maps = buildMaps(payload.catalog);
+    resetFeatureState(payload);
+    refreshAxisValueControls("x");
+    refreshAxisValueControls("y");
+    requestInitialAxisRange();
+    state.forceFreshPlot = true;
+    const counts = bulkPreloadCounts(payload);
+    const elapsed = Number(payload.meta?.timings?.preload_total);
+    const elapsedText = Number.isFinite(elapsed) ? ` in ${elapsed.toFixed(1)} s` : "";
+    const omissionText = payload.meta?.preload_omitted_photometric_spt
+      ? " Photometric SPT estimates were omitted for the private DB."
+      : "";
+    setStatus(`Bulk preload complete${elapsedText}: ${counts}.${omissionText}`);
+    setBulkPreloadControls(false, `Loaded ${counts}${elapsedText}.${omissionText}`);
+    render();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (token === state.loadToken) {
+      setBulkPreloadControls(false, `Bulk load failed: ${message}`, true);
+      setStatus(`Bulk load failed: ${message}`, true);
+    }
+  } finally {
+    if (token === state.loadToken) {
+      state.bulkPreloadActive = false;
+      setPlotLoading("bulk-preload", false);
+    }
+  }
+}
+
+async function clearDownloadedCache() {
+  if (state.cacheClearActive || state.bulkPreloadActive) return;
+  const designationOidsToPreserve = selectedDesignationOids();
+  ++state.loadToken;
+  window.clearTimeout(state.reloadTimer);
+  state.cacheClearActive = true;
+  state.bulkPreloadActive = false;
+  clearClientData({ preservedDesignationOids: designationOidsToPreserve });
+  state.plotLoadReasons.clear();
+  setPlotLoading("clear-cache", true);
+  setCacheControls(true, "Clearing cache and reloading.");
+  setBulkPreloadControls(false, "Not loaded.");
+  setStatus("Clearing cache");
+  try {
+    const response = await fetch(appUrl("api/cache/clear"), { method: "POST" });
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "Cache clear failed");
+    }
+    const bootstrap = Number(payload.cleared?.bootstrap || 0);
+    const features = Number(payload.cleared?.features || 0);
+    setCacheControls(true, `Cleared ${bootstrap.toLocaleString()} catalog and ${features.toLocaleString()} feature cache entries. Reloading.`);
+    setStatus("Cache cleared; reloading catalog");
+    await loadBootstrap({ applyAxisDefaults: false, resetAxisRange: true });
+    setCacheControls(false, `Cache cleared and reloaded at ${new Date().toLocaleTimeString()}.`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setCacheControls(false, `Cache clear failed: ${message}`, true);
+    setStatus(`Cache clear failed: ${message}`, true);
+  } finally {
+    state.cacheClearActive = false;
+    setPlotLoading("clear-cache", false);
+  }
+}
+
+function clearClientData(options = {}) {
+  state.preservedDesignationOids = new Set(options.preservedDesignationOids || []);
+  state.raw = null;
+  state.maps = null;
+  state.allRows = [];
+  state.rows = [];
+  state.selectedOids = [];
+  state.hiddenLegendClasses.clear();
+  state.hiddenLegendSamples.clear();
+  state.hiddenLegendBinaries = false;
+  state.hiddenLegendPhotdist = false;
+  state.featuresLoaded = {
+    designations: false,
+    spectralIndices: false,
+    equivalentWidths: false,
+    ages: false,
+  };
+  state.featureLoads = {};
+  state.photometryLoaded = new Set();
+  state.spectralIndicesLoaded = new Set();
+  state.photometricDistancesLoaded = false;
+  state.sequencesKey = "";
+  state.sequencesLoadedAll = false;
+  state.pendingInitialAxisRange = true;
+  state.lastAppliedAxisRangeSignature = "";
+  state.forceFreshPlot = true;
+  if (el.plot && window.Plotly) Plotly.purge(el.plot);
+  state.plotBound = false;
+  if (el["selection-table"]) el["selection-table"].innerHTML = "";
+  if (el["missing-oids"]) {
+    el["missing-oids"].hidden = true;
+    el["missing-oids"].textContent = "";
+  }
+  if (el["count-summary"]) el["count-summary"].textContent = "";
+}
+
+function bulkPreloadCounts(payload) {
+  const catalog = payload.catalog || {};
+  const parts = [
+    `${Number(catalog.objects?.length || 0).toLocaleString()} objects`,
+    `${Number(catalog.designations?.length || 0).toLocaleString()} designations`,
+    `${Number(catalog.photometry?.length || 0).toLocaleString()} photometry rows`,
+    `${Number(catalog.spectralIndices?.length || 0).toLocaleString()} spectral-index rows`,
+    `${Number(catalog.equivalentWidths?.length || 0).toLocaleString()} EW rows`,
+    `${Number(catalog.ages?.length || 0).toLocaleString()} ages`,
+  ];
+  return parts.join(", ");
+}
+
+function setBulkPreloadControls(disabled, text, isError = false) {
+  if (el["bulk-preload"]) el["bulk-preload"].disabled = disabled;
+  if (!el["bulk-preload-status"]) return;
+  el["bulk-preload-status"].textContent = text;
+  el["bulk-preload-status"].classList.toggle("error", Boolean(isError));
+}
+
+function setCacheControls(disabled, text, isError = false) {
+  if (el["clear-cache"]) el["clear-cache"].disabled = disabled;
+  if (!el["clear-cache-status"]) return;
+  el["clear-cache-status"].textContent = text;
+  el["clear-cache-status"].classList.toggle("error", Boolean(isError));
+}
+
 function resetFeatureState(payload) {
   const lazy = new Set(payload.meta?.lazy_features || []);
   state.featuresLoaded = {
+    designations: !lazy.has("designations"),
     spectralIndices: !lazy.has("spectralIndices"),
     equivalentWidths: !lazy.has("equivalentWidths"),
     ages: !lazy.has("ages"),
   };
   state.photometryLoaded = new Set(payload.meta?.photometry_psids || (payload.catalog?.photometry || []).map((row) => row.moca_psid));
+  for (const band of payload.meta?.photometry_simplebands || []) {
+    state.photometryLoaded.add(simplePhotometryValue(band));
+  }
+  state.spectralIndicesLoaded = new Set(payload.meta?.spectral_index_siids || (payload.catalog?.spectralIndices || []).map((row) => row.moca_siid));
   state.photometricDistancesLoaded = Boolean(payload.meta?.include_photometric_dist);
+  state.sequencesLoadedAll = Boolean(payload.meta?.all_sequences_loaded);
   state.featureLoads = {};
 }
 
 function ensureNeededFeatures() {
   if (!state.raw || !state.maps) return;
+  if (state.selectedDesignations.length && !state.featuresLoaded.designations && !state.featureLoads.designations) {
+    loadFeature("designations");
+  }
   if (includePhotometricDistancesForAxes() && !state.photometricDistancesLoaded && !state.featureLoads.distances) {
     loadDistances();
   }
   const sequenceKey = currentSequenceKey();
-  if (sequenceKey !== state.sequencesKey && !state.featureLoads.sequences) {
+  if (!state.sequencesLoadedAll && sequenceKey !== state.sequencesKey && !state.featureLoads.sequences) {
     loadSequences(sequenceKey);
   }
 
@@ -417,15 +685,16 @@ function ensureNeededFeatures() {
   }
 
   const needed = new Set();
+  const missingSpectralIndices = neededSpectralIndexIds().filter((siid) => !state.spectralIndicesLoaded.has(siid));
+  if (missingSpectralIndices.length) needed.add("spectralIndices");
   for (const axis of ["x", "y"]) {
     const type = el[`${axis}-axis-type`].value;
-    if (type === "spectral_index") needed.add("spectralIndices");
     if (type === "equivalent_width") needed.add("equivalentWidths");
   }
   if (el["color-by-age"].checked) needed.add("ages");
 
   for (const feature of needed) {
-    if (!state.featuresLoaded[feature] && !state.featureLoads[feature]) {
+    if ((feature === "spectralIndices" || !state.featuresLoaded[feature]) && !state.featureLoads[feature]) {
       loadFeature(feature);
     }
   }
@@ -453,6 +722,7 @@ async function loadSequences(sequenceKey) {
       return;
     }
     state.raw.catalog.sequences = payload.rows || [];
+    state.sequencesLoadedAll = Boolean(payload.meta?.all_sequences_loaded);
     state.sequencesKey = sequenceKey;
     state.maps = buildMaps(state.raw.catalog);
     const rowCount = payload.meta?.row_count || 0;
@@ -511,15 +781,33 @@ function neededPhotometryPsids() {
   return [...new Set(psids)];
 }
 
-async function loadPhotometry(psids) {
+function splitPhotometrySelectors(selectors) {
+  const psids = [];
+  const simplebands = [];
+  for (const selector of selectors || []) {
+    const band = simplePhotometryBand(selector);
+    if (band) {
+      if (!simplebands.includes(band)) simplebands.push(band);
+    } else if (selector && !psids.includes(selector)) {
+      psids.push(selector);
+    }
+  }
+  return { psids, simplebands };
+}
+
+async function loadPhotometry(selectors) {
   const token = state.loadToken;
   state.featureLoads.photometry = true;
   let shouldRender = false;
   setPlotLoading("photometry", true);
-  setStatus(`Loading ${psids.join(", ")} photometry`);
+  setStatus(`Loading ${selectors.join(", ")} photometry`);
   try {
     const params = buildBootstrapParams();
-    params.set("psids", psids.join(","));
+    const { psids, simplebands } = splitPhotometrySelectors(selectors);
+    params.delete("psids");
+    params.delete("simplebands");
+    if (psids.length) params.set("psids", psids.join(","));
+    if (simplebands.length) params.set("simplebands", simplebands.join(","));
     const response = await fetch(appUrl(`api/feature/photometry?${params.toString()}`));
     const payload = await response.json();
     if (token !== state.loadToken) return;
@@ -532,9 +820,9 @@ async function loadPhotometry(psids) {
       payload.rows || [],
       (row) => `${row.moca_oid}|${row.moca_psid}`,
     );
-    for (const psid of psids) state.photometryLoaded.add(psid);
+    for (const selector of selectors) state.photometryLoaded.add(selector);
     state.maps = buildMaps(state.raw.catalog);
-    if (psids.some((psid) => neededPhotometryPsids().includes(psid))) requestInitialAxisRange();
+    if (selectors.some((selector) => neededPhotometryPsids().includes(selector))) requestInitialAxisRange();
     setStatus(`${(payload.meta?.row_count || 0).toLocaleString()} photometry rows loaded`);
     shouldRender = true;
   } finally {
@@ -550,6 +838,9 @@ async function loadPhotometryOptionCounts(token) {
   const payload = await response.json();
   if (token !== state.loadToken || !payload.ok) return;
   state.raw.options.photometry = payload.rows || [];
+  if (payload.meta?.simple_photometry_options) {
+    state.raw.options.simplePhotometry = payload.meta.simple_photometry_options;
+  }
   const changedX = refreshAxisValueControls("x");
   const changedY = refreshAxisValueControls("y");
   if (changedX || changedY) requestInitialAxisRange();
@@ -558,16 +849,19 @@ async function loadPhotometryOptionCounts(token) {
 
 async function loadFeature(feature) {
   const routes = {
+    designations: "designations",
     spectralIndices: "spectral-indices",
     equivalentWidths: "equivalent-widths",
     ages: "ages",
   };
   const labels = {
+    designations: "designations",
     spectralIndices: "spectral indices",
     equivalentWidths: "equivalent widths",
     ages: "ages",
   };
   const loadingLabels = {
+    designations: "designation catalog data",
     spectralIndices: "spectral-index catalog data",
     equivalentWidths: "equivalent-width catalog data",
     ages: "age catalog data",
@@ -589,9 +883,28 @@ async function loadFeature(feature) {
       setStatus(`Could not load ${labels[feature]}: ${payload.error}`, true);
       return;
     }
-    state.raw.catalog[feature] = payload.rows || [];
+    if (feature === "spectralIndices") {
+      state.raw.catalog[feature] = mergeRowsByKey(
+        state.raw.catalog[feature] || [],
+        payload.rows || [],
+        (row) => `${row.moca_oid}|${row.moca_siid}`,
+      );
+      for (const siid of payload.meta?.spectral_index_siids || neededSpectralIndexIds()) {
+        state.spectralIndicesLoaded.add(siid);
+      }
+      state.featuresLoaded[feature] = spectralIndicesReady();
+    } else if (feature === "designations") {
+      state.raw.catalog[feature] = mergeRowsByKey(
+        state.raw.catalog[feature] || [],
+        payload.rows || [],
+        (row) => `${row.moca_oid}|${normalizeDesignation(row.designation)}`,
+      );
+      state.featuresLoaded[feature] = true;
+    } else {
+      state.raw.catalog[feature] = payload.rows || [];
+      state.featuresLoaded[feature] = true;
+    }
     state.maps = buildMaps(state.raw.catalog);
-    state.featuresLoaded[feature] = true;
     const changedX = refreshAxisValueControls("x");
     const changedY = refreshAxisValueControls("y");
     if (changedX || changedY || currentAxesUseFeature(feature)) requestInitialAxisRange();
@@ -646,6 +959,10 @@ function buildMaps(catalog) {
   const objectByOid = new Map();
   const distanceByOid = new Map();
   const photometryByOid = new Map();
+  const simplePhotometryByOid = new Map();
+  const designationsByOid = new Map();
+  const oidsByDesignation = new Map();
+  const designationRows = [];
   const spectralIndexByOid = new Map();
   const equivalentWidthByOid = new Map();
   const ageByOid = new Map();
@@ -662,6 +979,8 @@ function buildMaps(catalog) {
     rows.sort((a, b) => Number(a.photometric_estimate || 0) - Number(b.photometric_estimate || 0));
   }
   addNestedRows(photometryByOid, catalog.photometry || [], "moca_psid");
+  addSimplePhotometryRows(simplePhotometryByOid, catalog.photometry || []);
+  addDesignationRows(designationsByOid, oidsByDesignation, designationRows, catalog.designations || []);
   addNestedRows(spectralIndexByOid, catalog.spectralIndices || [], "moca_siid");
   addNestedRows(equivalentWidthByOid, catalog.equivalentWidths || [], "moca_spid");
   for (const age of catalog.ages || []) {
@@ -672,10 +991,57 @@ function buildMaps(catalog) {
     objectByOid,
     distanceByOid,
     photometryByOid,
+    simplePhotometryByOid,
+    designationsByOid,
+    oidsByDesignation,
+    designationRows,
     spectralIndexByOid,
     equivalentWidthByOid,
     ageByOid,
   };
+}
+
+function addSimplePhotometryRows(target, rows) {
+  for (const row of rows) {
+    if (Number(row.adopted_simpleband || 0) !== 1 || !row.system_band_simple) continue;
+    const oid = Number(row.moca_oid);
+    const band = normalizeSimplePhotometryBand(row.system_band_simple);
+    if (!band) continue;
+    if (!target.has(oid)) target.set(oid, new Map());
+    if (!target.get(oid).has(band)) target.get(oid).set(band, row);
+  }
+}
+
+function addDesignationRows(designationsByOid, oidsByDesignation, designationRows, rows) {
+  const seenRows = new Set();
+  for (const row of rows) {
+    const oid = Number(row.moca_oid);
+    const designation = String(row.designation || "").trim();
+    const key = normalizeDesignation(designation);
+    if (!Number.isFinite(oid) || !key) continue;
+    if (!designationsByOid.has(oid)) designationsByOid.set(oid, []);
+    if (!designationsByOid.get(oid).some((value) => normalizeDesignation(value) === key)) {
+      designationsByOid.get(oid).push(designation);
+    }
+    if (!oidsByDesignation.has(key)) oidsByDesignation.set(key, new Set());
+    oidsByDesignation.get(key).add(oid);
+    const rowKey = `${key}|${oid}`;
+    if (seenRows.has(rowKey)) continue;
+    seenRows.add(rowKey);
+    designationRows.push({
+      moca_oid: oid,
+      designation,
+      normalized: key,
+      searchable: searchableDesignation(designation),
+    });
+  }
+  for (const values of designationsByOid.values()) {
+    values.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }
+  designationRows.sort((a, b) => (
+    a.designation.localeCompare(b.designation, undefined, { sensitivity: "base" }) ||
+    a.moca_oid - b.moca_oid
+  ));
 }
 
 function addNestedRows(target, rows, keyField) {
@@ -696,6 +1062,124 @@ function dataCountBy(rows, keyField) {
   return counts;
 }
 
+function ensureDesignationsLoaded() {
+  if (!state.raw || state.featuresLoaded.designations || state.featureLoads.designations) return;
+  loadFeature("designations");
+}
+
+function highlightedOidSet() {
+  const oids = parseOidSet(el["highlight-oids"].value);
+  for (const oid of selectedDesignationOids()) oids.add(oid);
+  return oids;
+}
+
+function selectedDesignationOids() {
+  const oids = new Set();
+  if (!state.maps?.oidsByDesignation) return oids;
+  for (const designation of state.selectedDesignations) {
+    const matches = state.maps.oidsByDesignation.get(normalizeDesignation(designation));
+    if (!matches) continue;
+    for (const oid of matches) oids.add(oid);
+  }
+  return oids;
+}
+
+function designationSearchMatches() {
+  const query = el["highlight-designation-search"]?.value || "";
+  const normalizedQuery = normalizeDesignation(query);
+  const searchableQuery = searchableDesignation(query);
+  if (!normalizedQuery || !state.maps?.designationRows) return [];
+  if (searchableQuery.length < 2) return [];
+  const selected = new Set(state.selectedDesignations.map(normalizeDesignation));
+  const prefix = [];
+  const contains = [];
+  const seen = new Set();
+  for (const row of state.maps.designationRows) {
+    if (selected.has(row.normalized) || seen.has(row.normalized)) continue;
+    const startsWith = row.normalized.startsWith(normalizedQuery) || row.searchable.startsWith(searchableQuery);
+    const containsQuery = row.normalized.includes(normalizedQuery) || row.searchable.includes(searchableQuery);
+    if (!startsWith && !containsQuery) continue;
+    seen.add(row.normalized);
+    if (startsWith) prefix.push(row);
+    else contains.push(row);
+    if (prefix.length >= 40) break;
+  }
+  return prefix.concat(contains).slice(0, 40);
+}
+
+function renderDesignationPicker() {
+  if (!el["highlight-designation-selected"] || !el["highlight-designation-results"]) return;
+  el["highlight-designation-search"].placeholder = state.selectedDesignations.length
+    ? "Add another"
+    : "Start typing a designation";
+  el["highlight-designation-selected"].innerHTML = state.selectedDesignations.map((designation) => {
+    const label = selectedDesignationLabel(designation);
+    return `
+      <span class="designation-chip">
+        <span>${escapeHtml(label)}</span>
+        <button type="button" data-remove-designation="${escapeHtml(designation)}" aria-label="Remove ${escapeHtml(label)}">x</button>
+      </span>
+    `;
+  }).join("");
+
+  const query = el["highlight-designation-search"].value.trim();
+  const active = document.activeElement === el["highlight-designation-search"] || Boolean(query);
+  if (!active) {
+    el["highlight-designation-results"].hidden = true;
+    el["highlight-designation-results"].innerHTML = "";
+    return;
+  }
+  if (!query) {
+    el["highlight-designation-results"].hidden = true;
+    el["highlight-designation-results"].innerHTML = "";
+    return;
+  }
+  if (!state.featuresLoaded.designations) {
+    el["highlight-designation-results"].hidden = false;
+    el["highlight-designation-results"].innerHTML = `<div class="designation-result-note">Loading designations...</div>`;
+    return;
+  }
+  if (searchableDesignation(query).length < 2) {
+    el["highlight-designation-results"].hidden = false;
+    el["highlight-designation-results"].innerHTML = `<div class="designation-result-note">Type at least 2 characters.</div>`;
+    return;
+  }
+  const matches = designationSearchMatches();
+  el["highlight-designation-results"].hidden = false;
+  el["highlight-designation-results"].innerHTML = matches.length
+    ? matches.map((row) => `
+        <button type="button" class="designation-result" data-designation="${escapeHtml(row.designation)}">
+          ${escapeHtml(row.designation)}
+        </button>
+      `).join("")
+    : `<div class="designation-result-note">No loaded designations match.</div>`;
+}
+
+function selectedDesignationLabel(designation) {
+  const key = normalizeDesignation(designation);
+  const row = state.maps?.designationRows?.find((item) => item.normalized === key);
+  return row?.designation || designation;
+}
+
+function selectDesignation(designation) {
+  const cleaned = String(designation || "").trim();
+  const key = normalizeDesignation(cleaned);
+  if (!key) return;
+  if (!state.selectedDesignations.some((item) => normalizeDesignation(item) === key)) {
+    state.selectedDesignations.push(cleaned);
+  }
+  state.preservedDesignationOids = selectedDesignationOids();
+  el["highlight-designation-search"].value = "";
+  render();
+}
+
+function removeDesignation(designation) {
+  const key = normalizeDesignation(designation);
+  state.selectedDesignations = state.selectedDesignations.filter((item) => normalizeDesignation(item) !== key);
+  state.preservedDesignationOids = selectedDesignationOids();
+  render();
+}
+
 function refreshAxisValueControls(axis, optionsConfig = {}) {
   const type = el[`${axis}-axis-type`].value;
   const value1 = el[`${axis}-value-1`];
@@ -707,16 +1191,9 @@ function refreshAxisValueControls(axis, optionsConfig = {}) {
 
   let options = [];
   if (type === "color" || type === "absolute_magnitude") {
-    options = (state.raw?.options?.photometry || [])
-      .filter((row) => row.n_data === undefined || Number(row.n_data) > 0)
-      .map((row) => ({
-        value: row.moca_psid,
-        label: `${row.name} (${row.moca_psid})`,
-      }));
+    options = photometryOptionsForCurrentMode();
   } else if (type === "spectral_index") {
-    const counts = state.featuresLoaded.spectralIndices ? dataCountBy(state.raw?.catalog?.spectralIndices, "moca_siid") : null;
     options = (state.raw?.options?.spectralIndices || [])
-      .filter((row) => !counts || counts.has(row.moca_siid))
       .map((row) => ({
         value: row.moca_siid,
         label: `${row.description} (${row.moca_siid})`,
@@ -755,11 +1232,11 @@ function refreshAxisValueControls(axis, optionsConfig = {}) {
 
 function preferredOptionValue(type, options, fallbackIndex = 0) {
   if (type === "color") {
-    const preferred = fallbackIndex === 1 ? "mko_kmag" : "mko_jmag";
+    const preferred = fallbackIndex === 1 ? defaultPhotometryValue("K") : defaultPhotometryValue("J");
     const match = options.find((item) => item.value === preferred);
     if (match) return match.value;
   } else if (type === "absolute_magnitude") {
-    const mkoJ = options.find((item) => item.value === "mko_jmag");
+    const mkoJ = options.find((item) => item.value === defaultPhotometryValue("J"));
     if (mkoJ) return mkoJ.value;
   } else if (type === "spectral_index") {
     const hcont = options.find((item) => item.value === "hcont" || /h-?cont/i.test(item.label));
@@ -774,16 +1251,74 @@ function preferredOptionValue(type, options, fallbackIndex = 0) {
   return options[fallbackIndex]?.value || "";
 }
 
+function defaultPhotometryValue(simpleBand) {
+  if (useAdvancedPhotometrySystems()) {
+    if (simpleBand === "K") return "mko_kmag";
+    if (simpleBand === "H") return "mko_hmag";
+    return "mko_jmag";
+  }
+  return simplePhotometryValue(simpleBand);
+}
+
+function photometryOptionsForCurrentMode() {
+  if (useAdvancedPhotometrySystems()) {
+    return (state.raw?.options?.photometry || [])
+      .filter((row) => row.n_data === undefined || Number(row.n_data) > 0)
+      .map((row) => ({
+        value: row.moca_psid,
+        label: `${row.name} (${row.moca_psid})`,
+      }));
+  }
+  const rows = state.raw?.options?.simplePhotometry || simplePhotometryBands.map((band) => ({
+    value: simplePhotometryValue(band),
+    system_band_simple: band,
+    label: band,
+  }));
+  return rows
+    .filter((row) => normalizeSimplePhotometryBand(row.system_band_simple) || simplePhotometryBand(row.value))
+    .filter((row) => row.n_data === undefined || Number(row.n_data) > 0)
+    .map((row) => {
+      const band = normalizeSimplePhotometryBand(row.system_band_simple) || simplePhotometryBand(row.value);
+      return {
+        value: simplePhotometryValue(band),
+        label: simplePhotometryLabel(band),
+      };
+    });
+}
+
+function simplePhotometryValue(band) {
+  return `${simplePhotometryPrefix}${normalizeSimplePhotometryBand(band) || band}`;
+}
+
+function simplePhotometryBand(value) {
+  const raw = String(value || "");
+  if (!raw.startsWith(simplePhotometryPrefix)) return "";
+  return normalizeSimplePhotometryBand(raw.slice(simplePhotometryPrefix.length)) || "";
+}
+
+function isSimplePhotometryValue(value) {
+  return Boolean(simplePhotometryBand(value));
+}
+
+function simplePhotometryLabel(band) {
+  return String(normalizeSimplePhotometryBand(band) || band || "");
+}
+
+function normalizeSimplePhotometryBand(value) {
+  const aliases = new Map(simplePhotometryBands.map((band) => [band.toLowerCase(), band]));
+  return aliases.get(String(value || "").trim().toLowerCase()) || "";
+}
+
 function normalizeOptionText(text) {
   return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function applyAxisDefaults(params) {
   const defaults = [
-    ["x", "xaxis_value_1", "mko_jmag"],
-    ["x", "xaxis_value_2", "mko_kmag"],
-    ["y", "yaxis_value_1", "mko_jmag"],
-    ["y", "yaxis_value_2", "mko_kmag"],
+    ["x", "xaxis_value_1", defaultPhotometryValue("J")],
+    ["x", "xaxis_value_2", defaultPhotometryValue("K")],
+    ["y", "yaxis_value_1", defaultPhotometryValue("J")],
+    ["y", "yaxis_value_2", defaultPhotometryValue("K")],
   ];
   for (const [axis, paramName, fallback] of defaults) {
     const field = paramName.endsWith("_2") ? `${axis}-value-2` : `${axis}-value-1`;
@@ -817,6 +1352,7 @@ function render() {
     rangeSignature,
   });
   renderTable(state.selectedOids);
+  renderDesignationPicker();
   renderMissingHighlightedOids(rows);
   renderCountSummary(plottedRows, plotRanges);
   renderPlotHint();
@@ -893,7 +1429,7 @@ function legendFilteredRows(rows) {
 
 function buildRows() {
   const range = parseSptRange(el["spt-range"].value);
-  const highlighted = parseOidSet(el["highlight-oids"].value);
+  const highlighted = highlightedOidSet();
   const includePhotdist = includePhotometricDistancesForAxes();
   const includeBinaries = el["include-binaries"].checked;
   const includePhotspt = el["include-photspt"].checked;
@@ -970,8 +1506,8 @@ function axisValue(object, spec, includePhotdist) {
     };
   }
   if (spec.type === "color") {
-    const phot1 = state.maps.photometryByOid.get(oid)?.get(spec.value1);
-    const phot2 = state.maps.photometryByOid.get(oid)?.get(spec.value2);
+    const phot1 = photometryForAxisValue(oid, spec.value1);
+    const phot2 = photometryForAxisValue(oid, spec.value2);
     if (!phot1 || !phot2 || spec.value1 === spec.value2) return null;
     return {
       value: Number(phot1.magnitude) - Number(phot2.magnitude),
@@ -981,7 +1517,7 @@ function axisValue(object, spec, includePhotdist) {
     };
   }
   if (spec.type === "absolute_magnitude") {
-    const phot = state.maps.photometryByOid.get(oid)?.get(spec.value1);
+    const phot = photometryForAxisValue(oid, spec.value1);
     const dist = bestDistance(oid, includePhotdist);
     if (!phot || !dist || dist.dmod === null || dist.dmod === undefined) return null;
     return {
@@ -1016,6 +1552,12 @@ function axisValue(object, spec, includePhotdist) {
   return null;
 }
 
+function photometryForAxisValue(oid, value) {
+  const simpleBand = simplePhotometryBand(value);
+  if (simpleBand) return state.maps.simplePhotometryByOid.get(oid)?.get(simpleBand);
+  return state.maps.photometryByOid.get(oid)?.get(value);
+}
+
 function jitteredAxisValue(value, oid, axis, axisType) {
   if (axisType !== "spectral_type") return value;
   return value + deterministicJitter(oid, axis);
@@ -1041,6 +1583,8 @@ function plotY(row) {
 }
 
 function bandAxisLabel(photometryRow, fallbackId) {
+  const simpleBand = photometryRow?.system_band_simple || simplePhotometryBand(fallbackId);
+  if (simpleBand) return simplePhotometryLabel(simpleBand);
   const raw = String(photometryRow?.name || fallbackId || "");
   const lower = `${raw} ${fallbackId || ""}`.toLowerCase();
   if (/(^|[^a-z])ks([^a-z]|$)|ksmag|k_s/.test(lower)) return "<i>K</i><sub>S</sub>";
@@ -1278,10 +1822,23 @@ function hasPendingCriticalPlotData() {
   if (neededPhotometryPsids().some((psid) => !state.photometryLoaded.has(psid))) return true;
   for (const axis of ["x", "y"]) {
     const type = el[`${axis}-axis-type`].value;
-    if (type === "spectral_index" && !state.featuresLoaded.spectralIndices) return true;
+    if (type === "spectral_index" && !state.spectralIndicesLoaded.has(el[`${axis}-value-1`].value)) return true;
     if (type === "equivalent_width" && !state.featuresLoaded.equivalentWidths) return true;
   }
   return false;
+}
+
+function neededSpectralIndexIds() {
+  const ids = [];
+  for (const axis of ["x", "y"]) {
+    if (el[`${axis}-axis-type`].value === "spectral_index") ids.push(el[`${axis}-value-1`].value);
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function spectralIndicesReady() {
+  const needed = neededSpectralIndexIds();
+  return needed.length > 0 && needed.every((siid) => state.spectralIndicesLoaded.has(siid));
 }
 
 function currentAxesUseFeature(feature) {
@@ -1308,7 +1865,7 @@ function axisRangeSignature() {
 }
 
 function axisDataReadySignature(spec) {
-  if (spec.type === "spectral_index") return state.featuresLoaded.spectralIndices ? "loaded" : "loading";
+  if (spec.type === "spectral_index") return state.spectralIndicesLoaded.has(spec.value1) ? `loaded:${spec.value1}` : `loading:${spec.value1}`;
   if (spec.type === "equivalent_width") return state.featuresLoaded.equivalentWidths ? "loaded" : "loading";
   if (spec.type === "absolute_magnitude") {
     const photometryReady = state.photometryLoaded.has(spec.value1) ? "phot-loaded" : "phot-loading";
@@ -1987,8 +2544,22 @@ function sequenceMatches(row, x, y) {
 function axisMatchesRule(axis, type, value1, value2) {
   if (axis.type !== type) return false;
   if (type === "spectral_type") return true;
-  if (type === "color") return axis.value1 === value1 && axis.value2 === value2;
-  return axis.value1 === value1;
+  if (type === "color") {
+    return sequenceAxisValueMatches(axis.value1, value1) && sequenceAxisValueMatches(axis.value2, value2);
+  }
+  return sequenceAxisValueMatches(axis.value1, value1);
+}
+
+function sequenceAxisValueMatches(axisValue, sequenceValue) {
+  if (axisValue === sequenceValue) return true;
+  const simpleBand = simplePhotometryBand(axisValue);
+  if (!simpleBand) return false;
+  return photometrySimpleBandForValue(sequenceValue) === simpleBand;
+}
+
+function photometrySimpleBandForValue(value) {
+  const option = (state.raw?.options?.photometry || []).find((row) => row.moca_psid === value);
+  return normalizeSimplePhotometryBand(option?.system_band_simple);
 }
 
 function axisLayout(axis, label, rows, initialRange) {
@@ -2088,7 +2659,7 @@ function bindPlotEvents() {
   el.plot.on("plotly_click", (event) => {
     const oid = Number(event?.points?.[0]?.customdata);
     if (Number.isFinite(oid)) {
-      window.open(`https://mocadb.ca/search/results?search-query=oid%28${oid}%29&search-type=star`, "_blank");
+      window.open(mocaReportUrl(oid), "_blank");
     }
   });
   el.plot.on("plotly_legendclick", (event) => {
@@ -2214,24 +2785,45 @@ function renderTable(oids) {
   const selected = state.rows.filter((row) => oids.includes(row.moca_oid));
   const columns = ["moca_oid", "designation", "spectral_type", "x", "y", "distance_pc"];
   if (el["color-by-age"].checked) columns.push("age_myr", "age_sample");
+  const headerCells = ["report", ...columns].map((col) => `<th>${escapeHtml(col)}</th>`).join("");
   el["selection-table"].innerHTML = `
     <table>
-      <thead><tr>${columns.map((col) => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>
+      <thead><tr>${headerCells}</tr></thead>
       <tbody>
-        ${selected.map((row) => `<tr>${columns.map((col) => `<td>${escapeHtml(formatCell(row[col]))}</td>`).join("")}</tr>`).join("")}
+        ${selected.map((row) => `
+          <tr>
+            <td><a class="report-link" href="${escapeHtml(mocaReportUrl(row.moca_oid))}" target="_blank" rel="noopener">Report</a></td>
+            ${columns.map((col) => `<td>${escapeHtml(formatCell(row[col]))}</td>`).join("")}
+          </tr>
+        `).join("")}
       </tbody>
     </table>
   `;
+}
+
+function mocaReportUrl(oid) {
+  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(oid)}%29&search-type=star`;
 }
 
 function renderMissingHighlightedOids(rows) {
   const requested = parseOidList(el["highlight-oids"].value);
   const plotted = new Set(rows.map((row) => row.moca_oid));
   const missing = requested.filter((oid) => !plotted.has(oid));
-  el["missing-oids"].hidden = missing.length === 0;
-  el["missing-oids"].textContent = missing.length
-    ? `These OIDs were not found in the current dataset: ${missing.join(", ")}`
-    : "";
+  const messages = [];
+  if (missing.length) {
+    messages.push(`These OIDs were not found in the current dataset: ${missing.join(", ")}`);
+  }
+  if (state.selectedDesignations.length && state.featuresLoaded.designations) {
+    const missingDesignations = state.selectedDesignations.filter((designation) => {
+      const matches = state.maps?.oidsByDesignation?.get(normalizeDesignation(designation));
+      return !matches || ![...matches].some((oid) => plotted.has(oid));
+    });
+    if (missingDesignations.length) {
+      messages.push(`These designations were not found in the current plotted dataset: ${missingDesignations.map(selectedDesignationLabel).join(", ")}`);
+    }
+  }
+  el["missing-oids"].hidden = messages.length === 0;
+  el["missing-oids"].textContent = messages.join(" ");
 }
 
 const exportColumns = [
@@ -2480,6 +3072,33 @@ function classFromSpt(value) {
 function normalizedSpectralClass(value) {
   const cleaned = String(value || "").split("+")[0].replace(/\?/g, "").trim();
   return cleaned || String(value || "");
+}
+
+function parseDesignationParams(params) {
+  const rawValues = [
+    ...params.getAll("designation"),
+    ...params.getAll("designations"),
+  ];
+  const selected = [];
+  const seen = new Set();
+  for (const raw of rawValues) {
+    for (const designation of String(raw || "").split(",")) {
+      const cleaned = designation.trim();
+      const key = normalizeDesignation(cleaned);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      selected.push(cleaned);
+    }
+  }
+  return selected;
+}
+
+function normalizeDesignation(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function searchableDesignation(value) {
+  return normalizeDesignation(value).replace(/[^a-z0-9]+/g, "");
 }
 
 function parseOidSet(text) {

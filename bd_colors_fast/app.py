@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import os
 import random
@@ -33,11 +34,13 @@ OPTIONAL_QUERY_MAX_OBJECTS = max(
     BROAD_QUERY_MAX_OBJECTS,
 )
 DEFAULT_PHOTOMETRY_PSIDS = ("mko_jmag", "mko_kmag")
+SIMPLE_PHOTOMETRY_PREFIX = "simple:"
+SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
 DEFAULT_AXIS_SPECS = {
-    "x": ("color", "mko_jmag", "mko_kmag"),
-    "y": ("absolute_magnitude", "mko_jmag", ""),
+    "x": ("color", "simple:J", "simple:K"),
+    "y": ("absolute_magnitude", "simple:J", ""),
 }
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
@@ -54,6 +57,10 @@ def _db_config(args: dict[str, Any]) -> dict[str, str]:
         "password": args.get("pwd") or os.environ.get("MOCA_PASSWORD", DEFAULT_PASSWORD),
         "dbname": args.get("dbase") or os.environ.get("MOCA_DBNAME", DEFAULT_DBNAME),
     }
+
+
+def _is_private_db(args: dict[str, Any]) -> bool:
+    return str(_db_config(args)["dbname"]).strip("`").lower() == "mocadb_private_tables"
 
 
 def _connection_string(args: dict[str, Any]) -> str:
@@ -173,6 +180,30 @@ def _oid_filter_sql(alias: str, oids: list[int]) -> str:
     return f"{alias}.moca_oid IN ({oid_list})"
 
 
+def _simple_band_option_rows(counts: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for band in SIMPLE_PHOTOMETRY_BANDS:
+        row: dict[str, Any] = {
+            "value": f"{SIMPLE_PHOTOMETRY_PREFIX}{band}",
+            "system_band_simple": band,
+            "label": band,
+        }
+        if counts is not None:
+            row["n_data"] = int(counts.get(band, 0))
+        rows.append(row)
+    return rows
+
+
+def _normalize_simple_band(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.startswith(SIMPLE_PHOTOMETRY_PREFIX):
+        raw = raw[len(SIMPLE_PHOTOMETRY_PREFIX):]
+    aliases = {band.lower(): band for band in SIMPLE_PHOTOMETRY_BANDS}
+    return aliases.get(raw.lower())
+
+
 def _requested_photometry_psids(args: dict[str, Any]) -> list[str]:
     requested: list[str] = []
     raw_psids = args.get("psids")
@@ -192,9 +223,67 @@ def _requested_photometry_psids(args: dict[str, Any]) -> list[str]:
 
     clean: list[str] = []
     for psid in requested:
-        if psid and SAFE_ID_RE.match(psid) and psid not in clean:
+        if (
+            psid
+            and not _normalize_simple_band(psid)
+            and SAFE_ID_RE.match(psid)
+            and psid not in clean
+        ):
             clean.append(psid)
-    return clean or list(DEFAULT_PHOTOMETRY_PSIDS)
+    return clean
+
+
+def _requested_photometry_simplebands(args: dict[str, Any]) -> list[str]:
+    requested: list[str] = []
+    raw_simplebands = args.get("simplebands")
+    if raw_simplebands:
+        requested.extend(item.strip() for item in raw_simplebands.split(","))
+    else:
+        for axis in ("x", "y"):
+            axis_type = args.get(f"{axis}axis_type")
+            value1 = args.get(f"{axis}axis_value_1")
+            value2 = args.get(f"{axis}axis_value_2")
+            if axis_type in {"color", "absolute_magnitude"} and value1:
+                requested.append(value1)
+            if axis_type == "color" and value2:
+                requested.append(value2)
+        if not requested:
+            requested.extend(("simple:J", "simple:K"))
+
+    clean: list[str] = []
+    for value in requested:
+        band = _normalize_simple_band(value)
+        if band and band not in clean:
+            clean.append(band)
+    return clean
+
+
+def _request_all_photometry(args: dict[str, Any]) -> bool:
+    return str(args.get("psids") or "").strip().lower() in {"all", "*"}
+
+
+def _request_all_spectral_indices(args: dict[str, Any]) -> bool:
+    return _as_bool(args.get("bulk")) or str(args.get("siids") or "").strip().lower() in {"all", "*"}
+
+
+def _request_all_sequences(args: dict[str, Any]) -> bool:
+    return _as_bool(args.get("bulk")) or str(args.get("sequences") or "").strip().lower() in {"all", "*"}
+
+
+def _requested_spectral_index_ids(args: dict[str, Any]) -> list[str]:
+    if _request_all_spectral_indices(args):
+        return []
+    requested: list[str] = []
+    for axis in ("x", "y"):
+        axis_type = args.get(f"{axis}axis_type")
+        value1 = args.get(f"{axis}axis_value_1")
+        if axis_type == "spectral_index" and value1:
+            requested.append(value1)
+    clean: list[str] = []
+    for siid in requested:
+        if siid and SAFE_ID_RE.match(siid) and siid not in clean:
+            clean.append(siid)
+    return clean
 
 
 def _axis_spec(args: dict[str, Any], axis: str) -> tuple[str, str, str]:
@@ -223,18 +312,66 @@ def _sequence_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, str]]:
         params[f"{axis}_type"] = axis_type
         clauses.append(f"ms.{axis}axis_type_bdcolapp = :{axis}_type")
         if axis_type != "spectral_type":
-            params[f"{axis}_value1"] = value1
-            clauses.append(f"ms.{axis}axis_value_1_bdcolapp = :{axis}_value1")
+            clauses.append(_sequence_value_filter_sql(axis, 1, value1, params))
         if axis_type == "color":
-            params[f"{axis}_value2"] = value2
-            clauses.append(f"ms.{axis}axis_value_2_bdcolapp = :{axis}_value2")
+            clauses.append(_sequence_value_filter_sql(axis, 2, value2, params))
     return " AND ".join(clauses), params
 
 
+def _sequence_value_filter_sql(axis: str, index: int, value: str, params: dict[str, str]) -> str:
+    column = f"ms.{axis}axis_value_{index}_bdcolapp"
+    value_key = f"{axis}_value{index}"
+    params[value_key] = value
+    simple_band = _normalize_simple_band(value)
+    if not simple_band:
+        return f"{column} = :{value_key}"
+
+    band_key = f"{axis}_simpleband{index}"
+    params[band_key] = simple_band
+    return f"""(
+        {column} = :{value_key}
+        OR {column} IN (
+            SELECT ps.moca_psid
+            FROM moca_photometry_systems ps
+            WHERE ps.system_band_simple = :{band_key}
+        )
+    )"""
+
+
 def _psid_filter_sql(alias: str, psids: list[str]) -> tuple[str, dict[str, str]]:
+    if not psids:
+        return "1 = 1", {}
     params = {f"psid_{idx}": psid for idx, psid in enumerate(psids)}
     placeholders = ",".join(f":psid_{idx}" for idx in range(len(psids)))
     return f"{alias}.moca_psid IN ({placeholders})", params
+
+
+def _photometry_filter_sql(alias: str, psids: list[str], simplebands: list[str]) -> tuple[str, dict[str, str]]:
+    clauses: list[str] = []
+    params: dict[str, str] = {}
+    if psids:
+        psid_filter, psid_params = _psid_filter_sql(alias, psids)
+        clauses.append(psid_filter)
+        params.update(psid_params)
+    if simplebands:
+        band_params = {f"simpleband_{idx}": band for idx, band in enumerate(simplebands)}
+        placeholders = ",".join(f":simpleband_{idx}" for idx in range(len(simplebands)))
+        clauses.append(
+            f"({alias}.adopted_simpleband = 1 AND {alias}.system_band_simple IN ({placeholders}))"
+        )
+        params.update(band_params)
+    if not clauses:
+        return "0 = 1", {}
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+def _safe_id_filter_sql(alias: str, column: str, values: list[str], prefix: str) -> tuple[str, dict[str, str]]:
+    clean = [value for value in values if value and SAFE_ID_RE.match(value)]
+    if not clean:
+        return "1 = 1", {}
+    params = {f"{prefix}_{idx}": value for idx, value in enumerate(clean)}
+    placeholders = ",".join(f":{prefix}_{idx}" for idx in range(len(clean)))
+    return f"{alias}.{column} IN ({placeholders})", params
 
 
 def _cache_key(args: dict[str, Any]) -> str:
@@ -251,7 +388,13 @@ def _cache_key(args: dict[str, Any]) -> str:
         str(_include_photometric_spt(args)),
         str(_include_photometric_dist(args)),
         str(limit),
-        ",".join(_requested_photometry_psids(args)),
+        (
+            "all-photometry"
+            if _request_all_photometry(args)
+            else ",".join(_requested_photometry_psids(args))
+            + "|simple:"
+            + ",".join(_requested_photometry_simplebands(args))
+        ),
         _sequence_key(args),
         oids,
     ])
@@ -330,7 +473,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             return rows
 
         photometry_options = read_records("photometry_options", """
-            SELECT moca_psid, name
+            SELECT moca_psid, name, system_band_simple
             FROM moca_photometry_systems
             ORDER BY name, moca_psid
         """)
@@ -378,8 +521,17 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
         include_photometric_dist = _include_photometric_dist(args)
         dd_phot_filter = "1 = 1" if include_photometric_dist else "dd.photometric_estimate = 0"
         dp_oid_filter = _oid_filter_sql("dp", selected_oids)
-        photometry_psids = _requested_photometry_psids(args)
-        dp_psid_filter, dp_psid_params = _psid_filter_sql("dp", photometry_psids)
+        if _request_all_photometry(args):
+            photometry_psids = [
+                str(row["moca_psid"])
+                for row in photometry_options
+                if row.get("moca_psid") is not None
+            ]
+            photometry_simplebands = list(SIMPLE_PHOTOMETRY_BANDS)
+        else:
+            photometry_psids = _requested_photometry_psids(args)
+            photometry_simplebands = _requested_photometry_simplebands(args)
+        dp_phot_filter, dp_phot_params = _photometry_filter_sql("dp", photometry_psids, photometry_simplebands)
 
         distances = read_records("distances", """
             SELECT
@@ -418,6 +570,8 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             SELECT
                 dp.moca_oid,
                 dp.moca_psid,
+                MIN(dp.system_band_simple) AS system_band_simple,
+                MAX(dp.adopted_simpleband) AS adopted_simpleband,
                 MIN(dp.magnitude) AS magnitude,
                 MIN(dp.magnitude_unc) AS magnitude_unc,
                 MIN(ps.name) AS name,
@@ -436,11 +590,11 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             WHERE dp.adopted = 1
                 AND dp.magnitude IS NOT NULL
                 AND dp.magnitude_unc IS NOT NULL
-                AND {dp_psid_filter}
+                AND {dp_phot_filter}
                 AND {dp_oid_filter}
             GROUP BY dp.moca_oid, dp.moca_psid
             ORDER BY dp.moca_oid, dp.moca_psid
-        """.format(dp_oid_filter=dp_oid_filter, dp_psid_filter=dp_psid_filter), dp_psid_params)
+        """.format(dp_oid_filter=dp_oid_filter, dp_phot_filter=dp_phot_filter), dp_phot_params)
 
         median_colors = read_records("median_colors", """
             SELECT
@@ -484,6 +638,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "options": {
             "photometry": photometry_options,
+            "simplePhotometry": _simple_band_option_rows(),
             "spectralIndices": spectral_index_options,
             "equivalentWidths": equivalent_width_options,
         },
@@ -491,6 +646,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "objects": objects,
             "distances": distances,
             "photometry": photometry,
+            "designations": [],
             "spectralIndices": [],
             "equivalentWidths": [],
             "ages": [],
@@ -507,8 +663,9 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "object_count": len(objects),
             "photometry_count": len(photometry),
             "photometry_psids": photometry_psids,
+            "photometry_simplebands": photometry_simplebands,
             "sequence_key": _sequence_key(args),
-            "lazy_features": ["spectralIndices", "equivalentWidths", "ages"],
+            "lazy_features": ["designations", "spectralIndices", "equivalentWidths", "ages"],
             "timings": timings,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -518,7 +675,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
-    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "spectralIndices", "equivalentWidths", "ages"}:
+    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "designations", "spectralIndices", "equivalentWidths", "ages"}:
         raise ValueError(f"Unknown feature: {feature}")
 
     cache_key = f"{_cache_key(args)}|{feature}"
@@ -530,10 +687,15 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
         return payload
 
     engine = _engine(_connection_string(args))
+    feature_meta: dict[str, Any] = {}
     with engine.connect() as conn:
         if feature == "sequences":
             selected_oids = []
-            sequence_filter, sequence_params = _sequence_filter_sql(args)
+            if _request_all_sequences(args):
+                sequence_filter, sequence_params = "1 = 1", {}
+                feature_meta["all_sequences_loaded"] = True
+            else:
+                sequence_filter, sequence_params = _sequence_filter_sql(args)
             rows = _records(_read_sql(conn, """
                 SELECT
                     ms.moca_seqid,
@@ -562,17 +724,30 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 "distances": _oid_filter_sql("dd", selected_oids),
                 "photometry": _oid_filter_sql("dp", selected_oids),
                 "photometryOptions": _oid_filter_sql("dp", selected_oids),
+                "designations": _oid_filter_sql("mad", selected_oids),
                 "spectralIndices": _oid_filter_sql("dsi", selected_oids),
                 "equivalentWidths": _oid_filter_sql("dew", selected_oids),
                 "ages": _oid_filter_sql("cbs", selected_oids),
             }[feature]
         if feature == "sequences":
             pass
+        elif feature == "designations":
+            rows = _records(_read_sql(conn, """
+                SELECT
+                    mad.moca_oid,
+                    mad.designation
+                FROM mechanics_all_designations mad
+                WHERE mad.designation IS NOT NULL
+                    AND mad.designation <> ''
+                    AND {oid_filter}
+                ORDER BY mad.moca_oid, mad.designation
+            """.format(oid_filter=oid_filter)))
         elif feature == "photometryOptions":
             rows = _records(_read_sql(conn, """
                 SELECT
                     ps.moca_psid,
                     ps.name,
+                    ps.system_band_simple,
                     COUNT(DISTINCT dp.moca_oid) AS n_data
                 FROM moca_photometry_systems ps
                 JOIN data_photometry dp
@@ -581,10 +756,35 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                     AND dp.magnitude IS NOT NULL
                     AND dp.magnitude_unc IS NOT NULL
                     AND {oid_filter}
-                GROUP BY ps.moca_psid, ps.name
+                GROUP BY ps.moca_psid, ps.name, ps.system_band_simple
                 HAVING n_data > 0
                 ORDER BY ps.name, ps.moca_psid
             """.format(oid_filter=oid_filter)))
+            simple_filter, simple_params = _safe_id_filter_sql(
+                "dp",
+                "system_band_simple",
+                list(SIMPLE_PHOTOMETRY_BANDS),
+                "simpleband",
+            )
+            simple_rows = _records(_read_sql(conn, """
+                SELECT
+                    dp.system_band_simple,
+                    COUNT(DISTINCT dp.moca_oid) AS n_data
+                FROM data_photometry dp
+                WHERE dp.adopted = 1
+                    AND dp.magnitude IS NOT NULL
+                    AND dp.magnitude_unc IS NOT NULL
+                    AND dp.adopted_simpleband = 1
+                    AND {simple_filter}
+                    AND {oid_filter}
+                GROUP BY dp.system_band_simple
+            """.format(simple_filter=simple_filter, oid_filter=oid_filter), simple_params))
+            simple_counts = {
+                _normalize_simple_band(str(row["system_band_simple"])): int(row["n_data"])
+                for row in simple_rows
+                if _normalize_simple_band(str(row.get("system_band_simple") or ""))
+            }
+            feature_meta["simple_photometry_options"] = _simple_band_option_rows(simple_counts)
         elif feature == "distances":
             include_photometric_dist = _include_photometric_dist(args)
             phot_filter = "1 = 1" if include_photometric_dist else "dd.photometric_estimate = 0"
@@ -621,12 +821,22 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 ORDER BY dd.moca_oid, dd.photometric_estimate
             """.format(phot_filter=phot_filter, oid_filter=oid_filter)))
         elif feature == "photometry":
-            photometry_psids = _requested_photometry_psids(args)
-            psid_filter, psid_params = _psid_filter_sql("dp", photometry_psids)
+            if _request_all_photometry(args):
+                photometry_psids = []
+                photometry_simplebands = list(SIMPLE_PHOTOMETRY_BANDS)
+                psid_filter, psid_params = "1 = 1", {}
+            else:
+                photometry_psids = _requested_photometry_psids(args)
+                photometry_simplebands = _requested_photometry_simplebands(args)
+                psid_filter, psid_params = _photometry_filter_sql("dp", photometry_psids, photometry_simplebands)
+            feature_meta["photometry_psids"] = photometry_psids
+            feature_meta["photometry_simplebands"] = photometry_simplebands
             rows = _records(_read_sql(conn, """
                 SELECT
                     dp.moca_oid,
                     dp.moca_psid,
+                    MIN(dp.system_band_simple) AS system_band_simple,
+                    MAX(dp.adopted_simpleband) AS adopted_simpleband,
                     MIN(dp.magnitude) AS magnitude,
                     MIN(dp.magnitude_unc) AS magnitude_unc,
                     MIN(ps.name) AS name,
@@ -651,6 +861,9 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 ORDER BY dp.moca_oid, dp.moca_psid
             """.format(psid_filter=psid_filter, oid_filter=oid_filter), psid_params))
         elif feature == "spectralIndices":
+            spectral_index_ids = _requested_spectral_index_ids(args)
+            siid_filter, siid_params = _safe_id_filter_sql("dsi", "moca_siid", spectral_index_ids, "siid")
+            feature_meta["spectral_index_siids"] = spectral_index_ids
             rows = _records(_read_sql(conn, """
                 SELECT
                     dsi.moca_oid,
@@ -672,10 +885,11 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                     ON si_pub.moca_pid = dsi.moca_pid
                 WHERE dsi.ignored = 0
                     AND dsi.index_value IS NOT NULL
+                    AND {siid_filter}
                     AND {oid_filter}
                 GROUP BY dsi.moca_oid, dsi.moca_siid
                 ORDER BY dsi.moca_oid, dsi.moca_siid
-            """.format(oid_filter=oid_filter)))
+            """.format(siid_filter=siid_filter, oid_filter=oid_filter), siid_params))
         elif feature == "equivalentWidths":
             rows = _records(_read_sql(conn, """
                 SELECT
@@ -732,6 +946,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "object_count": len(selected_oids),
             "row_count": len(rows),
+            **feature_meta,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -739,14 +954,85 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
     return payload
 
 
+def _preload_args(args: dict[str, Any]) -> dict[str, Any]:
+    out = dict(args)
+    if _is_private_db(args):
+        out["photspt"] = "0"
+        out["include_photspt"] = "0"
+        out["include_photometric_spt"] = "0"
+    else:
+        out["photspt"] = "1"
+        out["include_photspt"] = "1"
+        out["include_photometric_spt"] = "1"
+    out["photdist"] = "1"
+    out["include_photdist"] = "1"
+    out["psids"] = "all"
+    out["siids"] = "all"
+    out["sequences"] = "all"
+    out["bulk"] = "1"
+    return out
+
+
+def _load_preload_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    bulk_args = _preload_args(args)
+    include_photometric_spt = _include_photometric_spt(bulk_args)
+    payload = copy.deepcopy(_load_bootstrap_from_db(bulk_args))
+    catalog = payload["catalog"]
+    feature_timings: dict[str, float] = {}
+    for feature in ("sequences", "designations", "spectralIndices", "equivalentWidths", "ages"):
+        started = time.time()
+        feature_payload = _load_feature_from_db(bulk_args, feature)
+        catalog[feature] = feature_payload["rows"]
+        feature_timings[feature] = round(time.time() - started, 3)
+
+    photometry_psids = sorted({
+        str(row["moca_psid"])
+        for row in payload.get("options", {}).get("photometry", [])
+        if row.get("moca_psid") is not None
+    })
+    spectral_index_siids = sorted({
+        str(row["moca_siid"])
+        for row in payload.get("options", {}).get("spectralIndices", [])
+        if row.get("moca_siid") is not None
+    })
+    equivalent_width_spids = sorted({
+        str(row["moca_spid"])
+        for row in catalog.get("equivalentWidths", [])
+        if row.get("moca_spid") is not None
+    })
+
+    timings = dict(payload.get("meta", {}).get("timings") or {})
+    timings.update({f"preload_{key}": value for key, value in feature_timings.items()})
+    timings["preload_total"] = round(sum(feature_timings.values()), 3)
+
+    payload["meta"] = {
+        **payload["meta"],
+        "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "include_photometric_spt": include_photometric_spt,
+        "preload_omitted_photometric_spt": not include_photometric_spt,
+        "include_photometric_dist": True,
+        "bulk_preloaded": True,
+        "all_sequences_loaded": True,
+        "lazy_features": [],
+        "photometry_psids": photometry_psids,
+        "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
+        "spectral_index_siids": spectral_index_siids,
+        "equivalent_width_spids": equivalent_width_spids,
+        "sequence_key": "all",
+        "timings": timings,
+    }
+    payload["cache"] = {"hit": False, "ttl_seconds": CACHE_SECONDS}
+    return payload
+
+
 def _mock_payload() -> dict[str, Any]:
     rng = random.Random(42)
     phot_opts = [
-        {"moca_psid": "mko_jmag", "name": "MKO J"},
-        {"moca_psid": "mko_hmag", "name": "MKO H"},
-        {"moca_psid": "mko_kmag", "name": "MKO K"},
-        {"moca_psid": "wise_w1", "name": "WISE W1"},
-        {"moca_psid": "wise_w2", "name": "WISE W2"},
+        {"moca_psid": "mko_jmag", "name": "MKO J", "system_band_simple": "J"},
+        {"moca_psid": "mko_hmag", "name": "MKO H", "system_band_simple": "H"},
+        {"moca_psid": "mko_kmag", "name": "MKO K", "system_band_simple": "K"},
+        {"moca_psid": "wise_w1", "name": "WISE W1", "system_band_simple": "W1"},
+        {"moca_psid": "wise_w2", "name": "WISE W2", "system_band_simple": "W2"},
     ]
     si_opts = [
         {"moca_siid": "h2o_j", "description": "H2O-J spectral index"},
@@ -760,6 +1046,7 @@ def _mock_payload() -> dict[str, Any]:
     objects = []
     distances = []
     photometry = []
+    designations = []
     spectral_indices = []
     equivalent_widths = []
     ages = []
@@ -785,6 +1072,12 @@ def _mock_payload() -> dict[str, Any]:
             "spt_ref": "mock",
             "all_prop_confidences": binary_flag,
         })
+        designations.extend([
+            {"moca_oid": oid, "designation": f"MOCK J{i:04d}"},
+            {"moca_oid": oid, "designation": f"2MASS J{i:04d}+{(i * 7) % 10000:04d}"},
+        ])
+        if i % 5 == 0:
+            designations.append({"moca_oid": oid, "designation": f"WISEA J{i:04d}"})
 
         dist = 8 + rng.random() * 70
         dmod = 5 * math.log10(dist) - 5
@@ -822,6 +1115,8 @@ def _mock_payload() -> dict[str, Any]:
             photometry.append({
                 "moca_oid": oid,
                 "moca_psid": psid,
+                "system_band_simple": opt["system_band_simple"],
+                "adopted_simpleband": 1,
                 "magnitude": round(mag, 4),
                 "magnitude_unc": round(0.02 + rng.random() * 0.08, 4),
                 "name": opt["name"],
@@ -879,6 +1174,7 @@ def _mock_payload() -> dict[str, Any]:
     return {
         "options": {
             "photometry": phot_opts,
+            "simplePhotometry": _simple_band_option_rows(),
             "spectralIndices": si_opts,
             "equivalentWidths": ew_opts,
         },
@@ -886,6 +1182,7 @@ def _mock_payload() -> dict[str, Any]:
             "objects": objects,
             "distances": distances,
             "photometry": photometry,
+            "designations": designations,
             "spectralIndices": spectral_indices,
             "equivalentWidths": equivalent_widths,
             "ages": ages,
@@ -896,6 +1193,7 @@ def _mock_payload() -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "object_count": len(objects),
             "photometry_count": len(photometry),
+            "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -936,6 +1234,82 @@ def bootstrap():
         })
 
 
+@app.get("/api/preload")
+def preload():
+    args = dict(request.args)
+    if args.get("mock") in {"1", "true", "yes"}:
+        payload = _mock_payload()
+        catalog = payload["catalog"]
+        include_photometric_spt = not _is_private_db(args)
+        if not include_photometric_spt:
+            keep_oids = {
+                int(row["moca_oid"])
+                for row in catalog["objects"]
+                if int(row.get("spectral_type_photometric_estimate") or 0) != 1
+            }
+            catalog["objects"] = [row for row in catalog["objects"] if int(row["moca_oid"]) in keep_oids]
+            for key in ("distances", "photometry", "designations", "spectralIndices", "equivalentWidths", "ages"):
+                catalog[key] = [row for row in catalog[key] if int(row["moca_oid"]) in keep_oids]
+        payload["meta"] = {
+            **payload["meta"],
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "object_count": len(catalog["objects"]),
+            "photometry_count": len(catalog["photometry"]),
+            "include_photometric_spt": include_photometric_spt,
+            "preload_omitted_photometric_spt": not include_photometric_spt,
+            "include_photometric_dist": True,
+            "bulk_preloaded": True,
+            "all_sequences_loaded": True,
+            "lazy_features": [],
+            "photometry_psids": sorted({
+                row["moca_psid"] for row in payload["options"]["photometry"] if row.get("moca_psid") is not None
+            }),
+            "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
+            "spectral_index_siids": sorted({
+                row["moca_siid"] for row in payload["options"]["spectralIndices"] if row.get("moca_siid") is not None
+            }),
+            "equivalent_width_spids": sorted({
+                row["moca_spid"] for row in catalog["equivalentWidths"] if row.get("moca_spid") is not None
+            }),
+            "sequence_key": "all",
+        }
+        return jsonify({"ok": True, "source": "mock", **payload})
+
+    try:
+        started = time.time()
+        payload = _load_preload_from_db(args)
+        payload["meta"]["timings"]["preload_total"] = round(time.time() - started, 3)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "catalog": {},
+            "options": {},
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        })
+
+
+@app.post("/api/cache/clear")
+def clear_cache():
+    bootstrap_count = len(_BOOTSTRAP_CACHE)
+    feature_count = len(_FEATURE_CACHE)
+    _BOOTSTRAP_CACHE.clear()
+    _FEATURE_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {
+            "bootstrap": bootstrap_count,
+            "features": feature_count,
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    })
+
+
 @app.get("/api/feature/<feature>")
 def feature(feature: str):
     feature_map = {
@@ -943,6 +1317,7 @@ def feature(feature: str):
         "photometry": "photometry",
         "photometry-options": "photometryOptions",
         "sequences": "sequences",
+        "designations": "designations",
         "spectral-indices": "spectralIndices",
         "spectralIndices": "spectralIndices",
         "equivalent-widths": "equivalentWidths",
@@ -958,26 +1333,55 @@ def feature(feature: str):
         payload = _mock_payload()
         if feature_name == "photometryOptions":
             counts: dict[str, int] = {}
-            names = {row["moca_psid"]: row["name"] for row in payload["options"]["photometry"]}
+            simple_counts: dict[str, int] = {}
+            option_by_psid = {row["moca_psid"]: row for row in payload["options"]["photometry"]}
             for row in payload["catalog"]["photometry"]:
                 psid = row["moca_psid"]
                 counts[psid] = counts.get(psid, 0) + 1
+                if int(row.get("adopted_simpleband") or 0) == 1 and row.get("system_band_simple"):
+                    band = str(row["system_band_simple"])
+                    simple_counts[band] = simple_counts.get(band, 0) + 1
             rows = [
-                {"moca_psid": psid, "name": names.get(psid, psid), "n_data": count}
+                {
+                    "moca_psid": psid,
+                    "name": option_by_psid.get(psid, {}).get("name", psid),
+                    "system_band_simple": option_by_psid.get(psid, {}).get("system_band_simple"),
+                    "n_data": count,
+                }
                 for psid, count in counts.items()
                 if count > 0
             ]
         else:
             rows = payload["catalog"][feature_name]
-        if feature_name == "photometry":
+        if feature_name == "photometry" and not _request_all_photometry(args):
             psids = set(_requested_photometry_psids(args))
-            rows = [row for row in rows if row.get("moca_psid") in psids]
+            simplebands = set(_requested_photometry_simplebands(args))
+            rows = [
+                row for row in rows
+                if row.get("moca_psid") in psids
+                or (
+                    int(row.get("adopted_simpleband") or 0) == 1
+                    and row.get("system_band_simple") in simplebands
+                )
+            ]
+        meta = {"object_count": payload["meta"]["object_count"], "row_count": len(rows)}
+        if feature_name == "photometryOptions":
+            meta["simple_photometry_options"] = _simple_band_option_rows(simple_counts)
+        if feature_name == "photometry":
+            meta["photometry_psids"] = _requested_photometry_psids(args)
+            meta["photometry_simplebands"] = _requested_photometry_simplebands(args)
+        if feature_name == "spectralIndices":
+            siids = _requested_spectral_index_ids(args)
+            if siids:
+                rows = [row for row in rows if row.get("moca_siid") in set(siids)]
+                meta["row_count"] = len(rows)
+            meta["spectral_index_siids"] = siids
         return jsonify({
             "ok": True,
             "source": "mock",
             "feature": feature_name,
             "rows": rows,
-            "meta": {"object_count": payload["meta"]["object_count"], "row_count": len(rows)},
+            "meta": meta,
             "cache": {"hit": False, "ttl_seconds": 0},
         })
 

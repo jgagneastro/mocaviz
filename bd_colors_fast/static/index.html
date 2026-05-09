@@ -59,10 +59,19 @@
             Spectral range
             <input id="spt-range" type="text" value="L0+">
           </label>
-          <label>
-            Highlight OIDs
-            <input id="highlight-oids" type="text" placeholder="602, 10995">
-          </label>
+          <div class="designation-picker">
+            <label for="highlight-designation-search">Highlight designations</label>
+            <input id="highlight-designation-search" type="text" autocomplete="off" placeholder="Start typing a designation">
+            <div id="highlight-designation-results" class="designation-results" hidden></div>
+            <div id="highlight-designation-selected" class="designation-selected" aria-live="polite"></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Use MOCA OIDs</summary>
+            <label>
+              Highlight OIDs
+              <input id="highlight-oids" type="text" placeholder="602, 10995">
+            </label>
+          </details>
           <label>
             De-emphasize data with X error larger than
             <input id="xerr-max" type="number" step="0.01" placeholder="none">
@@ -90,6 +99,10 @@
           <label class="checkline">
             <input id="include-photspt" type="checkbox">
             <span>Plot photometric spectral type estimates (slow)</span>
+          </label>
+          <label class="checkline">
+            <input id="advanced-photometry" type="checkbox">
+            <span>Use advanced photometry systems</span>
           </label>
           <label class="checkline">
             <input id="color-by-age" type="checkbox">
@@ -155,7 +168,7 @@
           <tr>
             <td><code>xaxis_value_1</code>, <code>yaxis_value_1</code></td>
             <td>Photometry system ID, spectral-index ID, or chemical-species ID</td>
-            <td>Chooses the main quantity for axes that need one. For photometry-based axes, examples include <code>mko_jmag</code>, <code>mko_hmag</code>, <code>mko_kmag</code>, <code>wise_w1</code>, and <code>wise_w2</code>. For spectral indices, use IDs such as <code>hcont</code> or <code>h2o_j</code>. For equivalent widths, use a chemical-species ID such as <code>li</code>.</td>
+            <td>Chooses the main quantity for axes that need one. Simplified photometry values use <code>simple:J</code>, <code>simple:H</code>, <code>simple:K</code>, or <code>simple:W2</code>. Advanced photometry values use detailed IDs such as <code>mko_jmag</code>, <code>mko_hmag</code>, <code>mko_kmag</code>, <code>wise_w1</code>, and <code>wise_w2</code>. For spectral indices, use IDs such as <code>hcont</code> or <code>h2o_j</code>. For equivalent widths, use a chemical-species ID such as <code>li</code>.</td>
           </tr>
           <tr>
             <td><code>xaxis_value_2</code>, <code>yaxis_value_2</code></td>
@@ -180,6 +193,11 @@
             <td><code>moca_oid</code></td>
             <td>Comma-separated OIDs, for example <code>602,10995</code></td>
             <td>Highlights specific objects and requests them from the backend even when they are outside the current spectral range or hidden optional filters.</td>
+          </tr>
+          <tr>
+            <td><code>designation</code></td>
+            <td>One designation per parameter, or comma-separated designations</td>
+            <td>Preselects designation-based highlights for objects already loaded in the current catalog. Use repeated parameters for several names, for example <code>?designation=WISEA%20J0000&amp;designation=2MASS%20J0001</code>.</td>
           </tr>
           <tr>
             <td><code>oid</code></td>
@@ -231,6 +249,11 @@
             <td>Includes photometric spectral type estimates. This can be slow because it broadens the source query.</td>
           </tr>
           <tr>
+            <td><code>advanced_photometry</code></td>
+            <td><code>false</code></td>
+            <td>Shows all detailed MOCAdb photometry system IDs instead of the simplified band list.</td>
+          </tr>
+          <tr>
             <td><code>agecolor</code></td>
             <td><code>false</code></td>
             <td>Colors objects with BANYAN association ages by age and shows objects without ages in gray.</td>
@@ -247,6 +270,30 @@
         <code>photspt</code> parameters, so those canonical names are preferred
         for URLs you intend to share.
       </p>
+
+      <section class="bulk-preload-panel">
+        <h2>Performance Preload</h2>
+        <p>
+          For the current spectral range and highlighted objects, this preloads
+          the full in-memory dataset: photometric spectral type estimates,
+          photometric distances, designations, all photometry bands, all
+          spectral indices, equivalent widths, age data, and sequence overlays.
+          This can take a
+          few minutes, but once it finishes the app can switch most axes and
+          display options much faster. When connected to
+          <code>mocadb_private_tables</code>, this preload intentionally omits
+          photometric spectral type estimates because that private dataset is
+          too large for the upfront load.
+        </p>
+        <div class="bulk-preload-actions">
+          <button id="bulk-preload" type="button">Bulk load all app data</button>
+          <span id="bulk-preload-status" class="bulk-preload-status">Not loaded.</span>
+        </div>
+        <div class="cache-actions">
+          <button id="clear-cache" type="button">Clear cache</button>
+          <span id="clear-cache-status" class="cache-status">Keeps the controls, flushes downloaded data, and reloads from MOCAdb.</span>
+        </div>
+      </section>
     </footer>
   </div>
 
