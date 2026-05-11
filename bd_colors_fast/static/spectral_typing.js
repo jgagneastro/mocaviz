@@ -1,5 +1,6 @@
 const sptDefaultNormText = "0.860-1.350, 1.445-1.800, 2.010-2.400";
 const sptDefaultBins = 200;
+const sptDefaultSpecid = 447;
 const sptDefaultFixedRv = "3.1";
 const sptDefaultCloudAlpha = "1.7";
 const sptGridColors = ["#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5"];
@@ -103,6 +104,7 @@ function collectSpectralElements() {
     "spt-chi2-plot",
     "spt-plot-loader",
     "spt-chi2-loader",
+    "spt-correction-info",
     "spt-count-summary",
     "spt-standard-meta",
     "spt-open-report",
@@ -116,7 +118,7 @@ function collectSpectralElements() {
 
 function readSpectralUrlState() {
   const params = new URLSearchParams(window.location.search);
-  const rawSpecid = params.get("specid") || params.get("moca_specid");
+  const rawSpecid = params.get("specid") || params.get("moca_specid") || String(sptDefaultSpecid);
   sptState.selectedSpecid = parseInteger(rawSpecid);
   sptState.initialGridParam = params.get("grid") || "";
   sptState.initialGridIndexParam = parseInteger(params.get("grid_index"));
@@ -218,6 +220,7 @@ function updateProcessingModeControls() {
     sptEl["spt-fixed-param-label"].textContent = deredden || !cloud ? "Fix R_V value" : "Fix alpha value";
   }
   sptEl["spt-fixed-param-wrap"]?.classList.toggle("disabled-field", !active);
+  renderCorrectionInfo();
 }
 
 function currentProcessingMode() {
@@ -484,6 +487,7 @@ function applyQuickStandardPayload(payload) {
   updateNavigation(entries.length ? entries : [entry], entry);
   updateLowResControl(mergedPayload);
   updateMetadata(mergedPayload, entry);
+  renderCorrectionInfo(mergedPayload);
   updateGridButtons();
 }
 
@@ -593,6 +597,7 @@ function renderSpectralTyping() {
   updateNavigation(entries, entry);
   updateLowResControl(payload);
   updateMetadata(payload, entry);
+  renderCorrectionInfo(payload);
 }
 
 function renderSpectrumPlot(payload, entry) {
@@ -818,7 +823,10 @@ function updateNavigation(entries, entry) {
   renderStandardMarks(entries);
   sptEl["spt-prev-standard"].disabled = sptState.currentIndex <= 0;
   sptEl["spt-next-standard"].disabled = sptState.currentIndex >= entries.length - 1;
-  sptEl["spt-count-summary"].textContent = `${entries.length} standards in ${sptState.selectedGrid}; showing ${entry.spectral_type || "standard"} (${sptState.currentIndex + 1} of ${entries.length})`;
+  if (sptEl["spt-count-summary"]) {
+    sptEl["spt-count-summary"].textContent = "";
+    sptEl["spt-count-summary"].hidden = true;
+  }
   updateGridButtons();
 }
 
@@ -876,32 +884,47 @@ function updateMetadata(payload, entry) {
   const parts = [];
   parts.push(`<strong>${escapeHtml(entry.spectral_type || "Standard")} standard</strong>`);
   parts.push(`Standard: ${escapeHtml(entry.object_designation || entry.designation || "None")}`);
-  parts.push(`Comments: ${escapeHtml(entry.comments || "None")}`);
-  parts.push(`χ<sup>2</sup>: ${formatNumber(entry.reduced_chi2, 2)}`);
-  if (sptEl["spt-deredden"].checked && Array.isArray(entry.A_V)) {
-    entry.A_V.forEach((av, index) => {
-      const rv = Array.isArray(entry.R_V) ? entry.R_V[index] : null;
-      parts.push(`${fitLabel("A(V)", index)}: ${formatNumber(av, 2)}; ${fitLabel("R(V)", index)}: ${formatNumber(rv, 2)}`);
-    });
-  } else if (sptEl["spt-cloud"].checked && Array.isArray(entry.cloud_tau0)) {
-    const alphaValues = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
-    entry.cloud_tau0.forEach((tau0, index) => {
-      const alpha = alphaValues[index] ?? entry.cloud_alpha ?? payload.meta?.cloud_alpha;
-      parts.push(`cloud ${fitLabel("τ", index)}: ${formatNumber(tau0, 3)}; ${fitLabel("α", index)}: ${formatNumber(alpha, 2)}`);
-    });
-    parts.push(`cloud λ<sub>0</sub>: ${formatNumber(entry.cloud_lambda0 ?? payload.meta?.cloud_lambda0, 2)} μm`);
-  }
   if (entry.bibcode) {
     const url = `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(entry.bibcode)}/abstract`;
-    parts.push(`Bibcode: <a href="${url}" target="_blank" rel="noopener">${escapeHtml(entry.bibcode)}</a>`);
+    parts.push(`Bibcode for standard: <a href="${url}" target="_blank" rel="noopener">${escapeHtml(entry.bibcode)}</a>`);
   } else {
-    parts.push("Bibcode: None");
+    parts.push("Bibcode for standard: None");
   }
   sptEl["spt-standard-meta"].innerHTML = parts.map((part) => `<div>${part}</div>`).join("");
   const oid = payload.comparisonMetadata?.moca_oid;
   sptEl["spt-open-report"].disabled = oid === null || oid === undefined;
   const standardOid = entry?.moca_oid;
   sptEl["spt-open-standard-report"].disabled = standardOid === null || standardOid === undefined;
+}
+
+function renderCorrectionInfo(payload = sptState.comparePayload) {
+  const target = sptEl["spt-correction-info"];
+  if (!target) return;
+  const deredden = Boolean(sptEl["spt-deredden"]?.checked);
+  const cloud = Boolean(sptEl["spt-cloud"]?.checked);
+  if (!deredden && !cloud) {
+    target.hidden = true;
+    target.innerHTML = "";
+    return;
+  }
+  target.hidden = false;
+  if (deredden) {
+    target.innerHTML = `
+      <strong>Extinction fit:</strong>
+      standards are adjusted with the near-infrared Cardelli, Clayton &amp; Mathis (1989) extinction law,
+      <span class="spectral-correction-formula">A(λ) / A(V) = a(x) + b(x) / R<sub>V</sub>, x = 1 / λ</span>.
+      The fit solves for A(V) in each normalization region and, when the fixed-value field is blank, also fits R<sub>V</sub>.
+      <a href="https://ui.adsabs.harvard.edu/abs/1989ApJ...345..245C/abstract" target="_blank" rel="noopener">Reference</a>.
+    `;
+    return;
+  }
+  const lambda0 = finiteNumber(payload?.meta?.cloud_lambda0) ? formatNumber(payload.meta.cloud_lambda0, 2) : "1.25";
+  target.innerHTML = `
+    <strong>Brown dwarf slope fit:</strong>
+    this is an ad-hoc multiplicative slope correction. It often gives behavior similar to the extinction option,
+    but τ<sub>0</sub> and α are easier to interpret as cloud-opacity strength and wavelength dependence in brown dwarf atmospheres.
+    <span class="spectral-correction-formula">C(λ) = exp{-τ<sub>0</sub>[(λ / λ<sub>0</sub>)<sup>-α</sup> - 1]}, λ<sub>0</sub> = ${escapeHtml(lambda0)} μm</span>.
+  `;
 }
 
 function fitLabel(name, index) {
@@ -926,8 +949,12 @@ function renderEmptySpectralPlots(message) {
   };
   Plotly.react(sptEl["spt-plot"], [], layout, plotConfig("spectral_typing_empty"));
   Plotly.react(sptEl["spt-chi2-plot"], [], { ...layout, annotations: [{ ...layout.annotations[0], text: "No chi2 data" }] }, plotConfig("spectral_typing_chi2_empty"));
-  sptEl["spt-count-summary"].textContent = "No comparison loaded";
+  if (sptEl["spt-count-summary"]) {
+    sptEl["spt-count-summary"].textContent = "";
+    sptEl["spt-count-summary"].hidden = true;
+  }
   sptEl["spt-standard-meta"].textContent = message;
+  renderCorrectionInfo();
   sptEl["spt-open-report"].disabled = true;
   sptEl["spt-open-standard-report"].disabled = true;
   updateLowResControl(null);

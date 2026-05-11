@@ -7,7 +7,7 @@ The integration is intentionally isolated:
 
 - The existing Dash pages still live under `pages/`.
 - The fast JavaScript app lives under `bd_colors_fast/`.
-- `app.py` mounts the fast app at `/bd-colors-fast` and `/bd_colors_fast` by wrapping
+- `app.py` mounts the fast app at `/bd-colors-fast`, `/bd_colors_fast`, and `/js` by wrapping
   `app.server.wsgi_app` with Werkzeug `DispatcherMiddleware`.
 
 ## Quick Health Check
@@ -19,6 +19,8 @@ https://<deployment-host>/
 https://<deployment-host>/bd-colors
 https://<deployment-host>/bd-colors-fast/?mock=1
 https://<deployment-host>/bd_colors_fast/?mock=1
+https://<deployment-host>/js/
+https://<deployment-host>/js/spectra?mock=1
 https://<deployment-host>/bd-colors-fast/static/app.js
 https://<deployment-host>/bd-colors-fast/api/bootstrap?mock=1
 ```
@@ -31,6 +33,8 @@ Expected results:
   MOCAdb.
 - `/bd_colors_fast/?mock=1` should load the same page through the compatibility
   alias.
+- `/js/` should load the JavaScript visualizations landing page.
+- `/js/spectra?mock=1` should load one of the namespaced JavaScript tools.
 - `/bd-colors-fast/static/app.js` should return JavaScript.
 - `/bd-colors-fast/api/bootstrap?mock=1` should return JSON with `"ok": true`.
 
@@ -53,7 +57,7 @@ Then restart or reload the Passenger app using the normal deployment mechanism.
 This removes:
 
 - the `bd_colors_fast/` directory
-- the `/bd-colors-fast` and `/bd_colors_fast` mounts in `app.py`
+- the `/bd-colors-fast`, `/bd_colors_fast`, and `/js` mounts in `app.py`
 
 ## Manual Emergency Rollback
 
@@ -79,8 +83,9 @@ try:
     server.wsgi_app = DispatcherMiddleware(server.wsgi_app, {
         "/bd-colors-fast": bd_colors_fast_app,
         "/bd_colors_fast": bd_colors_fast_app,
+        "/js": bd_colors_fast_app,
     })
-    sys.stderr.write("[mocaviz:init] mounted bd_colors_fast at /bd-colors-fast and /bd_colors_fast\n")
+    sys.stderr.write("[mocaviz:init] mounted bd_colors_fast at /bd-colors-fast, /bd_colors_fast, and /js\n")
     sys.stderr.flush()
 except Exception as exc:
     sys.stderr.write(f"[mocaviz:init] bd_colors_fast mount failed: {type(exc).__name__}: {exc}\n")
@@ -117,7 +122,7 @@ https://<deployment-host>/
 https://<deployment-host>/bd-colors
 ```
 
-The `/bd-colors-fast` and `/bd_colors_fast` URLs should now return 404 or the
+The `/bd-colors-fast`, `/bd_colors_fast`, and `/js` URLs should now return 404 or the
 deployment's normal not-found response.
 
 ## Passenger Restart Notes
@@ -150,7 +155,7 @@ cd /Users/jonathan/Documents/Python/Python_Packages/mocaviz
 Optional WSGI smoke test:
 
 ```bash
-/opt/anaconda3-native/anaconda3/envs/mocaviz/bin/python -B -c "from werkzeug.test import Client; from werkzeug.wrappers import Response; import app; c=Client(app.application, Response); print(c.get('/').status_code); print(c.get('/bd-colors-fast/').status_code); print(c.get('/bd-colors-fast/static/app.js').status_code); print(c.get('/bd-colors-fast/api/bootstrap?mock=1').json.get('ok'))"
+/opt/anaconda3-native/anaconda3/envs/mocaviz/bin/python -B -c "from werkzeug.test import Client; from werkzeug.wrappers import Response; import app; c=Client(app.application, Response); print(c.get('/').status_code); print(c.get('/bd-colors-fast/').status_code); print(c.get('/js/').status_code); print(c.get('/js/spectra?mock=1').status_code); print(c.get('/bd-colors-fast/static/app.js').status_code); print(c.get('/bd-colors-fast/api/bootstrap?mock=1').json.get('ok'))"
 ```
 
 Expected output includes:
@@ -171,6 +176,7 @@ comment out this line in `app.py`:
 server.wsgi_app = DispatcherMiddleware(server.wsgi_app, {
     "/bd-colors-fast": bd_colors_fast_app,
     "/bd_colors_fast": bd_colors_fast_app,
+    "/js": bd_colors_fast_app,
 })
 ```
 
@@ -180,5 +186,5 @@ and leave:
 application = server
 ```
 
-This keeps the existing Dash app behavior while making `/bd-colors-fast`
+This keeps the existing Dash app behavior while making `/bd-colors-fast` and `/js`
 unavailable.

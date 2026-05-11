@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb JavaScript Visualizations</title>
+  <link rel="stylesheet" href="/js/static/styles.css">
+</head>
+<body class="js-landing-page">
+  <div class="js-landing-shell">
+    <header class="js-landing-header">
+      <h1>MOCAdb JavaScript data visualizations</h1>
+    </header>
+    <main class="js-landing-content">
+      <p>
+        This page lists the faster JavaScript versions of the MOCAdb visualization
+        tools. Choose one of the following tools:
+      </p>
+      <ul class="js-page-list">
+        <li><a data-js-page href="/js/bd-colors">Brown Dwarf Photometry Explorer</a></li>
+        <li><a data-js-page href="/js/spectral-typing">Spectral Typing tool</a></li>
+        <li><a data-js-page href="/js/spectra">Spectral Explorer</a></li>
+        <li><a data-js-page href="/js/astrometry">Astrometric Explorer</a></li>
+        <li><a data-js-page href="/js/xyzuvw">Spatial-kinematic Explorer</a></li>
+        <li><a data-js-page href="/js/trueflow-age-pdfs">TrueFlow Age PDF Explorer</a></li>
+      </ul>
+      <p>
+        Return to the <a href="/">main MOCAviz page</a> or the
+        <a href="https://mocadb.ca">MOCAdb website</a>.
+      </p>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const query = window.location.search;
+      if (!query) return;
+      document.querySelectorAll("[data-js-page]").forEach((link) => {
+        link.href = `${link.getAttribute("href")}${query}`;
+      });
+    })();
+  </script>
+</body>
+</html>

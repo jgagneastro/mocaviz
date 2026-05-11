@@ -95,15 +95,9 @@
             <div class="plot-loader-ring"></div>
           </div>
         </div>
-        <div class="plot-frame spectral-chi2-frame">
-          <div id="spt-chi2-plot"></div>
-          <div id="spt-chi2-loader" class="plot-loader" aria-label="Loading spectral typing chi-square data">
-            <div class="plot-loader-ring"></div>
-          </div>
-        </div>
         <div class="spectral-toolbar">
           <div class="spectral-summary">
-            <div id="spt-count-summary">No comparison loaded</div>
+            <div id="spt-count-summary" hidden></div>
             <div id="spt-standard-meta" class="plot-hint">Select a comparison spectrum to begin.</div>
           </div>
           <div class="export-actions spectral-report-actions">
@@ -111,6 +105,13 @@
             <button id="spt-open-standard-report" type="button" disabled>Open MOCAdb report for standard</button>
           </div>
         </div>
+        <div class="plot-frame spectral-chi2-frame">
+          <div id="spt-chi2-plot"></div>
+          <div id="spt-chi2-loader" class="plot-loader" aria-label="Loading spectral typing chi-square data">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div id="spt-correction-info" class="spectral-correction-info" hidden></div>
       </section>
     </main>
 
@@ -139,7 +140,7 @@
           <tr>
             <td><code>specid</code>, <code>moca_specid</code></td>
             <td>Numeric MOCAdb spectrum ID</td>
-            <td>Preselects and computes the comparison spectrum.</td>
+            <td>Preselects and computes the comparison spectrum. Defaults to <code>447</code>.</td>
           </tr>
           <tr>
             <td><code>grid</code></td>

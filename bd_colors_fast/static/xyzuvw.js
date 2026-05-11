@@ -7,7 +7,7 @@ const xuvAxes = [
   { value: "w", label: "W", unit: "km/s" },
 ];
 
-const xuvDefaultAids = ["HYA", "CBER", "TWA", "THA"];
+const xuvDefaultAids = ["HYA", "TWA", "THA"];
 const xuvDefaultMtids = ["BF", "HM", "CM"];
 const xuvDefaultAxes = ["x", "y", "z"];
 const xuvDefaultCamera = { eye: { x: 1.55, y: 1.55, z: 1.25 } };
@@ -124,10 +124,12 @@ function readXyzuvwUrlState() {
   xuvState.selectedMtids = parseCsv(params.get("mtid"), xuvDefaultMtids);
   xuvState.selectedOids = parseOids(params.get("oid") || params.get("moca_oid"));
   xuvEl["xuv-oid-input"].value = xuvState.selectedOids.join(",");
+  const hasCheckboxParam = params.has("checkbox");
   const checkbox = new Set(parseCsv(params.get("checkbox"), []));
   for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen"]) {
     if (asBool(params.get(key))) checkbox.add(key);
   }
+  if (!hasCheckboxParam && !params.has("likely")) checkbox.add("likely");
   xuvEl["xuv-models"].checked = checkbox.has("models");
   xuvEl["xuv-errors"].checked = checkbox.has("errors");
   xuvEl["xuv-assmem"].checked = checkbox.has("assmem");
@@ -1216,6 +1218,7 @@ function buildXyzuvwParams() {
   params.set("bsmdid", xuvEl["xuv-bsmdid"].value || "latest");
   const checkbox = checkboxValues();
   if (checkbox.length) params.set("checkbox", checkbox.join(","));
+  if (!xuvEl["xuv-likely"].checked) params.set("likely", "0");
   return params;
 }
 
@@ -1247,7 +1250,9 @@ function updateXyzuvwUrl() {
   const checkbox = checkboxValues();
   if (checkbox.length) params.set("checkbox", checkbox.join(","));
   else params.delete("checkbox");
-  for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen"]) params.delete(key);
+  for (const key of ["models", "errors", "assmem", "hover", "asscen"]) params.delete(key);
+  if (xuvEl["xuv-likely"].checked) params.delete("likely");
+  else params.set("likely", "0");
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
 

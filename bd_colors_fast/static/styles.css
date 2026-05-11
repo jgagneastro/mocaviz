@@ -665,12 +665,57 @@ tbody tr:nth-child(odd) {
   color: var(--danger);
 }
 
+.js-landing-page {
+  min-height: 100vh;
+  background: #f5f8fa;
+  color: var(--ink);
+}
+
+.js-landing-shell {
+  min-height: 100vh;
+  background: #f5f8fa;
+}
+
+.js-landing-header {
+  width: 100%;
+  background: #dedde1;
+  color: #000000;
+  padding: 14px 30px;
+}
+
+.js-landing-header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.js-landing-content {
+  max-width: 980px;
+  margin: 0;
+  padding: 28px 30px 44px;
+  line-height: 1.55;
+}
+
+.js-page-list {
+  margin: 16px 0 22px;
+  padding-left: 24px;
+}
+
+.js-page-list li {
+  margin: 7px 0;
+}
+
+.js-landing-content a {
+  color: var(--accent-2);
+  font-weight: 750;
+}
+
 .spectral-workspace {
   grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .spectral-visual-area {
-  grid-template-rows: minmax(420px, 56vh) minmax(340px, 42vh) auto;
+  grid-template-rows: minmax(420px, 56vh) auto minmax(340px, 42vh) auto;
   row-gap: 8px;
   overflow: auto;
 }
@@ -724,6 +769,31 @@ tbody tr:nth-child(odd) {
 
 .spectral-report-actions button {
   width: max-content;
+}
+
+.spectral-correction-info {
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #f7f7f6;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.spectral-correction-info strong {
+  color: var(--ink);
+}
+
+.spectral-correction-info a {
+  color: var(--accent-2);
+  font-weight: 750;
+}
+
+.spectral-correction-formula {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 15px;
 }
 
 .selected-spectrum {
@@ -1115,7 +1185,22 @@ tbody tr:nth-child(odd) {
 }
 
 .xyzuvw-table-area {
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 190px;
+}
+
+.xyzuvw-explanation {
+  margin: 0 12px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f7f6;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.xyzuvw-explanation strong {
+  color: var(--ink);
 }
 
 .xyzuvw-url-help {
@@ -1237,7 +1322,7 @@ tbody tr:nth-child(odd) {
   }
 
   .spectral-visual-area {
-    grid-template-rows: 420px 360px auto;
+    grid-template-rows: 420px auto 360px auto;
   }
 
   .spectral-toolbar {

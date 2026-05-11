@@ -67,10 +67,10 @@ SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
 SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
-SPECTRA_EXPLORER_DEFAULT_SPECIDS = (812, 13510)
+SPECTRA_EXPLORER_DEFAULT_SPECIDS = (13510,)
 SPECTRA_EXPLORER_MAX_SELECTED = int(os.environ.get("SPECTRA_EXPLORER_MAX_SELECTED", "30"))
 SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "200"))
-XYZUVW_DEFAULT_AIDS = ("HYA", "CBER", "TWA", "THA")
+XYZUVW_DEFAULT_AIDS = ("HYA", "TWA", "THA")
 XYZUVW_DEFAULT_MTIDS = ("BF", "HM", "CM")
 XYZUVW_C_VALUE = 8.0
 XYZUVW_MAX_OBJECTS = int(os.environ.get("XYZUVW_FAST_MAX_OBJECTS", "60000"))
@@ -3625,6 +3625,7 @@ def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
     )
     mtids = _parse_xyzuvw_csv_ids(args.get("mtid"), XYZUVW_DEFAULT_MTIDS)
     oids = _parse_xyzuvw_oids(args.get("oid") or args.get("moca_oid"))
+    has_checkbox_param = args.get("checkbox") is not None
     checkbox_values = {
         item.strip().lower()
         for item in str(args.get("checkbox") or "").replace(";", ",").split(",")
@@ -3633,6 +3634,8 @@ def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
     for key in ("models", "errors", "hover", "assmem", "likely", "asscen"):
         if _as_bool(args.get(key)):
             checkbox_values.add(key)
+    if not has_checkbox_param and args.get("likely") is None:
+        checkbox_values.add("likely")
     bsmdid_raw = str(args.get("bsmdid") or args.get("banyan_version") or "latest").strip()
     bsmdid = bsmdid_raw if bsmdid_raw == "latest" or bsmdid_raw.isdigit() else "latest"
     return {
@@ -5739,6 +5742,26 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
 
 @app.get("/")
 def index():
+    if str(request.script_root or "").rstrip("/").endswith("/js"):
+        return send_from_directory(STATIC_DIR, "js_index.html")
+    return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/js")
+@app.get("/js/")
+def js_index_page():
+    return send_from_directory(STATIC_DIR, "js_index.html")
+
+
+@app.get("/bd-colors")
+@app.get("/bd_colors")
+@app.get("/bd-colors-fast")
+@app.get("/bd_colors_fast")
+@app.get("/js/bd-colors")
+@app.get("/js/bd_colors")
+@app.get("/js/bd-colors-fast")
+@app.get("/js/bd_colors_fast")
+def bd_colors_fast_page():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
@@ -5746,6 +5769,10 @@ def index():
 @app.get("/spectral_typing")
 @app.get("/spectral-typing-fast")
 @app.get("/spectral_typing_fast")
+@app.get("/js/spectral-typing")
+@app.get("/js/spectral_typing")
+@app.get("/js/spectral-typing-fast")
+@app.get("/js/spectral_typing_fast")
 def spectral_typing_fast_page():
     return send_from_directory(STATIC_DIR, "spectral_typing.html")
 
@@ -5753,6 +5780,9 @@ def spectral_typing_fast_page():
 @app.get("/astrometry")
 @app.get("/astrometry-fast")
 @app.get("/astrometry_fast")
+@app.get("/js/astrometry")
+@app.get("/js/astrometry-fast")
+@app.get("/js/astrometry_fast")
 def astrometry_fast_page():
     return send_from_directory(STATIC_DIR, "astrometry.html")
 
@@ -5760,6 +5790,9 @@ def astrometry_fast_page():
 @app.get("/spectra")
 @app.get("/spectra-fast")
 @app.get("/spectra_fast")
+@app.get("/js/spectra")
+@app.get("/js/spectra-fast")
+@app.get("/js/spectra_fast")
 def spectra_fast_page():
     return send_from_directory(STATIC_DIR, "spectra.html")
 
@@ -5769,6 +5802,11 @@ def spectra_fast_page():
 @app.get("/xyzuvw_fast")
 @app.get("/spatial-kinematics")
 @app.get("/spatial-kinematics-fast")
+@app.get("/js/xyzuvw")
+@app.get("/js/xyzuvw-fast")
+@app.get("/js/xyzuvw_fast")
+@app.get("/js/spatial-kinematics")
+@app.get("/js/spatial-kinematics-fast")
 def xyzuvw_fast_page():
     return send_from_directory(STATIC_DIR, "xyzuvw.html")
 
@@ -5778,11 +5816,17 @@ def xyzuvw_fast_page():
 @app.get("/trueflow-agepdfs")
 @app.get("/age-pdfs")
 @app.get("/age-pdfs-fast")
+@app.get("/js/trueflow-age-pdfs")
+@app.get("/js/trueflow_age_pdfs")
+@app.get("/js/trueflow-agepdfs")
+@app.get("/js/age-pdfs")
+@app.get("/js/age-pdfs-fast")
 def trueflow_age_pdfs_fast_page():
     return send_from_directory(STATIC_DIR, "trueflow_age_pdfs.html")
 
 
 @app.get("/plotly.min.js")
+@app.get("/js/plotly.min.js")
 def plotly_js():
     global _PLOTLY_JS
     if _PLOTLY_JS is None:
@@ -5790,6 +5834,11 @@ def plotly_js():
 
         _PLOTLY_JS = get_plotlyjs()
     return Response(_PLOTLY_JS, mimetype="application/javascript")
+
+
+@app.get("/js/static/<path:filename>")
+def js_static_files(filename: str):
+    return send_from_directory(STATIC_DIR, filename)
 
 
 @app.get("/api/bootstrap")

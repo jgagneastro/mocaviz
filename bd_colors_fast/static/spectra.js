@@ -1,4 +1,4 @@
-const speDefaultSpecids = [812, 13510];
+const speDefaultSpecids = [13510];
 const speDefaultNorm = "0.95-1.35";
 const speDefaultBinsPerMicron = 200;
 const speSpeedOfLight = 299792458.0;
