@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 import os
 import random
 import re
 import time
+import zlib
 from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -16,7 +18,7 @@ from urllib.parse import quote_plus
 import numpy as np
 import pandas as pd
 from flask import Flask, Response, jsonify, request, send_from_directory
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -50,6 +52,11 @@ _FEATURE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPT_GRID_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPT_SPECTRUM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPT_COMPARE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPT_STANDARD_PROCESS_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_ASTROMETRY_OBJECT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPECTRA_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_XYZUVW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_TRUEFLOW_AGE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _PLOTLY_JS: str | None = None
 
 SPT_WV_MIN = 0.85
@@ -58,6 +65,23 @@ SPT_MASKED_REGIONS = ((1.367, 1.424), (1.86, 2.0))
 SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
+SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
+SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
+SPECTRA_EXPLORER_DEFAULT_SPECIDS = (812, 13510)
+SPECTRA_EXPLORER_MAX_SELECTED = int(os.environ.get("SPECTRA_EXPLORER_MAX_SELECTED", "30"))
+SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "200"))
+XYZUVW_DEFAULT_AIDS = ("HYA", "CBER", "TWA", "THA")
+XYZUVW_DEFAULT_MTIDS = ("BF", "HM", "CM")
+XYZUVW_C_VALUE = 8.0
+XYZUVW_MAX_OBJECTS = int(os.environ.get("XYZUVW_FAST_MAX_OBJECTS", "60000"))
+XYZUVW_MODEL_GRID_POINTS = int(os.environ.get("XYZUVW_FAST_MODEL_GRID_POINTS", "100"))
+XYZUVW_MODEL_SIGMA_SCALE = float(os.environ.get("XYZUVW_FAST_MODEL_SIGMA_SCALE", "5"))
+XYZUVW_MODEL_CONTOURS = (
+    ("99%", 0.99, 0.07),
+    ("95%", 0.95, 0.15),
+    ("68%", 0.68, 0.30),
+)
+TRUEFLOW_AGE_DEFAULT_OID = int(os.environ.get("TRUEFLOW_AGE_DEFAULT_OID", "11266"))
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
@@ -132,6 +156,24 @@ def _highlight_oids(args: dict[str, Any]) -> list[int]:
 
 def _as_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_false(value: Any) -> bool:
+    if value is False:
+        return True
+    if value is True:
+        return False
+    return str(value or "").strip().lower() in {"0", "false", "no", "off", "free", "fit"}
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
 
 
 def _request_host_name() -> str:
@@ -1432,7 +1474,7 @@ def _spt_interp_without_large_gaps(x_values: Any, y_values: Any, target_wv: Any)
     return out
 
 
-def _spt_cardelli_extinction_law(wavelength: Any, r_v: float) -> np.ndarray:
+def _spt_cardelli_ab(wavelength: Any) -> tuple[np.ndarray, np.ndarray]:
     wv = np.asarray(wavelength, dtype=float)
     x = 1.0 / wv
     a = np.zeros_like(x)
@@ -1446,53 +1488,558 @@ def _spt_cardelli_extinction_law(wavelength: Any, r_v: float) -> np.ndarray:
     if np.any(mid_ir):
         a[mid_ir] = 0.574 * (0.3**1.61)
         b[mid_ir] = -0.527 * (0.3**1.61)
+    return a, b
+
+
+def _spt_cardelli_extinction_law(wavelength: Any, r_v: float) -> np.ndarray:
+    a, b = _spt_cardelli_ab(wavelength)
     return a + b / r_v
+
+
+def _spt_median_normalized_factor_apply(base_flux: Any, log_factor: Any) -> np.ndarray:
+    base = np.asarray(base_flux, dtype=float)
+    log_factor = np.asarray(log_factor, dtype=float)
+    if base.shape != log_factor.shape:
+        return base.copy()
+    factor = np.exp(np.clip(log_factor, -80.0, 80.0))
+    median_factor = np.nanmedian(factor[np.isfinite(factor)])
+    if not np.isfinite(median_factor) or median_factor == 0:
+        return base.copy()
+    return base * factor / median_factor
+
+
+def _spt_deredden_flux_values(
+    flux_values: Any,
+    a_v: float,
+    r_v: float,
+    a_coeff: Any,
+    b_coeff: Any,
+) -> np.ndarray:
+    a_coeff = np.asarray(a_coeff, dtype=float)
+    b_coeff = np.asarray(b_coeff, dtype=float)
+    r_v = max(float(r_v), 0.01)
+    extinction = a_coeff + b_coeff / r_v
+    log_factor = 0.4 * math.log(10.0) * float(a_v) * extinction
+    return _spt_median_normalized_factor_apply(flux_values, log_factor)
 
 
 def _spt_deredden_spectrum(spectrum: pd.DataFrame, a_v: float, r_v: float) -> pd.DataFrame:
     out = spectrum.copy()
-    extinction = _spt_cardelli_extinction_law(out["wv"].to_numpy(dtype=float), r_v)
-    factor = 10 ** (0.4 * a_v * extinction)
-    median_factor = np.nanmedian(factor)
-    if not np.isfinite(median_factor) or median_factor == 0:
-        return out
-    out["spn"] = (out["spn"].to_numpy(dtype=float) * factor) / median_factor
+    a_coeff, b_coeff = _spt_cardelli_ab(out["wv"].to_numpy(dtype=float))
+    out["spn"] = _spt_deredden_flux_values(out["spn"].to_numpy(dtype=float), a_v, r_v, a_coeff, b_coeff)
     return out
+
+
+def _spt_nanmedian_with_derivative(values: np.ndarray, derivatives: np.ndarray) -> tuple[float, np.ndarray]:
+    values = np.asarray(values, dtype=float)
+    derivatives = np.asarray(derivatives, dtype=float)
+    if derivatives.ndim == 1:
+        derivatives = derivatives[:, np.newaxis]
+    valid = np.isfinite(values) & np.all(np.isfinite(derivatives), axis=1)
+    if not np.any(valid):
+        return float("nan"), np.full(derivatives.shape[1], np.nan, dtype=float)
+    values_valid = values[valid]
+    deriv_valid = derivatives[valid]
+    order = np.argsort(values_valid, kind="mergesort")
+    values_sorted = values_valid[order]
+    deriv_sorted = deriv_valid[order]
+    count = values_sorted.size
+    middle = count // 2
+    if count % 2:
+        return float(values_sorted[middle]), deriv_sorted[middle].astype(float)
+    return (
+        float(0.5 * (values_sorted[middle - 1] + values_sorted[middle])),
+        0.5 * (deriv_sorted[middle - 1] + deriv_sorted[middle]),
+    )
+
+
+def _spt_scaled_residual_loss_and_grad(
+    base_flux: Any,
+    reference_flux: Any,
+    log_factor: Any,
+    dlog_factor: Any,
+) -> tuple[float, np.ndarray]:
+    base = np.asarray(base_flux, dtype=float)
+    reference = np.asarray(reference_flux, dtype=float)
+    log_factor = np.asarray(log_factor, dtype=float)
+    dlog = np.asarray(dlog_factor, dtype=float)
+    if dlog.ndim == 1:
+        dlog = dlog[:, np.newaxis]
+    n_params = dlog.shape[1]
+    bad = np.full(n_params, 0.0, dtype=float)
+    if base.size == 0 or reference.size != base.size or log_factor.size != base.size or dlog.shape[0] != base.size:
+        return 1e300, bad
+
+    raw_factor = np.exp(log_factor)
+    raw_derivative = raw_factor[:, np.newaxis] * dlog
+    median_factor, median_derivative = _spt_nanmedian_with_derivative(raw_factor, raw_derivative)
+    if not math.isfinite(median_factor) or median_factor == 0:
+        return 1e300, bad
+
+    corrected = base * raw_factor / median_factor
+    corrected_derivative = corrected[:, np.newaxis] * (dlog - median_derivative[np.newaxis, :] / median_factor)
+    residual_mask = np.isfinite(reference) & np.isfinite(corrected)
+    if not np.any(residual_mask):
+        return 1e300, bad
+
+    ratio_mask = residual_mask & (corrected != 0)
+    ratios = reference[ratio_mask] / corrected[ratio_mask]
+    ratio_derivative = -ratios[:, np.newaxis] * (corrected_derivative[ratio_mask] / corrected[ratio_mask, np.newaxis])
+    ratio_finite = np.isfinite(ratios) & np.all(np.isfinite(ratio_derivative), axis=1)
+    if not np.any(ratio_finite):
+        return 1e300, bad
+    scale, scale_derivative = _spt_nanmedian_with_derivative(ratios[ratio_finite], ratio_derivative[ratio_finite])
+    if not math.isfinite(scale):
+        return 1e300, bad
+
+    corrected_valid = corrected[residual_mask]
+    reference_valid = reference[residual_mask]
+    corrected_derivative_valid = corrected_derivative[residual_mask]
+    residual = scale * corrected_valid - reference_valid
+    residual_derivative = (
+        scale_derivative[np.newaxis, :] * corrected_valid[:, np.newaxis]
+        + scale * corrected_derivative_valid
+    )
+    loss = float(np.nansum(residual**2))
+    gradient = 2.0 * np.nansum(residual[:, np.newaxis] * residual_derivative, axis=0)
+    if not math.isfinite(loss) or not np.all(np.isfinite(gradient)):
+        return 1e300, bad
+    return loss, gradient.astype(float)
+
+
+def _spt_scaled_residual_ls_loss_and_grad(
+    base_flux: Any,
+    reference_flux: Any,
+    log_factor: Any,
+    dlog_factor: Any,
+) -> tuple[float, np.ndarray]:
+    base = np.asarray(base_flux, dtype=float)
+    reference = np.asarray(reference_flux, dtype=float)
+    log_factor = np.asarray(log_factor, dtype=float)
+    dlog = np.asarray(dlog_factor, dtype=float)
+    if dlog.ndim == 1:
+        dlog = dlog[:, np.newaxis]
+    n_params = dlog.shape[1] if dlog.ndim == 2 else 1
+    bad = np.full(n_params, 0.0, dtype=float)
+    if base.size == 0 or reference.size != base.size or log_factor.size != base.size or dlog.shape[0] != base.size:
+        return 1e300, bad
+
+    unclipped = np.isfinite(log_factor) & (log_factor >= -80.0) & (log_factor <= 80.0)
+    factor = np.exp(np.clip(log_factor, -80.0, 80.0))
+    dlog = np.where(unclipped[:, np.newaxis], dlog, 0.0)
+    corrected = base * factor
+    corrected_derivative = corrected[:, np.newaxis] * dlog
+    valid = (
+        np.isfinite(reference)
+        & np.isfinite(corrected)
+        & np.all(np.isfinite(corrected_derivative), axis=1)
+    )
+    if np.count_nonzero(valid) < 2:
+        return 1e300, bad
+
+    corrected_valid = corrected[valid]
+    reference_valid = reference[valid]
+    corrected_derivative_valid = corrected_derivative[valid]
+    denominator = float(np.nansum(corrected_valid * corrected_valid))
+    if not math.isfinite(denominator) or denominator <= 0:
+        return 1e300, bad
+    numerator = float(np.nansum(corrected_valid * reference_valid))
+    scale = numerator / denominator
+    dnumerator = np.nansum(corrected_derivative_valid * reference_valid[:, np.newaxis], axis=0)
+    ddenominator = 2.0 * np.nansum(corrected_valid[:, np.newaxis] * corrected_derivative_valid, axis=0)
+    scale_derivative = (dnumerator * denominator - numerator * ddenominator) / (denominator * denominator)
+    residual = scale * corrected_valid - reference_valid
+    residual_derivative = (
+        scale_derivative[np.newaxis, :] * corrected_valid[:, np.newaxis]
+        + scale * corrected_derivative_valid
+    )
+    loss = float(np.nansum(residual**2))
+    gradient = 2.0 * np.nansum(residual[:, np.newaxis] * residual_derivative, axis=0)
+    if not math.isfinite(loss) or not np.all(np.isfinite(gradient)):
+        return 1e300, bad
+    return loss, gradient.astype(float)
+
+
+def _spt_batch_ls_losses(
+    base_matrix: Any,
+    reference_flux: Any,
+    log_factor_grid: Any,
+    min_points: int = 2,
+    block_size: int = 32,
+) -> np.ndarray:
+    base = np.asarray(base_matrix, dtype=float)
+    reference = np.asarray(reference_flux, dtype=float)
+    log_grid = np.asarray(log_factor_grid, dtype=float)
+    if base.ndim == 1:
+        base = base[np.newaxis, :]
+    if log_grid.ndim == 1:
+        log_grid = log_grid[np.newaxis, :]
+    if base.ndim != 2 or log_grid.ndim != 2 or reference.ndim != 1:
+        return np.full((0, 0), np.inf, dtype=float)
+    if base.shape[1] != reference.size or log_grid.shape[1] != reference.size:
+        return np.full((log_grid.shape[0], base.shape[0]), np.inf, dtype=float)
+
+    valid = np.isfinite(base) & np.isfinite(reference)[np.newaxis, :]
+    point_counts = np.count_nonzero(valid, axis=1)
+    base0 = np.where(valid, base, 0.0)
+    reference0 = np.where(valid, reference[np.newaxis, :], 0.0)
+    reference2 = np.nansum(reference0 * reference0, axis=1)
+    losses = np.full((log_grid.shape[0], base.shape[0]), np.inf, dtype=float)
+    for start in range(0, log_grid.shape[0], max(1, int(block_size))):
+        stop = min(start + max(1, int(block_size)), log_grid.shape[0])
+        factor = np.exp(np.clip(log_grid[start:stop], -80.0, 80.0))
+        factor = np.where(np.isfinite(factor), factor, 0.0)
+        corrected = factor[:, np.newaxis, :] * base0[np.newaxis, :, :]
+        numerator = np.einsum("bnp,np->bn", corrected, reference0, optimize=True)
+        denominator = np.einsum("bnp,bnp->bn", corrected, corrected, optimize=True)
+        block_loss = reference2[np.newaxis, :] - (numerator * numerator) / np.where(denominator > 0, denominator, np.nan)
+        block_loss = np.where(
+            (denominator > 0) & (point_counts[np.newaxis, :] >= int(min_points)) & np.isfinite(block_loss),
+            np.maximum(block_loss, 0.0),
+            np.inf,
+        )
+        losses[start:stop] = block_loss
+    return losses
+
+
+def _spt_grid_parabolic_minima(grid_values: Any, losses: Any) -> np.ndarray:
+    grid = np.asarray(grid_values, dtype=float)
+    loss_grid = np.asarray(losses, dtype=float)
+    if grid.ndim != 1 or loss_grid.ndim != 2 or loss_grid.shape[0] != grid.size or grid.size == 0:
+        return np.asarray([], dtype=float)
+    estimates = np.full(loss_grid.shape[1], np.nan, dtype=float)
+    if grid.size == 1:
+        has_value = np.any(np.isfinite(loss_grid), axis=0)
+        estimates[has_value] = grid[0]
+        return estimates
+    step = float(np.nanmedian(np.diff(grid)))
+    for column in range(loss_grid.shape[1]):
+        column_losses = loss_grid[:, column]
+        finite = np.isfinite(column_losses)
+        if not np.any(finite):
+            continue
+        finite_losses = np.where(finite, column_losses, np.inf)
+        best = int(np.argmin(finite_losses))
+        estimate = float(grid[best])
+        if 0 < best < grid.size - 1:
+            y0, y1, y2 = column_losses[best - 1], column_losses[best], column_losses[best + 1]
+            denominator = y0 - 2.0 * y1 + y2
+            if np.isfinite(denominator) and denominator > 0 and np.isfinite(step):
+                offset = 0.5 * step * (y0 - y2) / denominator
+                if np.isfinite(offset) and abs(offset) <= abs(step):
+                    estimate = float(grid[best] + offset)
+        estimates[column] = float(np.clip(estimate, np.nanmin(grid), np.nanmax(grid)))
+    return estimates
+
+
+def _spt_batch_fixed_extinction_fit(
+    base_matrix: Any,
+    reference_flux: Any,
+    extinction: Any,
+    bounds: tuple[float, float] = (-50.0, 50.0),
+    grid_size: int = 501,
+) -> np.ndarray:
+    grid = np.linspace(float(bounds[0]), float(bounds[1]), int(grid_size))
+    extinction = np.asarray(extinction, dtype=float)
+    log_factor_grid = (0.4 * math.log(10.0)) * grid[:, np.newaxis] * extinction[np.newaxis, :]
+    losses = _spt_batch_ls_losses(base_matrix, reference_flux, log_factor_grid)
+    return _spt_grid_parabolic_minima(grid, losses)
+
+
+def _spt_batch_fixed_cloud_fit(
+    base_matrix: Any,
+    reference_flux: Any,
+    wavelength_ratio: Any,
+    alpha: float,
+    bounds: tuple[float, float] = (-20.0, 20.0),
+    grid_size: int = 501,
+) -> np.ndarray:
+    grid = np.linspace(float(bounds[0]), float(bounds[1]), int(grid_size))
+    ratio = np.asarray(wavelength_ratio, dtype=float)
+    alpha = max(float(alpha), 0.05)
+    power = np.power(np.clip(ratio, 1e-6, None), -alpha)
+    log_factor_grid = -grid[:, np.newaxis] * (power[np.newaxis, :] - 1.0)
+    losses = _spt_batch_ls_losses(base_matrix, reference_flux, log_factor_grid)
+    return _spt_grid_parabolic_minima(grid, losses)
+
+
+def _spt_minimize_with_gradient(value_and_gradient, initial: list[float], bounds: list[tuple[float, float]]):
+    from scipy.optimize import minimize
+
+    cache: dict[str, Any] = {"x": None, "value": None, "gradient": None}
+
+    def evaluate(params: Any) -> tuple[float, np.ndarray]:
+        x = np.asarray(params, dtype=float)
+        if cache["x"] is None or not np.array_equal(x, cache["x"]):
+            value, gradient = value_and_gradient(x)
+            cache["x"] = x.copy()
+            cache["value"] = float(value)
+            cache["gradient"] = np.asarray(gradient, dtype=float)
+        return float(cache["value"]), np.asarray(cache["gradient"], dtype=float)
+
+    def value(params: Any) -> float:
+        return evaluate(params)[0]
+
+    def jac(params: Any) -> np.ndarray:
+        return evaluate(params)[1]
+
+    return minimize(
+        value,
+        initial,
+        jac=jac,
+        bounds=bounds,
+        method="L-BFGS-B",
+    )
+
+
+def _spt_optimize_av_rv_arrays(
+    wavelength: Any,
+    base_flux: Any,
+    reference_flux: Any,
+    fixed_r_v: float | None = None,
+    initial_a_v: float | None = None,
+    initial_r_v: float = 3.1,
+    precomputed_ab: tuple[Any, Any] | None = None,
+) -> tuple[float, float]:
+    wv = np.asarray(wavelength, dtype=float)
+    base = np.asarray(base_flux, dtype=float)
+    reference = np.asarray(reference_flux, dtype=float)
+    if precomputed_ab is None:
+        a_coeff, b_coeff = _spt_cardelli_ab(wv)
+    else:
+        a_coeff = np.asarray(precomputed_ab[0], dtype=float)
+        b_coeff = np.asarray(precomputed_ab[1], dtype=float)
+    valid = (
+        np.isfinite(wv)
+        & np.isfinite(base)
+        & np.isfinite(reference)
+        & np.isfinite(a_coeff)
+        & np.isfinite(b_coeff)
+    )
+    if np.count_nonzero(valid) < 2:
+        fallback_rv = float(fixed_r_v) if fixed_r_v is not None and math.isfinite(float(fixed_r_v)) else float(initial_r_v)
+        return 0.0, fallback_rv
+    wv = wv[valid]
+    base = base[valid]
+    reference = reference[valid]
+    a_coeff = a_coeff[valid]
+    b_coeff = b_coeff[valid]
+    log10_factor = 0.4 * math.log(10.0)
+
+    def loss_and_grad_for(a_v: float, r_v: float) -> tuple[float, np.ndarray]:
+        r_v = max(float(r_v), 0.01)
+        extinction = a_coeff + b_coeff / r_v
+        log_factor = log10_factor * float(a_v) * extinction
+        dlog_da = log10_factor * extinction
+        dlog_drv = log10_factor * float(a_v) * (-b_coeff / (r_v * r_v))
+        return _spt_scaled_residual_ls_loss_and_grad(base, reference, log_factor, np.column_stack([dlog_da, dlog_drv]))
+
+    if fixed_r_v is not None and math.isfinite(fixed_r_v) and fixed_r_v > 0:
+        r_v = float(fixed_r_v)
+        if initial_a_v is None or not math.isfinite(float(initial_a_v)):
+            extinction = a_coeff + b_coeff / r_v
+            warm = _spt_batch_fixed_extinction_fit(base[np.newaxis, :], reference, extinction)
+            initial_a_v = float(warm[0]) if warm.size and np.isfinite(warm[0]) else 1.0
+        initial_a_v = float(np.clip(float(initial_a_v), -50.0, 50.0))
+
+        def fixed_value_and_gradient(params: np.ndarray) -> tuple[float, np.ndarray]:
+            value, gradient = loss_and_grad_for(float(params[0]), r_v)
+            return value, np.asarray([gradient[0]], dtype=float)
+
+        result = _spt_minimize_with_gradient(
+            fixed_value_and_gradient,
+            [initial_a_v],
+            [(-50, 50)],
+        )
+        return float(result.x[0]), r_v
+
+    try:
+        initial_r_v = float(initial_r_v)
+    except (TypeError, ValueError):
+        initial_r_v = 3.1
+    initial_r_v = initial_r_v if math.isfinite(initial_r_v) and initial_r_v > 0 else 3.1
+    if initial_a_v is None or not math.isfinite(float(initial_a_v)):
+        warm_rv = float(np.clip(initial_r_v, 0.01, 50.5))
+        extinction = a_coeff + b_coeff / warm_rv
+        warm = _spt_batch_fixed_extinction_fit(base[np.newaxis, :], reference, extinction)
+        initial_a_v = float(warm[0]) if warm.size and np.isfinite(warm[0]) else 1.0
+    initial_a_v = float(np.clip(float(initial_a_v), -50.0, 50.0))
+    initial_r_v = float(np.clip(initial_r_v, 0.01, 50.5))
+    result = _spt_minimize_with_gradient(
+        lambda params: loss_and_grad_for(float(params[0]), float(params[1])),
+        [initial_a_v, initial_r_v],
+        [(-50, 50), (0.01, 50.5)],
+    )
+    return float(result.x[0]), float(result.x[1])
 
 
 def _spt_optimize_av_rv(
     observed_spectrum: pd.DataFrame,
     reference_spectrum: pd.DataFrame,
     fixed_r_v: float | None = None,
+    initial_a_v: float | None = None,
 ) -> tuple[float, float]:
-    from scipy.optimize import minimize, minimize_scalar
-
-    def loss_for(a_v: float, r_v: float) -> float:
-        dereddened = _spt_deredden_spectrum(observed_spectrum, a_v, r_v)
-        ref = reference_spectrum["spn"].to_numpy(dtype=float)
-        der = dereddened["spn"].to_numpy(dtype=float)
-        valid = np.isfinite(ref) & np.isfinite(der)
-        if not np.any(valid):
-            return float("inf")
-        ratios = ref[valid] / der[valid]
-        ratios = ratios[np.isfinite(ratios)]
-        if ratios.size == 0:
-            return float("inf")
-        scale = np.nanmedian(ratios)
-        residual = scale * der[valid] - ref[valid]
-        return float(np.nansum(residual**2))
-
-    if fixed_r_v is not None and math.isfinite(fixed_r_v) and fixed_r_v > 0:
-        result = minimize_scalar(lambda a_v: loss_for(float(a_v), float(fixed_r_v)), bounds=(-50, 50), method="bounded")
-        return float(result.x), float(fixed_r_v)
-
-    result = minimize(
-        lambda params: loss_for(float(params[0]), float(params[1])),
-        [1.0, 3.1],
-        bounds=[(-50, 50), (0.01, 50.5)],
-        method="L-BFGS-B",
+    return _spt_optimize_av_rv_arrays(
+        observed_spectrum["wv"].to_numpy(dtype=float),
+        observed_spectrum["spn"].to_numpy(dtype=float),
+        reference_spectrum["spn"].to_numpy(dtype=float),
+        fixed_r_v=fixed_r_v,
+        initial_a_v=initial_a_v,
     )
-    return float(result.x[0]), float(result.x[1])
+
+
+def _spt_cloud_correct_flux_values(
+    flux_values: Any,
+    tau0: float,
+    alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    wavelength_ratio: Any | None = None,
+    wavelength: Any | None = None,
+    lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+) -> np.ndarray:
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError):
+        alpha = SPT_DEFAULT_CLOUD_ALPHA
+    if not math.isfinite(alpha) or alpha <= 0:
+        alpha = SPT_DEFAULT_CLOUD_ALPHA
+    if wavelength_ratio is None:
+        try:
+            lambda0 = float(lambda0)
+        except (TypeError, ValueError):
+            lambda0 = SPT_DEFAULT_CLOUD_LAMBDA0
+        lambda0 = lambda0 if math.isfinite(lambda0) and lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+        wavelength_ratio = np.asarray(wavelength, dtype=float) / lambda0
+    ratio = np.clip(np.asarray(wavelength_ratio, dtype=float), 1e-6, None)
+    exponent = -float(tau0) * (np.power(ratio, -alpha) - 1.0)
+    return _spt_median_normalized_factor_apply(flux_values, exponent)
+
+
+def _spt_cloud_correct_spectrum(
+    spectrum: pd.DataFrame,
+    tau0: float,
+    alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+) -> pd.DataFrame:
+    out = spectrum.copy()
+    out["spn"] = _spt_cloud_correct_flux_values(
+        out["spn"].to_numpy(dtype=float),
+        tau0,
+        alpha=alpha,
+        wavelength=out["wv"].to_numpy(dtype=float),
+        lambda0=lambda0,
+    )
+    return out
+
+
+def _spt_optimize_cloud_params_arrays(
+    wavelength: Any,
+    base_flux: Any,
+    reference_flux: Any,
+    fixed_alpha: float | None = SPT_DEFAULT_CLOUD_ALPHA,
+    lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+    initial_alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    initial_tau0: float | None = None,
+    precomputed_ratio: Any | None = None,
+    precomputed_log_ratio: Any | None = None,
+) -> tuple[float, float]:
+    wv = np.asarray(wavelength, dtype=float)
+    base = np.asarray(base_flux, dtype=float)
+    reference = np.asarray(reference_flux, dtype=float)
+    try:
+        lambda0 = float(lambda0)
+    except (TypeError, ValueError):
+        lambda0 = SPT_DEFAULT_CLOUD_LAMBDA0
+    lambda0 = lambda0 if math.isfinite(lambda0) and lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    if precomputed_ratio is None:
+        wavelength_ratio = np.clip(wv / lambda0, 1e-6, None)
+    else:
+        wavelength_ratio = np.clip(np.asarray(precomputed_ratio, dtype=float), 1e-6, None)
+    if precomputed_log_ratio is None:
+        log_wavelength_ratio = np.log(wavelength_ratio)
+    else:
+        log_wavelength_ratio = np.asarray(precomputed_log_ratio, dtype=float)
+    valid = (
+        np.isfinite(wv)
+        & np.isfinite(base)
+        & np.isfinite(reference)
+        & np.isfinite(wavelength_ratio)
+        & np.isfinite(log_wavelength_ratio)
+    )
+    if np.count_nonzero(valid) < 2:
+        fallback_alpha = float(fixed_alpha) if fixed_alpha is not None and math.isfinite(float(fixed_alpha)) else float(initial_alpha)
+        return 0.0, fallback_alpha
+    base = base[valid]
+    reference = reference[valid]
+    wavelength_ratio = wavelength_ratio[valid]
+    log_wavelength_ratio = log_wavelength_ratio[valid]
+
+    def loss_and_grad_for(tau0: float, alpha: float) -> tuple[float, np.ndarray]:
+        tau0 = float(tau0)
+        alpha = max(float(alpha), 0.05)
+        power = np.power(wavelength_ratio, -alpha)
+        exponent = -tau0 * (power - 1.0)
+        unclipped = np.isfinite(exponent) & (exponent >= -80.0) & (exponent <= 80.0)
+        log_factor = np.clip(exponent, -80.0, 80.0)
+        dlog_dtau = -(power - 1.0)
+        dlog_dalpha = tau0 * power * log_wavelength_ratio
+        dlog_dtau = np.where(unclipped, dlog_dtau, 0.0)
+        dlog_dalpha = np.where(unclipped, dlog_dalpha, 0.0)
+        return _spt_scaled_residual_ls_loss_and_grad(base, reference, log_factor, np.column_stack([dlog_dtau, dlog_dalpha]))
+
+    if fixed_alpha is not None and math.isfinite(float(fixed_alpha)) and float(fixed_alpha) > 0:
+        alpha = float(fixed_alpha)
+        if initial_tau0 is None or not math.isfinite(float(initial_tau0)):
+            warm = _spt_batch_fixed_cloud_fit(base[np.newaxis, :], reference, wavelength_ratio, alpha)
+            initial_tau0 = float(warm[0]) if warm.size and np.isfinite(warm[0]) else 0.0
+        initial_tau0 = float(np.clip(float(initial_tau0), -20.0, 20.0))
+
+        def fixed_value_and_gradient(params: np.ndarray) -> tuple[float, np.ndarray]:
+            value, gradient = loss_and_grad_for(float(params[0]), alpha)
+            return value, np.asarray([gradient[0]], dtype=float)
+
+        result = _spt_minimize_with_gradient(
+            fixed_value_and_gradient,
+            [initial_tau0],
+            [(-20.0, 20.0)],
+        )
+        return float(result.x[0]), alpha
+
+    try:
+        initial_alpha = float(initial_alpha)
+    except (TypeError, ValueError):
+        initial_alpha = SPT_DEFAULT_CLOUD_ALPHA
+    initial_alpha = initial_alpha if math.isfinite(initial_alpha) and initial_alpha > 0 else SPT_DEFAULT_CLOUD_ALPHA
+    if initial_tau0 is None or not math.isfinite(float(initial_tau0)):
+        warm = _spt_batch_fixed_cloud_fit(base[np.newaxis, :], reference, wavelength_ratio, initial_alpha)
+        initial_tau0 = float(warm[0]) if warm.size and np.isfinite(warm[0]) else 0.0
+    initial_tau0 = float(np.clip(float(initial_tau0), -20.0, 20.0))
+
+    result = _spt_minimize_with_gradient(
+        lambda params: loss_and_grad_for(float(params[0]), float(params[1])),
+        [initial_tau0, initial_alpha],
+        [(-20.0, 20.0), (0.05, 8.0)],
+    )
+    tau0, alpha = result.x
+    return float(tau0), float(alpha)
+
+
+def _spt_optimize_cloud_params(
+    observed_spectrum: pd.DataFrame,
+    reference_spectrum: pd.DataFrame,
+    fixed_alpha: float | None = SPT_DEFAULT_CLOUD_ALPHA,
+    lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+    initial_alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    initial_tau0: float | None = None,
+) -> tuple[float, float]:
+    return _spt_optimize_cloud_params_arrays(
+        observed_spectrum["wv"].to_numpy(dtype=float),
+        observed_spectrum["spn"].to_numpy(dtype=float),
+        reference_spectrum["spn"].to_numpy(dtype=float),
+        fixed_alpha=fixed_alpha,
+        lambda0=lambda0,
+        initial_alpha=initial_alpha,
+        initial_tau0=initial_tau0,
+    )
 
 
 def _spt_bin_to_grid(region: pd.DataFrame, target_wv: np.ndarray) -> pd.DataFrame:
@@ -1598,6 +2145,164 @@ def _spt_process_spectrum(
     return pd.concat(out_parts, ignore_index=True).sort_values("wv") if out_parts else pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
 
 
+def _spt_common_wavelength_key(common_wv: Any) -> str:
+    wv = np.asarray(common_wv, dtype=float)
+    wv = np.sort(wv[np.isfinite(wv)])
+    if wv.size == 0:
+        return "empty"
+    rounded = np.round(wv, 6).astype(np.float64)
+    return hashlib.sha1(rounded.tobytes()).hexdigest()[:16]
+
+
+def _spt_processed_standard_from_cache(
+    args: dict[str, Any],
+    std_specid: int,
+    std_raw: pd.DataFrame,
+    common_wv: np.ndarray,
+    norm_regions_param: list[tuple[float, float]],
+    bins_per_micron: int,
+) -> pd.DataFrame:
+    cache_key = "|".join([
+        _spt_db_cache_key(args),
+        "standard-process",
+        str(int(std_specid)),
+        str(int(bins_per_micron)),
+        _spt_format_norm_regions(norm_regions_param),
+        _spt_common_wavelength_key(common_wv),
+    ])
+    now = time.time()
+    cached = _SPT_STANDARD_PROCESS_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        return cached[1].copy(deep=True)
+    processed = _spt_process_spectrum(
+        std_raw,
+        bins_per_micron=bins_per_micron,
+        common_wv=common_wv,
+        norm_regions_param=norm_regions_param,
+    )
+    if not processed.empty:
+        processed["esp_calc"] = _spt_prepare_errors(processed["spn"], processed.get("espn"))
+    _SPT_STANDARD_PROCESS_CACHE[cache_key] = (now, processed.copy(deep=True))
+    return processed
+
+
+def _spt_rescale_standard_to_comparison(
+    std_df: pd.DataFrame,
+    comparison_df: pd.DataFrame,
+    norm_regions_param: list[tuple[float, float]],
+) -> pd.DataFrame:
+    if std_df.empty or comparison_df.empty:
+        return std_df
+    if "esp_calc" not in std_df.columns:
+        std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+    if "esp_calc" not in comparison_df.columns:
+        comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
+    for region_min, region_max in norm_regions_param:
+        std_seg = std_df[std_df["wv"].between(region_min, region_max)]
+        comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
+        if std_seg.empty or comp_seg.empty:
+            continue
+        merged = comp_seg[["wv", "spn", "esp_calc"]].merge(
+            std_seg[["wv", "spn", "esp_calc"]],
+            on="wv",
+            suffixes=("_comp", "_std"),
+        )
+        if merged.empty:
+            continue
+        valid = (
+            np.isfinite(merged["spn_comp"].to_numpy(dtype=float))
+            & np.isfinite(merged["spn_std"].to_numpy(dtype=float))
+            & np.isfinite(merged["esp_calc_comp"].to_numpy(dtype=float))
+            & (merged["esp_calc_comp"].to_numpy(dtype=float) > 0)
+            & np.isfinite(merged["esp_calc_std"].to_numpy(dtype=float))
+            & (merged["esp_calc_std"].to_numpy(dtype=float) > 0)
+        )
+        if not np.any(valid):
+            continue
+        scale = _spt_scale_to_reference(
+            merged["wv"].to_numpy(dtype=float)[valid],
+            merged["spn_comp"].to_numpy(dtype=float)[valid],
+            merged["esp_calc_comp"].to_numpy(dtype=float)[valid],
+            merged["wv"].to_numpy(dtype=float)[valid],
+            merged["spn_std"].to_numpy(dtype=float)[valid],
+            merged["esp_calc_std"].to_numpy(dtype=float)[valid],
+        )
+        if np.isfinite(scale):
+            mask = std_df["wv"].between(region_min, region_max)
+            std_df.loc[mask, "spn"] *= scale
+            if "espn" in std_df.columns:
+                std_df.loc[mask, "espn"] *= scale
+            std_df.loc[mask, "esp_calc"] *= scale
+    return std_df
+
+
+def _spt_comparison_regions(
+    comparison_df: pd.DataFrame,
+    norm_regions_param: list[tuple[float, float]],
+    cloud_lambda0: float,
+) -> list[dict[str, Any]]:
+    regions: list[dict[str, Any]] = []
+    lambda0 = float(cloud_lambda0) if math.isfinite(float(cloud_lambda0)) and float(cloud_lambda0) > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    for index, (region_min, region_max) in enumerate(norm_regions_param):
+        comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)].copy()
+        wv = comp_seg["wv"].to_numpy(dtype=float) if not comp_seg.empty else np.asarray([], dtype=float)
+        a_coeff, b_coeff = _spt_cardelli_ab(wv)
+        ratio = np.clip(wv / lambda0, 1e-6, None) if wv.size else np.asarray([], dtype=float)
+        regions.append({
+            "index": index,
+            "min": float(region_min),
+            "max": float(region_max),
+            "df": comp_seg,
+            "wv": wv,
+            "spn": comp_seg["spn"].to_numpy(dtype=float) if not comp_seg.empty else np.asarray([], dtype=float),
+            "esp_calc": comp_seg["esp_calc"].to_numpy(dtype=float) if not comp_seg.empty and "esp_calc" in comp_seg.columns else np.asarray([], dtype=float),
+            "a_coeff": a_coeff,
+            "b_coeff": b_coeff,
+            "cloud_ratio": ratio,
+            "cloud_log_ratio": np.log(ratio) if ratio.size else np.asarray([], dtype=float),
+        })
+    return regions
+
+
+def _spt_standard_segments(
+    std_df: pd.DataFrame,
+    comparison_regions: list[dict[str, Any]],
+    cloud_lambda0: float,
+) -> list[dict[str, Any] | None]:
+    segments: list[dict[str, Any] | None] = []
+    lambda0 = float(cloud_lambda0) if math.isfinite(float(cloud_lambda0)) and float(cloud_lambda0) > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    for region in comparison_regions:
+        if std_df.empty or region["wv"].size == 0:
+            segments.append(None)
+            continue
+        mask = std_df["wv"].between(region["min"], region["max"])
+        std_seg = std_df.loc[mask]
+        if std_seg.empty:
+            segments.append(None)
+            continue
+        std_wv = std_seg["wv"].to_numpy(dtype=float)
+        std_spn = std_seg["spn"].to_numpy(dtype=float)
+        interp_spn = _spt_interp_without_large_gaps(std_wv, std_spn, region["wv"])
+        valid = np.isfinite(interp_spn) & np.isfinite(region["spn"])
+        if not np.any(valid):
+            segments.append(None)
+            continue
+        std_a, std_b = _spt_cardelli_ab(std_wv)
+        std_ratio = np.clip(std_wv / lambda0, 1e-6, None)
+        segments.append({
+            "mask": mask,
+            "std_wv": std_wv,
+            "std_spn": std_spn,
+            "interp_spn": interp_spn,
+            "valid": valid,
+            "std_a_coeff": std_a,
+            "std_b_coeff": std_b,
+            "std_cloud_ratio": std_ratio,
+            "std_cloud_log_ratio": np.log(std_ratio),
+        })
+    return segments
+
+
 def _spt_spectrum_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     if df.empty:
         return []
@@ -1616,8 +2321,43 @@ def _spt_spectrum_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
-def _load_spt_grid_from_db(args: dict[str, Any], include_spectra: bool = True) -> dict[str, Any]:
-    cache_key = f"{_spt_db_cache_key(args)}|grid|spectra:{int(include_spectra)}"
+def _spt_sql_wavelength_region_filter(regions: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None) -> str:
+    if not regions:
+        return ""
+    clauses = []
+    for region_min, region_max in regions:
+        lo = _spt_float(region_min)
+        hi = _spt_float(region_max)
+        if lo is None or hi is None:
+            continue
+        if hi < lo:
+            lo, hi = hi, lo
+        clauses.append(f"(ds.wavelength_angstrom BETWEEN {lo * 10000:.6f} AND {hi * 10000:.6f})")
+    if not clauses:
+        return ""
+    return "AND (" + " OR ".join(clauses) + ")"
+
+
+def _load_spt_grid_from_db(
+    args: dict[str, Any],
+    include_spectra: bool = True,
+    wavelength_regions: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None = None,
+    bins_per_micron: int | None = None,
+    standard_specids: list[int] | tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    region_key = _spt_format_norm_regions(list(wavelength_regions or [])) if wavelength_regions else "all"
+    bins_key = max(1, min(int(bins_per_micron or 0), 2000)) if bins_per_micron else 0
+    standard_specid_key = "all"
+    standard_specid_set: set[int] = set()
+    if standard_specids:
+        standard_specid_set = {
+            int(specid)
+            for specid in standard_specids
+            if specid is not None and math.isfinite(float(specid))
+        }
+        if standard_specid_set:
+            standard_specid_key = ",".join(str(specid) for specid in sorted(standard_specid_set))
+    cache_key = f"{_spt_db_cache_key(args)}|grid|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
     now = time.time()
     cached = _SPT_GRID_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -1677,21 +2417,47 @@ def _load_spt_grid_from_db(args: dict[str, Any], include_spectra: bool = True) -
             for row in grid_rows
             if row.get("moca_specid") is not None
         })
-        if include_spectra and specids:
-            specid_clause = ",".join(str(specid) for specid in specids)
-            spectra_df = _read_sql(conn, f"""
-                SELECT
-                    ds.moca_specid,
-                    ds.wavelength_angstrom * 1e-4 AS wv,
-                    ds.flux_flambda AS sp,
-                    ds.flux_flambda_unc AS esp
-                FROM data_spectra ds
-                WHERE ds.moca_specid IN ({specid_clause})
-                    AND ds.ignored = 0
-                    AND ds.flux_flambda IS NOT NULL
-                    AND ds.wavelength_angstrom IS NOT NULL
-                ORDER BY ds.moca_specid, ds.wavelength_angstrom
-            """)
+        spectra_specids = sorted(set(specids) & standard_specid_set) if standard_specid_set else specids
+        if include_spectra and spectra_specids:
+            specid_clause = ",".join(str(specid) for specid in spectra_specids)
+            region_filter = _spt_sql_wavelength_region_filter(wavelength_regions)
+            if bins_key:
+                bin_factor = bins_key / 10000.0
+                spectra_df = _read_sql(conn, f"""
+                    SELECT
+                        ds.moca_specid,
+                        AVG(ds.wavelength_angstrom) * 1e-4 AS wv,
+                        AVG(ds.flux_flambda) AS sp,
+                        CASE
+                            WHEN COUNT(ds.flux_flambda_unc) = 0 THEN NULL
+                            ELSE SQRT(AVG(ds.flux_flambda_unc * ds.flux_flambda_unc))
+                        END AS esp
+                    FROM data_spectra ds
+                    WHERE ds.moca_specid IN ({specid_clause})
+                        AND ds.ignored = 0
+                        AND ds.flux_flambda IS NOT NULL
+                        AND ds.wavelength_angstrom IS NOT NULL
+                        {region_filter}
+                    GROUP BY ds.moca_specid, FLOOR(ds.wavelength_angstrom * {bin_factor:.12g})
+                    ORDER BY NULL
+                """)
+                if not spectra_df.empty:
+                    spectra_df = spectra_df.sort_values(["moca_specid", "wv"], kind="mergesort").reset_index(drop=True)
+            else:
+                spectra_df = _read_sql(conn, f"""
+                    SELECT
+                        ds.moca_specid,
+                        ds.wavelength_angstrom * 1e-4 AS wv,
+                        ds.flux_flambda AS sp,
+                        ds.flux_flambda_unc AS esp
+                    FROM data_spectra ds
+                    WHERE ds.moca_specid IN ({specid_clause})
+                        AND ds.ignored = 0
+                        AND ds.flux_flambda IS NOT NULL
+                        AND ds.wavelength_angstrom IS NOT NULL
+                        {region_filter}
+                    ORDER BY ds.moca_specid, ds.wavelength_angstrom
+                """)
         else:
             spectra_df = pd.DataFrame(columns=["moca_specid", "wv", "sp", "esp"])
 
@@ -1720,6 +2486,8 @@ def _load_spt_grid_from_db(args: dict[str, Any], include_spectra: bool = True) -
             "grid_count": len(grids),
             "standard_count": len(grid_rows),
             "spectrum_row_count": int(len(spectra_df)),
+            "spectrum_regions": list(wavelength_regions or []),
+            "spectrum_bins_per_micron": bins_key or None,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -1848,13 +2616,10 @@ def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selecte
             ) AS label
         FROM moca_spectra ms
         LEFT JOIN moca_objects mo USING(moca_oid)
-        LEFT JOIN (
-            SELECT moca_oid, spectral_type
-            FROM data_spectral_types
-            WHERE adopted = 1
-        ) spt USING(moca_oid)
-        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
-            AND COALESCE(ms.ignored, 0) = 0
+        LEFT JOIN data_spectral_types spt
+            ON spt.moca_oid = ms.moca_oid
+            AND spt.adopted = 1
+        WHERE COALESCE(ms.ignored, 0) = 0
     """
     rows: list[dict[str, Any]] = []
     with engine.connect() as conn:
@@ -1916,11 +2681,31 @@ def _precompute_spt_comparison(
     norm_regions_param: list[tuple[float, float]],
     deredden: bool,
     fixed_r_v: float | None,
+    cloud_correction: bool = False,
+    cloud_alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    cloud_alpha_fixed: bool = True,
+    cloud_lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+    only_standard_specid: int | None = None,
+    priority_standard_specid: int | None = None,
 ) -> dict[str, Any]:
     bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
     norm_key = _spt_format_norm_regions(norm_regions_param)
     fixed_key = "" if fixed_r_v is None else f"{fixed_r_v:.6g}"
-    cache_key = f"{_spt_db_cache_key(args)}|compare|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}"
+    if cloud_correction:
+        deredden = False
+    try:
+        cloud_alpha = float(cloud_alpha)
+    except (TypeError, ValueError):
+        cloud_alpha = SPT_DEFAULT_CLOUD_ALPHA
+    try:
+        cloud_lambda0 = float(cloud_lambda0)
+    except (TypeError, ValueError):
+        cloud_lambda0 = SPT_DEFAULT_CLOUD_LAMBDA0
+    cloud_alpha = cloud_alpha if math.isfinite(cloud_alpha) and cloud_alpha > 0 else SPT_DEFAULT_CLOUD_ALPHA
+    cloud_lambda0 = cloud_lambda0 if math.isfinite(cloud_lambda0) and cloud_lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
+    only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _SPT_COMPARE_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -1928,15 +2713,30 @@ def _precompute_spt_comparison(
         payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
         return payload
 
-    grid_payload = _load_spt_grid_from_db(args)
+    grid_payload = _load_spt_grid_from_db(
+        args,
+        wavelength_regions=norm_regions_param,
+        bins_per_micron=bins,
+        standard_specids=[int(only_standard_specid)] if only_standard_specid is not None else None,
+    )
     spectrum_payload = _load_spt_spectrum_from_db(args, specid)
     comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
     grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
     grid_data = pd.DataFrame(grid_payload["gridData"])
+    if only_standard_specid is not None and not grid_data.empty and "moca_specid" in grid_data.columns:
+        grid_data = grid_data[pd.to_numeric(grid_data["moca_specid"], errors="coerce") == int(only_standard_specid)].copy()
     if comparison_raw.empty:
         raise ValueError(f"No spectrum data found for moca_specid={int(specid)}")
     if grid_raw.empty or grid_data.empty:
         raise ValueError("No spectral typing grid data found")
+    grid_data = grid_data.copy()
+    grid_data["_spt_original_order"] = np.arange(len(grid_data))
+    if priority_standard_specid is not None and "moca_specid" in grid_data.columns:
+        priority_value = int(priority_standard_specid)
+        grid_data["_spt_priority"] = (
+            pd.to_numeric(grid_data["moca_specid"], errors="coerce") != priority_value
+        ).astype(int)
+        grid_data = grid_data.sort_values(["_spt_priority", "_spt_original_order"], kind="mergesort")
 
     comparison_df = _spt_process_spectrum(
         comparison_raw,
@@ -1948,126 +2748,146 @@ def _precompute_spt_comparison(
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
 
-    results: list[dict[str, Any]] = []
+    comparison_regions = _spt_comparison_regions(comparison_df, norm_regions_param, cloud_lambda0)
+    grid_raw_by_specid: dict[int, pd.DataFrame] = {}
+    if "moca_specid" in grid_raw.columns:
+        for raw_specid, raw_group in grid_raw.groupby("moca_specid", sort=False):
+            if pd.isna(raw_specid):
+                continue
+            grid_raw_by_specid[int(raw_specid)] = raw_group.copy()
+
+    standard_items: list[dict[str, Any]] = []
     for _, row in grid_data.iterrows():
         std_specid = row.get("moca_specid")
         if pd.isna(std_specid):
             continue
         std_specid = int(std_specid)
-        std_raw = grid_raw[grid_raw["moca_specid"].astype(int) == std_specid]
-        if std_raw.empty or float(np.nansum(std_raw["sp"].to_numpy(dtype=float))) == 0:
+        std_raw = grid_raw_by_specid.get(std_specid)
+        if std_raw is None or std_raw.empty:
             continue
-        std_df = _spt_process_spectrum(
+        raw_flux = pd.to_numeric(std_raw.get("sp"), errors="coerce").to_numpy(dtype=float)
+        if raw_flux.size == 0 or float(np.nansum(raw_flux)) == 0:
+            continue
+        std_df = _spt_processed_standard_from_cache(
+            args,
+            std_specid,
             std_raw,
-            common_wv=common_wv,
-            norm_regions_param=norm_regions_param,
+            common_wv,
+            norm_regions_param,
+            bins,
         )
         if std_df.empty:
             continue
-        std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+        std_df = _spt_rescale_standard_to_comparison(std_df.copy(deep=True), comparison_df, norm_regions_param)
+        standard_items.append({
+            "row": row,
+            "std_specid": std_specid,
+            "std_df": std_df,
+            "segments": _spt_standard_segments(std_df, comparison_regions, cloud_lambda0),
+            "spectrum_original": _spt_spectrum_records(std_df),
+            "av_list": [None] * len(norm_regions_param),
+            "rv_list": [None] * len(norm_regions_param),
+            "cloud_tau_list": [None] * len(norm_regions_param),
+            "cloud_alpha_list": [None] * len(norm_regions_param),
+        })
 
-        for region_min, region_max in norm_regions_param:
-            std_seg = std_df[std_df["wv"].between(region_min, region_max)]
-            comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
-            if std_seg.empty or comp_seg.empty:
+    fixed_rv_value = _spt_float(fixed_r_v)
+    if deredden and fixed_rv_value is not None and fixed_rv_value > 0:
+        for index, region in enumerate(comparison_regions):
+            fit_items: list[dict[str, Any]] = []
+            base_rows: list[np.ndarray] = []
+            for item in standard_items:
+                segment = item["segments"][index]
+                if segment is None:
+                    continue
+                base = np.asarray(segment["interp_spn"], dtype=float).copy()
+                base[~segment["valid"]] = np.nan
+                fit_items.append(item)
+                base_rows.append(base)
+            if not base_rows or region["spn"].size == 0:
                 continue
-            merged = comp_seg[["wv", "spn", "esp_calc"]].merge(
-                std_seg[["wv", "spn", "esp_calc"]],
-                on="wv",
-                suffixes=("_comp", "_std"),
-            )
-            if merged.empty:
-                continue
-            valid = (
-                np.isfinite(merged["spn_comp"].to_numpy(dtype=float))
-                & np.isfinite(merged["spn_std"].to_numpy(dtype=float))
-                & np.isfinite(merged["esp_calc_comp"].to_numpy(dtype=float))
-                & (merged["esp_calc_comp"].to_numpy(dtype=float) > 0)
-                & np.isfinite(merged["esp_calc_std"].to_numpy(dtype=float))
-                & (merged["esp_calc_std"].to_numpy(dtype=float) > 0)
-            )
-            if not np.any(valid):
-                continue
-            scale = _spt_scale_to_reference(
-                merged["wv"].to_numpy(dtype=float)[valid],
-                merged["spn_comp"].to_numpy(dtype=float)[valid],
-                merged["esp_calc_comp"].to_numpy(dtype=float)[valid],
-                merged["wv"].to_numpy(dtype=float)[valid],
-                merged["spn_std"].to_numpy(dtype=float)[valid],
-                merged["esp_calc_std"].to_numpy(dtype=float)[valid],
-            )
-            if np.isfinite(scale):
-                mask = std_df["wv"].between(region_min, region_max)
-                std_df.loc[mask, "spn"] *= scale
-                if "espn" in std_df.columns:
-                    std_df.loc[mask, "espn"] *= scale
-                std_df.loc[mask, "esp_calc"] *= scale
+            extinction = region["a_coeff"] + region["b_coeff"] / fixed_rv_value
+            av_values = _spt_batch_fixed_extinction_fit(np.vstack(base_rows), region["spn"], extinction)
+            for item, a_v in zip(fit_items, av_values):
+                if np.isfinite(a_v):
+                    item["av_list"][index] = float(a_v)
+                    item["rv_list"][index] = float(fixed_rv_value)
 
-        spectrum_original = _spt_spectrum_records(std_df)
+    if cloud_correction and cloud_alpha_fixed:
+        fixed_alpha = float(cloud_alpha)
+        for index, region in enumerate(comparison_regions):
+            fit_items = []
+            base_rows = []
+            for item in standard_items:
+                segment = item["segments"][index]
+                if segment is None:
+                    continue
+                base = np.asarray(segment["interp_spn"], dtype=float).copy()
+                base[~segment["valid"]] = np.nan
+                fit_items.append(item)
+                base_rows.append(base)
+            if not base_rows or region["spn"].size == 0:
+                continue
+            tau_values = _spt_batch_fixed_cloud_fit(np.vstack(base_rows), region["spn"], region["cloud_ratio"], fixed_alpha)
+            for item, tau0 in zip(fit_items, tau_values):
+                if np.isfinite(tau0):
+                    item["cloud_tau_list"][index] = float(tau0)
+                    item["cloud_alpha_list"][index] = float(fixed_alpha)
+
+    results: list[dict[str, Any]] = []
+    for item in standard_items:
+        row = item["row"]
+        std_specid = int(item["std_specid"])
+        std_df = item["std_df"]
+        spectrum_original = item["spectrum_original"]
         spectrum_dereddened: list[dict[str, Any]] | None = None
-        av_list = [None] * len(norm_regions_param)
-        rv_list = [None] * len(norm_regions_param)
+        spectrum_cloud: list[dict[str, Any]] | None = None
+        av_list = list(item["av_list"])
+        rv_list = list(item["rv_list"])
+        cloud_tau_list = list(item["cloud_tau_list"])
+        cloud_alpha_list = list(item["cloud_alpha_list"])
         metric_df = std_df
         if deredden:
             std_df_dered = std_df.copy()
             try:
-                for index, (region_min, region_max) in enumerate(norm_regions_param):
-                    std_seg = std_df[std_df["wv"].between(region_min, region_max)].copy()
-                    comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)].copy()
-                    if std_seg.empty or comp_seg.empty:
+                for index, region in enumerate(comparison_regions):
+                    segment = item["segments"][index]
+                    if segment is None:
                         continue
-                    interp_spn = np.interp(comp_seg["wv"], std_seg["wv"], std_seg["spn"], left=np.nan, right=np.nan)
-                    std_interp = pd.DataFrame({"wv": comp_seg["wv"].to_numpy(dtype=float), "spn": interp_spn})
-                    valid = np.isfinite(std_interp["spn"].to_numpy(dtype=float)) & np.isfinite(comp_seg["spn"].to_numpy(dtype=float))
+                    valid = segment["valid"]
                     if not np.any(valid):
                         continue
-                    a_v, r_v = _spt_optimize_av_rv(
-                        std_interp.loc[valid, ["wv", "spn"]],
-                        comp_seg.loc[valid, ["wv", "spn"]],
-                        fixed_r_v=fixed_r_v,
-                    )
+                    a_v = av_list[index]
+                    r_v = rv_list[index]
+                    if not (a_v is not None and r_v is not None and np.isfinite(float(a_v)) and np.isfinite(float(r_v))):
+                        warm_rv = fixed_rv_value if fixed_rv_value is not None and fixed_rv_value > 0 else 3.1
+                        warm_extinction = region["a_coeff"][valid] + region["b_coeff"][valid] / warm_rv
+                        warm = _spt_batch_fixed_extinction_fit(
+                            segment["interp_spn"][valid][np.newaxis, :],
+                            region["spn"][valid],
+                            warm_extinction,
+                        )
+                        initial_a_v = float(warm[0]) if warm.size and np.isfinite(warm[0]) else None
+                        a_v, r_v = _spt_optimize_av_rv_arrays(
+                            region["wv"][valid],
+                            segment["interp_spn"][valid],
+                            region["spn"][valid],
+                            fixed_r_v=fixed_rv_value if fixed_rv_value is not None and fixed_rv_value > 0 else None,
+                            initial_a_v=initial_a_v,
+                            initial_r_v=warm_rv,
+                            precomputed_ab=(region["a_coeff"][valid], region["b_coeff"][valid]),
+                        )
                     av_list[index] = a_v
                     rv_list[index] = r_v
-                    dered_seg = _spt_deredden_spectrum(std_seg[["wv", "spn"]], a_v, r_v)
-                    mask = std_df_dered["wv"].between(region_min, region_max)
-                    std_df_dered.loc[mask, "spn"] = dered_seg["spn"].to_numpy(dtype=float)
+                    std_df_dered.loc[segment["mask"], "spn"] = _spt_deredden_flux_values(
+                        segment["std_spn"],
+                        float(a_v),
+                        float(r_v),
+                        segment["std_a_coeff"],
+                        segment["std_b_coeff"],
+                    )
                 std_df_dered["esp_calc"] = _spt_prepare_errors(std_df_dered["spn"], std_df_dered.get("espn"))
-                for region_min, region_max in norm_regions_param:
-                    std_seg = std_df_dered[std_df_dered["wv"].between(region_min, region_max)]
-                    comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
-                    if std_seg.empty or comp_seg.empty:
-                        continue
-                    merged = comp_seg[["wv", "spn", "esp_calc"]].merge(
-                        std_seg[["wv", "spn", "esp_calc"]],
-                        on="wv",
-                        suffixes=("_comp", "_std"),
-                    )
-                    if merged.empty:
-                        continue
-                    valid = (
-                        np.isfinite(merged["spn_comp"].to_numpy(dtype=float))
-                        & np.isfinite(merged["spn_std"].to_numpy(dtype=float))
-                        & np.isfinite(merged["esp_calc_comp"].to_numpy(dtype=float))
-                        & (merged["esp_calc_comp"].to_numpy(dtype=float) > 0)
-                        & np.isfinite(merged["esp_calc_std"].to_numpy(dtype=float))
-                        & (merged["esp_calc_std"].to_numpy(dtype=float) > 0)
-                    )
-                    if not np.any(valid):
-                        continue
-                    scale = _spt_scale_to_reference(
-                        merged["wv"].to_numpy(dtype=float)[valid],
-                        merged["spn_comp"].to_numpy(dtype=float)[valid],
-                        merged["esp_calc_comp"].to_numpy(dtype=float)[valid],
-                        merged["wv"].to_numpy(dtype=float)[valid],
-                        merged["spn_std"].to_numpy(dtype=float)[valid],
-                        merged["esp_calc_std"].to_numpy(dtype=float)[valid],
-                    )
-                    if np.isfinite(scale):
-                        mask = std_df_dered["wv"].between(region_min, region_max)
-                        std_df_dered.loc[mask, "spn"] *= scale
-                        if "espn" in std_df_dered.columns:
-                            std_df_dered.loc[mask, "espn"] *= scale
-                        std_df_dered.loc[mask, "esp_calc"] *= scale
+                _spt_rescale_standard_to_comparison(std_df_dered, comparison_df, norm_regions_param)
                 metric_df = std_df_dered
                 spectrum_dereddened = _spt_spectrum_records(std_df_dered)
             except Exception:
@@ -2075,6 +2895,55 @@ def _precompute_spt_comparison(
                 spectrum_dereddened = None
                 av_list = [None] * len(norm_regions_param)
                 rv_list = [None] * len(norm_regions_param)
+        elif cloud_correction:
+            std_df_cloud = std_df.copy()
+            try:
+                for index, region in enumerate(comparison_regions):
+                    segment = item["segments"][index]
+                    if segment is None:
+                        continue
+                    valid = segment["valid"]
+                    if not np.any(valid):
+                        continue
+                    tau0 = cloud_tau_list[index]
+                    fitted_alpha = cloud_alpha_list[index]
+                    if not (tau0 is not None and fitted_alpha is not None and np.isfinite(float(tau0)) and np.isfinite(float(fitted_alpha))):
+                        warm_alpha = float(cloud_alpha)
+                        warm = _spt_batch_fixed_cloud_fit(
+                            segment["interp_spn"][valid][np.newaxis, :],
+                            region["spn"][valid],
+                            region["cloud_ratio"][valid],
+                            warm_alpha,
+                        )
+                        initial_tau0 = float(warm[0]) if warm.size and np.isfinite(warm[0]) else None
+                        tau0, fitted_alpha = _spt_optimize_cloud_params_arrays(
+                            region["wv"][valid],
+                            segment["interp_spn"][valid],
+                            region["spn"][valid],
+                            fixed_alpha=warm_alpha if cloud_alpha_fixed else None,
+                            lambda0=float(cloud_lambda0),
+                            initial_alpha=warm_alpha,
+                            initial_tau0=initial_tau0,
+                            precomputed_ratio=region["cloud_ratio"][valid],
+                            precomputed_log_ratio=region["cloud_log_ratio"][valid],
+                        )
+                    cloud_tau_list[index] = tau0
+                    cloud_alpha_list[index] = fitted_alpha
+                    std_df_cloud.loc[segment["mask"], "spn"] = _spt_cloud_correct_flux_values(
+                        segment["std_spn"],
+                        float(tau0),
+                        alpha=float(fitted_alpha),
+                        wavelength_ratio=segment["std_cloud_ratio"],
+                    )
+                std_df_cloud["esp_calc"] = _spt_prepare_errors(std_df_cloud["spn"], std_df_cloud.get("espn"))
+                _spt_rescale_standard_to_comparison(std_df_cloud, comparison_df, norm_regions_param)
+                metric_df = std_df_cloud
+                spectrum_cloud = _spt_spectrum_records(std_df_cloud)
+            except Exception:
+                metric_df = std_df
+                spectrum_cloud = None
+                cloud_tau_list = [None] * len(norm_regions_param)
+                cloud_alpha_list = [None] * len(norm_regions_param)
 
         residuals: list[np.ndarray] = []
         for region_min, region_max in norm_regions_param:
@@ -2090,7 +2959,12 @@ def _precompute_spt_comparison(
         if residuals:
             all_residuals = np.concatenate(residuals)
             n_bands = len(norm_regions_param)
-            params = 3 * n_bands if deredden else n_bands
+            if deredden:
+                params = 3 * n_bands
+            elif cloud_correction:
+                params = (2 if cloud_alpha_fixed else 3) * n_bands
+            else:
+                params = n_bands
             dof = len(all_residuals) - params if len(all_residuals) > params else len(all_residuals)
             reduced_chi2 = float(1e3 * np.nansum(all_residuals**2) / dof) if dof > 0 else None
             mad = float(1e3 * np.nanmedian(np.abs(all_residuals)))
@@ -2099,6 +2973,7 @@ def _precompute_spt_comparison(
             mad = None
 
         results.append({
+            "_spt_original_order": _pythonize(row.get("_spt_original_order")),
             "grid": row.get("grid"),
             "moca_sptgridhid": _pythonize(row.get("moca_sptgridhid")),
             "moca_specid": std_specid,
@@ -2113,11 +2988,21 @@ def _precompute_spt_comparison(
             "gravity_class": row.get("gravity_class"),
             "spectrum": spectrum_original,
             "spectrum_dered": spectrum_dereddened,
+            "spectrum_cloud": spectrum_cloud,
             "A_V": [_pythonize(value) for value in av_list],
             "R_V": [_pythonize(value) for value in rv_list],
+            "cloud_tau0": [_pythonize(value) for value in cloud_tau_list],
+            "cloud_alpha": _pythonize(float(cloud_alpha)),
+            "cloud_alpha_values": [_pythonize(value) for value in cloud_alpha_list],
+            "cloud_alpha_fixed": bool(cloud_alpha_fixed),
+            "cloud_lambda0": _pythonize(float(cloud_lambda0)),
             "reduced_chi2": _pythonize(reduced_chi2),
             "mad": _pythonize(mad),
         })
+
+    results.sort(key=lambda entry: int(entry.get("_spt_original_order") if entry.get("_spt_original_order") is not None else 10**12))
+    for entry in results:
+        entry.pop("_spt_original_order", None)
 
     payload = {
         "comparison": _spt_spectrum_records(comparison_df),
@@ -2133,6 +3018,10 @@ def _precompute_spt_comparison(
             "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
             "deredden": bool(deredden),
             "fixed_r_v": fixed_r_v,
+            "cloud_correction": bool(cloud_correction),
+            "cloud_alpha": _pythonize(float(cloud_alpha)),
+            "cloud_alpha_fixed": bool(cloud_alpha_fixed),
+            "cloud_lambda0": _pythonize(float(cloud_lambda0)),
             "average_resolving_power": spectrum_payload.get("meta", {}).get("average_resolving_power"),
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
@@ -2227,7 +3116,20 @@ def _mock_spt_spectrum_payload(specid: int) -> dict[str, Any]:
     }
 
 
-def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions_param: list[tuple[float, float]], deredden: bool, fixed_r_v: float | None) -> dict[str, Any]:
+def _mock_spt_compare(
+    args: dict[str, Any],
+    specid: int,
+    bins: int,
+    norm_regions_param: list[tuple[float, float]],
+    deredden: bool,
+    fixed_r_v: float | None,
+    cloud_correction: bool = False,
+    cloud_alpha: float = SPT_DEFAULT_CLOUD_ALPHA,
+    cloud_alpha_fixed: bool = True,
+    cloud_lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
+    only_standard_specid: int | None = None,
+    priority_standard_specid: int | None = None,
+) -> dict[str, Any]:
     grid_payload = _mock_spt_grid_payload()
     spectrum_payload = _mock_spt_spectrum_payload(specid)
     temp_args = dict(args)
@@ -2244,16 +3146,48 @@ def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
     results = []
+    if only_standard_specid is not None:
+        grid_data = grid_data[pd.to_numeric(grid_data["moca_specid"], errors="coerce") == int(only_standard_specid)].copy()
+    if priority_standard_specid is not None and not grid_data.empty:
+        grid_data = grid_data.copy()
+        grid_data["_spt_original_order"] = np.arange(len(grid_data))
+        grid_data["_spt_priority"] = (
+            pd.to_numeric(grid_data["moca_specid"], errors="coerce") != int(priority_standard_specid)
+        ).astype(int)
+        grid_data = grid_data.sort_values(["_spt_priority", "_spt_original_order"], kind="mergesort")
     for _, row in grid_data.iterrows():
         std_raw = grid_raw[grid_raw["moca_specid"].astype(int) == int(row["moca_specid"])]
         std_df = _spt_process_spectrum(std_raw, common_wv=common_wv, norm_regions_param=norm_regions_param)
         if std_df.empty:
             continue
         std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+        spectrum_original = _spt_spectrum_records(std_df)
+        spectrum_cloud = None
+        cloud_tau = [None] * len(norm_regions_param)
+        cloud_alpha_values = [None] * len(norm_regions_param)
+        metric_df = std_df
+        if cloud_correction:
+            std_df_cloud = std_df.copy()
+            for index, (region_min, region_max) in enumerate(norm_regions_param):
+                mask = std_df_cloud["wv"].between(region_min, region_max)
+                tau0 = 0.18 * (index + 1)
+                alpha_value = float(cloud_alpha) if cloud_alpha_fixed else float(cloud_alpha) + 0.15 * index
+                cloud_tau[index] = tau0
+                cloud_alpha_values[index] = alpha_value
+                cloud_seg = _spt_cloud_correct_spectrum(
+                    std_df_cloud.loc[mask, ["wv", "spn"]],
+                    tau0,
+                    alpha=alpha_value,
+                    lambda0=cloud_lambda0,
+                )
+                if not cloud_seg.empty:
+                    std_df_cloud.loc[mask, "spn"] = cloud_seg["spn"].to_numpy(dtype=float)
+            metric_df = std_df_cloud
+            spectrum_cloud = _spt_spectrum_records(std_df_cloud)
         residuals = []
         for region_min, region_max in norm_regions_param:
             comp_seg = comparison_df[comparison_df["wv"].between(region_min, region_max)]
-            std_seg = std_df[std_df["wv"].between(region_min, region_max)]
+            std_seg = metric_df[metric_df["wv"].between(region_min, region_max)]
             if comp_seg.empty or std_seg.empty:
                 continue
             scale = _spt_scale_to_reference(
@@ -2261,8 +3195,8 @@ def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions
                 std_seg["wv"], std_seg["spn"], std_seg["esp_calc"],
             )
             if np.isfinite(scale):
-                mask = std_df["wv"].between(region_min, region_max)
-                std_df.loc[mask, "spn"] *= scale
+                mask = metric_df["wv"].between(region_min, region_max)
+                metric_df.loc[mask, "spn"] *= scale
             interp_std = np.interp(comp_seg["wv"], std_seg["wv"], std_seg["spn"], left=np.nan, right=np.nan)
             diff = comp_seg["spn"].to_numpy(dtype=float) - interp_std
             diff = diff[np.isfinite(diff)]
@@ -2275,13 +3209,22 @@ def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions
             reduced_chi2 = None
         results.append({
             **row.to_dict(),
-            "spectrum": _spt_spectrum_records(std_df),
+            "spectrum": spectrum_original,
             "spectrum_dered": None,
+            "spectrum_cloud": _spt_spectrum_records(metric_df) if cloud_correction else spectrum_cloud,
             "A_V": [None] * len(norm_regions_param),
             "R_V": [None] * len(norm_regions_param),
+            "cloud_tau0": [_pythonize(value) for value in cloud_tau],
+            "cloud_alpha": _pythonize(float(cloud_alpha)),
+            "cloud_alpha_values": [_pythonize(value) for value in cloud_alpha_values],
+            "cloud_alpha_fixed": bool(cloud_alpha_fixed),
+            "cloud_lambda0": _pythonize(float(cloud_lambda0)),
             "reduced_chi2": _pythonize(reduced_chi2),
             "mad": None,
         })
+    results.sort(key=lambda entry: int(entry.get("_spt_original_order") if entry.get("_spt_original_order") is not None else 10**12))
+    for entry in results:
+        entry.pop("_spt_original_order", None)
     return {
         "comparison": _spt_spectrum_records(comparison_df),
         "comparisonMetadata": spectrum_payload["metadata"],
@@ -2296,6 +3239,10 @@ def _mock_spt_compare(args: dict[str, Any], specid: int, bins: int, norm_regions
             "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
             "deredden": bool(deredden),
             "fixed_r_v": fixed_r_v,
+            "cloud_correction": bool(cloud_correction),
+            "cloud_alpha": _pythonize(float(cloud_alpha)),
+            "cloud_alpha_fixed": bool(cloud_alpha_fixed),
+            "cloud_lambda0": _pythonize(float(cloud_lambda0)),
             "average_resolving_power": spectrum_payload["meta"]["average_resolving_power"],
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
@@ -2311,6 +3258,2485 @@ def _spt_grid_response_payload(payload: dict[str, Any], include_spectra: bool) -
     return out
 
 
+def _parse_spectra_explorer_specids(args: dict[str, Any]) -> list[int]:
+    raw = args.get("specids") or args.get("moca_specid") or args.get("specid") or ""
+    specids: list[int] = []
+    for item in str(raw).replace(";", ",").split(","):
+        item = item.strip()
+        if item.isdigit():
+            specid = int(item)
+            if specid not in specids:
+                specids.append(specid)
+    if not specids:
+        specids = list(SPECTRA_EXPLORER_DEFAULT_SPECIDS)
+    return specids[:max(1, SPECTRA_EXPLORER_MAX_SELECTED)]
+
+
+def _spectra_explorer_cache_key(args: dict[str, Any], specids: list[int]) -> str:
+    bins = _spectra_explorer_bins_per_micron(args)
+    return f"{_spt_db_cache_key(args)}|spectra-explorer|bins:{bins or 'raw'}|" + ",".join(str(int(specid)) for specid in specids)
+
+
+def _spectra_explorer_bins_per_micron(args: dict[str, Any]) -> int:
+    raw = args.get("bins") or args.get("bins_per_micron") or args.get("spe_bins")
+    if raw is None or raw == "":
+        raw = SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON
+    try:
+        bins = int(raw)
+    except (TypeError, ValueError):
+        bins = SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON
+    return max(0, min(bins, 20000))
+
+
+def _spectra_explorer_label(row: dict[str, Any]) -> str:
+    specid = int(row["moca_specid"]) if row.get("moca_specid") is not None else "unknown"
+    designation = row.get("designation") or row.get("spectrum_name") or f"specid{specid}"
+    label = f"specid{specid}"
+    if row.get("moca_oid") is not None:
+        label += f",oid{int(row['moca_oid'])}"
+    label += f": {designation}"
+    if row.get("spectral_type"):
+        label += f" ({row['spectral_type']})"
+    if row.get("moca_instid"):
+        label += f" with {row['moca_instid']}"
+    if row.get("instrument_mode_name"):
+        label += f" in {row['instrument_mode_name']} mode"
+    if row.get("data_collection_date"):
+        label += f" ({row['data_collection_date']})"
+    return label
+
+
+def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
+    search_text = (query or "").strip()
+    selected_specids = selected_specids or []
+    if not search_text and not selected_specids:
+        return {"options": [], "values": [], "meta": {"row_count": 0}}
+
+    search_int: int | None = None
+    if search_text.isdigit():
+        search_int = int(search_text)
+
+    base_query = """
+        SELECT
+            ms.moca_specid,
+            ms.moca_oid,
+            ms.moca_instid,
+            ms.instrument_mode_name,
+            ms.spectrum_name,
+            ms.data_collection_date,
+            COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+            mo.designation,
+            spt.spectral_type
+        FROM moca_spectra ms
+        LEFT JOIN moca_objects mo USING(moca_oid)
+        LEFT JOIN (
+            SELECT moca_oid, spectral_type
+            FROM data_spectral_types
+            WHERE adopted = 1
+        ) spt USING(moca_oid)
+        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+            AND COALESCE(ms.ignored, 0) = 0
+    """
+
+    rows: list[dict[str, Any]] = []
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        if selected_specids:
+            specid_clause = ",".join(str(int(specid)) for specid in selected_specids)
+            rows.extend(_records(_read_sql(conn, base_query + f"""
+                AND ms.moca_specid IN ({specid_clause})
+                ORDER BY FIELD(ms.moca_specid, {specid_clause})
+            """)))
+        if search_text:
+            rows.extend(_records(_read_sql(conn, base_query + """
+                AND (
+                    (:search_int IS NOT NULL AND (ms.moca_specid = :search_int OR ms.moca_oid = :search_int))
+                    OR CONCAT('specid', ms.moca_specid) LIKE :search_prefix
+                    OR CONCAT('oid', ms.moca_oid) LIKE :search_prefix
+                    OR COALESCE(mo.designation, '') LIKE :search_prefix
+                    OR COALESCE(ms.spectrum_name, '') LIKE :search_like
+                    OR COALESCE(ms.moca_instid, '') LIKE :search_like
+                    OR COALESCE(ms.instrument_mode_name, '') LIKE :search_like
+                    OR EXISTS (
+                        SELECT 1
+                        FROM mechanics_all_designations mad
+                        WHERE mad.moca_oid = ms.moca_oid
+                            AND mad.designation LIKE :search_prefix
+                    )
+                )
+                ORDER BY
+                    CASE
+                        WHEN :search_int IS NOT NULL AND ms.moca_specid = :search_int THEN 0
+                        WHEN :search_int IS NOT NULL AND ms.moca_oid = :search_int THEN 1
+                        ELSE 2
+                    END,
+                    ms.moca_specid
+                LIMIT 100
+            """, {
+                "search_int": search_int,
+                "search_prefix": f"{search_text}%",
+                "search_like": f"%{search_text}%",
+            })))
+
+    seen: set[int] = set()
+    options = []
+    for row in rows:
+        if row.get("moca_specid") is None:
+            continue
+        specid = int(row["moca_specid"])
+        if specid in seen:
+            continue
+        seen.add(specid)
+        options.append({**row, "value": specid, "label": _spectra_explorer_label(row)})
+    values = [specid for specid in selected_specids if specid in seen]
+    return {"options": options, "values": values, "meta": {"row_count": len(options)}}
+
+
+def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> dict[str, Any]:
+    clean_specids = [int(specid) for specid in specids if int(specid) > 0]
+    if not clean_specids:
+        raise ValueError("At least one numeric moca_specid is required")
+    bins_per_micron = _spectra_explorer_bins_per_micron(args)
+    cache_key = _spectra_explorer_cache_key(args, clean_specids)
+    now = time.time()
+    cached = _SPECTRA_EXPLORER_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    specid_clause = ",".join(str(int(specid)) for specid in clean_specids)
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        metadata_rows = _records(_read_sql(conn, f"""
+            SELECT
+                ms.moca_specid,
+                ms.moca_oid,
+                ms.moca_instid,
+                ms.instrument_mode_name,
+                ms.spectrum_name,
+                ms.data_collection_date,
+                COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+                mo.designation,
+                spt.spectral_type
+            FROM moca_spectra ms
+            LEFT JOIN moca_objects mo USING(moca_oid)
+            LEFT JOIN data_spectral_types spt
+                ON spt.moca_oid = ms.moca_oid
+                AND spt.adopted = 1
+            WHERE ms.moca_specid IN ({specid_clause})
+                AND COALESCE(ms.ignored, 0) = 0
+            ORDER BY FIELD(ms.moca_specid, {specid_clause})
+        """))
+        valid_specids = [
+            int(row["moca_specid"])
+            for row in metadata_rows
+            if row.get("moca_specid") is not None
+        ] or clean_specids
+        valid_specid_clause = ",".join(str(int(specid)) for specid in valid_specids)
+        if bins_per_micron:
+            bin_factor = bins_per_micron / 10000.0
+            rows_df = _read_sql(conn, f"""
+                SELECT
+                    ds.moca_specid,
+                    AVG(ds.wavelength_angstrom) * 1e-4 AS lam,
+                    AVG(ds.flux_flambda) AS sp,
+                    SQRT(AVG(ds.flux_flambda_unc * ds.flux_flambda_unc)) AS esp
+                FROM data_spectra ds
+                WHERE ds.moca_specid IN ({valid_specid_clause})
+                    AND ds.ignored = 0
+                    AND ds.wavelength_angstrom IS NOT NULL
+                    AND ds.flux_flambda IS NOT NULL
+                GROUP BY ds.moca_specid, FLOOR(ds.wavelength_angstrom * {bin_factor:.12g})
+                ORDER BY ds.moca_specid, lam
+            """)
+        else:
+            rows_df = _read_sql(conn, f"""
+                SELECT
+                    ds.moca_specid,
+                    ds.wavelength_angstrom * 1e-4 AS lam,
+                    ds.flux_flambda AS sp,
+                    ds.flux_flambda_unc AS esp
+                FROM data_spectra ds
+                WHERE ds.moca_specid IN ({valid_specid_clause})
+                    AND ds.ignored = 0
+                    AND ds.wavelength_angstrom IS NOT NULL
+                    AND ds.flux_flambda IS NOT NULL
+                ORDER BY ds.moca_specid, ds.wavelength_angstrom
+            """)
+
+    metadata_by_specid: dict[int, dict[str, Any]] = {}
+    for row in metadata_rows:
+        if row.get("moca_specid") is None:
+            continue
+        row = {**row, "label": _spectra_explorer_label(row)}
+        metadata_by_specid[int(row["moca_specid"])] = row
+
+    spectra = []
+    total_rows = 0
+    for specid in clean_specids:
+        spec_rows = rows_df[rows_df["moca_specid"].astype(int) == int(specid)] if not rows_df.empty else pd.DataFrame()
+        metadata = metadata_by_specid.get(int(specid), {"moca_specid": int(specid), "label": f"specid{int(specid)}"})
+        average_resolving_power = (
+            _spt_average_resolving_power(spec_rows["lam"].to_numpy(dtype=float))
+            if not spec_rows.empty else None
+        )
+        row_records = _records(spec_rows)
+        total_rows += len(row_records)
+        spectra.append({
+            "moca_specid": int(specid),
+            "metadata": metadata,
+            "rows": row_records,
+            "meta": {
+                "row_count": len(row_records),
+                "average_resolving_power": _pythonize(average_resolving_power),
+                "bins_per_micron": bins_per_micron or None,
+            },
+        })
+
+    payload = {
+        "spectra": spectra,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "specid_count": len(spectra),
+            "row_count": total_rows,
+            "bins_per_micron": bins_per_micron or None,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _SPECTRA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_spectra_explorer_search(query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
+    selected_specids = selected_specids or []
+    rows = [
+        {"moca_specid": 59595, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "spectral_type": "T2.5", "moca_instid": "SpeX", "instrument_mode_name": "prism", "data_collection_date": "2013-10-20", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A"},
+        {"moca_specid": 13510, "moca_oid": 10995, "designation": "2MASS J05591914-1404488", "spectral_type": "T4.5", "moca_instid": "SpeX", "instrument_mode_name": "prism", "data_collection_date": "2006-11-03", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A"},
+        {"moca_specid": 8168, "moca_oid": 2616, "designation": "2MASS J03552337+1133437", "spectral_type": "L5 gamma", "moca_instid": "NIRSPEC", "instrument_mode_name": "low-res", "data_collection_date": "2016-09-18", "spectrum_name": "mock NIRSPEC", "flux_units": "W/m2/A"},
+    ]
+    q = str(query or "").strip().lower()
+    if selected_specids:
+        rows = [row for row in rows if int(row["moca_specid"]) in set(map(int, selected_specids))]
+    elif q:
+        rows = [
+            row for row in rows
+            if q in _spectra_explorer_label(row).lower()
+            or q in str(row.get("moca_oid") or "").lower()
+            or q in str(row.get("designation") or "").lower()
+        ]
+    options = [{**row, "value": row["moca_specid"], "label": _spectra_explorer_label(row)} for row in rows]
+    return {
+        "options": options,
+        "values": [specid for specid in selected_specids if specid in {row["moca_specid"] for row in rows}],
+        "meta": {"row_count": len(options)},
+    }
+
+
+def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
+    selected = specids or list(SPECTRA_EXPLORER_DEFAULT_SPECIDS)
+    search_payload = _mock_spectra_explorer_search("", selected)
+    metadata_by_specid = {int(row["moca_specid"]): row for row in search_payload["options"]}
+    rng = np.random.default_rng(1234)
+    spectra = []
+    total_rows = 0
+    for index, specid in enumerate(selected):
+        specid = int(specid)
+        low_res = index == 2 or specid == 8168
+        step = 0.055 if low_res else 0.0025
+        wave = np.arange(0.82, 2.48, step)
+        water = 0.18 * np.exp(-0.5 * ((wave - 1.4) / 0.045) ** 2) + 0.24 * np.exp(-0.5 * ((wave - 1.9) / 0.07) ** 2)
+        methane = (0.08 + 0.04 * index) * np.exp(-0.5 * ((wave - 1.65) / 0.08) ** 2)
+        slope = 1.0 + 0.12 * np.sin(wave * (4.8 + index)) + 0.08 * (index - 1) * (wave - 1.55)
+        flux_flambda_um = np.clip(slope - water - methane, 0.04, None) * (1.2 + 0.3 * index) * 1e-15
+        flux_flambda_a = flux_flambda_um / 10000.0
+        err = np.abs(flux_flambda_a) * (0.03 + 0.02 * index)
+        noise = rng.normal(0.0, np.nanmedian(err), size=wave.size)
+        rows = [
+            {
+                "moca_specid": specid,
+                "lam": round(float(x), 6),
+                "sp": float(y + dy),
+                "esp": float(e),
+            }
+            for x, y, dy, e in zip(wave, flux_flambda_a, noise, err)
+        ]
+        metadata = metadata_by_specid.get(specid) or {
+            "moca_specid": specid,
+            "moca_oid": 900000 + specid,
+            "designation": f"Mock spectrum {specid}",
+            "spectral_type": "L/T",
+            "moca_instid": "mock",
+            "instrument_mode_name": "synthetic",
+            "spectrum_name": f"mock spectrum {specid}",
+            "flux_units": "W/m2/A",
+        }
+        spectra.append({
+            "moca_specid": specid,
+            "metadata": {**metadata, "label": _spectra_explorer_label(metadata)},
+            "rows": rows,
+            "meta": {
+                "row_count": len(rows),
+                "average_resolving_power": _spt_average_resolving_power(wave),
+            },
+        })
+        total_rows += len(rows)
+    return {
+        "spectra": spectra,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "specid_count": len(spectra),
+            "row_count": total_rows,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _parse_xyzuvw_csv_ids(raw: Any, default: tuple[str, ...] = ()) -> list[str]:
+    values: list[str] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip()
+        if value and SAFE_ID_RE.match(value) and value not in values:
+            values.append(value)
+    return values or list(default)
+
+
+def _parse_xyzuvw_oids(raw: Any) -> list[int]:
+    oids: list[int] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip()
+        if value.isdigit():
+            oid = int(value)
+            if oid not in oids:
+                oids.append(oid)
+    return oids[:100]
+
+
+def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
+    axes_raw = str(args.get("axes") or "xyz").lower()
+    axes = [axis for axis in axes_raw if axis in {"x", "y", "z", "u", "v", "w"}]
+    if len(axes) != 3 or len(set(axes)) != 3:
+        axes = ["x", "y", "z"]
+    aids = _parse_xyzuvw_csv_ids(
+        args.get("asso") or args.get("moca_aid") or args.get("aid"),
+        XYZUVW_DEFAULT_AIDS,
+    )
+    mtids = _parse_xyzuvw_csv_ids(args.get("mtid"), XYZUVW_DEFAULT_MTIDS)
+    oids = _parse_xyzuvw_oids(args.get("oid") or args.get("moca_oid"))
+    checkbox_values = {
+        item.strip().lower()
+        for item in str(args.get("checkbox") or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+    for key in ("models", "errors", "hover", "assmem", "likely", "asscen"):
+        if _as_bool(args.get(key)):
+            checkbox_values.add(key)
+    bsmdid_raw = str(args.get("bsmdid") or args.get("banyan_version") or "latest").strip()
+    bsmdid = bsmdid_raw if bsmdid_raw == "latest" or bsmdid_raw.isdigit() else "latest"
+    return {
+        "axes": axes,
+        "aids": aids,
+        "mtids": mtids,
+        "oids": oids,
+        "bsmdid": bsmdid,
+        "likely": "likely" in checkbox_values,
+        "labels": "asscen" in checkbox_values,
+        "checkboxes": sorted(checkbox_values),
+    }
+
+
+def _sql_in_clause(prefix: str, values: list[str]) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    placeholders = []
+    for index, value in enumerate(values):
+        key = f"{prefix}_{index}"
+        placeholders.append(f":{key}")
+        params[key] = value
+    return ",".join(placeholders) or "NULL", params
+
+
+def _xyzuvw_covariance_key(axis1: str, axis2: str) -> str:
+    order = ["x", "y", "z", "u", "v", "w"]
+    sorted_axes = sorted([axis1, axis2], key=order.index)
+    return f"{sorted_axes[0]}{sorted_axes[1]}_covar"
+
+
+def _xyzuvw_db_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        cfg["host"],
+        cfg["username"],
+        cfg["dbname"],
+        "".join(selection["axes"]),
+        ",".join(selection["aids"]),
+        ",".join(selection["mtids"]),
+        ",".join(str(oid) for oid in selection["oids"]),
+        str(selection["bsmdid"]),
+        str(int(selection["likely"])),
+        str(int(selection["labels"])),
+        str(int("models" in selection["checkboxes"])),
+        str(int("errors" in selection["checkboxes"])),
+    ])
+
+
+def _load_xyzuvw_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _parse_xyzuvw_selection(args)
+    option_aids = list(dict.fromkeys([*selection["aids"], *XYZUVW_DEFAULT_AIDS]))
+    cache_key = f"{_spt_db_cache_key(args)}|xyzuvw-options|{','.join(option_aids)}"
+    now = time.time()
+    cached = _XYZUVW_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    aid_clause, aid_params = _sql_in_clause("option_aid", option_aids)
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        associations = _records(_read_sql(conn, """
+            SELECT ma.moca_aid, ma.name
+            FROM moca_associations ma
+            WHERE ma.moca_aid IN ({aid_clause})
+            ORDER BY ma.moca_aid
+        """.format(aid_clause=aid_clause), aid_params))
+        mtids = _records(_read_sql(conn, """
+            SELECT mt.moca_mtid, mt.name, mt.description
+            FROM moca_membership_types mt
+            ORDER BY mt.level DESC, mt.moca_mtid
+        """))
+        versions = _records(_read_sql(conn, """
+            SELECT DISTINCT dbs.moca_bsmdid
+            FROM data_banyan_sigma_models dbs
+            WHERE dbs.moca_bsmdid IS NOT NULL
+            ORDER BY dbs.moca_bsmdid DESC
+        """))
+
+    payload = {
+        "associations": [
+            {
+                "value": row.get("moca_aid"),
+                "label": f"{row.get('moca_aid')} - {row.get('name')}" if row.get("name") else row.get("moca_aid"),
+            }
+            for row in associations
+            if row.get("moca_aid")
+        ],
+        "mtids": [
+            {
+                "value": row.get("moca_mtid"),
+                "label": f"{row.get('moca_mtid')} - {row.get('name')}" if row.get("name") else row.get("moca_mtid"),
+                "description": row.get("description"),
+            }
+            for row in mtids
+            if row.get("moca_mtid")
+        ],
+        "versions": [{"value": "latest", "label": "Latest available"}] + [
+            {"value": str(row["moca_bsmdid"]), "label": str(row["moca_bsmdid"])}
+            for row in versions
+            if row.get("moca_bsmdid") is not None
+        ],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _XYZUVW_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _search_xyzuvw_associations_from_db(args: dict[str, Any], query: str) -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        return {"options": [], "meta": {"row_count": 0}}
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT ma.moca_aid, ma.name
+            FROM moca_associations ma
+            WHERE ma.moca_aid LIKE :prefix
+                OR ma.name LIKE :contains
+            ORDER BY
+                CASE WHEN ma.moca_aid LIKE :prefix THEN 0 ELSE 1 END,
+                ma.moca_aid
+            LIMIT 80
+        """, {"prefix": f"{query}%", "contains": f"%{query}%"}))
+    options = [
+        {
+            "value": row.get("moca_aid"),
+            "label": f"{row.get('moca_aid')} - {row.get('name')}" if row.get("name") else row.get("moca_aid"),
+        }
+        for row in rows
+        if row.get("moca_aid")
+    ]
+    return {"options": options, "meta": {"row_count": len(options)}}
+
+
+def _xyzuvw_model_query(selection: dict[str, Any], aid_clause: str) -> str:
+    columns = """
+        dbs2.moca_aid,
+        dbs2.moca_bsmdid,
+        dbs2.coeff_index,
+        dbs2.coeff_amplitude,
+        dbs2.x_cen,
+        dbs2.y_cen,
+        dbs2.z_cen,
+        dbs2.u_cen,
+        dbs2.v_cen,
+        dbs2.w_cen,
+        dbs2.xx_covar,
+        dbs2.xy_covar,
+        dbs2.xz_covar,
+        dbs2.xu_covar,
+        dbs2.xv_covar,
+        dbs2.xw_covar,
+        dbs2.yy_covar,
+        dbs2.yz_covar,
+        dbs2.yu_covar,
+        dbs2.yv_covar,
+        dbs2.yw_covar,
+        dbs2.zz_covar,
+        dbs2.zu_covar,
+        dbs2.zv_covar,
+        dbs2.zw_covar,
+        dbs2.uu_covar,
+        dbs2.uv_covar,
+        dbs2.uw_covar,
+        dbs2.vv_covar,
+        dbs2.vw_covar,
+        dbs2.ww_covar
+    """
+    if selection["bsmdid"] == "latest":
+        return f"""
+            SELECT {columns}
+            FROM data_banyan_sigma_models dbs2
+            JOIN (
+                SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, dbs.moca_aid
+                FROM data_banyan_sigma_models dbs
+                WHERE dbs.moca_aid IN ({aid_clause})
+                GROUP BY dbs.moca_aid
+            ) inq USING(moca_aid, moca_bsmdid)
+            ORDER BY dbs2.moca_aid, dbs2.coeff_index
+        """
+    return f"""
+        SELECT {columns}
+        FROM data_banyan_sigma_models dbs2
+        WHERE dbs2.moca_aid IN ({aid_clause})
+            AND dbs2.moca_bsmdid = :bsmdid
+        ORDER BY dbs2.moca_aid, dbs2.coeff_index
+    """
+
+
+def _xyzuvw_scale_value(axis: str, value: Any) -> float | None:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    return numeric * XYZUVW_C_VALUE if axis in {"u", "v", "w"} else numeric
+
+
+def _xyzuvw_scale_covar(axis1: str, axis2: str, value: Any) -> float | None:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    kin1 = axis1 in {"u", "v", "w"}
+    kin2 = axis2 in {"u", "v", "w"}
+    if kin1 and kin2:
+        return numeric * XYZUVW_C_VALUE * XYZUVW_C_VALUE
+    if kin1 or kin2:
+        return numeric * XYZUVW_C_VALUE
+    return numeric
+
+
+def _xyzuvw_model_components(models: list[dict[str, Any]], axes: list[str]) -> list[dict[str, Any]]:
+    components: list[dict[str, Any]] = []
+    for model in models:
+        mean_values = [_xyzuvw_scale_value(axis, model.get(f"{axis}_cen")) for axis in axes]
+        if any(value is None for value in mean_values):
+            continue
+        covariance_values = [
+            [
+                _xyzuvw_scale_covar(axis1, axis2, model.get(_xyzuvw_covariance_key(axis1, axis2)))
+                for axis2 in axes
+            ]
+            for axis1 in axes
+        ]
+        if any(value is None for row in covariance_values for value in row):
+            continue
+        covariance = np.asarray(covariance_values, dtype=float)
+        covariance = 0.5 * (covariance + covariance.T)
+        try:
+            eigenvalues = np.linalg.eigvalsh(covariance)
+        except np.linalg.LinAlgError:
+            continue
+        if not np.all(np.isfinite(eigenvalues)) or np.any(eigenvalues <= 0):
+            continue
+        weight = _safe_float(model.get("coeff_amplitude"))
+        components.append({
+            "mean": np.asarray(mean_values, dtype=float),
+            "covariance": covariance,
+            "weight": float(weight if weight is not None and weight > 0 else 1.0),
+        })
+    return components
+
+
+def _xyzuvw_density_threshold(density: np.ndarray, contour: float) -> float | None:
+    sorted_density = np.sort(density.ravel())[::-1]
+    sorted_density = sorted_density[np.isfinite(sorted_density) & (sorted_density > 0)]
+    if sorted_density.size == 0:
+        return None
+    cumulative = np.cumsum(sorted_density)
+    total = cumulative[-1]
+    if not np.isfinite(total) or total <= 0:
+        return None
+    cumulative /= total
+    index = int(np.searchsorted(cumulative, contour, side="left"))
+    index = min(max(index, 0), sorted_density.size - 1)
+    level = float(sorted_density[index])
+    min_value = float(np.nanmin(density))
+    max_value = float(np.nanmax(density))
+    if not math.isfinite(level) or level <= min_value or level >= max_value:
+        eps = max((max_value - min_value) * 1e-6, 1e-300)
+        level = min(max(level, min_value + eps), max_value - eps)
+    return level if math.isfinite(level) and min_value < level < max_value else None
+
+
+def _xyzuvw_model_surfaces(models: list[dict[str, Any]], axes: list[str]) -> list[dict[str, Any]]:
+    try:
+        from skimage.measure import marching_cubes
+    except Exception:
+        return []
+
+    grid_points = max(24, min(120, int(XYZUVW_MODEL_GRID_POINTS)))
+    surfaces: list[dict[str, Any]] = []
+    models_by_aid: dict[str, list[dict[str, Any]]] = {}
+    for model in models:
+        aid = str(model.get("moca_aid") or "")
+        if aid:
+            models_by_aid.setdefault(aid, []).append(model)
+
+    for aid, aid_models in models_by_aid.items():
+        components = _xyzuvw_model_components(aid_models, axes)
+        if not components:
+            continue
+        means = np.asarray([component["mean"] for component in components], dtype=float)
+        sigmas = np.asarray([
+            np.sqrt(np.maximum(np.diag(component["covariance"]), 1e-12))
+            for component in components
+        ], dtype=float)
+        lower = np.min(means - XYZUVW_MODEL_SIGMA_SCALE * sigmas, axis=0)
+        upper = np.max(means + XYZUVW_MODEL_SIGMA_SCALE * sigmas, axis=0)
+        if not np.all(np.isfinite(lower)) or not np.all(np.isfinite(upper)) or np.any(upper <= lower):
+            continue
+
+        axis_vectors = [np.linspace(float(lower[index]), float(upper[index]), grid_points) for index in range(3)]
+        grid = np.meshgrid(*axis_vectors, indexing="ij")
+        points = np.column_stack([grid[0].ravel(), grid[1].ravel(), grid[2].ravel()])
+        density_flat = np.zeros(points.shape[0], dtype=float)
+        for component in components:
+            try:
+                inverse = np.linalg.inv(component["covariance"])
+                determinant = float(np.linalg.det(component["covariance"]))
+            except np.linalg.LinAlgError:
+                continue
+            if not math.isfinite(determinant) or determinant <= 0:
+                continue
+            delta = points - component["mean"]
+            q = np.einsum("ij,jk,ik->i", delta, inverse, delta, optimize=True)
+            norm = component["weight"] / (((2 * math.pi) ** 1.5) * math.sqrt(determinant))
+            density_flat += norm * np.exp(-0.5 * np.clip(q, 0, 200))
+        density = density_flat.reshape((grid_points, grid_points, grid_points))
+        if not np.isfinite(density).any() or float(np.nanmax(density)) <= 0:
+            continue
+
+        for label, contour, opacity in XYZUVW_MODEL_CONTOURS:
+            level = _xyzuvw_density_threshold(density, contour)
+            if level is None:
+                continue
+            try:
+                verts, faces, _, _ = marching_cubes(density, level=level)
+            except Exception:
+                continue
+            if len(verts) == 0 or len(faces) == 0:
+                continue
+            verts_real = np.column_stack([
+                np.interp(verts[:, 0], (0, grid_points - 1), (axis_vectors[0][0], axis_vectors[0][-1])),
+                np.interp(verts[:, 1], (0, grid_points - 1), (axis_vectors[1][0], axis_vectors[1][-1])),
+                np.interp(verts[:, 2], (0, grid_points - 1), (axis_vectors[2][0], axis_vectors[2][-1])),
+            ])
+            surfaces.append({
+                "moca_aid": aid,
+                "label": label,
+                "contour": contour,
+                "opacity": opacity,
+                "x": np.round(verts_real[:, 0].astype(float), 4).tolist(),
+                "y": np.round(verts_real[:, 1].astype(float), 4).tolist(),
+                "z": np.round(verts_real[:, 2].astype(float), 4).tolist(),
+                "i": faces[:, 0].astype(int).tolist(),
+                "j": faces[:, 1].astype(int).tolist(),
+                "k": faces[:, 2].astype(int).tolist(),
+            })
+    return surfaces
+
+
+def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _parse_xyzuvw_selection(args)
+    cache_key = _xyzuvw_db_cache_key(args, selection)
+    now = time.time()
+    cached = _XYZUVW_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    aid_clause, aid_params = _sql_in_clause("aid", selection["aids"])
+    mtid_clause, mtid_params = _sql_in_clause("mtid", selection["mtids"])
+    params: dict[str, Any] = {**aid_params, **mtid_params}
+    if selection["bsmdid"] != "latest":
+        params["bsmdid"] = int(selection["bsmdid"])
+
+    likely_filter = ""
+    if selection["likely"]:
+        likely_filter = "AND COALESCE(sam.banyan_prob, cbs.ya_prob) >= 90"
+    include_covariances = "errors" in selection["checkboxes"]
+    covariance_columns = ""
+    covariance_joins = ""
+    if include_covariances:
+        spatial_covariances = {"xx_covar", "yy_covar", "zz_covar", "xy_covar", "xz_covar", "yz_covar"}
+        requested_covariances = []
+        for axis_index, axis1 in enumerate(selection["axes"]):
+            for axis2 in selection["axes"][axis_index:]:
+                key = _xyzuvw_covariance_key(axis1, axis2)
+                if key not in requested_covariances:
+                    requested_covariances.append(key)
+        xyz_covariances = [key for key in requested_covariances if key in spatial_covariances]
+        uvw_covariances = [key for key in requested_covariances if key not in spatial_covariances]
+        covariance_columns = "\n".join(
+            [f"                xyz.{key}," for key in xyz_covariances]
+            + [f"                uvw.{key}," for key in uvw_covariances]
+        )
+        if covariance_columns:
+            covariance_columns += "\n"
+        join_parts = []
+        if xyz_covariances:
+            join_parts.append("""
+            LEFT JOIN calc_xyz xyz
+                ON xyz.moca_oid = sam.moca_oid
+                {xyz_public_filter}
+            """)
+        if uvw_covariances:
+            join_parts.append("""
+            LEFT JOIN calc_uvw uvw
+                ON uvw.moca_oid = sam.moca_oid
+                AND uvw.moca_aid = sam.moca_aid
+                {uvw_public_filter}
+            """)
+        covariance_joins = "".join(join_parts).format(
+            xyz_public_filter="AND xyz.is_public = 0" if _is_private_db(args) else "",
+            uvw_public_filter="AND uvw.is_public = 0" if _is_private_db(args) else "",
+        )
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        active_model_rows = _records(_read_sql(conn, """
+            SELECT mbsm.moca_bsmdid
+            FROM moca_banyan_sigma_models mbsm
+            WHERE mbsm.adopted = 1
+            ORDER BY mbsm.moca_bsmdid DESC
+            LIMIT 1
+        """))
+        params["active_bsmdid"] = (
+            active_model_rows[0].get("moca_bsmdid") if active_model_rows else None
+        )
+        cbs_public_filter = "AND cbs.is_public = 0" if _is_private_db(args) else ""
+        members_df = _read_sql(conn, f"""
+            SELECT
+                sam.designation,
+                sam.moca_aid,
+                sam.moca_mtid,
+                sam.spectral_type AS spt,
+                sam.dr3_ruwe,
+                sam.moca_oid,
+                sam.x_pc AS x,
+                sam.y_pc AS y,
+                sam.z_pc AS z,
+                {covariance_columns}
+                {XYZUVW_C_VALUE} * sam.u_kms AS u,
+                {XYZUVW_C_VALUE} * sam.v_kms AS v,
+                {XYZUVW_C_VALUE} * sam.w_kms AS w,
+                cbsd.x_opt,
+                cbsd.y_opt,
+                cbsd.z_opt,
+                {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
+                {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
+                {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
+                COALESCE(sam.banyan_prob, cbs.ya_prob) AS ya_prob,
+                cbs.uvw_sep,
+                cbs.xyz_sep,
+                cbs.observables
+            FROM summary_all_members sam
+            {covariance_joins}
+            LEFT JOIN calc_banyan_sigma cbs
+                ON cbs.moca_oid = sam.moca_oid
+                AND cbs.moca_aid = sam.moca_aid
+                AND cbs.moca_bsmdid = :active_bsmdid
+                AND cbs.max_observables = 1
+                {cbs_public_filter}
+            LEFT JOIN calc_banyan_sigma_details cbsd
+                ON cbs.id = cbsd.cbs_id
+                AND cbsd.moca_aid = sam.moca_aid
+            WHERE sam.moca_aid IN ({aid_clause})
+                AND sam.moca_mtid IN ({mtid_clause})
+                {likely_filter}
+            ORDER BY sam.moca_aid, sam.moca_mtid, sam.moca_oid
+            LIMIT {XYZUVW_MAX_OBJECTS}
+        """, params)
+        models_df = _read_sql(conn, _xyzuvw_model_query(selection, aid_clause), params)
+
+        objects_df = pd.DataFrame()
+        if selection["oids"]:
+            oid_clause = ",".join(str(int(oid)) for oid in selection["oids"])
+            objects_df = _read_sql(conn, f"""
+                SELECT
+                    mo.designation,
+                    COALESCE(mv.moca_aid, 'N/A') AS moca_aid,
+                    'N/A' AS moca_mtid,
+                    cspt.spectral_type AS spt,
+                    dr3.RUWE AS dr3_ruwe,
+                    mo.moca_oid,
+                    xyz.x_pc AS x,
+                    xyz.y_pc AS y,
+                    xyz.z_pc AS z,
+                    {XYZUVW_C_VALUE} * uvw.u_kms AS u,
+                    {XYZUVW_C_VALUE} * uvw.v_kms AS v,
+                    {XYZUVW_C_VALUE} * uvw.w_kms AS w,
+                    mo.ra,
+                    mo.`dec`,
+                    dpm.pmra_masyr,
+                    dpm.pmdec_masyr,
+                    cdist.distance_pc,
+                    crvc.radial_velocity_kms
+                FROM moca_objects mo
+                LEFT JOIN calc_banyan_sigma_best mv
+                    ON mv.moca_oid = mo.moca_oid
+                LEFT JOIN calc_xyz xyz
+                    ON xyz.moca_oid = mo.moca_oid
+                LEFT JOIN calc_uvw_raw uvw
+                    ON uvw.moca_oid = mo.moca_oid
+                LEFT JOIN calc_radial_velocities_corrected crvc
+                    ON crvc.moca_oid = mo.moca_oid
+                    AND crvc.moca_aid = mv.moca_aid
+                LEFT JOIN cat_gaiadr3 dr3
+                    ON dr3.moca_oid = mo.moca_oid
+                LEFT JOIN data_spectral_types cspt
+                    ON cspt.moca_oid = mo.moca_oid
+                    AND cspt.adopted = 1
+                LEFT JOIN data_distances cdist
+                    ON cdist.moca_oid = mo.moca_oid
+                    AND cdist.adopted = 1
+                LEFT JOIN data_proper_motions dpm
+                    ON dpm.moca_oid = mo.moca_oid
+                    AND dpm.adopted = 1
+                WHERE mo.moca_oid IN ({oid_clause})
+                ORDER BY FIELD(mo.moca_oid, {oid_clause})
+            """)
+
+    members = _records(members_df)
+    models = _records(models_df)
+    model_surfaces = _xyzuvw_model_surfaces(models, selection["axes"]) if "models" in selection["checkboxes"] else []
+    labels = []
+    if selection["labels"] and members:
+        by_aid: dict[str, list[dict[str, Any]]] = {}
+        for row in members:
+            by_aid.setdefault(str(row.get("moca_aid")), []).append(row)
+        for aid, rows in by_aid.items():
+            label_row: dict[str, Any] = {"moca_aid": aid}
+            for axis in ("x", "y", "z", "u", "v", "w"):
+                finite_values = [
+                    float(row[axis])
+                    for row in rows
+                    if row.get(axis) is not None and math.isfinite(float(row[axis]))
+                ]
+                label_row[axis] = float(np.nanmedian(finite_values)) if finite_values else None
+            labels.append(label_row)
+
+    payload = {
+        "selection": selection,
+        "members": members,
+        "models": models,
+        "modelSurfaces": model_surfaces,
+        "objects": _records(objects_df),
+        "labels": labels,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "member_count": len(members),
+            "model_count": len(models),
+            "model_surface_count": len(model_surfaces),
+            "object_count": int(len(objects_df)),
+            "truncated": int(len(members_df)) >= XYZUVW_MAX_OBJECTS,
+            "max_objects": XYZUVW_MAX_OBJECTS,
+            "c_value": XYZUVW_C_VALUE,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _XYZUVW_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _search_xyzuvw_objects_from_db(args: dict[str, Any], query: str) -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        return {"options": [], "meta": {"row_count": 0}}
+    search_int = int(query) if query.isdigit() else None
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT mo.moca_oid, mo.designation
+            FROM moca_objects mo
+            WHERE (:search_int IS NOT NULL AND mo.moca_oid = :search_int)
+                OR mo.designation LIKE :prefix
+                OR EXISTS (
+                    SELECT 1
+                    FROM mechanics_all_designations mad
+                    WHERE mad.moca_oid = mo.moca_oid
+                        AND mad.designation LIKE :prefix
+                )
+            ORDER BY
+                CASE WHEN :search_int IS NOT NULL AND mo.moca_oid = :search_int THEN 0 ELSE 1 END,
+                mo.designation,
+                mo.moca_oid
+            LIMIT 40
+        """, {"search_int": search_int, "prefix": f"{query}%"}))
+    options = [
+        {
+            "value": int(row["moca_oid"]),
+            "moca_oid": int(row["moca_oid"]),
+            "designation": row.get("designation"),
+            "label": f"oid{int(row['moca_oid'])}: {row.get('designation') or 'MOCAdb object'}",
+        }
+        for row in rows
+        if row.get("moca_oid") is not None
+    ]
+    return {"options": options, "meta": {"row_count": len(options)}}
+
+
+def _mock_xyzuvw_options() -> dict[str, Any]:
+    aids = ["HYA", "CBER", "TWA", "THA", "BPMG", "ABDMG"]
+    return {
+        "associations": [{"value": aid, "label": f"{aid} - Mock association"} for aid in aids],
+        "mtids": [{"value": mtid, "label": f"{mtid} - Mock membership"} for mtid in ["BF", "HM", "CM", "LM"]],
+        "versions": [{"value": "latest", "label": "Latest available"}, {"value": "16", "label": "16"}],
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "private_db": False},
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_xyzuvw_payload(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _parse_xyzuvw_selection(args)
+    rng = np.random.default_rng(42)
+    members = []
+    models = []
+    labels = []
+    for aid_index, aid in enumerate(selection["aids"]):
+        center = np.asarray([
+            -30 + 45 * aid_index,
+            20 - 25 * aid_index,
+            -10 + 12 * aid_index,
+            XYZUVW_C_VALUE * (-10 + 3 * aid_index),
+            XYZUVW_C_VALUE * (-18 + 2 * aid_index),
+            XYZUVW_C_VALUE * (-6 + aid_index),
+        ], dtype=float)
+        spread = np.asarray([18, 12, 10, 4 * XYZUVW_C_VALUE, 3 * XYZUVW_C_VALUE, 2.5 * XYZUVW_C_VALUE], dtype=float)
+        label = {"moca_aid": aid, "x": center[0], "y": center[1], "z": center[2], "u": center[3], "v": center[4], "w": center[5]}
+        labels.append(label)
+        models.append({
+            "moca_aid": aid,
+            "moca_bsmdid": 16,
+            "coeff_index": 0,
+            "coeff_amplitude": 1.0,
+            "x_cen": center[0],
+            "y_cen": center[1],
+            "z_cen": center[2],
+            "u_cen": center[3] / XYZUVW_C_VALUE,
+            "v_cen": center[4] / XYZUVW_C_VALUE,
+            "w_cen": center[5] / XYZUVW_C_VALUE,
+            "xx_covar": spread[0] ** 2,
+            "yy_covar": spread[1] ** 2,
+            "zz_covar": spread[2] ** 2,
+            "uu_covar": (spread[3] / XYZUVW_C_VALUE) ** 2,
+            "vv_covar": (spread[4] / XYZUVW_C_VALUE) ** 2,
+            "ww_covar": (spread[5] / XYZUVW_C_VALUE) ** 2,
+            "xy_covar": 0,
+            "xz_covar": 0,
+            "yz_covar": 0,
+            "uv_covar": 0,
+            "uw_covar": 0,
+            "vw_covar": 0,
+            "xu_covar": 0,
+            "xv_covar": 0,
+            "xw_covar": 0,
+            "yu_covar": 0,
+            "yv_covar": 0,
+            "yw_covar": 0,
+            "zu_covar": 0,
+            "zv_covar": 0,
+            "zw_covar": 0,
+        })
+        for index in range(52):
+            coords = center + rng.normal(0, spread, size=6)
+            oid = 900000 + aid_index * 1000 + index
+            mtid = selection["mtids"][index % max(1, len(selection["mtids"]))]
+            members.append({
+                "designation": f"Mock {aid} member {index:02d}",
+                "moca_aid": aid,
+                "moca_mtid": mtid,
+                "spt": ["M5", "L1", "T2"][index % 3],
+                "dr3_ruwe": round(float(rng.uniform(0.9, 1.6)), 2),
+                "moca_oid": oid,
+                "x": coords[0],
+                "y": coords[1],
+                "z": coords[2],
+                "u": coords[3],
+                "v": coords[4],
+                "w": coords[5],
+                "x_opt": 0.7 * coords[0] + 0.3 * center[0],
+                "y_opt": 0.7 * coords[1] + 0.3 * center[1],
+                "z_opt": 0.7 * coords[2] + 0.3 * center[2],
+                "u_opt": 0.7 * coords[3] + 0.3 * center[3],
+                "v_opt": 0.7 * coords[4] + 0.3 * center[4],
+                "w_opt": 0.7 * coords[5] + 0.3 * center[5],
+                "xx_covar": 9,
+                "yy_covar": 9,
+                "zz_covar": 9,
+                "uu_covar": 4,
+                "vv_covar": 4,
+                "ww_covar": 4,
+                "ya_prob": round(float(rng.uniform(45, 99)), 1),
+                "observables": "XYZUVW",
+            })
+    objects = []
+    for oid in selection["oids"]:
+        objects.append({
+            "designation": f"Highlighted mock oid{oid}",
+            "moca_aid": "N/A",
+            "moca_mtid": "N/A",
+            "spt": "L/T",
+            "dr3_ruwe": 1.1,
+            "moca_oid": int(oid),
+            "x": 5,
+            "y": -10,
+            "z": 18,
+            "u": None,
+            "v": None,
+            "w": None,
+            "ra": 24.0,
+            "dec": 9.5,
+            "pmra_masyr": 1200,
+            "pmdec_masyr": -450,
+            "distance_pc": 6.2,
+            "radial_velocity_kms": None,
+        })
+    if selection["likely"]:
+        members = [row for row in members if float(row.get("ya_prob") or 0) >= 80]
+    return {
+        "selection": selection,
+        "members": members,
+        "models": models,
+        "objects": objects,
+        "labels": labels if selection["labels"] else [],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "member_count": len(members),
+            "model_count": len(models),
+            "object_count": len(objects),
+            "truncated": False,
+            "max_objects": XYZUVW_MAX_OBJECTS,
+            "c_value": XYZUVW_C_VALUE,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+class _TfAgeCurve:
+    __slots__ = ("key", "label", "source", "age_myr", "pdf_age", "metadata")
+
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        source: str,
+        age_myr: np.ndarray,
+        pdf_age: np.ndarray,
+        metadata: dict[str, Any],
+    ) -> None:
+        self.key = key
+        self.label = label
+        self.source = source
+        self.age_myr = age_myr
+        self.pdf_age = pdf_age
+        self.metadata = metadata
+
+
+def _tfage_scope(args: dict[str, Any]) -> str:
+    raw = str(args.get("target") or args.get("scope") or args.get("mode") or "").strip().lower()
+    if raw in {"association", "associations", "assoc", "aid"}:
+        return "association"
+    if raw in {"object", "objects", "oid"}:
+        return "object"
+    if args.get("moca_aid") or args.get("aid"):
+        return "association"
+    return "object"
+
+
+def _tfage_target(args: dict[str, Any], scope: str) -> int | str | None:
+    if scope == "association":
+        aid = str(args.get("moca_aid") or args.get("aid") or "").strip().upper()
+        return aid or None
+    raw_oid = args.get("moca_oid") or args.get("oid") or args.get("target_oid") or TRUEFLOW_AGE_DEFAULT_OID
+    try:
+        return int(raw_oid)
+    except (TypeError, ValueError):
+        return None
+
+
+def _tfage_load_posteriors(args: dict[str, Any]) -> bool:
+    checkbox = {part.strip().lower() for part in str(args.get("checkbox") or "").split(",") if part.strip()}
+    return _as_bool(args.get("posteriors")) or _as_bool(args.get("posterior")) or "posteriors" in checkbox
+
+
+def _tfage_db_config(args: dict[str, Any], scope: str) -> dict[str, str]:
+    if scope == "object":
+        return {
+            "host": (
+                args.get("host")
+                or os.environ.get("ATM_HOST")
+                or os.environ.get("MOCA_HOST")
+                or DEFAULT_HOST
+            ),
+            "username": (
+                args.get("user")
+                or args.get("username")
+                or os.environ.get("ATM_USERNAME")
+                or os.environ.get("ATM_USER")
+                or os.environ.get("MOCA_USERNAME")
+                or DEFAULT_USERNAME
+            ),
+            "password": (
+                args.get("pwd")
+                or args.get("password")
+                or os.environ.get("ATM_PASSWORD")
+                or os.environ.get("MOCA_PASSWORD")
+                or DEFAULT_PASSWORD
+            ),
+            "dbname": (
+                args.get("dbase")
+                or args.get("db")
+                or args.get("database")
+                or os.environ.get("MOCA_DBNAME")
+                or "mocadb_private_tables"
+            ),
+            "port": args.get("port") or os.environ.get("ATM_PORT") or os.environ.get("MOCA_PORT") or "3306",
+        }
+    return {
+        "host": args.get("host") or os.environ.get("MOCA_HOST") or DEFAULT_HOST,
+        "username": args.get("user") or args.get("username") or os.environ.get("MOCA_USERNAME") or DEFAULT_USERNAME,
+        "password": args.get("pwd") or args.get("password") or os.environ.get("MOCA_PASSWORD") or DEFAULT_PASSWORD,
+        "dbname": (
+            args.get("dbase")
+            or args.get("db")
+            or args.get("database")
+            or os.environ.get("MOCA_DBNAME")
+            or DEFAULT_DBNAME
+        ),
+        "port": args.get("port") or os.environ.get("MOCA_PORT") or "3306",
+    }
+
+
+def _tfage_connection_string(args: dict[str, Any], scope: str) -> str:
+    cfg = _tfage_db_config(args, scope)
+    password = quote_plus(cfg["password"])
+    return f"mysql+pymysql://{cfg['username']}:{password}@{cfg['host']}:{cfg['port']}/{cfg['dbname']}"
+
+
+def _tfage_cache_key(args: dict[str, Any], scope: str, target: int | str | None) -> str:
+    cfg = _tfage_db_config(args, scope)
+    return "|".join([
+        cfg["host"],
+        cfg["username"],
+        cfg["dbname"],
+        cfg["port"],
+        scope,
+        str(target or ""),
+        str(int(_tfage_load_posteriors(args))),
+    ])
+
+
+def _tfage_table_exists(engine, table_name: str) -> bool:
+    query = text("""
+        SELECT COUNT(*) AS n
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+            AND table_name = :table_name
+    """)
+    with engine.connect() as conn:
+        return int(conn.execute(query, {"table_name": table_name}).scalar() or 0) > 0
+
+
+def _tfage_columns(engine, table_name: str) -> set[str]:
+    query = text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+            AND table_name = :table_name
+    """)
+    with engine.connect() as conn:
+        return {str(row[0]) for row in conn.execute(query, {"table_name": table_name})}
+
+
+def _tfage_qid(name: str) -> str:
+    if not name.replace("_", "").isalnum():
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+    return f"`{name}`"
+
+
+def _tfage_fetch_age_rows(engine, scope: str, target: int | str) -> pd.DataFrame:
+    age_table = "data_object_ages" if scope == "object" else "data_association_ages"
+    target_col = "moca_oid" if scope == "object" else "moca_aid"
+    if not _tfage_table_exists(engine, age_table):
+        return pd.DataFrame()
+    cols = _tfage_columns(engine, age_table)
+    order_terms = []
+    for col in ("adopted", "public_adopted", "adopt_asis", "public_adopt_asis"):
+        if col in cols:
+            order_terms.append(f"{_tfage_qid(col)} DESC")
+    for col in ("modified_timestamp", "created_timestamp", "id"):
+        if col in cols:
+            order_terms.append(f"{_tfage_qid(col)} DESC")
+    order_sql = ", ".join(order_terms) if order_terms else "1"
+    query = text(f"""
+        SELECT *
+        FROM {_tfage_qid(age_table)}
+        WHERE {_tfage_qid(target_col)} = :target
+        ORDER BY {order_sql}
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"target": target}).mappings().all()
+    return pd.DataFrame(rows)
+
+
+def _tfage_dtype(dtype: str | None, byte_order: str | None) -> np.dtype:
+    dtype = dtype or "float32"
+    byte_order = byte_order or "little"
+    if dtype not in {"float32", "float64"}:
+        dtype = "float32"
+    prefix = "<" if byte_order != "big" else ">"
+    return np.dtype(prefix + ("f4" if dtype == "float32" else "f8"))
+
+
+def _tfage_decode_array(
+    blob: bytes | memoryview,
+    *,
+    n_values: int,
+    dtype: str | None,
+    byte_order: str | None,
+    compression: str | None,
+    expected_sha256: str | None = None,
+) -> np.ndarray:
+    raw_blob = bytes(blob)
+    raw = raw_blob if compression == "none" else zlib.decompress(raw_blob)
+    if expected_sha256:
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected_sha256:
+            raise ValueError("Blob SHA256 check failed")
+    values = np.frombuffer(raw, dtype=_tfage_dtype(dtype, byte_order), count=int(n_values))
+    return values.astype(float, copy=True)
+
+
+def _tfage_normalize_pdf(age_myr: np.ndarray, pdf: np.ndarray) -> np.ndarray:
+    age_myr = np.asarray(age_myr, dtype=float)
+    pdf = np.asarray(pdf, dtype=float)
+    ok = np.isfinite(age_myr) & np.isfinite(pdf) & (age_myr > 0)
+    out = np.zeros_like(pdf, dtype=float)
+    if np.count_nonzero(ok) < 2:
+        return out
+    clipped = np.clip(pdf[ok], 0.0, None)
+    norm = float(np.trapz(clipped, age_myr[ok]))
+    if not math.isfinite(norm) or norm <= 0:
+        return out
+    out[ok] = clipped / norm
+    return out
+
+
+def _tfage_cdf_from_pdf(age_myr: np.ndarray, pdf: np.ndarray) -> np.ndarray:
+    age_myr = np.asarray(age_myr, dtype=float)
+    pdf = _tfage_normalize_pdf(age_myr, pdf)
+    cdf = np.zeros_like(pdf, dtype=float)
+    if age_myr.size < 2:
+        return cdf
+    order = np.argsort(age_myr)
+    age_sorted = age_myr[order]
+    pdf_sorted = pdf[order]
+    increments = 0.5 * (pdf_sorted[1:] + pdf_sorted[:-1]) * np.diff(age_sorted)
+    cdf_sorted = np.concatenate([[0.0], np.cumsum(increments)])
+    if cdf_sorted[-1] > 0:
+        cdf_sorted = cdf_sorted / cdf_sorted[-1]
+    cdf[order] = np.clip(cdf_sorted, 0.0, 1.0)
+    return cdf
+
+
+def _tfage_percentiles(age_myr: np.ndarray, pdf: np.ndarray) -> tuple[float, float, float] | None:
+    age_myr = np.asarray(age_myr, dtype=float)
+    pdf = _tfage_normalize_pdf(age_myr, pdf)
+    ok = np.isfinite(age_myr) & np.isfinite(pdf) & (age_myr > 0)
+    if np.count_nonzero(ok) < 2:
+        return None
+    age = age_myr[ok]
+    cdf = _tfage_cdf_from_pdf(age, pdf[ok])
+    if not np.any(np.diff(cdf) > 0):
+        return None
+    return tuple(float(np.interp(p, cdf, age)) for p in (0.16, 0.5, 0.84))
+
+
+def _tfage_log10_age_log_pdf_to_age_pdf(
+    log10_age_grid: np.ndarray,
+    log_pdf: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    log10_age_grid = np.asarray(log10_age_grid, dtype=float)
+    log_pdf = np.asarray(log_pdf, dtype=float)
+    ok = np.isfinite(log10_age_grid) & np.isfinite(log_pdf)
+    if np.count_nonzero(ok) < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    log10_age_grid = log10_age_grid[ok]
+    log_pdf = log_pdf[ok]
+    order = np.argsort(log10_age_grid)
+    log10_age_grid = log10_age_grid[order]
+    log_pdf = log_pdf[order]
+    log_age_pdf = np.exp(log_pdf - float(np.nanmax(log_pdf)))
+    log_norm = float(np.trapz(log_age_pdf, log10_age_grid))
+    if not math.isfinite(log_norm) or log_norm <= 0:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    log_age_pdf /= log_norm
+    age_myr = np.power(10.0, log10_age_grid)
+    age_pdf = log_age_pdf / (age_myr * np.log(10.0))
+    return age_myr, _tfage_normalize_pdf(age_myr, age_pdf)
+
+
+def _tfage_blob_curve_sort_key(curve: _TfAgeCurve) -> tuple[Any, ...]:
+    meta = curve.metadata or {}
+    return (
+        meta.get("age_id"),
+        meta.get("result_key"),
+        meta.get("pdf_space"),
+        meta.get("used_colors"),
+    )
+
+
+def _tfage_deduplicate_blob_curves(curves: list[_TfAgeCurve], *, prefer_posteriors: bool) -> list[_TfAgeCurve]:
+    by_key: dict[tuple[Any, ...], _TfAgeCurve] = {}
+    for curve in curves:
+        key = _tfage_blob_curve_sort_key(curve)
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = curve
+            continue
+        role = (curve.metadata or {}).get("curve_role")
+        current_role = (current.metadata or {}).get("curve_role")
+        if prefer_posteriors and role == "posterior" and current_role != "posterior":
+            by_key[key] = curve
+        elif not prefer_posteriors and role == "likelihood" and current_role != "likelihood":
+            by_key[key] = curve
+    return list(by_key.values())
+
+
+def _tfage_curve_from_log_pdf_row(data: dict[str, Any], age_meta: dict[Any, dict[str, Any]]) -> _TfAgeCurve | None:
+    try:
+        grid = _tfage_decode_array(
+            data["grid_blob"],
+            n_values=int(data["grid_n_grid"]),
+            dtype=data.get("grid_dtype"),
+            byte_order=data.get("grid_byte_order"),
+            compression=data.get("grid_compression"),
+            expected_sha256=data.get("grid_sha256"),
+        )
+        if data.get("grid_coordinate") in (None, "", "log10_age_myr"):
+            log10_age = grid
+        elif data.get("grid_coordinate") in {"age_myr", "age"}:
+            log10_age = np.log10(grid)
+        else:
+            log10_age = grid
+        log_pdf = _tfage_decode_array(
+            data["log_pdf_blob"],
+            n_values=int(data["grid_n_grid"]),
+            dtype=data.get("dtype"),
+            byte_order=data.get("byte_order"),
+            compression=data.get("compression"),
+            expected_sha256=data.get("log_pdf_sha256"),
+        )
+        age, pdf = _tfage_log10_age_log_pdf_to_age_pdf(log10_age, log_pdf)
+    except Exception as exc:
+        return _TfAgeCurve(
+            key=f"blob-decode-error-{data.get('id')}",
+            label=f"Blob decode error id={data.get('id')}",
+            source="MOCAFlows error",
+            age_myr=np.array([], dtype=float),
+            pdf_age=np.array([], dtype=float),
+            metadata={"error": str(exc), "age_id": data.get("age_id")},
+        )
+    if age.size < 2 or not np.any(pdf > 0):
+        return None
+
+    meta = age_meta.get(data["age_id"], {})
+    row_method = meta.get("calculation_method") or meta.get("method") or meta.get("method_detailed") or ""
+    result_key = data.get("result_key") or row_method or "age_pdf"
+    role = data.get("curve_role") or "posterior"
+    extras = []
+    if data.get("used_colors"):
+        extras.append(str(data["used_colors"]))
+    if data.get("n_contributors") is not None:
+        extras.append(f"N={data['n_contributors']}")
+    if data.get("prior_id") is not None:
+        extras.append(f"prior={data['prior_id']}")
+    label = f"{result_key} {role} (age_id={data['age_id']})"
+    if row_method and row_method != result_key:
+        label = f"{label}; {row_method}"
+    if extras:
+        label = f"{label}; {', '.join(extras)}"
+    return _TfAgeCurve(
+        key=f"blob-{data.get('id')}-{data.get('age_id')}-{data.get('result_key')}",
+        label=label,
+        source="MOCAFlows",
+        age_myr=age,
+        pdf_age=pdf,
+        metadata={**data, "scalar_row": meta},
+    )
+
+
+def _tfage_fetch_blob_curves(
+    engine,
+    scope: str,
+    age_rows: pd.DataFrame,
+    *,
+    load_posteriors: bool = False,
+) -> list[_TfAgeCurve]:
+    if age_rows.empty or "id" not in age_rows:
+        return []
+    blob_table = "calc_object_age_pdf_blobs" if scope == "object" else "calc_association_age_pdf_blobs"
+    if not (_tfage_table_exists(engine, blob_table) and _tfage_table_exists(engine, "calc_age_pdf_grids")):
+        return []
+
+    age_ids = [int(v) for v in age_rows["id"].dropna().astype(int).unique()]
+    if not age_ids:
+        return []
+
+    blob_cols = _tfage_columns(engine, blob_table)
+    required = {"id", "age_id", "grid_id", "result_key", "curve_role", "pdf_space", "log_pdf_blob"}
+    if not required.issubset(blob_cols):
+        return []
+
+    wanted_blob_cols = [
+        "id",
+        "age_id",
+        "grid_id",
+        "result_key",
+        "curve_role",
+        "pdf_space",
+        "dtype",
+        "byte_order",
+        "compression",
+        "compression_level",
+        "log_pdf_sha256",
+        "log_pdf_blob",
+        "peak_age_myr",
+        "age_lo_myr",
+        "age_hi_myr",
+        "n_contributors",
+        "used_colors",
+        "metadata_json",
+        "eps_peak",
+        "eps_mean",
+        "eps_lo",
+        "eps_hi",
+        "prior_id",
+    ]
+    select_blob = ",\n               ".join(
+        f"b.{_tfage_qid(col)} AS {_tfage_qid(col)}" for col in wanted_blob_cols if col in blob_cols
+    )
+    role_values = ("posterior", "likelihood") if load_posteriors else ("likelihood",)
+    query = text(f"""
+        SELECT {select_blob},
+               g.id AS grid_row_id,
+               g.coordinate AS grid_coordinate,
+               g.n_grid AS grid_n_grid,
+               g.dtype AS grid_dtype,
+               g.byte_order AS grid_byte_order,
+               g.compression AS grid_compression,
+               g.grid_sha256 AS grid_sha256,
+               g.grid_blob AS grid_blob
+        FROM {_tfage_qid(blob_table)} AS b
+        JOIN calc_age_pdf_grids AS g
+            ON g.id = b.grid_id
+        WHERE b.age_id IN :age_ids
+            AND b.curve_role IN :role_values
+        ORDER BY b.age_id, b.result_key, b.curve_role, b.id
+    """).bindparams(bindparam("age_ids", expanding=True), bindparam("role_values", expanding=True))
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"age_ids": age_ids, "role_values": role_values}).mappings().all()
+
+    age_meta = age_rows.set_index("id", drop=False).to_dict(orient="index")
+    curves = []
+    for row in rows:
+        curve = _tfage_curve_from_log_pdf_row(dict(row), age_meta)
+        if curve is not None:
+            curves.append(curve)
+    return _tfage_deduplicate_blob_curves(curves, prefer_posteriors=load_posteriors)
+
+
+def _tfage_fetch_legacy_pdf_curves(engine, scope: str, age_rows: pd.DataFrame) -> list[_TfAgeCurve]:
+    if age_rows.empty or "id" not in age_rows:
+        return []
+    pdf_table = "calc_object_age_pdfs" if scope == "object" else "calc_association_age_pdfs"
+    if not _tfage_table_exists(engine, pdf_table):
+        return []
+    cols = _tfage_columns(engine, pdf_table)
+    if not {"age_id", "age_myr", "log_probability_density"}.issubset(cols):
+        return []
+    age_ids = [int(v) for v in age_rows["id"].dropna().astype(int).unique()]
+    if not age_ids:
+        return []
+    query = text(f"""
+        SELECT age_id, age_myr, log_probability_density
+        FROM {_tfage_qid(pdf_table)}
+        WHERE age_id IN :age_ids
+        ORDER BY age_id, age_myr
+    """).bindparams(bindparam("age_ids", expanding=True))
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"age_ids": age_ids}).mappings().all()
+    pdf_rows = pd.DataFrame(rows)
+    if pdf_rows.empty:
+        return []
+    age_meta = age_rows.set_index("id", drop=False).to_dict(orient="index")
+    curves = []
+    for age_id, sub in pdf_rows.groupby("age_id", sort=False):
+        sub = sub.dropna(subset=["age_myr", "log_probability_density"]).copy()
+        sub = sub[sub["age_myr"] > 0]
+        if sub.shape[0] < 2:
+            continue
+        sub.sort_values("age_myr", inplace=True)
+        age = sub["age_myr"].to_numpy(dtype=float)
+        log_pdf = sub["log_probability_density"].to_numpy(dtype=float)
+        pdf = np.exp(log_pdf - float(np.nanmax(log_pdf)))
+        pdf = _tfage_normalize_pdf(age, pdf)
+        if not np.any(pdf > 0):
+            continue
+        meta = age_meta.get(age_id, {})
+        method = meta.get("calculation_method") or meta.get("method") or meta.get("method_detailed") or "legacy age PDF"
+        curves.append(_TfAgeCurve(
+            key=f"legacy-{age_id}",
+            label=f"{method} legacy PDF (age_id={age_id})",
+            source="Legacy",
+            age_myr=age,
+            pdf_age=pdf,
+            metadata={"age_id": age_id, "scalar_row": meta},
+        ))
+    return curves
+
+
+def _tfage_first_number(row: dict[str, Any], names: tuple[str, ...]) -> float | None:
+    for name in names:
+        if name in row:
+            value = _safe_float(row.get(name))
+            if value is not None:
+                return value
+    return None
+
+
+def _tfage_scalar_age_summary(row: dict[str, Any]) -> tuple[float, float, float, str] | None:
+    center = _tfage_first_number(row, ("age_myr", "age", "age_value_myr", "best_age_myr"))
+    note = "stored uncertainty"
+    if center is None:
+        log_age_yr = _tfage_first_number(row, ("log_age_yr", "log10_age_yr"))
+        if log_age_yr is not None:
+            center = 10.0**log_age_yr / 1e6
+    if center is None or center <= 0:
+        return None
+
+    lo_unc = _tfage_first_number(row, ("age_myr_unc_neg", "age_myr_err_neg", "age_myr_minus", "age_unc_neg", "age_err_neg"))
+    hi_unc = _tfage_first_number(row, ("age_myr_unc_pos", "age_myr_err_pos", "age_myr_plus", "age_unc_pos", "age_err_pos"))
+    sym_unc = _tfage_first_number(row, ("age_myr_unc", "age_unc", "age_err", "uncertainty_myr"))
+    if lo_unc is None and hi_unc is None and sym_unc is not None:
+        lo_unc = sym_unc
+        hi_unc = sym_unc
+
+    log_center = math.log10(center * 1e6)
+    log_lo = _tfage_first_number(row, ("log_age_unc_neg", "log_age_yr_unc_neg", "log10_age_yr_unc_neg"))
+    log_hi = _tfage_first_number(row, ("log_age_unc_pos", "log_age_yr_unc_pos", "log10_age_yr_unc_pos"))
+    log_sym = _tfage_first_number(row, ("log_age_unc", "log_age_yr_unc", "log10_age_yr_unc"))
+    if log_lo is None and log_hi is None and log_sym is not None:
+        log_lo = log_sym
+        log_hi = log_sym
+    if lo_unc is None and log_lo is not None:
+        lo_unc = center - (10.0 ** (log_center - abs(log_lo)) / 1e6)
+    if hi_unc is None and log_hi is not None:
+        hi_unc = (10.0 ** (log_center + abs(log_hi)) / 1e6) - center
+
+    if lo_unc is None or lo_unc <= 0:
+        lo_unc = 0.10 * center
+        note = "fallback 10% uncertainty"
+    if hi_unc is None or hi_unc <= 0:
+        hi_unc = 0.10 * center
+        note = "fallback 10% uncertainty"
+    return float(center), float(abs(lo_unc)), float(abs(hi_unc)), note
+
+
+def _tfage_gaussian_grid(age_rows: pd.DataFrame, stored_curves: list[_TfAgeCurve]) -> np.ndarray:
+    candidates: list[float] = []
+    for curve in stored_curves:
+        if curve.age_myr.size:
+            good = curve.age_myr[np.isfinite(curve.age_myr) & (curve.age_myr > 0)]
+            if good.size:
+                candidates.extend([float(np.nanmin(good)), float(np.nanmax(good))])
+    for row in age_rows.to_dict(orient="records"):
+        summary = _tfage_scalar_age_summary(row)
+        if not summary:
+            continue
+        center, lo_unc, hi_unc, _ = summary
+        candidates.extend([max(center - 6.0 * lo_unc, 0.02), center + 6.0 * hi_unc])
+    if not candidates:
+        return np.geomspace(0.5, 20000.0, 1200)
+    amin = max(0.02, min(candidates))
+    amax = max(amin * 10.0, max(candidates))
+    amin = max(0.02, amin / 1.5)
+    amax = min(50000.0, amax * 1.5)
+    return np.geomspace(amin, amax, 1400)
+
+
+def _tfage_stored_pdf_age_ids(stored_curves: list[_TfAgeCurve]) -> set[int]:
+    age_ids: set[int] = set()
+    for curve in stored_curves:
+        meta = curve.metadata or {}
+        age_id = meta.get("age_id")
+        if age_id is None:
+            scalar = meta.get("scalar_row") or {}
+            age_id = scalar.get("id")
+        try:
+            if age_id is not None:
+                age_ids.add(int(age_id))
+        except (TypeError, ValueError):
+            continue
+    return age_ids
+
+
+def _tfage_all_stored_pdf_age_ids(engine, scope: str, age_rows: pd.DataFrame) -> set[int]:
+    if age_rows.empty or "id" not in age_rows:
+        return set()
+    age_ids = [int(v) for v in age_rows["id"].dropna().astype(int).unique()]
+    if not age_ids:
+        return set()
+    out: set[int] = set()
+    for table_name in (
+        "calc_object_age_pdf_blobs" if scope == "object" else "calc_association_age_pdf_blobs",
+        "calc_object_age_pdfs" if scope == "object" else "calc_association_age_pdfs",
+    ):
+        if not _tfage_table_exists(engine, table_name):
+            continue
+        cols = _tfage_columns(engine, table_name)
+        if "age_id" not in cols:
+            continue
+        query = text(f"""
+            SELECT DISTINCT age_id
+            FROM {_tfage_qid(table_name)}
+            WHERE age_id IN :age_ids
+        """).bindparams(bindparam("age_ids", expanding=True))
+        with engine.connect() as conn:
+            out.update(int(row[0]) for row in conn.execute(query, {"age_ids": age_ids}))
+    return out
+
+
+def _tfage_scalar_gaussian_curves(
+    age_rows: pd.DataFrame,
+    stored_curves: list[_TfAgeCurve],
+    skip_age_ids: set[int] | None = None,
+) -> list[_TfAgeCurve]:
+    if age_rows.empty:
+        return []
+    skip_age_ids = skip_age_ids or set()
+    grid = _tfage_gaussian_grid(age_rows, stored_curves)
+    curves = []
+    for row in age_rows.to_dict(orient="records"):
+        age_id_raw = row.get("id")
+        try:
+            age_id_int = int(age_id_raw) if age_id_raw is not None else None
+        except (TypeError, ValueError):
+            age_id_int = None
+        if age_id_int is not None and age_id_int in skip_age_ids:
+            continue
+        summary = _tfage_scalar_age_summary(row)
+        if not summary:
+            continue
+        center, lo_unc, hi_unc, note = summary
+        sigma = np.where(grid < center, lo_unc, hi_unc)
+        pdf = np.exp(-0.5 * ((grid - center) / sigma) ** 2)
+        pdf = _tfage_normalize_pdf(grid, pdf)
+        if not np.any(pdf > 0):
+            continue
+        method = row.get("calculation_method") or row.get("method") or row.get("method_detailed") or "scalar age"
+        age_id = row.get("id", "unknown")
+        curves.append(_TfAgeCurve(
+            key=f"gaussian-{age_id}",
+            label=f"{method} asymmetric Gaussian (age_id={age_id})",
+            source="Scalar Gaussian",
+            age_myr=grid,
+            pdf_age=pdf,
+            metadata={
+                "age_id": age_id,
+                "age_myr": center,
+                "age_myr_unc_neg": lo_unc,
+                "age_myr_unc_pos": hi_unc,
+                "uncertainty_note": note,
+                "scalar_row": row,
+            },
+        ))
+    return curves
+
+
+def _tfage_is_hbm_mocaflows_curve(curve: _TfAgeCurve) -> bool:
+    meta = curve.metadata or {}
+    scalar = meta.get("scalar_row") or {}
+    values = [
+        meta.get("result_key"),
+        meta.get("metadata_json"),
+        scalar.get("calculation_method"),
+        scalar.get("method"),
+        scalar.get("method_detailed"),
+        scalar.get("comments"),
+        scalar.get("origin"),
+    ]
+    text_blob = " ".join(str(value).lower() for value in values if value not in (None, ""))
+    calc_method = str(scalar.get("calculation_method") or "").lower()
+    return (
+        calc_method.startswith("mfhbm")
+        or "hbm" in text_blob
+        or "hierarchical bayesian" in text_blob
+        or "hierarchical_bayesian" in text_blob
+        or "outlier rejection" in text_blob
+    )
+
+
+def _tfage_load_curves(
+    engine,
+    scope: str,
+    target: int | str,
+    *,
+    load_blob_posteriors: bool = False,
+) -> tuple[pd.DataFrame, list[_TfAgeCurve]]:
+    age_rows = _tfage_fetch_age_rows(engine, scope, target)
+    blob_curves = _tfage_fetch_blob_curves(engine, scope, age_rows, load_posteriors=load_blob_posteriors)
+    legacy_curves = _tfage_fetch_legacy_pdf_curves(engine, scope, age_rows)
+    stored_curves = blob_curves + legacy_curves
+    skip_age_ids = _tfage_all_stored_pdf_age_ids(engine, scope, age_rows)
+    skip_age_ids.update(_tfage_stored_pdf_age_ids(stored_curves))
+    scalar_curves = _tfage_scalar_gaussian_curves(age_rows, stored_curves, skip_age_ids=skip_age_ids)
+    return age_rows, blob_curves + legacy_curves + scalar_curves
+
+
+def _tfage_curve_summary_row(curve: _TfAgeCurve) -> dict[str, Any]:
+    pct = _tfage_percentiles(curve.age_myr, curve.pdf_age)
+    meta = curve.metadata or {}
+    scalar = meta.get("scalar_row") or {}
+    if pct:
+        age16, age50, age84 = pct
+        age_text = f"{age50:.3g} (+{age84 - age50:.3g}/-{age50 - age16:.3g}) Myr"
+    else:
+        age_text = ""
+    return {
+        "curve": curve.label,
+        "source": curve.source,
+        "age": age_text,
+        "calculation_method": scalar.get("calculation_method", ""),
+        "moca_pid": scalar.get("moca_pid", ""),
+        "adopted": scalar.get("adopted", ""),
+        "public_adopted": scalar.get("public_adopted", ""),
+        "comments": scalar.get("comments", ""),
+    }
+
+
+def _tfage_curve_payload(curve: _TfAgeCurve) -> dict[str, Any]:
+    meta = curve.metadata or {}
+    scalar = meta.get("scalar_row") or {}
+    age = np.asarray(curve.age_myr, dtype=float)
+    pdf = _tfage_normalize_pdf(age, np.asarray(curve.pdf_age, dtype=float))
+    ok = np.isfinite(age) & np.isfinite(pdf) & (age > 0)
+    age = age[ok]
+    pdf = pdf[ok]
+    return {
+        "key": curve.key,
+        "label": curve.label,
+        "source": curve.source,
+        "age_myr": [float(value) for value in age],
+        "pdf_age": [float(value) for value in pdf],
+        "is_hbm_mocaflows": bool(_tfage_is_hbm_mocaflows_curve(curve)),
+        "summary": _tfage_curve_summary_row(curve),
+        "metadata": {
+            "age_id": _pythonize(meta.get("age_id") if meta.get("age_id") is not None else scalar.get("id")),
+            "result_key": _pythonize(meta.get("result_key")),
+            "curve_role": _pythonize(meta.get("curve_role")),
+            "used_colors": _pythonize(meta.get("used_colors")),
+            "n_contributors": _pythonize(meta.get("n_contributors")),
+            "moca_pid": _pythonize(scalar.get("moca_pid")),
+            "calculation_method": _pythonize(scalar.get("calculation_method")),
+        },
+    }
+
+
+def _tfage_target_info(engine, scope: str, target: int | str | None) -> dict[str, Any]:
+    if target in (None, ""):
+        return {}
+    if scope == "object":
+        if _tfage_table_exists(engine, "moca_objects"):
+            with engine.connect() as conn:
+                rows = _records(_read_sql(conn, """
+                    SELECT mo.moca_oid, mo.designation
+                    FROM moca_objects mo
+                    WHERE mo.moca_oid = :target
+                    LIMIT 1
+                """, {"target": int(target)}))
+            return rows[0] if rows else {"moca_oid": int(target)}
+        return {"moca_oid": int(target)}
+    with engine.connect() as conn:
+        if _tfage_table_exists(engine, "moca_associations"):
+            rows = _records(_read_sql(conn, """
+                SELECT ma.moca_aid, ma.name
+                FROM moca_associations ma
+                WHERE ma.moca_aid = :target
+                LIMIT 1
+            """, {"target": str(target)}))
+            return rows[0] if rows else {"moca_aid": str(target)}
+    return {"moca_aid": str(target)}
+
+
+def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    scope = "association"
+    cache_key = f"{_tfage_cache_key(args, scope, 'options')}|options"
+    now = time.time()
+    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_tfage_connection_string(args, scope))
+    associations: list[dict[str, Any]] = []
+    if _tfage_table_exists(engine, "data_association_ages"):
+        with engine.connect() as conn:
+            if _tfage_table_exists(engine, "moca_associations"):
+                rows = _records(_read_sql(conn, """
+                    SELECT DISTINCT daa.moca_aid, ma.name
+                    FROM data_association_ages daa
+                    LEFT JOIN moca_associations ma
+                        ON ma.moca_aid = daa.moca_aid
+                    WHERE daa.moca_aid IS NOT NULL
+                    ORDER BY daa.moca_aid
+                """))
+            else:
+                rows = _records(_read_sql(conn, """
+                    SELECT DISTINCT daa.moca_aid, NULL AS name
+                    FROM data_association_ages daa
+                    WHERE daa.moca_aid IS NOT NULL
+                    ORDER BY daa.moca_aid
+                """))
+        associations = [
+            {
+                "value": row.get("moca_aid"),
+                "label": f"{row.get('moca_aid')} - {row.get('name')}" if row.get("name") else row.get("moca_aid"),
+            }
+            for row in rows
+            if row.get("moca_aid")
+        ]
+    payload = {
+        "associations": associations,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "association_count": len(associations),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _search_tfage_objects_from_db(args: dict[str, Any], query: str, selected_oid: int | None = None) -> dict[str, Any]:
+    scope = "object"
+    engine = _engine(_tfage_connection_string(args, scope))
+    has_objects = _tfage_table_exists(engine, "moca_objects")
+    has_designations = _tfage_table_exists(engine, "mechanics_all_designations")
+    if not has_objects and selected_oid is not None:
+        return {
+            "options": [{"value": selected_oid, "moca_oid": selected_oid, "designation": None, "label": f"oid{selected_oid}"}],
+            "value": selected_oid,
+            "meta": {"row_count": 1},
+        }
+    with engine.connect() as conn:
+        if selected_oid is not None:
+            rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.moca_oid = :oid
+                LIMIT 1
+            """, {"oid": selected_oid}))
+        else:
+            query = (query or "").strip()
+            if not query:
+                query = str(TRUEFLOW_AGE_DEFAULT_OID)
+            if query.isdigit() and not has_objects:
+                rows = [{"moca_oid": int(query), "designation": None}]
+            elif query.isdigit():
+                rows = _records(_read_sql(conn, """
+                    SELECT mo.moca_oid, mo.designation
+                    FROM moca_objects mo
+                    WHERE mo.moca_oid = :oid
+                    LIMIT 1
+                """, {"oid": int(query)}))
+            elif has_objects and has_designations:
+                params = {"prefix": f"{query}%"}
+                rows = _records(_read_sql(conn, """
+                    SELECT mo.moca_oid, mo.designation
+                    FROM moca_objects mo
+                    WHERE mo.designation LIKE :prefix
+                        OR EXISTS (
+                            SELECT 1
+                            FROM mechanics_all_designations mad
+                            WHERE mad.moca_oid = mo.moca_oid
+                                AND mad.designation LIKE :prefix
+                        )
+                    ORDER BY mo.designation, mo.moca_oid
+                    LIMIT 40
+                """, params))
+            elif has_objects:
+                rows = _records(_read_sql(conn, """
+                    SELECT mo.moca_oid, mo.designation
+                    FROM moca_objects mo
+                    WHERE mo.designation LIKE :prefix
+                    ORDER BY mo.designation, mo.moca_oid
+                    LIMIT 40
+                """, {"prefix": f"{query}%"}))
+            elif has_designations:
+                rows = _records(_read_sql(conn, """
+                    SELECT mad.moca_oid, mad.designation
+                    FROM mechanics_all_designations mad
+                    WHERE mad.designation LIKE :prefix
+                    ORDER BY mad.designation, mad.moca_oid
+                    LIMIT 40
+                """, {"prefix": f"{query}%"}))
+            else:
+                rows = []
+    options = [
+        {
+            "value": int(row["moca_oid"]),
+            "moca_oid": int(row["moca_oid"]),
+            "designation": row.get("designation"),
+            "label": f"oid{int(row['moca_oid'])}: {row.get('designation') or 'MOCAdb object'}",
+        }
+        for row in rows
+        if row.get("moca_oid") is not None
+    ]
+    return {"options": options, "value": selected_oid if selected_oid and options else None, "meta": {"row_count": len(options)}}
+
+
+def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    scope = _tfage_scope(args)
+    target = _tfage_target(args, scope)
+    load_posteriors = _tfage_load_posteriors(args)
+    cache_key = _tfage_cache_key(args, scope, target)
+    now = time.time()
+    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+    if target in (None, ""):
+        return {
+            "selection": {"scope": scope, "target": None, "load_posteriors": load_posteriors},
+            "target": {},
+            "curves": [],
+            "tableRows": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "age_row_count": 0,
+                "curve_count": 0,
+                "displayable_curve_count": 0,
+                "load_posteriors": load_posteriors,
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    started = time.time()
+    engine = _engine(_tfage_connection_string(args, scope))
+    age_rows, curves = _tfage_load_curves(engine, scope, target, load_blob_posteriors=load_posteriors)
+    displayable = [
+        curve for curve in curves
+        if curve.source != "MOCAFlows error" and curve.age_myr.size > 1 and np.any(curve.pdf_age > 0)
+    ]
+    curve_payloads = [_tfage_curve_payload(curve) for curve in displayable]
+    target_info = _tfage_target_info(engine, scope, target)
+    payload = {
+        "selection": {
+            "scope": scope,
+            "target": target,
+            "moca_oid": int(target) if scope == "object" else None,
+            "moca_aid": str(target) if scope == "association" else None,
+            "load_posteriors": load_posteriors,
+        },
+        "target": target_info,
+        "curves": curve_payloads,
+        "tableRows": [row["summary"] for row in curve_payloads],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "age_row_count": int(len(age_rows)),
+            "curve_count": int(len(curves)),
+            "displayable_curve_count": int(len(curve_payloads)),
+            "load_posteriors": load_posteriors,
+            "source_counts": {
+                source: sum(1 for curve in curve_payloads if curve["source"] == source)
+                for source in sorted({curve["source"] for curve in curve_payloads})
+            },
+            "timings": {"load_total": round(time.time() - started, 3)},
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_tfage_options() -> dict[str, Any]:
+    associations = [
+        {"value": "ABDMG", "label": "ABDMG - AB Doradus moving group"},
+        {"value": "BPMG", "label": "BPMG - beta Pictoris moving group"},
+        {"value": "TWA", "label": "TWA - TW Hydrae association"},
+        {"value": "THA", "label": "THA - Tucana-Horologium association"},
+    ]
+    return {
+        "associations": associations,
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "association_count": len(associations)},
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
+    scope = _tfage_scope(args)
+    target = _tfage_target(args, scope)
+    age = np.geomspace(1.0, 5000.0, 900)
+    specs = [
+        ("mocaflows-young-likelihood", "MOCAFlows color likelihood (age_id=101)", "MOCAFlows", 35.0, 0.22, False),
+        ("mocaflows-hbm-likelihood", "mfhbm posterior-like likelihood (age_id=102); HBM", "MOCAFlows", 55.0, 0.28, True),
+        ("legacy-lithium", "lithium boundary legacy PDF (age_id=88)", "Legacy", 130.0, 0.32, False),
+        ("gaussian-kinematic", "kinematic age asymmetric Gaussian (age_id=77)", "Scalar Gaussian", 45.0, 0.18, False),
+    ]
+    curves = []
+    for key, label, source, center, sigma, is_hbm in specs:
+        log_age = np.log(age)
+        pdf = np.exp(-0.5 * ((log_age - math.log(center)) / sigma) ** 2)
+        pdf = _tfage_normalize_pdf(age, pdf)
+        fake_curve = _TfAgeCurve(
+            key=key,
+            label=label,
+            source=source,
+            age_myr=age,
+            pdf_age=pdf,
+            metadata={
+                "age_id": key.rsplit("-", 1)[-1],
+                "curve_role": "likelihood",
+                "result_key": key,
+                "scalar_row": {
+                    "calculation_method": "mfhbm mock" if is_hbm else f"{source} mock",
+                    "moca_pid": "mock",
+                    "adopted": 1,
+                    "public_adopted": 1,
+                    "comments": "Synthetic smoke-test curve",
+                },
+            },
+        )
+        payload = _tfage_curve_payload(fake_curve)
+        payload["is_hbm_mocaflows"] = is_hbm
+        curves.append(payload)
+    if scope == "association":
+        target_info = {"moca_aid": target or "TWA", "name": "Mock association"}
+    else:
+        target_info = {"moca_oid": int(target or TRUEFLOW_AGE_DEFAULT_OID), "designation": "Mock age-PDF target"}
+    return {
+        "selection": {
+            "scope": scope,
+            "target": target,
+            "moca_oid": int(target) if scope == "object" and target is not None else None,
+            "moca_aid": str(target) if scope == "association" and target is not None else None,
+            "load_posteriors": _tfage_load_posteriors(args),
+        },
+        "target": target_info,
+        "curves": curves,
+        "tableRows": [curve["summary"] for curve in curves],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "age_row_count": 4,
+            "curve_count": len(curves),
+            "displayable_curve_count": len(curves),
+            "load_posteriors": _tfage_load_posteriors(args),
+            "source_counts": {"MOCAFlows": 2, "Legacy": 1, "Scalar Gaussian": 1},
+            "timings": {"load_total": 0.02},
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _astrometry_db_cache_key(args: dict[str, Any], oid: int) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        cfg["host"],
+        cfg["username"],
+        cfg["dbname"],
+        str(int(oid)),
+    ])
+
+
+def _format_astrometry_reference(row: dict[str, Any] | None, prefix: str) -> str:
+    if not row:
+        return f"No adopted {prefix}"
+    source = row.get("publication_name") or row.get("moca_pid") or row.get("origin") or f"No adopted {prefix}"
+    mission = " ".join(
+        str(part).strip()
+        for part in (row.get("mission_name"), row.get("data_release"))
+        if part is not None and str(part).strip()
+    )
+    return f"{source}, {mission}" if mission else str(source)
+
+
+def _search_astrometry_objects_from_db(args: dict[str, Any], query: str, selected_oid: int | None) -> dict[str, Any]:
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        if selected_oid is not None:
+            rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.moca_oid = :oid
+                LIMIT 1
+            """, {"oid": selected_oid}))
+            options = [
+                {
+                    "value": row["moca_oid"],
+                    "moca_oid": row["moca_oid"],
+                    "designation": row.get("designation"),
+                    "label": f"oid{row['moca_oid']}: {row.get('designation') or 'MOCAdb object'}",
+                }
+                for row in rows
+            ]
+            return {"options": options, "value": selected_oid if options else None, "meta": {"row_count": len(options)}}
+
+        query = (query or "").strip()
+        if not query:
+            query = "602"
+        if query.isdigit():
+            rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.moca_oid = :oid
+                LIMIT 1
+            """, {"oid": int(query)}))
+        else:
+            params = {"prefix": f"{query}%"}
+            object_rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.designation LIKE :prefix
+                ORDER BY mo.designation, mo.moca_oid
+                LIMIT 15
+            """, params))
+            if object_rows:
+                rows = object_rows
+            else:
+                rows = _records(_read_sql(conn, """
+                    SELECT mad.moca_oid, mad.designation
+                    FROM mechanics_all_designations mad
+                    WHERE mad.designation LIKE :prefix
+                    ORDER BY mad.designation, mad.moca_oid
+                    LIMIT 30
+                """, params))
+    options = [
+        {
+            "value": row["moca_oid"],
+            "moca_oid": row["moca_oid"],
+            "designation": row.get("designation"),
+            "label": f"oid{row['moca_oid']}: {row.get('designation') or 'MOCAdb object'}",
+        }
+        for row in rows
+    ]
+    return {"options": options, "value": options[0]["value"] if options else None, "meta": {"row_count": len(options)}}
+
+
+def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str, Any]:
+    cache_key = _astrometry_db_cache_key(args, oid)
+    now = time.time()
+    cached = _ASTROMETRY_OBJECT_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        target_rows = _records(_read_sql(conn, """
+            SELECT mo.moca_oid, mo.designation
+            FROM moca_objects mo
+            WHERE mo.moca_oid = :oid
+            LIMIT 1
+        """, {"oid": oid}))
+        designation_rows = _records(_read_sql(conn, """
+            SELECT mad.designation
+            FROM mechanics_all_designations mad
+            WHERE mad.moca_oid = :oid
+            ORDER BY mad.designation
+            LIMIT 80
+        """, {"oid": oid}))
+        reference_rows = _records(_read_sql(conn, """
+            SELECT
+                deq.id,
+                deq.ra,
+                deq.`dec`,
+                deq.ra - IFNULL(
+                    deq.calibration_delta_ra_mas / (3600 * 1000 * COS(deq.`dec` * PI() / 180)),
+                    0
+                ) AS raw_ra,
+                deq.`dec` - IFNULL(deq.calibration_delta_dec_mas / (3600 * 1000), 0) AS raw_dec,
+                deq.measurement_epoch_yr,
+                deq.pm_corrected,
+                deq.plx_corrected
+            FROM data_equatorial_coordinates deq
+            WHERE deq.moca_oid = :oid
+                AND deq.ignored = 0
+                AND deq.adopt_as_reference = 1
+            ORDER BY deq.measurement_epoch_yr DESC, deq.id DESC
+            LIMIT 1
+        """, {"oid": oid}))
+        pm_rows = _records(_read_sql(conn, """
+            SELECT
+                dpm.pmra_masyr,
+                dpm.pmdec_masyr,
+                dpm.pmra_masyr_unc,
+                dpm.pmdec_masyr_unc,
+                dpm.moca_pid,
+                dpm.origin,
+                dpm.mission_name,
+                dpm.data_release,
+                mp.name AS publication_name
+            FROM data_proper_motions dpm
+            LEFT JOIN moca_publications mp ON mp.moca_pid = dpm.moca_pid
+            WHERE dpm.moca_oid = :oid
+                AND dpm.adopted = 1
+            LIMIT 1
+        """, {"oid": oid}))
+        plx_rows = _records(_read_sql(conn, """
+            SELECT
+                dplx.parallax_mas,
+                dplx.parallax_mas_unc,
+                dplx.moca_pid,
+                dplx.origin,
+                dplx.mission_name,
+                dplx.data_release,
+                mp.name AS publication_name
+            FROM data_parallaxes dplx
+            LEFT JOIN moca_publications mp ON mp.moca_pid = dplx.moca_pid
+            WHERE dplx.moca_oid = :oid
+                AND dplx.adopted = 1
+            LIMIT 1
+        """, {"oid": oid}))
+        rows_df = _read_sql(conn, """
+            SELECT
+                deq.id,
+                deq.ra,
+                deq.`dec`,
+                deq.ra - IFNULL(
+                    deq.calibration_delta_ra_mas / (3600 * 1000 * COS(deq.`dec` * PI() / 180)),
+                    0
+                ) AS raw_ra,
+                deq.`dec` - IFNULL(deq.calibration_delta_dec_mas / (3600 * 1000), 0) AS raw_dec,
+                deq.measurement_epoch_yr,
+                deq.ra_unc_mas,
+                deq.dec_unc_mas,
+                COALESCE(deq.measurement_epoch_yr_unc, 0) AS measurement_epoch_yr_unc,
+                CASE
+                    WHEN deq.mission_name IS NULL OR TRIM(deq.mission_name) = ''
+                        THEN COALESCE(deq.moca_pid, 'No mission')
+                    WHEN TRIM(COALESCE(deq.data_release, '')) = ''
+                        THEN TRIM(deq.mission_name)
+                    ELSE TRIM(CONCAT(deq.mission_name, ' ', deq.data_release))
+                END AS mission,
+                deq.moca_pid,
+                deq.mission_name,
+                deq.data_release,
+                deq.origin,
+                deq.comments,
+                deq.airmass,
+                deq.moca_psid,
+                deq.calibration_delta_ra_mas,
+                deq.calibration_delta_dec_mas,
+                deq.nstars_calibration,
+                deq.calibration_method,
+                COALESCE(mm.include_in_recalibrated_display, 0) AS include_in_recalibrated_display
+            FROM data_equatorial_coordinates deq
+            LEFT JOIN moca_missions mm
+                ON mm.mission_name = deq.mission_name
+                AND mm.data_release = deq.data_release
+            WHERE deq.moca_oid = :oid
+                AND deq.ignored = 0
+                AND deq.single_epoch = 1
+            ORDER BY deq.measurement_epoch_yr, deq.id
+            LIMIT 20000
+        """, {"oid": oid})
+
+    rows = _records(rows_df)
+    reference = reference_rows[0] if reference_rows else None
+    if reference is None and rows:
+        finite_rows = [
+            row for row in rows
+            if row.get("ra") is not None and row.get("dec") is not None and row.get("measurement_epoch_yr") is not None
+        ]
+        if finite_rows:
+            median_index = len(finite_rows) // 2
+            reference = {
+                "id": finite_rows[median_index].get("id"),
+                "ra": finite_rows[median_index].get("ra"),
+                "dec": finite_rows[median_index].get("dec"),
+                "measurement_epoch_yr": finite_rows[median_index].get("measurement_epoch_yr"),
+                "fallback": True,
+            }
+
+    target = target_rows[0] if target_rows else {"moca_oid": int(oid), "designation": None}
+    pm = pm_rows[0] if pm_rows else {}
+    pm["reference"] = _format_astrometry_reference(pm_rows[0] if pm_rows else None, "PM")
+    plx = plx_rows[0] if plx_rows else {}
+    plx["reference"] = _format_astrometry_reference(plx_rows[0] if plx_rows else None, "parallax")
+    mission_counts: dict[str, int] = {}
+    for row in rows:
+        mission = str(row.get("mission") or "No mission")
+        mission_counts[mission] = mission_counts.get(mission, 0) + 1
+    missions = [
+        {"value": mission, "label": f"{mission} ({count})", "count": count}
+        for mission, count in sorted(mission_counts.items(), key=lambda item: item[0].lower())
+    ]
+    payload = {
+        "target": {
+            "moca_oid": int(oid),
+            "designation": target.get("designation"),
+            "designations": [row.get("designation") for row in designation_rows if row.get("designation")],
+        },
+        "reference": reference or {},
+        "pm": pm,
+        "parallax": plx,
+        "missions": missions,
+        "rows": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "mission_count": len(missions),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _ASTROMETRY_OBJECT_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_astrometry_search(query: str, selected_oid: int | None = None) -> dict[str, Any]:
+    options = [
+        {"value": 602, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "label": "oid602: SIMP J013656.5+093347.3"},
+        {"value": 10995, "moca_oid": 10995, "designation": "Mock high-motion dwarf", "label": "oid10995: Mock high-motion dwarf"},
+    ]
+    if selected_oid is not None:
+        options = [row for row in options if int(row["moca_oid"]) == int(selected_oid)]
+    elif query:
+        q = str(query).lower()
+        options = [row for row in options if q in str(row["label"]).lower()]
+    return {"options": options, "value": options[0]["value"] if options else None, "meta": {"row_count": len(options)}}
+
+
+def _mock_astrometry_object(oid: int) -> dict[str, Any]:
+    rng = np.random.default_rng(int(oid) % 10000)
+    base_ra = 24.2354
+    base_dec = 9.5631
+    epoch_ref = 2016.0
+    pmra = 1230.0
+    pmdec = -430.0
+    plx = 163.0
+    missions = [("CFHT WIRCam", "2010"), ("UKIRT WFCAM", "2015"), ("Gaia", "DR3"), ("JWST", "2023")]
+    epochs = np.sort(rng.uniform(2008.0, 2025.3, 90))
+    rows = []
+    for index, epoch in enumerate(epochs):
+        mission_name, release = missions[index % len(missions)]
+        dra_mas = pmra * (epoch - epoch_ref) + rng.normal(0, 18)
+        ddec_mas = pmdec * (epoch - epoch_ref) + rng.normal(0, 14)
+        ra = base_ra + dra_mas / (math.cos(math.radians(base_dec)) * 3600 * 1000)
+        dec = base_dec + ddec_mas / (3600 * 1000)
+        calibrated = index % 5 != 0
+        rows.append({
+            "id": index + 1,
+            "ra": round(ra, 9),
+            "dec": round(dec, 9),
+            "raw_ra": round(ra - (0.008 if calibrated else 0.0) / (math.cos(math.radians(base_dec)) * 3600 * 1000), 9),
+            "raw_dec": round(dec + (0.006 if calibrated else 0.0) / (3600 * 1000), 9),
+            "measurement_epoch_yr": round(float(epoch), 6),
+            "ra_unc_mas": round(float(rng.uniform(8, 32)), 3),
+            "dec_unc_mas": round(float(rng.uniform(8, 32)), 3),
+            "measurement_epoch_yr_unc": 0.0,
+            "mission": f"{mission_name} {release}",
+            "moca_pid": "mock",
+            "mission_name": mission_name,
+            "data_release": release,
+            "origin": "mock_astrometry",
+            "comments": "Synthetic astrometry for local smoke testing",
+            "airmass": None,
+            "moca_psid": None,
+            "calibration_delta_ra_mas": 0.008 if calibrated else None,
+            "calibration_delta_dec_mas": -0.006 if calibrated else None,
+            "nstars_calibration": int(rng.integers(20, 180)) if calibrated else None,
+            "calibration_method": "mock recalibration" if calibrated else None,
+            "include_in_recalibrated_display": 1 if "Gaia" in mission_name else 0,
+        })
+    mission_counts: dict[str, int] = {}
+    for row in rows:
+        mission_counts[row["mission"]] = mission_counts.get(row["mission"], 0) + 1
+    return {
+        "target": {
+            "moca_oid": int(oid),
+            "designation": "SIMP J013656.5+093347.3" if int(oid) == 602 else "Mock high-motion dwarf",
+            "designations": ["SIMP J013656.5+093347.3", "2MASS J01365662+0933473"],
+        },
+        "reference": {"id": 1, "ra": base_ra, "dec": base_dec, "measurement_epoch_yr": epoch_ref},
+        "pm": {
+            "pmra_masyr": pmra,
+            "pmdec_masyr": pmdec,
+            "pmra_masyr_unc": 4.0,
+            "pmdec_masyr_unc": 5.0,
+            "reference": "Mock adopted PM",
+        },
+        "parallax": {
+            "parallax_mas": plx,
+            "parallax_mas_unc": 3.0,
+            "reference": "Mock adopted parallax",
+        },
+        "missions": [
+            {"value": mission, "label": f"{mission} ({count})", "count": count}
+            for mission, count in sorted(mission_counts.items())
+        ],
+        "rows": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "mission_count": len(mission_counts),
+            "private_db": False,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
 @app.get("/")
 def index():
     return send_from_directory(STATIC_DIR, "index.html")
@@ -2322,6 +5748,38 @@ def index():
 @app.get("/spectral_typing_fast")
 def spectral_typing_fast_page():
     return send_from_directory(STATIC_DIR, "spectral_typing.html")
+
+
+@app.get("/astrometry")
+@app.get("/astrometry-fast")
+@app.get("/astrometry_fast")
+def astrometry_fast_page():
+    return send_from_directory(STATIC_DIR, "astrometry.html")
+
+
+@app.get("/spectra")
+@app.get("/spectra-fast")
+@app.get("/spectra_fast")
+def spectra_fast_page():
+    return send_from_directory(STATIC_DIR, "spectra.html")
+
+
+@app.get("/xyzuvw")
+@app.get("/xyzuvw-fast")
+@app.get("/xyzuvw_fast")
+@app.get("/spatial-kinematics")
+@app.get("/spatial-kinematics-fast")
+def xyzuvw_fast_page():
+    return send_from_directory(STATIC_DIR, "xyzuvw.html")
+
+
+@app.get("/trueflow-age-pdfs")
+@app.get("/trueflow_age_pdfs")
+@app.get("/trueflow-agepdfs")
+@app.get("/age-pdfs")
+@app.get("/age-pdfs-fast")
+def trueflow_age_pdfs_fast_page():
+    return send_from_directory(STATIC_DIR, "trueflow_age_pdfs.html")
 
 
 @app.get("/plotly.min.js")
@@ -2528,15 +5986,76 @@ def spectral_typing_compare():
     norm_text = body.get("norm") or body.get("norm_regions") or args.get("norm")
     norm_regions_param = _spt_parse_norm_regions(norm_text)
     deredden = _as_bool(body.get("deredden")) or _as_bool(args.get("deredden"))
+    cloud_correction = (
+        _as_bool(body.get("cloud_correction"))
+        or _as_bool(body.get("cloud"))
+        or _as_bool(args.get("cloud_correction"))
+        or _as_bool(args.get("cloud"))
+    )
+    if deredden and cloud_correction:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": "Dereddening and brown dwarf cloud correction cannot be used simultaneously.",
+        }), 400
     fixed_r_v = _spt_float(body.get("fix_rv") if body.get("fix_rv") is not None else args.get("fix_rv"))
     if fixed_r_v is not None and fixed_r_v <= 0:
         fixed_r_v = None
+    raw_cloud_alpha = body.get("cloud_alpha") if body.get("cloud_alpha") is not None else args.get("cloud_alpha")
+    cloud_alpha = _spt_float(raw_cloud_alpha)
+    cloud_lambda0 = _spt_float(body.get("cloud_lambda0") if body.get("cloud_lambda0") is not None else args.get("cloud_lambda0"))
+    cloud_alpha = cloud_alpha if cloud_alpha is not None and cloud_alpha > 0 else SPT_DEFAULT_CLOUD_ALPHA
+    cloud_lambda0 = cloud_lambda0 if cloud_lambda0 is not None and cloud_lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    raw_cloud_alpha_fixed = body.get("cloud_alpha_fixed") if body.get("cloud_alpha_fixed") is not None else args.get("cloud_alpha_fixed")
+    cloud_alpha_fixed = not _as_false(raw_cloud_alpha_fixed) if raw_cloud_alpha_fixed is not None else True
+    if raw_cloud_alpha is not None and _as_false(raw_cloud_alpha):
+        cloud_alpha_fixed = False
+    if (
+        _as_bool(body.get("cloud_fit_alpha"))
+        or _as_bool(args.get("cloud_fit_alpha"))
+        or _as_bool(body.get("fit_cloud_alpha"))
+        or _as_bool(args.get("fit_cloud_alpha"))
+    ):
+        cloud_alpha_fixed = False
+    priority_standard_specid = None
+    raw_priority_standard_specid = (
+        body.get("priority_standard_specid")
+        or body.get("current_standard_specid")
+        or args.get("priority_standard_specid")
+    )
+    try:
+        priority_standard_specid = int(raw_priority_standard_specid)
+    except (TypeError, ValueError):
+        priority_standard_specid = None
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            payload = _mock_spt_compare(args, specid, bins, norm_regions_param, deredden, fixed_r_v)
+            payload = _mock_spt_compare(
+                args,
+                specid,
+                bins,
+                norm_regions_param,
+                deredden,
+                fixed_r_v,
+                cloud_correction,
+                cloud_alpha,
+                cloud_alpha_fixed,
+                cloud_lambda0,
+            )
             return jsonify({"ok": True, "source": "mock", **payload})
         started = time.time()
-        payload = _precompute_spt_comparison(args, specid, bins, norm_regions_param, deredden, fixed_r_v)
+        payload = _precompute_spt_comparison(
+            args,
+            specid,
+            bins,
+            norm_regions_param,
+            deredden,
+            fixed_r_v,
+            cloud_correction=cloud_correction,
+            cloud_alpha=cloud_alpha,
+            cloud_alpha_fixed=cloud_alpha_fixed,
+            cloud_lambda0=cloud_lambda0,
+            priority_standard_specid=priority_standard_specid,
+        )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
@@ -2555,6 +6074,123 @@ def spectral_typing_compare():
                 "norm_regions": norm_regions_param,
                 "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
                 "deredden": deredden,
+                "cloud_correction": cloud_correction,
+                "cloud_alpha": cloud_alpha,
+                "cloud_alpha_fixed": cloud_alpha_fixed,
+                "cloud_lambda0": cloud_lambda0,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/spectral-typing/standard")
+def spectral_typing_standard():
+    args = dict(request.args)
+    body = request.get_json(silent=True) or {}
+    raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
+    raw_standard_specid = (
+        body.get("standard_specid")
+        or body.get("moca_standard_specid")
+        or body.get("current_standard_specid")
+        or args.get("standard_specid")
+    )
+    try:
+        specid = int(raw_specid)
+        standard_specid = int(raw_standard_specid)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "source": "none", "error": "Numeric specid and standard_specid are required"}), 400
+    try:
+        bins = int(body.get("bins") or body.get("bins_per_micron") or args.get("bins") or SPT_DEFAULT_BINS_PER_MICRON)
+    except (TypeError, ValueError):
+        bins = SPT_DEFAULT_BINS_PER_MICRON
+    bins = max(1, min(bins, 2000))
+    norm_text = body.get("norm") or body.get("norm_regions") or args.get("norm")
+    norm_regions_param = _spt_parse_norm_regions(norm_text)
+    deredden = _as_bool(body.get("deredden")) or _as_bool(args.get("deredden"))
+    cloud_correction = (
+        _as_bool(body.get("cloud_correction"))
+        or _as_bool(body.get("cloud"))
+        or _as_bool(args.get("cloud_correction"))
+        or _as_bool(args.get("cloud"))
+    )
+    if deredden and cloud_correction:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": "Dereddening and brown dwarf cloud correction cannot be used simultaneously.",
+        }), 400
+    fixed_r_v = _spt_float(body.get("fix_rv") if body.get("fix_rv") is not None else args.get("fix_rv"))
+    if fixed_r_v is not None and fixed_r_v <= 0:
+        fixed_r_v = None
+    raw_cloud_alpha = body.get("cloud_alpha") if body.get("cloud_alpha") is not None else args.get("cloud_alpha")
+    cloud_alpha = _spt_float(raw_cloud_alpha)
+    cloud_lambda0 = _spt_float(body.get("cloud_lambda0") if body.get("cloud_lambda0") is not None else args.get("cloud_lambda0"))
+    cloud_alpha = cloud_alpha if cloud_alpha is not None and cloud_alpha > 0 else SPT_DEFAULT_CLOUD_ALPHA
+    cloud_lambda0 = cloud_lambda0 if cloud_lambda0 is not None and cloud_lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
+    raw_cloud_alpha_fixed = body.get("cloud_alpha_fixed") if body.get("cloud_alpha_fixed") is not None else args.get("cloud_alpha_fixed")
+    cloud_alpha_fixed = not _as_false(raw_cloud_alpha_fixed) if raw_cloud_alpha_fixed is not None else True
+    if raw_cloud_alpha is not None and _as_false(raw_cloud_alpha):
+        cloud_alpha_fixed = False
+    if (
+        _as_bool(body.get("cloud_fit_alpha"))
+        or _as_bool(args.get("cloud_fit_alpha"))
+        or _as_bool(body.get("fit_cloud_alpha"))
+        or _as_bool(args.get("fit_cloud_alpha"))
+    ):
+        cloud_alpha_fixed = False
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_spt_compare(
+                args,
+                specid,
+                bins,
+                norm_regions_param,
+                deredden,
+                fixed_r_v,
+                cloud_correction,
+                cloud_alpha,
+                cloud_alpha_fixed,
+                cloud_lambda0,
+                only_standard_specid=standard_specid,
+            )
+            return jsonify({"ok": True, "source": "mock", **payload})
+        started = time.time()
+        payload = _precompute_spt_comparison(
+            args,
+            specid,
+            bins,
+            norm_regions_param,
+            deredden,
+            fixed_r_v,
+            cloud_correction=cloud_correction,
+            cloud_alpha=cloud_alpha,
+            cloud_alpha_fixed=cloud_alpha_fixed,
+            cloud_lambda0=cloud_lambda0,
+            only_standard_specid=standard_specid,
+        )
+        payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "comparison": [],
+            "comparisonMetadata": {"moca_specid": specid},
+            "entries": [],
+            "options": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "specid": specid,
+                "standard_specid": standard_specid,
+                "bins_per_micron": bins,
+                "norm_regions": norm_regions_param,
+                "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
+                "deredden": deredden,
+                "cloud_correction": cloud_correction,
+                "cloud_alpha": cloud_alpha,
+                "cloud_alpha_fixed": cloud_alpha_fixed,
+                "cloud_lambda0": cloud_lambda0,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), 500
@@ -2565,16 +6201,351 @@ def spectral_typing_clear_cache():
     grid_count = len(_SPT_GRID_CACHE)
     spectrum_count = len(_SPT_SPECTRUM_CACHE)
     compare_count = len(_SPT_COMPARE_CACHE)
+    standard_process_count = len(_SPT_STANDARD_PROCESS_CACHE)
     _SPT_GRID_CACHE.clear()
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
+    _SPT_STANDARD_PROCESS_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
             "spectralTypingGrid": grid_count,
             "spectralTypingSpectra": spectrum_count,
             "spectralTypingComparisons": compare_count,
+            "spectralTypingProcessedStandards": standard_process_count,
         },
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
+@app.get("/api/spectra/search")
+def spectra_explorer_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    selected_specids = _parse_spectra_explorer_specids(args) if (args.get("specids") or args.get("moca_specid") or args.get("specid")) else []
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_spectra_explorer_search(query, selected_specids)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _search_spectra_explorer_from_db(args, query, selected_specids)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "values": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/spectra/load")
+def spectra_explorer_load():
+    args = dict(request.args)
+    specids = _parse_spectra_explorer_specids(args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_spectra_explorer_payload(specids)})
+        payload = _load_spectra_explorer_from_db(args, specids)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "spectra": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "specid_count": 0,
+                "row_count": 0,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/spectra/cache/clear")
+def spectra_explorer_clear_cache():
+    spectra_count = len(_SPECTRA_EXPLORER_CACHE)
+    _SPECTRA_EXPLORER_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"spectraExplorer": spectra_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
+@app.get("/api/xyzuvw/options")
+def xyzuvw_options():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_xyzuvw_options()})
+        payload = _load_xyzuvw_options_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "associations": [],
+            "mtids": [],
+            "versions": [{"value": "latest", "label": "Latest available"}],
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/xyzuvw/search")
+def xyzuvw_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            q = str(query or "").lower()
+            options = [
+                {"value": 602, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "label": "oid602: SIMP J013656.5+093347.3"},
+                {"value": 10995, "moca_oid": 10995, "designation": "Mock moving-group candidate", "label": "oid10995: Mock moving-group candidate"},
+            ]
+            if q:
+                options = [row for row in options if q in row["label"].lower()]
+            return jsonify({"ok": True, "source": "mock", "options": options, "meta": {"row_count": len(options)}})
+        payload = _search_xyzuvw_objects_from_db(args, query)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/xyzuvw/associations/search")
+def xyzuvw_association_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            q = str(query or "").lower()
+            options = _mock_xyzuvw_options()["associations"]
+            if q:
+                options = [row for row in options if q in str(row.get("label") or row.get("value") or "").lower()]
+            return jsonify({"ok": True, "source": "mock", "options": options[:80], "meta": {"row_count": len(options[:80])}})
+        payload = _search_xyzuvw_associations_from_db(args, query)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/xyzuvw/data")
+def xyzuvw_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_xyzuvw_payload(args)})
+        payload = _load_xyzuvw_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": _parse_xyzuvw_selection(args),
+            "members": [],
+            "models": [],
+            "objects": [],
+            "labels": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "member_count": 0,
+                "model_count": 0,
+                "object_count": 0,
+                "truncated": False,
+                "max_objects": XYZUVW_MAX_OBJECTS,
+                "c_value": XYZUVW_C_VALUE,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/xyzuvw/cache/clear")
+def xyzuvw_clear_cache():
+    xyzuvw_count = len(_XYZUVW_CACHE)
+    _XYZUVW_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"xyzuvw": xyzuvw_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
+@app.get("/api/trueflow-age-pdfs/options")
+def trueflow_age_pdfs_options():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_tfage_options()})
+        payload = _load_tfage_options_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "associations": [],
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "association_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/trueflow-age-pdfs/search")
+def trueflow_age_pdfs_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    selected_oid = None
+    raw_oid = args.get("moca_oid") or args.get("oid")
+    if raw_oid is not None:
+        try:
+            selected_oid = int(raw_oid)
+        except (TypeError, ValueError):
+            selected_oid = None
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            options = [
+                {
+                    "value": TRUEFLOW_AGE_DEFAULT_OID,
+                    "moca_oid": TRUEFLOW_AGE_DEFAULT_OID,
+                    "designation": "Mock age-PDF target",
+                    "label": f"oid{TRUEFLOW_AGE_DEFAULT_OID}: Mock age-PDF target",
+                },
+                {"value": 602, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "label": "oid602: SIMP J013656.5+093347.3"},
+            ]
+            q = str(query or "").strip().lower()
+            if q:
+                options = [row for row in options if q in row["label"].lower()]
+            return jsonify({"ok": True, "source": "mock", "options": options, "value": selected_oid, "meta": {"row_count": len(options)}})
+        payload = _search_tfage_objects_from_db(args, query, selected_oid)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": None,
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/trueflow-age-pdfs/data")
+def trueflow_age_pdfs_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_tfage_payload(args)})
+        payload = _load_tfage_payload_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": {
+                "scope": _tfage_scope(args),
+                "target": _tfage_target(args, _tfage_scope(args)),
+                "load_posteriors": _tfage_load_posteriors(args),
+            },
+            "target": {},
+            "curves": [],
+            "tableRows": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "age_row_count": 0,
+                "curve_count": 0,
+                "displayable_curve_count": 0,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/trueflow-age-pdfs/cache/clear")
+def trueflow_age_pdfs_clear_cache():
+    age_count = len(_TRUEFLOW_AGE_CACHE)
+    _TRUEFLOW_AGE_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"trueflowAgePdfs": age_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
+@app.get("/api/astrometry/search")
+def astrometry_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    selected_oid = None
+    raw_oid = args.get("moca_oid") or args.get("oid")
+    if raw_oid is not None:
+        try:
+            selected_oid = int(raw_oid)
+        except (TypeError, ValueError):
+            selected_oid = None
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_astrometry_search(query, selected_oid)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _search_astrometry_objects_from_db(args, query, selected_oid)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": None,
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/astrometry/object/<int:oid>")
+def astrometry_object(oid: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_astrometry_object(oid)})
+        payload = _load_astrometry_object_from_db(args, oid)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "target": {"moca_oid": int(oid), "designation": None, "designations": []},
+            "reference": {},
+            "pm": {},
+            "parallax": {},
+            "missions": [],
+            "rows": [],
+            "meta": {"row_count": 0, "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/astrometry/cache/clear")
+def astrometry_clear_cache():
+    object_count = len(_ASTROMETRY_OBJECT_CACHE)
+    _ASTROMETRY_OBJECT_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"astrometryObjects": object_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -2586,11 +6557,21 @@ def clear_cache():
     spt_grid_count = len(_SPT_GRID_CACHE)
     spt_spectrum_count = len(_SPT_SPECTRUM_CACHE)
     spt_compare_count = len(_SPT_COMPARE_CACHE)
+    spt_standard_process_count = len(_SPT_STANDARD_PROCESS_CACHE)
+    astrometry_count = len(_ASTROMETRY_OBJECT_CACHE)
+    spectra_explorer_count = len(_SPECTRA_EXPLORER_CACHE)
+    xyzuvw_count = len(_XYZUVW_CACHE)
+    trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
     _SPT_GRID_CACHE.clear()
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
+    _SPT_STANDARD_PROCESS_CACHE.clear()
+    _ASTROMETRY_OBJECT_CACHE.clear()
+    _SPECTRA_EXPLORER_CACHE.clear()
+    _XYZUVW_CACHE.clear()
+    _TRUEFLOW_AGE_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
@@ -2599,6 +6580,11 @@ def clear_cache():
             "spectralTypingGrid": spt_grid_count,
             "spectralTypingSpectra": spt_spectrum_count,
             "spectralTypingComparisons": spt_compare_count,
+            "spectralTypingProcessedStandards": spt_standard_process_count,
+            "astrometryObjects": astrometry_count,
+            "spectraExplorer": spectra_explorer_count,
+            "xyzuvw": xyzuvw_count,
+            "trueflowAgePdfs": trueflow_age_count,
         },
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

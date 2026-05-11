@@ -65,9 +65,13 @@
             <input id="spt-deredden" type="checkbox">
             <span>Apply dereddening (slow)</span>
           </label>
-          <label id="spt-fix-rv-wrap">
-            Fixed R(V)
-            <input id="spt-fix-rv" type="number" step="0.01" placeholder="optional">
+          <label class="checkline">
+            <input id="spt-cloud" type="checkbox">
+            <span>Apply brown dwarf slope correction</span>
+          </label>
+          <label id="spt-fixed-param-wrap" hidden>
+            <span id="spt-fixed-param-label">Fix R_V value</span>
+            <input id="spt-fixed-param" type="number" step="0.01" placeholder="free">
           </label>
           <label class="checkline">
             <input id="spt-allred" type="checkbox" checked>
@@ -93,6 +97,9 @@
         </div>
         <div class="plot-frame spectral-chi2-frame">
           <div id="spt-chi2-plot"></div>
+          <div id="spt-chi2-loader" class="plot-loader" aria-label="Loading spectral typing chi-square data">
+            <div class="plot-loader-ring"></div>
+          </div>
         </div>
         <div class="spectral-toolbar">
           <div class="spectral-summary">
@@ -119,6 +126,7 @@
         <li><code>?specid=602&amp;grid=field&amp;bins=200</code></li>
         <li><code>?specid=602&amp;grid=field&amp;grid_index=4&amp;norm=0.860-1.350,1.445-1.800,2.010-2.400</code></li>
         <li><code>?specid=602&amp;deredden=1&amp;fix_rv=3.1</code></li>
+        <li><code>?specid=602&amp;cloud=1</code></li>
         <li><code>?mock=1&amp;specid=602</code> for a network-free local sample dataset.</li>
       </ul>
 
@@ -160,8 +168,18 @@
           </tr>
           <tr>
             <td><code>fix_rv</code></td>
-            <td>Positive number</td>
-            <td>When dereddening is active, holds <code>R(V)</code> fixed and optimizes only <code>A(V)</code>.</td>
+            <td>Positive number, or <code>free</code></td>
+            <td>When dereddening is active, holds <code>R(V)</code> fixed and optimizes only <code>A(V)</code>. Use <code>fix_rv=free</code> or leave the field blank to fit <code>R(V)</code>.</td>
+          </tr>
+          <tr>
+            <td><code>cloud</code>, <code>cloud_correction</code></td>
+            <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
+            <td>Fits a one-parameter brown-dwarf slope correction. This cannot be combined with <code>deredden</code>.</td>
+          </tr>
+          <tr>
+            <td><code>cloud_alpha</code>, <code>cloud_alpha_fixed</code></td>
+            <td>Positive number; <code>cloud_alpha_fixed=0</code> or <code>cloud_alpha=free</code> to fit</td>
+            <td>Controls the slope-correction wavelength exponent. In the page controls, entering a value fixes alpha; clearing the field fits alpha.</td>
           </tr>
         </tbody>
       </table>

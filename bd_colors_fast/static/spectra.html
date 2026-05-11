@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast Spectral Explorer</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="spectra-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast Spectral Explorer</div>
+      <div id="spe-status" class="status loading">Loading spectra</div>
+    </header>
+
+    <main class="workspace spectra-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Spectra</h2>
+          <div class="designation-picker">
+            <label for="spe-search">Add spectrum</label>
+            <input id="spe-search" type="text" autocomplete="off" placeholder="Type a specid, oid, designation, or instrument">
+            <div id="spe-results" class="designation-results" hidden></div>
+          </div>
+          <div id="spe-selected-list" class="spectra-selected-list"></div>
+          <div class="button-grid">
+            <button id="spe-load" type="button">Load spectra</button>
+            <button id="spe-clear-selected" type="button">Clear</button>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="spe-hover" type="checkbox">
+            <span>Enable hover properties</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-xlog" type="checkbox" checked>
+            <span>Log X axis</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-ylog" type="checkbox" checked>
+            <span>Log Y axis</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-fnu" type="checkbox">
+            <span><i>F</i><sub>ν</sub> instead (Jy) of <i>F</i><sub>λ</sub> (W/m<sup>2</sup>/μm)</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-showfeatures" type="checkbox" checked>
+            <span>Show chemical features</span>
+          </label>
+          <label id="spe-disable-lowres-wrap" class="checkline is-disabled">
+            <input id="spe-disable-lowres" type="checkbox" disabled>
+            <span>Deactivate low-resolution display mode</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Normalization</h2>
+          <label class="checkline">
+            <input id="spe-normalize" type="checkbox" checked>
+            <span>Normalize spectra</span>
+          </label>
+          <label>
+            Normalization range
+            <input id="spe-normrange" type="text" value="0.95-1.35" placeholder="0.95-1.35">
+          </label>
+          <button id="spe-reset-norm" type="button">Reset Norm</button>
+        </section>
+      </aside>
+
+      <section id="spe-visual-area" class="visual-area spectra-visual-area">
+        <div class="plot-frame spectra-plot-frame">
+          <div id="spe-plot"></div>
+          <div id="spe-plot-loader" class="plot-loader is-visible" aria-label="Loading spectra">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="spectra-toolbar">
+          <div class="spectra-summary">
+            <div id="spe-summary">No spectra loaded</div>
+            <div id="spe-hint" class="plot-hint">Select spectra to compare their wavelength coverage and flux shape.</div>
+          </div>
+          <div class="export-actions spectra-actions">
+            <button id="spe-export-csv" type="button" disabled>Export plotted CSV</button>
+            <button id="spe-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div class="selection-area spectra-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="spe-table-title">Selected spectra</strong>
+              <div id="spe-table-subtitle" class="plot-hint">Click a spectrum in the plot to list its rows here.</div>
+            </div>
+            <div id="spe-download-links" class="export-actions spectra-download-links"></div>
+          </div>
+          <div id="spe-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help spectra-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The fast spectral explorer can be opened with predefined spectra and
+        display settings by appending query-string parameters.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>moca_specid</code>, <code>specid</code>, <code>specids</code></td><td>Comma-separated spectrum IDs</td><td>Loads those spectra. Defaults to <code>812,13510</code>.</td></tr>
+          <tr><td><code>hover</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows detailed hover text for plotted spectral rows.</td></tr>
+          <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>0</code> disables either log axis</td><td>Both axes use logarithmic scaling by default.</td></tr>
+          <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
+          <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
+          <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>
+          <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows common chemical and atomic feature bands by default.</td></tr>
+          <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Cache</h3>
+      <p>
+        This page keeps downloaded spectra in server memory for a short period.
+        Clearing the cache forces the next load to redownload spectra from
+        MOCAdb.
+      </p>
+      <div class="cache-actions">
+        <button id="spe-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="spe-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/spectra.js"></script>
+</body>
+</html>

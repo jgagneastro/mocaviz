@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast Spatial-Kinematic Explorer</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="xyzuvw-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast Spatial-Kinematic Explorer</div>
+      <div id="xuv-status" class="status loading">Loading XYZUVW data</div>
+    </header>
+
+    <main class="workspace xyzuvw-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <label>
+            Axis 1
+            <select id="xuv-axis-1"></select>
+          </label>
+          <label>
+            Axis 2
+            <select id="xuv-axis-2"></select>
+          </label>
+          <label>
+            Axis 3
+            <select id="xuv-axis-3"></select>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Associations</h2>
+          <div class="button-grid">
+            <button id="xuv-aids-default" type="button">Default</button>
+            <button id="xuv-aids-clear" type="button">Clear</button>
+          </div>
+          <div class="designation-picker xyzuvw-association-picker">
+            <label for="xuv-aid-search">Add association</label>
+            <input id="xuv-aid-search" type="text" autocomplete="off" placeholder="Type an association name or ID">
+            <div id="xuv-aid-results" class="designation-results association-results" hidden></div>
+          </div>
+          <div id="xuv-selected-aids" class="designation-selected association-selected"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Memberships</h2>
+          <div id="xuv-mtid-list" class="xyzuvw-check-list xyzuvw-mtid-list"></div>
+        </section>
+
+        <section class="control-section axes-section">
+          <h2>Objects</h2>
+          <div class="designation-picker">
+            <label for="xuv-object-search">Highlight object</label>
+            <input id="xuv-object-search" type="text" autocomplete="off" placeholder="Type a designation or MOCA OID">
+            <div id="xuv-object-results" class="designation-results" hidden></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Use MOCA OIDs</summary>
+            <label>
+              Highlight OIDs
+              <input id="xuv-oid-input" type="text" placeholder="602,10995">
+            </label>
+          </details>
+          <div id="xuv-selected-oids" class="designation-selected"></div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label>
+            BANYAN model version
+            <select id="xuv-bsmdid"></select>
+          </label>
+          <label class="checkline">
+            <input id="xuv-models" type="checkbox">
+            <span>BANYAN Models</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-errors" type="checkbox">
+            <span>Show Object Errors</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-assmem" type="checkbox">
+            <span>Assume Membership</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-hover" type="checkbox">
+            <span>Enable Hover Properties</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-likely" type="checkbox">
+            <span>Only Display Likely Members</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-asscen" type="checkbox">
+            <span>All Labels (slow load)</span>
+          </label>
+          <button id="xuv-load" type="button">Load map</button>
+        </section>
+      </aside>
+
+      <section id="xuv-visual-area" class="visual-area xyzuvw-visual-area">
+        <div class="plot-frame xyzuvw-plot-frame">
+          <div id="xuv-plot"></div>
+          <div id="xuv-plot-loader" class="plot-loader is-visible" aria-label="Loading XYZUVW map">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="xyzuvw-toolbar">
+          <div class="xyzuvw-summary">
+            <div id="xuv-summary">No data loaded</div>
+            <div id="xuv-hint" class="plot-hint">Box-select or click points to inspect objects.</div>
+          </div>
+          <div class="export-actions xyzuvw-actions">
+            <button id="xuv-open-report" type="button" disabled>Open selected report</button>
+            <button id="xuv-export-csv" type="button" disabled>Export CSV</button>
+            <button id="xuv-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div class="selection-area xyzuvw-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="xuv-table-title">Displayed objects</strong>
+              <div id="xuv-table-subtitle" class="plot-hint">Selections appear here.</div>
+            </div>
+          </div>
+          <div id="xuv-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help xyzuvw-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The fast spatial-kinematic explorer accepts the same core URL inputs as
+        the legacy Dash page.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>axes</code></td><td>Three distinct letters among <code>x,y,z,u,v,w</code></td><td>Sets the 3D axes, for example <code>axes=xyz</code> or <code>axes=xuw</code>.</td></tr>
+          <tr><td><code>asso</code>, <code>moca_aid</code>, <code>aid</code></td><td>Comma-separated association IDs</td><td>Selects associations. Defaults to <code>HYA,CBER,TWA,THA</code>.</td></tr>
+          <tr><td><code>mtid</code></td><td>Comma-separated membership type IDs</td><td>Filters memberships. Defaults to <code>BF,HM,CM</code>.</td></tr>
+          <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated MOCA OIDs</td><td>Overplots highlighted objects.</td></tr>
+          <tr><td><code>bsmdid</code></td><td><code>latest</code> or a numeric model version</td><td>Selects the BANYAN Sigma model version.</td></tr>
+          <tr><td><code>checkbox</code></td><td><code>models,errors,hover,assmem,likely,asscen</code></td><td>Enables display options in one URL parameter.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <p>
+        The selected membership/model payload is kept in server memory for a
+        short period. Clearing the cache forces the next map load to redownload
+        the selected data.
+      </p>
+      <div class="cache-actions">
+        <button id="xuv-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="xuv-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/xyzuvw.js"></script>
+</body>
+</html>

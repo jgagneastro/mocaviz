@@ -24,6 +24,30 @@ The fast spectral typing prototype is served by the same process:
 http://127.0.0.1:8061/spectral-typing
 ```
 
+The fast astrometric explorer prototype is also served by the same process:
+
+```text
+http://127.0.0.1:8061/astrometry
+```
+
+The fast spectral explorer prototype is served at:
+
+```text
+http://127.0.0.1:8061/spectra
+```
+
+The fast spatial-kinematic explorer prototype is served at:
+
+```text
+http://127.0.0.1:8061/xyzuvw
+```
+
+The fast TrueFlow age-PDF prototype is served at:
+
+```text
+http://127.0.0.1:8061/trueflow-age-pdfs
+```
+
 If another local copy is already using port 8061:
 
 ```bash
@@ -42,6 +66,10 @@ For a network-free smoke test, use:
 ```text
 http://127.0.0.1:8061/?mock=1
 http://127.0.0.1:8061/spectral-typing?mock=1&specid=602
+http://127.0.0.1:8061/astrometry?mock=1&moca_oid=602
+http://127.0.0.1:8061/spectra?mock=1&moca_specid=812,13510
+http://127.0.0.1:8061/xyzuvw?mock=1&axes=xyz&asso=HYA,CBER
+http://127.0.0.1:8061/trueflow-age-pdfs?mock=1&moca_oid=11266
 ```
 
 ## Design
@@ -69,6 +97,24 @@ http://127.0.0.1:8061/spectral-typing?mock=1&specid=602
   callbacks. The server caches the standards grid, raw spectra, and computed
   comparison payloads; the browser handles navigation, Plotly rendering, URL
   state, and cache clearing.
+- The fast astrometry page loads one target's single-epoch astrometry,
+  adopted PM/parallax, designations, and mission metadata through compact JSON
+  endpoints; the browser handles mission toggles, residual transforms, binned
+  display, selections, Plotly rendering, CSV export, URL state, and cache
+  clearing.
+- The fast spectral explorer loads selected spectra through compact JSON
+  endpoints; the browser handles normalization, flux-unit conversion,
+  low-resolution display styling, chemical feature overlays, selections,
+  Plotly rendering, per-spectrum CSV downloads, URL state, and cache clearing.
+- The fast spatial-kinematic explorer loads selected memberships, highlighted
+  objects, and BANYAN model components through compact JSON endpoints; the
+  browser handles 3D XYZUVW rendering, association filters, model wireframes,
+  object selections, CSV export, URL state, and cache clearing.
+- The fast TrueFlow age-PDF page loads object or association age rows, compact
+  MOCAFlows PDF blobs, legacy PDF rows, and scalar Gaussian fallbacks through
+  JSON endpoints; the browser handles source filters, HBM filtering, CDF/log
+  display modes, visible-curve products, Plotly rendering, URL state, CSV
+  export, and cache clearing.
 
 ## Database Indexes
 

@@ -17,6 +17,29 @@ indexes belong on the underlying `mocadb_private_tables` base tables.
 
 ## Recommended Missing Indexes
 
+For the fast XYZUVW page, `summary_all_members` resolves to the private base
+table `summary_all_members_both`, which has about 7.6 million rows. The member
+query filters by `moca_aid` and `moca_mtid`, implicitly filters
+`is_public = 0` through the view, and orders by `moca_aid, moca_mtid,
+moca_oid`. Live `EXPLAIN` on 2026-05-10 used only `idx_sam_moca_aid` and still
+reported `Using index condition; Using where; Using filesort`.
+
+```sql
+ALTER TABLE `summary_all_members_both`
+  ADD INDEX `idx_fastxyzuvw_aid_mtid_public_oid`
+  (`moca_aid`, `moca_mtid`, `is_public`, `moca_oid`);
+```
+
+The app-side query strategy was also changed so the XYZUVW member query no
+longer joins through every adopted-model row and now constrains
+`calc_banyan_sigma` by `moca_aid`, adopted `moca_bsmdid`, `max_observables`,
+and private/public visibility. That lets MariaDB use the existing
+`ix_best_pairs_fast (moca_bsmdid, max_observables, moca_aid, is_public,
+moca_oid)` access path. A read-only timing comparison on the default XYZUVW
+selection dropped a simplified member query from about 4.2 s to about 0.8 s;
+the local JSON endpoint dropped from about 27.1 s to about 7.0 s cold, then
+about 0.06 s from the in-process cache.
+
 `data_spectral_indices` has about 9.5 million rows. It currently has separate
 indexes on `moca_oid` and `moca_siid`, but no composite index covering the
 page lookup by selected object, spectral-index id, and `ignored = 0`.
@@ -72,6 +95,15 @@ problem:
   (moca_oid, moca_aid)`, and `ix_best_pairs_fast
   (moca_bsmdid, max_observables, moca_aid, is_public, moca_oid)`. The earlier
   candidate index would mostly duplicate those access paths.
+- `calc_banyan_sigma_details`: the XYZUVW join uses `(cbs_id, moca_aid)`, but
+  live `EXPLAIN` estimated one row through the existing `cbs_id` index. I would
+  not add a composite details index unless a broader selection shows that join
+  becoming measurable.
+- `moca_associations`: the XYZUVW options endpoint still spends several seconds
+  fetching all association choices cold, but this table already has a unique
+  `moca_aid` index. This is a call-strategy issue, not an obvious missing-index
+  issue; the faster design would be to return defaults immediately and search
+  associations lazily as the user types.
 - `data_median_colors`: the current table has about 1k rows. A publication and
   photometric-band-pair composite is not covered by the existing unique index
   `uniq_spt_ps1_ps2_pid (spectral_type_number, moca_psid1, moca_psid2,

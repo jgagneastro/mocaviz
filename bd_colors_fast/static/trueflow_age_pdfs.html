@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast TrueFlow Age PDFs</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="trueflow-age-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast TrueFlow Age PDFs</div>
+      <div id="tfa-status" class="status loading">Loading age PDFs</div>
+    </header>
+
+    <main class="workspace tfage-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Target</h2>
+          <label class="checkline">
+            <input id="tfa-scope-object" type="radio" name="tfa-scope" value="object">
+            <span>Object age PDFs</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-scope-association" type="radio" name="tfa-scope" value="association">
+            <span>Association age PDFs</span>
+          </label>
+          <div id="tfa-object-controls">
+            <div class="designation-picker">
+              <label for="tfa-object-search">Find object</label>
+              <input id="tfa-object-search" type="text" autocomplete="off" placeholder="Type a designation or MOCA OID">
+              <div id="tfa-object-results" class="designation-results" hidden></div>
+            </div>
+            <label>
+              MOCA OID
+              <input id="tfa-oid-input" type="number" placeholder="11266">
+            </label>
+          </div>
+          <div id="tfa-association-controls">
+            <label>
+              Filter associations
+              <input id="tfa-aid-filter" type="text" autocomplete="off" placeholder="Type to filter">
+            </label>
+            <label>
+              MOCA AID
+              <select id="tfa-aid-select"></select>
+            </label>
+          </div>
+          <button id="tfa-load" type="button">Load PDFs</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Data Products</h2>
+          <label class="checkline">
+            <input id="tfa-source-mocaflows" type="checkbox">
+            <span>MOCAFlows products</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-source-legacy" type="checkbox">
+            <span>Other age tools</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-source-scalar" type="checkbox">
+            <span>Scalar rows as asymmetric Gaussians</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>MOCAFlows</h2>
+          <label class="checkline">
+            <input id="tfa-posteriors" type="checkbox">
+            <span>Use posteriors when possible</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-hbm" type="checkbox">
+            <span>Use Hierarchical Bayesian Models with outlier rejection</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="tfa-log-x" type="checkbox">
+            <span>Log x-axis</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-log-y" type="checkbox">
+            <span>Log y-axis</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-cdf" type="checkbox">
+            <span>CDF</span>
+          </label>
+          <label class="checkline">
+            <input id="tfa-combine" type="checkbox">
+            <span>Show product of visible curves</span>
+          </label>
+        </section>
+      </aside>
+
+      <section class="visual-area tfage-visual-area">
+        <div class="plot-frame tfage-plot-frame">
+          <div id="tfa-plot"></div>
+          <div id="tfa-plot-loader" class="plot-loader is-visible" aria-label="Loading age PDFs">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="tfage-toolbar">
+          <div class="tfage-summary">
+            <div id="tfa-summary">No data loaded</div>
+            <div id="tfa-hint" class="plot-hint">Click a curve to focus its summary row.</div>
+          </div>
+          <div class="export-actions tfage-actions">
+            <button id="tfa-open-report" type="button" disabled>Open MOCAdb report</button>
+            <button id="tfa-export-csv" type="button" disabled>Export CSV</button>
+            <button id="tfa-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div class="selection-area tfage-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="tfa-table-title">Displayed curves</strong>
+              <div id="tfa-table-subtitle" class="plot-hint">Curve summaries appear here.</div>
+            </div>
+          </div>
+          <div id="tfa-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help tfage-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The fast TrueFlow age-PDF page accepts the same core target inputs as
+        the legacy Dash page.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>target</code>, <code>scope</code>, <code>mode</code></td><td><code>object</code> or <code>association</code></td><td>Selects object-age or association-age products.</td></tr>
+          <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Numeric MOCA OID</td><td>Loads one object's age PDFs.</td></tr>
+          <tr><td><code>aid</code>, <code>moca_aid</code></td><td>Association ID</td><td>Loads one association's age PDFs.</td></tr>
+          <tr><td><code>sources</code></td><td><code>MOCAFlows,Legacy,Scalar Gaussian</code></td><td>Controls the initially visible data products.</td></tr>
+          <tr><td><code>checkbox</code></td><td><code>posteriors,hbm,log_x,log_y,cdf,combine</code></td><td>Enables MOCAFlows and display options.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <p>
+        Loaded age-PDF payloads are kept in server memory briefly. Clearing the
+        cache forces the next target load to redownload and decode the selected products.
+      </p>
+      <div class="cache-actions">
+        <button id="tfa-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="tfa-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/trueflow_age_pdfs.js"></script>
+</body>
+</html>

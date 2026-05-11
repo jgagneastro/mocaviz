@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast Astrometric Explorer</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="astrometry-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast Astrometric Explorer</div>
+      <div id="atm-status" class="status loading">Loading astrometry</div>
+    </header>
+
+    <main class="workspace astrometry-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Target</h2>
+          <div class="designation-picker">
+            <label for="atm-target-search">Object</label>
+            <input id="atm-target-search" type="text" autocomplete="off" placeholder="Type an object name or MOCA OID">
+            <div id="atm-target-results" class="designation-results" hidden></div>
+          </div>
+          <div id="atm-selected-target" class="selected-spectrum">
+            <span id="atm-selected-target-text">No target selected</span>
+            <button id="atm-clear-target" type="button" aria-label="Clear selected target" hidden>x</button>
+          </div>
+          <button id="atm-open-report" type="button" disabled>Open MOCAdb report</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Missions</h2>
+          <div class="mission-actions">
+            <button id="atm-missions-all" type="button">All</button>
+            <button id="atm-missions-none" type="button">None</button>
+          </div>
+          <div id="atm-mission-list" class="mission-list"></div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="atm-subtract-pm" type="checkbox">
+            <span>Subtract proper motion</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-subtract-plx" type="checkbox">
+            <span>Subtract parallax motion</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-phase-yearly" type="checkbox">
+            <span>Phase yearly</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-bin" type="checkbox">
+            <span>Bin data for display</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-adjust-reference" type="checkbox" checked>
+            <span>Adjust reference astrometry</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-only-recalibrated" type="checkbox" checked>
+            <span>Only use recalibrated astrometry when possible</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-revert-raw" type="checkbox">
+            <span>Use raw, non-recalibrated astrometry</span>
+          </label>
+        </section>
+      </aside>
+
+      <section id="atm-visual-area" class="visual-area astrometry-visual-area">
+        <div class="plot-frame astrometry-plot-frame">
+          <div id="atm-ra-plot"></div>
+          <div id="atm-plot-loader" class="plot-loader is-visible" aria-label="Loading astrometry">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="plot-frame astrometry-plot-frame">
+          <div id="atm-dec-plot"></div>
+        </div>
+        <div class="astrometry-toolbar">
+          <div id="atm-summary" class="astrometry-summary">No target loaded</div>
+          <div class="export-actions astrometry-actions">
+            <button id="atm-export-csv" type="button" disabled>Export CSV</button>
+            <button id="atm-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div class="selection-area astrometry-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="atm-table-title">Measurements</strong>
+              <div id="atm-table-subtitle" class="plot-hint">Click or box-select points in either plot.</div>
+            </div>
+          </div>
+          <div id="atm-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help astrometry-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The fast astrometric explorer can be opened with predefined state by
+        appending query-string parameters.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>moca_oid</code>, <code>oid</code></td><td>Numeric MOCA OID</td><td>Loads that object. Defaults to <code>602</code>.</td></tr>
+          <tr><td><code>missions</code></td><td>Comma-separated mission labels</td><td>Shows only those mission traces.</td></tr>
+          <tr><td><code>subtract_pm</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted proper motion from the plotted offsets.</td></tr>
+          <tr><td><code>subtract_plx</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted parallax motion from the plotted offsets.</td></tr>
+          <tr><td><code>phase</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Plots yearly phase instead of absolute epoch.</td></tr>
+          <tr><td><code>bin</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Adds display-only binned measurements.</td></tr>
+          <tr><td><code>adjust_ref</code></td><td><code>0</code> disables it</td><td>Uses adjusted reference astrometry by default.</td></tr>
+          <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated rows, or missions explicitly marked as display-ready, by default.</td></tr>
+          <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+    </footer>
+  </div>
+  <script src="static/astrometry.js"></script>
+</body>
+</html>

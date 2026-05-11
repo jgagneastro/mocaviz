@@ -1,5 +1,7 @@
 const sptDefaultNormText = "0.860-1.350, 1.445-1.800, 2.010-2.400";
 const sptDefaultBins = 200;
+const sptDefaultFixedRv = "3.1";
+const sptDefaultCloudAlpha = "1.7";
 const sptGridColors = ["#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5"];
 const sptStandardRed = "#E41A1C";
 const sptStandardPalette = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF"];
@@ -27,6 +29,7 @@ const sptFeatureBands = [
 
 const sptState = {
   gridOptions: [],
+  gridData: [],
   selectedSpecid: null,
   selectedSpectrumLabel: "",
   selectedGrid: "",
@@ -34,9 +37,12 @@ const sptState = {
   comparePayload: null,
   searchTimer: null,
   computeToken: 0,
+  quickComputeToken: 0,
   initialGridParam: "",
   initialGridIndexParam: null,
   hasAppliedInitialIndex: false,
+  fixedRvValue: sptDefaultFixedRv,
+  cloudAlphaValue: sptDefaultCloudAlpha,
 };
 
 const sptEl = {};
@@ -86,13 +92,17 @@ function collectSpectralElements() {
     "spt-norm",
     "spt-reset-norm",
     "spt-deredden",
-    "spt-fix-rv",
+    "spt-cloud",
+    "spt-fixed-param-wrap",
+    "spt-fixed-param-label",
+    "spt-fixed-param",
     "spt-allred",
     "spt-showfeatures",
     "spt-disable-lowres",
     "spt-plot",
     "spt-chi2-plot",
     "spt-plot-loader",
+    "spt-chi2-loader",
     "spt-count-summary",
     "spt-standard-meta",
     "spt-open-report",
@@ -113,7 +123,10 @@ function readSpectralUrlState() {
   sptEl["spt-bins"].value = params.get("bins") || String(sptDefaultBins);
   sptEl["spt-norm"].value = params.get("norm") || sptDefaultNormText;
   sptEl["spt-deredden"].checked = asSpectralBool(params.get("deredden"));
-  sptEl["spt-fix-rv"].value = params.get("fix_rv") || "";
+  sptEl["spt-cloud"].checked = asSpectralBool(params.get("cloud")) || asSpectralBool(params.get("cloud_correction"));
+  if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
+  sptState.fixedRvValue = spectralFixedRvUrlValue(params);
+  sptState.cloudAlphaValue = spectralCloudAlphaUrlValue(params);
   if (sptState.selectedSpecid !== null) {
     sptEl["spt-comparison-search"].value = `specid${sptState.selectedSpecid}`;
   }
@@ -153,7 +166,18 @@ function bindSpectralControls() {
   });
   sptEl["spt-prev-standard"].addEventListener("click", () => moveStandard(-1));
   sptEl["spt-next-standard"].addEventListener("click", () => moveStandard(1));
-  for (const id of ["spt-bins", "spt-norm", "spt-deredden", "spt-fix-rv"]) {
+  sptEl["spt-deredden"].addEventListener("change", () => {
+    if (sptEl["spt-deredden"].checked) sptEl["spt-cloud"].checked = false;
+    updateProcessingModeControls();
+    computeSpectralComparison();
+  });
+  sptEl["spt-cloud"].addEventListener("change", () => {
+    if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
+    updateProcessingModeControls();
+    computeSpectralComparison();
+  });
+  sptEl["spt-fixed-param"].addEventListener("input", syncFixedParameterValue);
+  for (const id of ["spt-bins", "spt-norm", "spt-fixed-param"]) {
     sptEl[id].addEventListener("change", () => computeSpectralComparison());
   }
   for (const id of ["spt-allred", "spt-showfeatures", "spt-disable-lowres"]) {
@@ -177,6 +201,43 @@ function bindSpectralControls() {
     if (!sptEl["spt-comparison-results"].hidden) positionSearchResultsPopup();
     if (sptState.comparePayload) renderSpectralTyping();
   }, 150));
+  updateProcessingModeControls();
+}
+
+function updateProcessingModeControls() {
+  const deredden = Boolean(sptEl["spt-deredden"]?.checked);
+  const cloud = Boolean(sptEl["spt-cloud"]?.checked);
+  const active = deredden || cloud;
+  if (sptEl["spt-fixed-param-wrap"]) sptEl["spt-fixed-param-wrap"].hidden = !active;
+  if (sptEl["spt-fixed-param"]) {
+    sptEl["spt-fixed-param"].disabled = !active;
+    sptEl["spt-fixed-param"].value = deredden ? sptState.fixedRvValue : (cloud ? sptState.cloudAlphaValue : "");
+    sptEl["spt-fixed-param"].placeholder = deredden ? "free R_V" : (cloud ? "free alpha" : "free");
+  }
+  if (sptEl["spt-fixed-param-label"]) {
+    sptEl["spt-fixed-param-label"].textContent = deredden || !cloud ? "Fix R_V value" : "Fix alpha value";
+  }
+  sptEl["spt-fixed-param-wrap"]?.classList.toggle("disabled-field", !active);
+}
+
+function currentProcessingMode() {
+  if (sptEl["spt-deredden"]?.checked) return "rv";
+  if (sptEl["spt-cloud"]?.checked) return "alpha";
+  return "";
+}
+
+function syncFixedParameterValue() {
+  const input = sptEl["spt-fixed-param"];
+  if (!input) return;
+  const value = String(input.value || "").trim();
+  const mode = currentProcessingMode();
+  if (mode === "rv") sptState.fixedRvValue = value;
+  if (mode === "alpha") sptState.cloudAlphaValue = value;
+}
+
+function fixedParameterValue() {
+  syncFixedParameterValue();
+  return String(sptEl["spt-fixed-param"]?.value || "").trim();
 }
 
 async function loadSpectralGrid() {
@@ -189,6 +250,7 @@ async function loadSpectralGrid() {
     return;
   }
   sptState.gridOptions = payload.options || [];
+  sptState.gridData = payload.gridData || [];
   fillGridSelect();
   setSpectralStatus(`${payload.meta?.standard_count || 0} standards loaded`, "");
   setSpectralLoading(false);
@@ -199,7 +261,7 @@ function fillGridSelect(options = sptState.gridOptions) {
     .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label || option.value)}</option>`)
     .join("");
   const values = options.map((option) => String(option.value));
-  if (sptState.initialGridParam && values.includes(sptState.initialGridParam)) {
+  if (!sptState.hasAppliedInitialIndex && sptState.initialGridParam && values.includes(sptState.initialGridParam)) {
     sptState.selectedGrid = sptState.initialGridParam;
   } else if (!sptState.selectedGrid || !values.includes(sptState.selectedGrid)) {
     sptState.selectedGrid = values[0] || "";
@@ -326,18 +388,47 @@ async function computeSpectralComparison() {
     renderEmptySpectralPlots("Select a comparison spectrum");
     return;
   }
+  const fixedValue = fixedParameterValue();
+  const deredden = sptEl["spt-deredden"].checked;
+  const cloud = sptEl["spt-cloud"].checked;
   const token = ++sptState.computeToken;
-  setSpectralLoading(true);
+  const progressive = deredden || cloud;
+  const priorityStandardSpecid = currentStandardSpecid();
+  let fullCompleted = false;
+  setTopLoading(!(progressive && priorityStandardSpecid !== null));
+  setChi2Loading(true);
   setSpectralStatus("Computing spectral comparison", "loading");
   updateSpectralUrl();
   const body = {
     specid: sptState.selectedSpecid,
     bins: parseInteger(sptEl["spt-bins"].value) || sptDefaultBins,
     norm: sptEl["spt-norm"].value || sptDefaultNormText,
-    deredden: sptEl["spt-deredden"].checked ? "1" : "0",
-    fix_rv: sptEl["spt-fix-rv"].value || null,
+    deredden: deredden ? "1" : "0",
+    cloud_correction: cloud ? "1" : "0",
+    cloud_alpha_fixed: cloud && fixedValue ? "1" : "0",
+    cloud_alpha: cloud ? (fixedValue || sptDefaultCloudAlpha) : sptDefaultCloudAlpha,
+    fix_rv: deredden ? (fixedValue || null) : null,
+    priority_standard_specid: priorityStandardSpecid || null,
   };
+  if (progressive && priorityStandardSpecid !== null) {
+    const quickToken = ++sptState.quickComputeToken;
+    setSpectralStatus("Computing selected standard", "loading");
+    postSpectralJson("api/spectral-typing/standard", {
+      ...body,
+      standard_specid: priorityStandardSpecid,
+    }).then((quickPayload) => {
+      if (fullCompleted || token !== sptState.computeToken || quickToken !== sptState.quickComputeToken) return;
+      if (!quickPayload?.ok || !(quickPayload.entries || []).length) return;
+      applyQuickStandardPayload(quickPayload);
+      setTopLoading(false);
+      setChi2Loading(true);
+      setSpectralStatus("Displayed selected standard; computing full χ² grid", "loading");
+    }).catch(() => {
+      if (token === sptState.computeToken) setTopLoading(true);
+    });
+  }
   const payload = await postSpectralJson("api/spectral-typing/compare", body);
+  fullCompleted = true;
   if (token !== sptState.computeToken) return;
   setSpectralLoading(false);
   if (!payload.ok) {
@@ -356,6 +447,44 @@ async function computeSpectralComparison() {
   const timingText = finiteNumber(timing) ? Number(timing).toFixed(1) : "";
   const cacheText = payload.cache?.hit ? " from cache" : "";
   setSpectralStatus(`Computed ${payload.meta?.standard_count || 0} standards${cacheText}${timingText ? ` in ${timingText}s` : ""}`, "");
+}
+
+function applyQuickStandardPayload(payload) {
+  const quickEntry = (payload.entries || [])[0];
+  if (!quickEntry) return;
+  let mergedPayload = payload;
+  if (sptState.comparePayload?.entries?.length) {
+    let replaced = false;
+    const mergedEntries = sptState.comparePayload.entries.map((entry) => {
+      if (Number(entry.moca_specid) === Number(quickEntry.moca_specid) && String(entry.grid) === String(quickEntry.grid)) {
+        replaced = true;
+        return { ...entry, ...quickEntry };
+      }
+      return entry;
+    });
+    if (!replaced) mergedEntries.push(quickEntry);
+    mergedPayload = {
+      ...sptState.comparePayload,
+      comparison: payload.comparison || sptState.comparePayload.comparison,
+      comparisonMetadata: payload.comparisonMetadata || sptState.comparePayload.comparisonMetadata,
+      options: payload.options || sptState.comparePayload.options,
+      meta: { ...(sptState.comparePayload.meta || {}), ...(payload.meta || {}), progressive: true },
+      entries: mergedEntries,
+    };
+  }
+  sptState.comparePayload = mergedPayload;
+  sptState.gridOptions = payload.options || sptState.gridOptions;
+  if (!sptState.selectedGrid) sptState.selectedGrid = String(quickEntry.grid || "");
+  fillGridSelect(sptState.gridOptions);
+  const localIndex = localIndexForEntry(quickEntry);
+  if (localIndex >= 0) sptState.currentIndex = localIndex;
+  const entries = filteredEntries();
+  const entry = entries[sptState.currentIndex] || quickEntry;
+  renderSpectrumPlot(mergedPayload, entry);
+  updateNavigation(entries.length ? entries : [entry], entry);
+  updateLowResControl(mergedPayload);
+  updateMetadata(mergedPayload, entry);
+  updateGridButtons();
 }
 
 function chooseGridAndIndexAfterCompute() {
@@ -414,6 +543,27 @@ function filteredEntries() {
   return (payload.entries || []).filter((entry) => String(entry.grid) === String(sptState.selectedGrid));
 }
 
+function gridMetadataEntries(grid = sptState.selectedGrid) {
+  return (sptState.gridData || []).filter((entry) => String(entry.grid) === String(grid));
+}
+
+function currentStandardSpecid() {
+  const entries = filteredEntries();
+  const selectedEntry = entries[sptState.currentIndex];
+  if (selectedEntry?.moca_specid !== null && selectedEntry?.moca_specid !== undefined) {
+    return Number(selectedEntry.moca_specid);
+  }
+  const rows = gridMetadataEntries();
+  if (!rows.length) return null;
+  let index = sptState.currentIndex || 0;
+  if (!sptState.hasAppliedInitialIndex && sptState.initialGridIndexParam !== null) {
+    index = sptState.initialGridIndexParam;
+  }
+  index = Math.min(Math.max(0, index), rows.length - 1);
+  const specid = rows[index]?.moca_specid;
+  return specid === null || specid === undefined ? null : Number(specid);
+}
+
 function bestIndexForGrid(grid) {
   const entries = (sptState.comparePayload?.entries || []).filter((entry) => String(entry.grid) === String(grid));
   if (!entries.length) return 0;
@@ -449,6 +599,9 @@ function renderSpectrumPlot(payload, entry) {
   const comparisonRows = payload.comparison || [];
   const standardRows = entry.spectrum || [];
   const dereddenedRows = sptEl["spt-deredden"].checked && entry.spectrum_dered ? entry.spectrum_dered : null;
+  const cloudRows = sptEl["spt-cloud"].checked && entry.spectrum_cloud ? entry.spectrum_cloud : null;
+  const correctedRows = dereddenedRows || cloudRows;
+  const correctionLabel = cloudRows ? "slope-corrected" : "dereddened";
   const normRegions = payload.meta?.norm_regions || parseNormText(sptEl["spt-norm"].value);
   const traces = [];
   const allred = sptEl["spt-allred"].checked;
@@ -462,27 +615,27 @@ function renderSpectrumPlot(payload, entry) {
       type: "scatter",
       mode: "lines",
       line: { shape: "hv", width: 4, color: standardColor },
-      opacity: dereddenedRows ? 0.3 : 1,
-      name: dereddenedRows ? `${standardName}, original` : standardName,
+      opacity: correctedRows ? 0.3 : 1,
+      name: correctedRows ? `${standardName}, original` : standardName,
       legendgroup: "standard-original",
       showlegend: index === 0,
       hovertemplate: "Standard<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
     });
   }
 
-  if (dereddenedRows) {
+  if (correctedRows) {
     for (const [index, region] of normRegions.entries()) {
-      const segment = segmentRows(dereddenedRows, region);
+      const segment = segmentRows(correctedRows, region);
       if (!segment.length) continue;
       addSegmentedLineTraces(traces, segment, {
         type: "scatter",
         mode: "lines",
         line: { shape: "hv", width: 4, color: standardColor },
         opacity: 1,
-        name: `${standardName}, dereddened`,
-        legendgroup: "standard-dereddened",
+        name: `${standardName}, ${correctionLabel}`,
+        legendgroup: "standard-corrected",
         showlegend: index === 0,
-        hovertemplate: "Dereddened standard<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
+        hovertemplate: `${correctionLabel} standard<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>`,
       });
     }
   }
@@ -526,7 +679,7 @@ function renderSpectrumPlot(payload, entry) {
   }
 
   const title = spectrumTitle(payload, entry);
-  const values = [...comparisonRows, ...standardRows, ...(dereddenedRows || [])].filter((row) => finiteNumber(row.wv) && finiteNumber(row.spn));
+  const values = [...comparisonRows, ...standardRows, ...(correctedRows || [])].filter((row) => finiteNumber(row.wv) && finiteNumber(row.spn));
   const xVals = values.map((row) => row.wv);
   const yVals = values.map((row) => row.spn);
   const xRange = paddedRange(xVals, 0.015, [0.85, 2.4]);
@@ -592,16 +745,19 @@ function renderChi2Plot(payload, selectedEntry) {
     });
   });
   if (selectedTrace) traces.push(selectedTrace);
-  const finiteX = adjustedEntries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
   const finiteChi = adjustedEntries.map((entry) => entry.reduced_chi2).filter((value) => finiteNumber(value) && value > 0).sort((a, b) => a - b);
-  const xMin = Math.floor(Math.min(...finiteX));
-  const xMax = Math.ceil(Math.max(...finiteX));
-  const tickStep = Math.max(1, Math.ceil((xMax - xMin) / 20));
-  const tickvals = [];
-  for (let value = xMin; value <= xMax; value += tickStep) tickvals.push(value);
   const yTopCount = Math.max(1, Math.floor(finiteChi.length * 0.75));
   const topChi = finiteChi.slice(0, yTopCount);
   const yRange = topChi.length ? [Math.log10(Math.max(1e-12, topChi[0] * 0.85)), Math.log10(topChi[topChi.length - 1] * 1.6)] : undefined;
+  const visibleChiEntries = chiEntriesInsideRange(adjustedEntries, yRange);
+  const finiteX = visibleChiEntries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
+  const fallbackX = adjustedEntries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
+  const xValues = finiteX.length ? finiteX : fallbackX;
+  const xMin = xValues.length ? Math.floor(Math.min(...xValues)) : 0;
+  const xMax = xValues.length ? Math.ceil(Math.max(...xValues)) : 30;
+  const tickStep = Math.max(1, Math.ceil((xMax - xMin) / 20));
+  const tickvals = [];
+  for (let value = xMin; value <= xMax; value += tickStep) tickvals.push(value);
   const yTickSpec = logTickSpecForRange(yRange);
   const layout = {
     title: `Global goodness of fit for ${comparisonShortName(payload)}`,
@@ -615,6 +771,7 @@ function renderChi2Plot(payload, selectedEntry) {
       tickmode: "array",
       tickvals,
       ticktext: tickvals.map(sptLabelFromNumber),
+      range: [xMin - 0.5, xMax + 0.5],
       zeroline: false,
     },
     yaxis: {
@@ -724,8 +881,15 @@ function updateMetadata(payload, entry) {
   if (sptEl["spt-deredden"].checked && Array.isArray(entry.A_V)) {
     entry.A_V.forEach((av, index) => {
       const rv = Array.isArray(entry.R_V) ? entry.R_V[index] : null;
-      parts.push(`A(V)${index + 1}: ${formatNumber(av, 2)}; R(V)${index + 1}: ${formatNumber(rv, 2)}`);
+      parts.push(`${fitLabel("A(V)", index)}: ${formatNumber(av, 2)}; ${fitLabel("R(V)", index)}: ${formatNumber(rv, 2)}`);
     });
+  } else if (sptEl["spt-cloud"].checked && Array.isArray(entry.cloud_tau0)) {
+    const alphaValues = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
+    entry.cloud_tau0.forEach((tau0, index) => {
+      const alpha = alphaValues[index] ?? entry.cloud_alpha ?? payload.meta?.cloud_alpha;
+      parts.push(`cloud ${fitLabel("τ", index)}: ${formatNumber(tau0, 3)}; ${fitLabel("α", index)}: ${formatNumber(alpha, 2)}`);
+    });
+    parts.push(`cloud λ<sub>0</sub>: ${formatNumber(entry.cloud_lambda0 ?? payload.meta?.cloud_lambda0, 2)} μm`);
   }
   if (entry.bibcode) {
     const url = `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(entry.bibcode)}/abstract`;
@@ -738,6 +902,10 @@ function updateMetadata(payload, entry) {
   sptEl["spt-open-report"].disabled = oid === null || oid === undefined;
   const standardOid = entry?.moca_oid;
   sptEl["spt-open-standard-report"].disabled = standardOid === null || standardOid === undefined;
+}
+
+function fitLabel(name, index) {
+  return `${name}<sub>${Number(index) + 1}</sub>`;
 }
 
 function renderEmptySpectralPlots(message) {
@@ -868,15 +1036,23 @@ function featureAnnotations() {
 function metricAnnotation(entry) {
   const lines = [`χ<sup>2</sup>: ${formatNumber(entry.reduced_chi2, 2)}`];
   if (sptEl["spt-deredden"].checked && Array.isArray(entry.A_V)) {
+    const showRv = !spectralRvIsFixed();
     entry.A_V.forEach((av, index) => {
       const rv = Array.isArray(entry.R_V) ? entry.R_V[index] : null;
-      lines.push(`A(V)${index + 1}: ${formatNumber(av, 2)}`);
-      lines.push(`R(V)${index + 1}: ${formatNumber(rv, 2)}`);
+      lines.push(`${fitLabel("A(V)", index)}: ${formatNumber(av, 2)}`);
+      if (showRv) lines.push(`${fitLabel("R(V)", index)}: ${formatNumber(rv, 2)}`);
+    });
+  } else if (sptEl["spt-cloud"].checked && Array.isArray(entry.cloud_tau0)) {
+    const showAlpha = !spectralCloudAlphaIsFixed();
+    const alphaValues = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
+    entry.cloud_tau0.forEach((tau0, index) => {
+      lines.push(`${fitLabel("τ", index)}: ${formatNumber(tau0, 3)}`);
+      if (showAlpha) lines.push(`${fitLabel("α", index)}: ${formatNumber(alphaValues[index] ?? entry.cloud_alpha, 2)}`);
     });
   }
   return {
     x: 1.02,
-    y: sptEl["spt-deredden"].checked ? 0.72 : 0.82,
+    y: (sptEl["spt-deredden"].checked || sptEl["spt-cloud"].checked) ? 0.72 : 0.82,
     xref: "paper",
     yref: "paper",
     text: lines.join("<br>"),
@@ -887,6 +1063,14 @@ function metricAnnotation(entry) {
     yanchor: "top",
     font: { size: 13 },
   };
+}
+
+function spectralRvIsFixed() {
+  return Boolean(sptEl["spt-deredden"]?.checked && String(sptState.fixedRvValue || "").trim());
+}
+
+function spectralCloudAlphaIsFixed() {
+  return Boolean(sptEl["spt-cloud"]?.checked && String(sptState.cloudAlphaValue || "").trim());
 }
 
 function adjustedChiEntries(entries) {
@@ -903,6 +1087,19 @@ function adjustedChiEntries(entries) {
     });
   }
   return out;
+}
+
+function chiEntriesInsideRange(entries, yRange) {
+  const usable = entries.filter((entry) => (
+    finiteNumber(entry.spectral_type_number)
+    && finiteNumber(entry.reduced_chi2)
+    && Number(entry.reduced_chi2) > 0
+  ));
+  if (!Array.isArray(yRange) || yRange.length !== 2) return usable;
+  return usable.filter((entry) => {
+    const logChi = Math.log10(Number(entry.reduced_chi2));
+    return logChi >= yRange[0] && logChi <= yRange[1];
+  });
 }
 
 function localIndexForEntry(entry) {
@@ -1009,6 +1206,7 @@ function plotConfig(filename) {
 }
 
 function updateSpectralUrl() {
+  const fixedValue = fixedParameterValue();
   const params = new URLSearchParams(window.location.search);
   if (sptState.selectedSpecid !== null) params.set("specid", sptState.selectedSpecid);
   else {
@@ -1023,9 +1221,32 @@ function updateSpectralUrl() {
   params.set("bins", sptEl["spt-bins"].value || String(sptDefaultBins));
   params.set("norm", sptEl["spt-norm"].value || sptDefaultNormText);
   if (sptEl["spt-deredden"].checked) params.set("deredden", "1");
-  else params.delete("deredden");
-  if (sptEl["spt-fix-rv"].value) params.set("fix_rv", sptEl["spt-fix-rv"].value);
-  else params.delete("fix_rv");
+  else {
+    params.delete("deredden");
+    params.delete("fix_rv");
+  }
+  if (sptEl["spt-cloud"].checked) params.set("cloud", "1");
+  else {
+    params.delete("cloud");
+    params.delete("cloud_correction");
+    params.delete("cloud_alpha");
+    params.delete("cloud_alpha_fixed");
+    params.delete("cloud_fit_alpha");
+  }
+  if (sptEl["spt-cloud"].checked) {
+    if (fixedValue) {
+      params.set("cloud_alpha", fixedValue);
+      params.set("cloud_alpha_fixed", "1");
+      params.delete("cloud_fit_alpha");
+    } else {
+      params.set("cloud_alpha", "free");
+      params.set("cloud_alpha_fixed", "0");
+      params.set("cloud_fit_alpha", "1");
+    }
+  }
+  if (sptEl["spt-deredden"].checked) {
+    params.set("fix_rv", fixedValue || "free");
+  }
   const nextUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", nextUrl);
 }
@@ -1083,7 +1304,16 @@ function setSpectralStatus(text, kind) {
 }
 
 function setSpectralLoading(isLoading) {
-  sptEl["spt-plot-loader"].classList.toggle("is-visible", isLoading);
+  setTopLoading(isLoading);
+  setChi2Loading(isLoading);
+}
+
+function setTopLoading(isLoading) {
+  sptEl["spt-plot-loader"]?.classList.toggle("is-visible", Boolean(isLoading));
+}
+
+function setChi2Loading(isLoading) {
+  sptEl["spt-chi2-loader"]?.classList.toggle("is-visible", Boolean(isLoading));
 }
 
 function parseInteger(value) {
@@ -1094,6 +1324,23 @@ function parseInteger(value) {
 
 function asSpectralBool(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function spectralFixedRvUrlValue(params) {
+  if (!params.has("fix_rv")) return sptDefaultFixedRv;
+  const raw = String(params.get("fix_rv") || "").trim();
+  if (!raw || ["free", "fit", "none", "null"].includes(raw.toLowerCase())) return "";
+  return raw;
+}
+
+function spectralCloudAlphaUrlValue(params) {
+  if (asSpectralBool(params.get("cloud_fit_alpha")) || asSpectralBool(params.get("fit_cloud_alpha"))) return "";
+  const rawFixed = params.has("cloud_alpha_fixed") ? String(params.get("cloud_alpha_fixed") || "").trim().toLowerCase() : "";
+  if (rawFixed && ["0", "false", "no", "off", "free", "fit"].includes(rawFixed)) return "";
+  if (!params.has("cloud_alpha")) return sptDefaultCloudAlpha;
+  const raw = String(params.get("cloud_alpha") || "").trim();
+  if (!raw || ["free", "fit", "none", "null"].includes(raw.toLowerCase())) return "";
+  return raw;
 }
 
 function finiteNumber(value) {
