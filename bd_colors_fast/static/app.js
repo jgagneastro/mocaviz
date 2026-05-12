@@ -1448,7 +1448,7 @@ function renderCountSummary(rows, plotRanges = currentPlotRanges()) {
 
 function renderPlotHint() {
   const jitterText = hasSpectralTypeAxis() ? " Spectral-type axes use ±0.3 subtype jitter." : "";
-  el["plot-hint"].textContent = `Click a data point to open its MOCAdb report${jitterText}`;
+  el["plot-hint"].innerHTML = `Click a data point to open its MOCAdb report${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function hasSpectralTypeAxis() {
@@ -1703,16 +1703,32 @@ function plotY(row) {
 
 function bandAxisLabel(photometryRow, fallbackId) {
   const simpleBand = photometryRow?.system_band_simple || simplePhotometryBand(fallbackId);
-  if (simpleBand) return simplePhotometryLabel(simpleBand);
+  if (simpleBand) return italicBandAxisLabel(simplePhotometryLabel(simpleBand));
   const raw = String(photometryRow?.name || fallbackId || "");
   const lower = `${raw} ${fallbackId || ""}`.toLowerCase();
   if (/(^|[^a-z])ks([^a-z]|$)|ksmag|k_s/.test(lower)) return "<i>K</i><sub>S</sub>";
   if (/(^|[^a-z])j([^a-z]|$)|jmag/.test(lower)) return "<i>J</i>";
   if (/(^|[^a-z])h([^a-z]|$)|hmag/.test(lower)) return "<i>H</i>";
   if (/(^|[^a-z])k([^a-z]|$)|kmag/.test(lower)) return "<i>K</i>";
+  if (/(^|[^a-z])g([^a-z]|$)|gmag/.test(lower)) return "<i>g</i>";
+  if (/(^|[^a-z])r([^a-z]|$)|rmag/.test(lower)) return "<i>r</i>";
+  if (/(^|[^a-z])i([^a-z]|$)|imag/.test(lower)) return "<i>i</i>";
+  if (/(^|[^a-z])z([^a-z]|$)|zmag/.test(lower)) return "<i>z</i>";
+  if (/(^|[^a-z])y([^a-z]|$)|ymag/.test(lower)) return "<i>y</i>";
+  if (/(^|[^a-z])l([^a-z]|$)|lmag/.test(lower)) return "<i>L</i>";
+  if (/(^|[^a-z])m([^a-z]|$)|mmag/.test(lower)) return "<i>M</i>";
   const wMatch = lower.match(/(?:^|[^a-z0-9])w([1-4])(?:[^a-z0-9]|$)|wise[_ -]?w([1-4])/);
   if (wMatch) return `<i>W</i>${wMatch[1] || wMatch[2]}`;
   return escapeHtml(raw);
+}
+
+function italicBandAxisLabel(label) {
+  const text = String(label || "");
+  const match = text.match(/^([A-Za-z])([0-9]*)$/);
+  if (!match) return escapeHtml(text);
+  const [, band, suffix] = match;
+  const italicBands = new Set(["J", "H", "K", "L", "M", "g", "r", "i", "z", "y"]);
+  return italicBands.has(band) ? `<i>${escapeHtml(band)}</i>${escapeHtml(suffix)}` : escapeHtml(text);
 }
 
 function bestDistance(oid, includePhotdist) {
@@ -2778,7 +2794,8 @@ function bindPlotEvents() {
   el.plot.on("plotly_click", (event) => {
     const oid = Number(event?.points?.[0]?.customdata);
     if (Number.isFinite(oid)) {
-      window.open(mocaReportUrl(oid), "_blank");
+      const reportUrl = mocaReportUrl(oid);
+      if (reportUrl) window.open(reportUrl, "_blank");
     }
   });
   el.plot.on("plotly_legendclick", (event) => {
@@ -2913,22 +2930,50 @@ function renderTable(oids) {
   if (el["color-by-age"].checked) {
     columns.push(tableColumn("age_myr"), tableColumn("age_sample"));
   }
-  const headerCells = ["report", ...columns.map((col) => col.label)]
+  const headerCells = ["plot", "report", ...columns.map((col) => col.label)]
     .map((col) => `<th>${escapeHtml(plainText(col))}</th>`)
     .join("");
   el["selection-table"].innerHTML = `
     <table>
       <thead><tr>${headerCells}</tr></thead>
       <tbody>
-        ${selected.map((row) => `
-          <tr>
-            <td><a class="report-link" href="${escapeHtml(mocaReportUrl(row.moca_oid))}" target="_blank" rel="noopener">Report</a></td>
-            ${columns.map((col) => `<td>${escapeHtml(col.value(row))}</td>`).join("")}
-          </tr>
-        `).join("")}
+        ${selected.map((row) => {
+          const reportUrl = mocaReportUrl(row.moca_oid);
+          return `
+            <tr>
+              <td>${bdTableMarkerHtml(row)}</td>
+              <td>${reportUrl ? `<a class="report-link" href="${escapeHtml(reportUrl)}" target="_blank" rel="noopener">Report</a>` : ""}</td>
+              ${columns.map((col) => `<td>${escapeHtml(col.value(row))}</td>`).join("")}
+            </tr>
+          `;
+        }).join("")}
       </tbody>
     </table>
   `;
+}
+
+function bdTableMarkerHtml(row) {
+  const symbol = row.highlighted ? "star" : String(markerSymbolForRow(row));
+  const baseSymbol = symbol.replace(/-open$/, "");
+  const open = !row.highlighted && symbol.endsWith("-open");
+  const color = row.highlighted ? "#ffe66d" : bdTableColor(row);
+  const edgeColor = row.highlighted
+    ? "#111111"
+    : (open ? color : (row.is_photometric_spt ? photometricSptEdgeColor : "rgba(255,255,255,0.82)"));
+  const edgeWidth = row.highlighted
+    ? 2.5
+    : (open ? 2.4 : (row.is_photometric_spt ? photometricSptEdgeWidth : 1.4));
+  const fill = open ? "none" : color;
+  const opacity = row.noisy ? 0.45 : 1;
+  const size = markerSizeForRow(row, 14.4);
+  const sizeText = Number.isFinite(size) ? size.toFixed(1) : "18.0";
+  const shape = ["circle", "square", "triangle-up", "star"].includes(baseSymbol) ? baseSymbol : "circle";
+  return `<span class="plot-table-marker-wrap"><span class="plot-table-marker is-${escapeHtml(shape)}${open ? " is-open" : ""}" style="--marker-size: ${sizeText}px; --marker-color: ${escapeHtml(color)}; --marker-fill: ${escapeHtml(fill)}; --marker-edge: ${escapeHtml(edgeColor)}; --marker-border-width: ${escapeHtml(edgeWidth)}px; --marker-opacity: ${opacity};"></span></span>`;
+}
+
+function bdTableColor(row) {
+  if (el["color-by-age"]?.checked) return ageColorForRow(row, ageColorDomain(state.rows));
+  return classColors[row.spectral_class] || "#1da6b8";
 }
 
 function tableColumn(key) {
@@ -2964,7 +3009,17 @@ function inputTableColumns(rows) {
 }
 
 function mocaReportUrl(oid) {
-  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(oid)}%29&search-type=star`;
+  const normalizedOid = normalizedMocaOid(oid);
+  return normalizedOid ? `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(normalizedOid)}%29&search-type=star` : "";
+}
+
+function normalizedMocaOid(oid) {
+  if (oid === null || oid === undefined) return "";
+  const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
 }
 
 function renderMissingHighlightedOids(rows) {

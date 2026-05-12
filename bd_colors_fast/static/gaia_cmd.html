@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Fast Gaia CMD</title>
+  <link rel="stylesheet" href="static/styles.css?v=plot-table-symbols-small-20260512">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="gaia-cmd-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Fast Gaia CMD</div>
+      <div id="gcmd-status" class="status loading">Loading Gaia CMD</div>
+    </header>
+
+    <main class="workspace gaia-cmd-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <label>
+            Color blue band
+            <select id="gcmd-x1"></select>
+          </label>
+          <label>
+            Color red band
+            <select id="gcmd-x2"></select>
+          </label>
+          <label>
+            Absolute magnitude band
+            <select id="gcmd-y"></select>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Filters</h2>
+          <label>
+            De-emphasize RUWE above
+            <input id="gcmd-ruwe" type="number" min="0" step="0.05" value="1.4">
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Associations</h2>
+          <div class="button-grid">
+            <button id="gcmd-aids-clear" type="button">Clear</button>
+          </div>
+          <div class="designation-picker xyzuvw-association-picker">
+            <label for="gcmd-aid-search">Add association</label>
+            <input id="gcmd-aid-search" type="text" autocomplete="off" placeholder="Type an association name or ID">
+            <div id="gcmd-aid-results" class="designation-results association-results" hidden></div>
+          </div>
+          <div id="gcmd-selected-aids" class="designation-selected association-selected"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Highlight Objects</h2>
+          <div class="designation-picker">
+            <label for="gcmd-object-search">Search by designation</label>
+            <input id="gcmd-object-search" type="text" autocomplete="off" placeholder="Start typing a designation">
+            <div id="gcmd-object-results" class="designation-results" hidden></div>
+            <div id="gcmd-selected-objects" class="designation-selected" aria-live="polite"></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Direct OID entry</summary>
+            <label>
+              moca_oid list
+              <input id="gcmd-highlight-oids" type="text" value="" placeholder="602, 10995">
+            </label>
+          </details>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Options</h2>
+          <label class="checkline">
+            <input id="gcmd-color-age" type="checkbox">
+            <span>Color by age</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-raw-gaia" type="checkbox">
+            <span>Use raw Gaia photometry without extinction correction</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-extcorr-only" type="checkbox">
+            <span>Only display photometry with extinction corrected</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-extcorr-vectors" type="checkbox">
+            <span>Show extinction correction vectors</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-highlight-binaries" type="checkbox">
+            <span>Highlight known binaries</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-show-sequences" type="checkbox" checked>
+            <span>Display MOCAdb empirical age sequences</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-field-hover" type="checkbox">
+            <span>Activate hovertext for field objects</span>
+          </label>
+          <button id="gcmd-load" type="button">Load Gaia CMD</button>
+        </section>
+      </aside>
+
+      <section id="gcmd-visual-area" class="visual-area gaia-cmd-visual-area">
+        <div class="plot-frame gaia-cmd-plot-frame">
+          <div id="gcmd-plot"></div>
+          <div id="gcmd-plot-loader" class="plot-loader is-visible" aria-label="Loading Gaia CMD">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="gaia-cmd-toolbar">
+          <div class="gaia-cmd-summary">
+            <div id="gcmd-summary">No data loaded</div>
+            <div id="gcmd-hint" class="plot-hint">Click or box-select points to inspect objects.<br>Double-click an empty region of the plot to reset Plotly selection</div>
+          </div>
+          <div class="export-actions gaia-cmd-actions">
+            <button id="gcmd-export-csv" type="button" disabled>Export CSV</button>
+            <button id="gcmd-export-tsv" type="button" disabled>Export TSV</button>
+            <button id="gcmd-export-fits" type="button" disabled>Export FITS table</button>
+            <button id="gcmd-export-votable" type="button" disabled>Export VOTable</button>
+          </div>
+        </div>
+        <div class="selection-area gaia-cmd-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="gcmd-table-title">Displayed objects</strong>
+              <div id="gcmd-table-subtitle" class="plot-hint">Selections appear here.</div>
+            </div>
+          </div>
+          <div id="gcmd-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help gaia-cmd-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        This page starts from <code>pcat_gaiadr3_100pc_field</code> for the
+        default field-star sample. Selected associations are added from
+        <code>calc_banyan_sigma</code> with <code>ya_prob &gt;= 90</code> and
+        use adopted MOCAdb Gaia photometry unless raw Gaia photometry is
+        requested.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>x1</code>, <code>x2</code>, <code>y</code></td><td>Gaia band or PSID</td><td>Sets the color and absolute-magnitude bands. Defaults are <code>GBP</code>, <code>GRP</code>, and <code>G</code>.</td></tr>
+          <tr><td><code>asso</code>, <code>moca_aid</code></td><td>Comma-separated association IDs</td><td>Adds likely BANYAN Sigma members for the selected associations.</td></tr>
+          <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted MOCAdb objects.</td></tr>
+          <tr><td><code>ruwe</code>, <code>ruwe_max</code></td><td>Positive number, or <code>none</code></td><td>De-emphasizes objects with Gaia RUWE above the threshold. Default is <code>1.4</code>.</td></tr>
+          <tr><td><code>color_age</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Colors objects with BANYAN-linked association ages by age.</td></tr>
+          <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
+          <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>.</td></tr>
+          <tr><td><code>extinction_vectors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws arrows from uncorrected photometry, <code>magnitude + extinction_a</code>, to the corrected plotted photometry when available.</td></tr>
+          <tr><td><code>binaries</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overplots known binaries with open symbols. Objects remain plotted normally either way.</td></tr>
+          <tr><td><code>sequences</code></td><td><code>0</code>, <code>false</code>, or <code>no</code></td><td>Hides MOCAdb empirical age-sequence overlays. They are shown by default.</td></tr>
+          <tr><td><code>field_hover</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Enables hover text for the dense field-star sample. Field hover is off by default.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <p>
+        The selected Gaia CMD payload is kept in server memory for a short
+        period. Clearing the cache forces the next load to redownload the
+        selected data.
+      </p>
+      <div class="cache-actions">
+        <button id="gcmd-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="gcmd-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/gaia_cmd.js?v=boxed-axes-20260512"></script>
+</body>
+</html>

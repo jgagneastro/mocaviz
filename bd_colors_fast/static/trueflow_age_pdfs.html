@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MOCAdb Fast TrueFlow Age PDFs</title>
-  <link rel="stylesheet" href="static/styles.css">
+  <title>The MOCAdb age PDF Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=short-table-lines-20260512">
   <script src="plotly.min.js"></script>
 </head>
 <body class="trueflow-age-page">
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand">MOCAdb Fast TrueFlow Age PDFs</div>
+      <div class="brand">The MOCAdb age PDF Explorer</div>
       <div id="tfa-status" class="status loading">Loading age PDFs</div>
     </header>
 
@@ -114,7 +114,9 @@
           <div class="export-actions tfage-actions">
             <button id="tfa-open-report" type="button" disabled>Open MOCAdb report</button>
             <button id="tfa-export-csv" type="button" disabled>Export CSV</button>
-            <button id="tfa-clear-cache" type="button">Clear cache</button>
+            <button id="tfa-export-tsv" type="button" disabled>Export TSV</button>
+            <button id="tfa-export-fits" type="button" disabled>Export FITS table</button>
+            <button id="tfa-export-votable" type="button" disabled>Export VOTable</button>
           </div>
         </div>
         <div class="selection-area tfage-table-area">
@@ -132,7 +134,7 @@
     <footer class="url-help tfage-url-help">
       <h2>Using URL Parameters</h2>
       <p>
-        The fast TrueFlow age-PDF page accepts the same core target inputs as
+        The MOCAdb age PDF Explorer accepts the same core target inputs as
         the legacy Dash page.
       </p>
       <table>
@@ -159,6 +161,7 @@
       </div>
     </footer>
   </div>
-  <script src="static/trueflow_age_pdfs.js"></script>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/trueflow_age_pdfs.js?v=title-designation-v3-20260512"></script>
 </body>
 </html>

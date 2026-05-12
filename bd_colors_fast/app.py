@@ -17,7 +17,7 @@ from urllib.parse import quote_plus
 
 import numpy as np
 import pandas as pd
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 from sqlalchemy import bindparam, create_engine, text
 
 
@@ -57,6 +57,7 @@ _ASTROMETRY_OBJECT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPECTRA_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _XYZUVW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _TRUEFLOW_AGE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_GAIA_CMD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _PLOTLY_JS: str | None = None
 
 SPT_WV_MIN = 0.85
@@ -82,6 +83,36 @@ XYZUVW_MODEL_CONTOURS = (
     ("68%", 0.68, 0.30),
 )
 TRUEFLOW_AGE_DEFAULT_OID = int(os.environ.get("TRUEFLOW_AGE_DEFAULT_OID", "11266"))
+TRUEFLOW_AGE_CACHE_SCHEMA = "target-title-v3"
+GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
+GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
+GAIA_CMD_SIMPLE_BANDS = {
+    "G": {"label": "G", "psid": "gaiadr3_gmag", "simple_band": "g"},
+    "GBP": {"label": "G_BP", "psid": "gaiadr3_bpmag", "simple_band": "b"},
+    "GRP": {"label": "G_RP", "psid": "gaiadr3_rpmag", "simple_band": "r"},
+    "GRVS": {"label": "G_RVS", "psid": "gaiadr3_grvsmag", "simple_band": "grvs"},
+}
+GAIA_CMD_ALLOWED_PSIDS = (
+    "gaiadr1_gmag",
+    "gaiadr2_bpmag",
+    "gaiadr2_gmag",
+    "gaiadr2_rpmag",
+    "gaiadr3_bpmag",
+    "gaiadr3_gmag",
+    "gaiadr3_grvsmag",
+    "gaiadr3_rpmag",
+)
+GAIA_CMD_PSID_BANDS = {
+    "gaiadr1_gmag": "G",
+    "gaiadr2_bpmag": "GBP",
+    "gaiadr2_gmag": "G",
+    "gaiadr2_rpmag": "GRP",
+    "gaiadr3_bpmag": "GBP",
+    "gaiadr3_gmag": "G",
+    "gaiadr3_grvsmag": "GRVS",
+    "gaiadr3_rpmag": "GRP",
+}
+GAIA_CMD_SEQUENCE_SUFFIXES = ("field", "mel5", "abdmg", "tha", "bpmg", "twa", "etac")
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
@@ -3594,6 +3625,811 @@ def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
     }
 
 
+def _gaia_cmd_band_value(raw: Any, default_key: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        value = default_key
+    if value.startswith(SIMPLE_PHOTOMETRY_PREFIX):
+        value = value[len(SIMPLE_PHOTOMETRY_PREFIX):]
+    normalized = value.upper().replace("_", "").replace("-", "")
+    aliases = {
+        "BP": "GBP",
+        "GBP": "GBP",
+        "G BP": "GBP",
+        "RP": "GRP",
+        "GRP": "GRP",
+        "G RP": "GRP",
+        "G": "G",
+        "GRVS": "GRVS",
+        "G RVS": "GRVS",
+        "RVS": "GRVS",
+    }
+    simple_key = aliases.get(normalized)
+    if simple_key in GAIA_CMD_SIMPLE_BANDS:
+        return GAIA_CMD_SIMPLE_BANDS[simple_key]["psid"]
+    raw_lower = value.lower()
+    band_key = GAIA_CMD_PSID_BANDS.get(raw_lower)
+    if band_key in GAIA_CMD_SIMPLE_BANDS:
+        return GAIA_CMD_SIMPLE_BANDS[band_key]["psid"]
+    return GAIA_CMD_SIMPLE_BANDS[default_key]["psid"]
+
+
+def _gaia_cmd_psid_label(psid: str) -> str:
+    band = GAIA_CMD_PSID_BANDS.get(psid)
+    if band and band in GAIA_CMD_SIMPLE_BANDS:
+        label = GAIA_CMD_SIMPLE_BANDS[band]["label"]
+        release = psid.split("_", 1)[0].replace("gaiadr", "Gaia DR")
+        return f"{label} ({release})" if psid != GAIA_CMD_SIMPLE_BANDS[band]["psid"] else label
+    return psid
+
+
+def _gaia_cmd_parse_float(raw: Any, default: float | None) -> float | None:
+    if raw is None or str(raw).strip() == "":
+        return default
+    if str(raw).strip().lower() in {"0", "none", "off", "false", "all"}:
+        return None
+    value = _safe_float(raw)
+    return value if value is not None and value > 0 else default
+
+
+def _gaia_cmd_parse_max_objects(raw: Any) -> int:
+    if raw is None or str(raw).strip() == "":
+        return max(1, min(GAIA_CMD_DEFAULT_MAX_OBJECTS, GAIA_CMD_HARD_MAX_OBJECTS))
+    if str(raw).strip().lower() in {"0", "none", "uncapped", "all"}:
+        return GAIA_CMD_HARD_MAX_OBJECTS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = GAIA_CMD_DEFAULT_MAX_OBJECTS
+    return max(1, min(value, GAIA_CMD_HARD_MAX_OBJECTS))
+
+
+def _gaia_cmd_parse_aids(args: dict[str, Any]) -> list[str]:
+    raw = (
+        args.get("asso")
+        or args.get("association")
+        or args.get("associations")
+        or args.get("moca_aid")
+        or args.get("aid")
+        or ""
+    )
+    aids: list[str] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip()
+        if value and SAFE_ID_RE.match(value) and value not in aids:
+            aids.append(value)
+    return aids[:80]
+
+
+def _gaia_cmd_parse_oids(args: dict[str, Any]) -> list[int]:
+    raw = (
+        args.get("oids")
+        or args.get("oid")
+        or args.get("moca_oids")
+        or args.get("moca_oid")
+        or args.get("highlight_oids")
+        or args.get("highlight_oid")
+        or ""
+    )
+    oids: list[int] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip()
+        if value.isdigit():
+            oid = int(value)
+            if oid not in oids:
+                oids.append(oid)
+    return oids[:100]
+
+
+def _gaia_cmd_raw_column(psid: str) -> str:
+    return {
+        "gaiadr3_bpmag": "phot_bp_mean_mag",
+        "gaiadr3_gmag": "phot_g_mean_mag",
+        "gaiadr3_rpmag": "phot_rp_mean_mag",
+        "gaiadr3_grvsmag": "grvs_mag",
+    }.get(str(psid or "").lower(), "phot_g_mean_mag")
+
+
+def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
+    x1 = _gaia_cmd_band_value(args.get("x1") or args.get("xaxis_value_1"), "GBP")
+    x2 = _gaia_cmd_band_value(args.get("x2") or args.get("xaxis_value_2"), "GRP")
+    y = _gaia_cmd_band_value(args.get("y") or args.get("yaxis_value_1"), "G")
+    raw_gaia = any(
+        _as_bool(args.get(key))
+        for key in ("raw_gaia", "raw_photometry", "use_raw_gaia", "use_raw_gaia_photometry")
+    )
+    extinction_corrected_only = any(
+        _as_bool(args.get(key))
+        for key in ("extinction_corrected", "extcorr", "extinction_corrected_only")
+    )
+    show_extinction_vectors = any(
+        _as_bool(args.get(key))
+        for key in ("extinction_vectors", "extcorr_vectors", "show_extinction_vectors")
+    )
+    show_sequences = not any(
+        _as_false(args.get(key))
+        for key in ("sequences", "display_sequences", "age_sequences", "show_sequences")
+    )
+    return {
+        "x1": x1,
+        "x2": x2,
+        "y": y,
+        "x_label": _gaia_cmd_psid_label(x1),
+        "x2_label": _gaia_cmd_psid_label(x2),
+        "y_label": _gaia_cmd_psid_label(y),
+        "ruwe_max": _gaia_cmd_parse_float(args.get("ruwe") or args.get("ruwe_max"), 1.4),
+        "max_objects": _gaia_cmd_parse_max_objects(args.get("max_objects") or args.get("limit")),
+        "color_by_age": _as_bool(args.get("color_age") or args.get("color_by_age") or args.get("age")),
+        "raw_gaia": raw_gaia,
+        "extinction_corrected_only": extinction_corrected_only,
+        "show_extinction_vectors": show_extinction_vectors,
+        "show_sequences": show_sequences,
+        "associations": _gaia_cmd_parse_aids(args),
+        "highlight_oids": _gaia_cmd_parse_oids(args),
+    }
+
+
+def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        cfg["host"],
+        cfg["username"],
+        cfg["dbname"],
+        selection["x1"],
+        selection["x2"],
+        selection["y"],
+        str(selection["ruwe_max"]),
+        str(selection["max_objects"]),
+        str(int(selection["color_by_age"])),
+        str(int(selection["raw_gaia"])),
+        str(int(selection["extinction_corrected_only"])),
+        str(int(selection["show_extinction_vectors"])),
+        str(int(selection["show_sequences"])),
+        ",".join(selection["associations"]),
+        ",".join(str(oid) for oid in selection["highlight_oids"]),
+    ])
+
+
+def _gaia_cmd_band_key(psid: str) -> str | None:
+    return GAIA_CMD_PSID_BANDS.get(str(psid or "").lower())
+
+
+def _gaia_cmd_sequence_ids(selection: dict[str, Any]) -> list[str]:
+    if not selection.get("show_sequences", True):
+        return []
+    x1_band = _gaia_cmd_band_key(selection["x1"])
+    x2_band = _gaia_cmd_band_key(selection["x2"])
+    y_band = _gaia_cmd_band_key(selection["y"])
+    if y_band != "G":
+        return []
+    prefix = None
+    if x1_band == "GBP" and x2_band == "GRP":
+        prefix = "bprp"
+    elif x1_band == "G" and x2_band == "GRP":
+        prefix = "grp"
+    if prefix is None:
+        return []
+    return [f"{prefix}_mg_gaiadr3_ext_{suffix}" for suffix in GAIA_CMD_SEQUENCE_SUFFIXES]
+
+
+def _load_gaia_cmd_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = f"{_spt_db_cache_key(args)}|gaia-cmd-options"
+    now = time.time()
+    cached = _GAIA_CMD_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    simple_options = [
+        {
+            "value": row["psid"],
+            "simple_value": key,
+            "label": row["label"],
+            "moca_psid": row["psid"],
+            "system_band_simple": row["simple_band"],
+        }
+        for key, row in GAIA_CMD_SIMPLE_BANDS.items()
+    ]
+    payload = {
+        "photometry": {
+            "simple": simple_options,
+            "advanced": [],
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "default": {"x1": "gaiadr3_bpmag", "x2": "gaiadr3_rpmag", "y": "gaiadr3_gmag"},
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _GAIA_CMD_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _gaia_cmd_selection(args)
+    cache_key = _gaia_cmd_cache_key(args, selection)
+    now = time.time()
+    cached = _GAIA_CMD_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    params: dict[str, Any] = {
+        "x1_psid": selection["x1"],
+        "x2_psid": selection["x2"],
+        "y_psid": selection["y"],
+    }
+    x1_raw_col = _gaia_cmd_raw_column(selection["x1"])
+    x2_raw_col = _gaia_cmd_raw_column(selection["x2"])
+    y_raw_col = _gaia_cmd_raw_column(selection["y"])
+    aid_clause = "NULL"
+    aid_params: dict[str, Any] = {}
+    if selection["associations"]:
+        aid_clause, aid_params = _sql_in_clause("gcmd_aid", selection["associations"])
+        params.update(aid_params)
+    oid_clause = "NULL"
+    oid_params: dict[str, Any] = {}
+    if selection["highlight_oids"]:
+        oid_clause = ",".join(str(int(oid)) for oid in selection["highlight_oids"])
+    private_public_filter = "AND cbs.is_public = 0" if _is_private_db(args) else ""
+    phot_extcorr_filter = {
+        alias: f"AND {alias}.extinction_corrected = 1"
+        for alias in ("px1", "px2", "py")
+    } if selection["extinction_corrected_only"] else {alias: "" for alias in ("px1", "px2", "py")}
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        started = time.time()
+        frames: list[pd.DataFrame] = []
+        field_df = _read_sql(conn, f"""
+            SELECT
+                g.moca_oid,
+                COALESCE(mo.designation, field.designation) AS designation,
+                field.source_id,
+                'Field' AS sample,
+                NULL AS moca_aid,
+                NULL AS ya_prob,
+                0 AS highlighted,
+                CASE
+                    WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                        OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                    THEN 1 ELSE 0
+                END AS is_binary,
+                'pcat_gaiadr3_100pc_field' AS photometry_source,
+                field.ruwe,
+                1000 / field.parallax AS distance_pc,
+                1000 * field.parallax_error / (field.parallax * field.parallax) AS distance_pc_unc,
+                0 AS distance_photometric_estimate,
+                field.{x1_raw_col} AS x1_mag,
+                NULL AS x1_mag_unc,
+                field.{x2_raw_col} AS x2_mag,
+                NULL AS x2_mag_unc,
+                field.{y_raw_col} AS y_mag,
+                NULL AS y_mag_unc,
+                :x1_psid AS x1_psid,
+                :x2_psid AS x2_psid,
+                :y_psid AS y_psid,
+                field.{x1_raw_col} - field.{x2_raw_col} AS x,
+                field.{y_raw_col} - 5 * LOG10(1000 / field.parallax) + 5 AS y,
+                NULL AS x1_extinction_a,
+                NULL AS x2_extinction_a,
+                NULL AS y_extinction_a,
+                NULL AS x_original,
+                NULL AS y_original,
+                NULL AS age_myr,
+                CASE
+                    WHEN g.moca_oid IS NULL THEN NULL
+                    ELSE CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star')
+                END AS report_url
+            FROM pcat_gaiadr3_100pc_field field
+            LEFT JOIN cat_gaiadr3 g
+                ON g.source_id = field.source_id
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = g.moca_oid
+            LEFT JOIN mechanics_object_properties_combined mopc
+                ON mopc.moca_oid = g.moca_oid
+            WHERE field.parallax IS NOT NULL
+                AND field.parallax > 0
+                AND (field.ruwe IS NULL OR field.ruwe < 1.4)
+                AND field.{x1_raw_col} IS NOT NULL
+                AND field.{x2_raw_col} IS NOT NULL
+                AND field.{y_raw_col} IS NOT NULL
+            LIMIT {selection["max_objects"]}
+        """, params)
+        frames.append(field_df)
+
+        if selection["associations"]:
+            if selection["raw_gaia"]:
+                association_sql = f"""
+                    SELECT
+                        cbs.moca_oid,
+                        COALESCE(mo.designation, g.designation, CONCAT('oid', cbs.moca_oid)) AS designation,
+                        g.source_id,
+                        cbs.moca_aid AS sample,
+                        cbs.moca_aid,
+                        cbs.ya_prob,
+                        0 AS highlighted,
+                        CASE
+                            WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                                OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                            THEN 1 ELSE 0
+                        END AS is_binary,
+                        'cat_gaiadr3' AS photometry_source,
+                        g.ruwe,
+                        dd.distance_pc,
+                        dd.distance_pc_unc,
+                        0 AS distance_photometric_estimate,
+                        g.{x1_raw_col} AS x1_mag,
+                        NULL AS x1_mag_unc,
+                        g.{x2_raw_col} AS x2_mag,
+                        NULL AS x2_mag_unc,
+                        g.{y_raw_col} AS y_mag,
+                        NULL AS y_mag_unc,
+                        :x1_psid AS x1_psid,
+                        :x2_psid AS x2_psid,
+                        :y_psid AS y_psid,
+                        g.{x1_raw_col} - g.{x2_raw_col} AS x,
+                        g.{y_raw_col} - 5 * LOG10(dd.distance_pc) + 5 AS y,
+                        NULL AS x1_extinction_a,
+                        NULL AS x2_extinction_a,
+                        NULL AS y_extinction_a,
+                        NULL AS x_original,
+                        NULL AS y_original,
+                        daa.age_myr,
+                        CONCAT('https://mocadb.ca/search/results?search-query=oid%28', cbs.moca_oid, '%29&search-type=star') AS report_url
+                    FROM calc_banyan_sigma cbs
+                    JOIN cat_gaiadr3 g
+                        ON g.moca_oid = cbs.moca_oid
+                    JOIN data_distances dd
+                        ON dd.moca_oid = cbs.moca_oid
+                        AND dd.adopted = 1
+                        AND dd.photometric_estimate = 0
+                        AND dd.distance_pc IS NOT NULL
+                        AND dd.distance_pc > 0
+                    LEFT JOIN data_association_ages daa
+                        ON daa.moca_aid = cbs.moca_aid
+                        AND daa.adopted = 1
+                    LEFT JOIN moca_objects mo
+                        ON mo.moca_oid = cbs.moca_oid
+                    LEFT JOIN mechanics_object_properties_combined mopc
+                        ON mopc.moca_oid = cbs.moca_oid
+                    WHERE cbs.moca_aid IN ({aid_clause})
+                        AND cbs.ya_prob >= 90
+                        AND cbs.max_observables = 1
+                        AND cbs.moca_bsmdid = (
+                            SELECT moca_bsmdid
+                            FROM moca_banyan_sigma_models
+                            WHERE adopted = 1
+                            ORDER BY moca_bsmdid DESC
+                            LIMIT 1
+                        )
+                        {private_public_filter}
+                        AND g.{x1_raw_col} IS NOT NULL
+                        AND g.{x2_raw_col} IS NOT NULL
+                        AND g.{y_raw_col} IS NOT NULL
+                    ORDER BY cbs.moca_aid, cbs.moca_oid
+                    LIMIT {selection["max_objects"]}
+                """
+            else:
+                association_sql = f"""
+                    SELECT
+                        cbs.moca_oid,
+                        COALESCE(mo.designation, g.designation, CONCAT('oid', cbs.moca_oid)) AS designation,
+                        g.source_id,
+                        cbs.moca_aid AS sample,
+                        cbs.moca_aid,
+                        cbs.ya_prob,
+                        0 AS highlighted,
+                        CASE
+                            WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                                OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                            THEN 1 ELSE 0
+                        END AS is_binary,
+                        'data_photometry' AS photometry_source,
+                        g.ruwe,
+                        dd.distance_pc,
+                        dd.distance_pc_unc,
+                        0 AS distance_photometric_estimate,
+                        px1.magnitude AS x1_mag,
+                        px1.magnitude_unc AS x1_mag_unc,
+                        px2.magnitude AS x2_mag,
+                        px2.magnitude_unc AS x2_mag_unc,
+                        py.magnitude AS y_mag,
+                        py.magnitude_unc AS y_mag_unc,
+                        px1.moca_psid AS x1_psid,
+                        px2.moca_psid AS x2_psid,
+                        py.moca_psid AS y_psid,
+                        px1.magnitude - px2.magnitude AS x,
+                        py.magnitude - 5 * LOG10(dd.distance_pc) + 5 AS y,
+                        px1.extinction_a AS x1_extinction_a,
+                        px2.extinction_a AS x2_extinction_a,
+                        py.extinction_a AS y_extinction_a,
+                        CASE
+                            WHEN px1.extinction_corrected = 1
+                                AND px2.extinction_corrected = 1
+                                AND py.extinction_corrected = 1
+                                AND px1.extinction_a IS NOT NULL
+                                AND px2.extinction_a IS NOT NULL
+                                AND py.extinction_a IS NOT NULL
+                            THEN (px1.magnitude + px1.extinction_a) - (px2.magnitude + px2.extinction_a)
+                            ELSE NULL
+                        END AS x_original,
+                        CASE
+                            WHEN px1.extinction_corrected = 1
+                                AND px2.extinction_corrected = 1
+                                AND py.extinction_corrected = 1
+                                AND px1.extinction_a IS NOT NULL
+                                AND px2.extinction_a IS NOT NULL
+                                AND py.extinction_a IS NOT NULL
+                            THEN (py.magnitude + py.extinction_a) - 5 * LOG10(dd.distance_pc) + 5
+                            ELSE NULL
+                        END AS y_original,
+                        daa.age_myr,
+                        CONCAT('https://mocadb.ca/search/results?search-query=oid%28', cbs.moca_oid, '%29&search-type=star') AS report_url
+                    FROM calc_banyan_sigma cbs
+                    JOIN data_distances dd
+                        ON dd.moca_oid = cbs.moca_oid
+                        AND dd.adopted = 1
+                        AND dd.photometric_estimate = 0
+                        AND dd.distance_pc IS NOT NULL
+                        AND dd.distance_pc > 0
+                    JOIN data_photometry px1
+                        ON px1.moca_oid = cbs.moca_oid
+                        AND px1.moca_psid = :x1_psid
+                        AND px1.adopted = 1
+                        {phot_extcorr_filter["px1"]}
+                        AND px1.magnitude IS NOT NULL
+                    JOIN data_photometry px2
+                        ON px2.moca_oid = cbs.moca_oid
+                        AND px2.moca_psid = :x2_psid
+                        AND px2.adopted = 1
+                        {phot_extcorr_filter["px2"]}
+                        AND px2.magnitude IS NOT NULL
+                    JOIN data_photometry py
+                        ON py.moca_oid = cbs.moca_oid
+                        AND py.moca_psid = :y_psid
+                        AND py.adopted = 1
+                        {phot_extcorr_filter["py"]}
+                        AND py.magnitude IS NOT NULL
+                    LEFT JOIN cat_gaiadr3 g
+                        ON g.moca_oid = cbs.moca_oid
+                    LEFT JOIN data_association_ages daa
+                        ON daa.moca_aid = cbs.moca_aid
+                        AND daa.adopted = 1
+                    LEFT JOIN moca_objects mo
+                        ON mo.moca_oid = cbs.moca_oid
+                    LEFT JOIN mechanics_object_properties_combined mopc
+                        ON mopc.moca_oid = cbs.moca_oid
+                    WHERE cbs.moca_aid IN ({aid_clause})
+                        AND cbs.ya_prob >= 90
+                        AND cbs.max_observables = 1
+                        AND cbs.moca_bsmdid = (
+                            SELECT moca_bsmdid
+                            FROM moca_banyan_sigma_models
+                            WHERE adopted = 1
+                            ORDER BY moca_bsmdid DESC
+                            LIMIT 1
+                        )
+                        {private_public_filter}
+                    ORDER BY cbs.moca_aid, cbs.moca_oid
+                    LIMIT {selection["max_objects"]}
+                """
+            frames.append(_read_sql(conn, association_sql, params))
+
+        if selection["highlight_oids"]:
+            if selection["raw_gaia"]:
+                highlight_sql = f"""
+                    SELECT
+                        g.moca_oid,
+                        COALESCE(mo.designation, g.designation, CONCAT('oid', g.moca_oid)) AS designation,
+                        g.source_id,
+                        'Highlighted' AS sample,
+                        NULL AS moca_aid,
+                        NULL AS ya_prob,
+                        1 AS highlighted,
+                        CASE
+                            WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                                OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                            THEN 1 ELSE 0
+                        END AS is_binary,
+                        'cat_gaiadr3' AS photometry_source,
+                        g.ruwe,
+                        COALESCE(dd.distance_pc, 1000 / g.parallax) AS distance_pc,
+                        dd.distance_pc_unc,
+                        0 AS distance_photometric_estimate,
+                        g.{x1_raw_col} AS x1_mag,
+                        NULL AS x1_mag_unc,
+                        g.{x2_raw_col} AS x2_mag,
+                        NULL AS x2_mag_unc,
+                        g.{y_raw_col} AS y_mag,
+                        NULL AS y_mag_unc,
+                        :x1_psid AS x1_psid,
+                        :x2_psid AS x2_psid,
+                        :y_psid AS y_psid,
+                        g.{x1_raw_col} - g.{x2_raw_col} AS x,
+                        g.{y_raw_col} - 5 * LOG10(COALESCE(dd.distance_pc, 1000 / g.parallax)) + 5 AS y,
+                        NULL AS x1_extinction_a,
+                        NULL AS x2_extinction_a,
+                        NULL AS y_extinction_a,
+                        NULL AS x_original,
+                        NULL AS y_original,
+                        NULL AS age_myr,
+                        CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star') AS report_url
+                    FROM cat_gaiadr3 g
+                    LEFT JOIN data_distances dd
+                        ON dd.moca_oid = g.moca_oid
+                        AND dd.adopted = 1
+                        AND dd.photometric_estimate = 0
+                        AND dd.distance_pc IS NOT NULL
+                        AND dd.distance_pc > 0
+                    LEFT JOIN moca_objects mo
+                        ON mo.moca_oid = g.moca_oid
+                    LEFT JOIN mechanics_object_properties_combined mopc
+                        ON mopc.moca_oid = g.moca_oid
+                    WHERE g.moca_oid IN ({oid_clause})
+                        AND COALESCE(dd.distance_pc, 1000 / g.parallax) > 0
+                        AND g.{x1_raw_col} IS NOT NULL
+                        AND g.{x2_raw_col} IS NOT NULL
+                        AND g.{y_raw_col} IS NOT NULL
+                """
+            else:
+                highlight_sql = f"""
+                    SELECT
+                        g.moca_oid,
+                        COALESCE(mo.designation, g.designation, CONCAT('oid', g.moca_oid)) AS designation,
+                        g.source_id,
+                        'Highlighted' AS sample,
+                        NULL AS moca_aid,
+                        NULL AS ya_prob,
+                        1 AS highlighted,
+                        CASE
+                            WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                                OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                            THEN 1 ELSE 0
+                        END AS is_binary,
+                        'data_photometry' AS photometry_source,
+                        g.ruwe,
+                        COALESCE(dd.distance_pc, 1000 / g.parallax) AS distance_pc,
+                        dd.distance_pc_unc,
+                        0 AS distance_photometric_estimate,
+                        px1.magnitude AS x1_mag,
+                        px1.magnitude_unc AS x1_mag_unc,
+                        px2.magnitude AS x2_mag,
+                        px2.magnitude_unc AS x2_mag_unc,
+                        py.magnitude AS y_mag,
+                        py.magnitude_unc AS y_mag_unc,
+                        px1.moca_psid AS x1_psid,
+                        px2.moca_psid AS x2_psid,
+                        py.moca_psid AS y_psid,
+                        px1.magnitude - px2.magnitude AS x,
+                        py.magnitude - 5 * LOG10(COALESCE(dd.distance_pc, 1000 / g.parallax)) + 5 AS y,
+                        px1.extinction_a AS x1_extinction_a,
+                        px2.extinction_a AS x2_extinction_a,
+                        py.extinction_a AS y_extinction_a,
+                        CASE
+                            WHEN px1.extinction_corrected = 1
+                                AND px2.extinction_corrected = 1
+                                AND py.extinction_corrected = 1
+                                AND px1.extinction_a IS NOT NULL
+                                AND px2.extinction_a IS NOT NULL
+                                AND py.extinction_a IS NOT NULL
+                            THEN (px1.magnitude + px1.extinction_a) - (px2.magnitude + px2.extinction_a)
+                            ELSE NULL
+                        END AS x_original,
+                        CASE
+                            WHEN px1.extinction_corrected = 1
+                                AND px2.extinction_corrected = 1
+                                AND py.extinction_corrected = 1
+                                AND px1.extinction_a IS NOT NULL
+                                AND px2.extinction_a IS NOT NULL
+                                AND py.extinction_a IS NOT NULL
+                            THEN (py.magnitude + py.extinction_a) - 5 * LOG10(COALESCE(dd.distance_pc, 1000 / g.parallax)) + 5
+                            ELSE NULL
+                        END AS y_original,
+                        NULL AS age_myr,
+                        CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star') AS report_url
+                    FROM cat_gaiadr3 g
+                    JOIN data_photometry px1
+                        ON px1.moca_oid = g.moca_oid
+                        AND px1.moca_psid = :x1_psid
+                        AND px1.adopted = 1
+                        {phot_extcorr_filter["px1"]}
+                        AND px1.magnitude IS NOT NULL
+                    JOIN data_photometry px2
+                        ON px2.moca_oid = g.moca_oid
+                        AND px2.moca_psid = :x2_psid
+                        AND px2.adopted = 1
+                        {phot_extcorr_filter["px2"]}
+                        AND px2.magnitude IS NOT NULL
+                    JOIN data_photometry py
+                        ON py.moca_oid = g.moca_oid
+                        AND py.moca_psid = :y_psid
+                        AND py.adopted = 1
+                        {phot_extcorr_filter["py"]}
+                        AND py.magnitude IS NOT NULL
+                    LEFT JOIN data_distances dd
+                        ON dd.moca_oid = g.moca_oid
+                        AND dd.adopted = 1
+                        AND dd.photometric_estimate = 0
+                        AND dd.distance_pc IS NOT NULL
+                        AND dd.distance_pc > 0
+                    LEFT JOIN moca_objects mo
+                        ON mo.moca_oid = g.moca_oid
+                    LEFT JOIN mechanics_object_properties_combined mopc
+                        ON mopc.moca_oid = g.moca_oid
+                    WHERE g.moca_oid IN ({oid_clause})
+                        AND COALESCE(dd.distance_pc, 1000 / g.parallax) > 0
+                """
+            frames.append(_read_sql(conn, highlight_sql, params))
+
+        nonempty_frames = [frame for frame in frames if frame is not None and not frame.empty]
+        rows_df = pd.concat(nonempty_frames, ignore_index=True) if nonempty_frames else pd.DataFrame()
+        query_seconds = round(time.time() - started, 3)
+        for column, digits in {
+            "ruwe": 5,
+            "distance_pc": 5,
+            "distance_pc_unc": 5,
+            "x1_mag": 5,
+            "x1_mag_unc": 5,
+            "x1_extinction_a": 5,
+            "x2_mag": 5,
+            "x2_mag_unc": 5,
+            "x2_extinction_a": 5,
+            "y_mag": 5,
+            "y_mag_unc": 5,
+            "y_extinction_a": 5,
+            "x": 5,
+            "y": 5,
+            "x_original": 5,
+            "y_original": 5,
+            "age_myr": 3,
+            "ya_prob": 3,
+        }.items():
+            if column in rows_df.columns:
+                rows_df[column] = pd.to_numeric(rows_df[column], errors="coerce").round(digits)
+
+        seqids = _gaia_cmd_sequence_ids(selection)
+        sequences: list[dict[str, Any]] = []
+        if seqids:
+            seq_clause, seq_params = _sql_in_clause("seqid", seqids)
+            sequence_rows = _records(_read_sql(conn, f"""
+                SELECT
+                    ms.moca_seqid,
+                    COALESCE(ms.name_bdcolapp, ms.moca_seqid) AS name,
+                    das.xdata,
+                    das.ydata,
+                    das.yerror
+                FROM moca_sequences ms
+                JOIN data_astro_sequences das
+                    ON das.moca_seqid = ms.moca_seqid
+                WHERE ms.moca_seqid IN ({seq_clause})
+                    AND ms.display_in_bdcolapp = 1
+                    AND ms.ignored = 0
+                    AND das.ignored = 0
+                    AND das.xdata IS NOT NULL
+                    AND das.ydata IS NOT NULL
+                ORDER BY ms.moca_seqid, das.xdata
+            """, seq_params))
+            by_seqid: dict[str, dict[str, Any]] = {}
+            for row in sequence_rows:
+                seqid = str(row.get("moca_seqid") or "")
+                if not seqid:
+                    continue
+                item = by_seqid.setdefault(seqid, {
+                    "moca_seqid": seqid,
+                    "name": row.get("name") or seqid,
+                    "x": [],
+                    "y": [],
+                    "yerror": [],
+                })
+                item["x"].append(round(float(row["xdata"]), 5) if row.get("xdata") is not None else None)
+                item["y"].append(round(float(row["ydata"]), 5) if row.get("ydata") is not None else None)
+                item["yerror"].append(round(float(row["yerror"]), 5) if row.get("yerror") is not None else None)
+            sequences = list(by_seqid.values())
+
+    rows = _records(rows_df)
+    payload = {
+        "selection": selection,
+        "rows": rows,
+        "sequences": sequences,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "row_count": len(rows),
+            "sequence_count": len(sequences),
+            "sequence_ids": _gaia_cmd_sequence_ids(selection),
+            "truncated": len(rows) >= selection["max_objects"],
+            "max_objects": selection["max_objects"],
+            "query_seconds": query_seconds,
+            "field_table": "pcat_gaiadr3_100pc_field",
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _GAIA_CMD_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _gaia_cmd_selection(args)
+    rng = np.random.default_rng(433)
+    rows = []
+    for index in range(min(selection["max_objects"], 2500)):
+        bp_rp = float(rng.uniform(-0.2, 4.8))
+        abs_g = 2.2 + 3.1 * bp_rp + 0.65 * bp_rp * bp_rp + float(rng.normal(0, 0.35))
+        dist = float(10 ** rng.uniform(0.65, 2.8))
+        gmag = abs_g + 5 * math.log10(dist) - 5
+        selected_aids = selection["associations"]
+        aid = selected_aids[index % len(selected_aids)] if selected_aids and index % 12 == 0 else None
+        age = 10 ** rng.uniform(1.0, 3.1) if aid else None
+        moca_oid = 800000 + index if aid or index % 21 == 0 else None
+        x1_mag = gmag + bp_rp * 0.55
+        x2_mag = gmag - bp_rp * 0.45
+        y_mag = gmag
+        has_mock_extinction = bool(aid and not selection["raw_gaia"])
+        x1_extinction_a = round(float(rng.uniform(0.08, 0.35)), 4) if has_mock_extinction else None
+        x2_extinction_a = round(float(rng.uniform(0.04, 0.22)), 4) if has_mock_extinction else None
+        y_extinction_a = round(float(rng.uniform(0.05, 0.28)), 4) if has_mock_extinction else None
+        x_original = (x1_mag + x1_extinction_a) - (x2_mag + x2_extinction_a) if has_mock_extinction else None
+        y_original = (y_mag + y_extinction_a) - 5 * math.log10(dist) + 5 if has_mock_extinction else None
+        rows.append({
+            "moca_oid": moca_oid,
+            "designation": f"Mock Gaia CMD star {index}",
+            "source_id": str(6000000000000000000 + index),
+            "sample": aid or "Field",
+            "moca_aid": aid,
+            "ya_prob": round(float(rng.uniform(90, 100)), 2) if aid else None,
+            "highlighted": 1 if moca_oid in selection["highlight_oids"] else 0,
+            "is_binary": 1 if index % 17 == 0 else 0,
+            "photometry_source": "data_photometry" if aid and not selection["raw_gaia"] else "pcat_gaiadr3_100pc_field",
+            "ruwe": round(float(rng.uniform(0.75, 2.2)), 3),
+            "distance_pc": round(dist, 3),
+            "distance_pc_unc": round(0.03 * dist, 3),
+            "distance_photometric_estimate": 0,
+            "x1_mag": round(x1_mag, 4),
+            "x1_mag_unc": 0.015,
+            "x1_extinction_a": x1_extinction_a,
+            "x2_mag": round(x2_mag, 4),
+            "x2_mag_unc": 0.014,
+            "x2_extinction_a": x2_extinction_a,
+            "y_mag": round(y_mag, 4),
+            "y_mag_unc": 0.012,
+            "y_extinction_a": y_extinction_a,
+            "x1_psid": selection["x1"],
+            "x2_psid": selection["x2"],
+            "y_psid": selection["y"],
+            "x": round(bp_rp, 5),
+            "y": round(abs_g, 5),
+            "x_original": round(x_original, 5) if x_original is not None else None,
+            "y_original": round(y_original, 5) if y_original is not None else None,
+            "age_myr": round(age, 2) if age else None,
+            "report_url": f"https://mocadb.ca/search/results?search-query=oid%28{moca_oid}%29&search-type=star" if moca_oid else None,
+        })
+    sequences = []
+    for seqid in _gaia_cmd_sequence_ids(selection):
+        x = np.linspace(-0.1, 4.7, 120)
+        offset = {"field": 0.0, "mel5": -0.7, "abdmg": -0.45, "tha": -0.55, "bpmg": -0.6, "twa": -0.75, "etac": -0.8}.get(seqid.rsplit("_", 1)[-1], 0.0)
+        y = 2.2 + 3.1 * x + 0.65 * x * x + offset
+        sequences.append({"moca_seqid": seqid, "name": seqid, "x": x.round(4).tolist(), "y": y.round(4).tolist(), "yerror": [None] * len(x)})
+    return {
+        "selection": selection,
+        "rows": rows,
+        "sequences": sequences,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "row_count": len(rows),
+            "sequence_count": len(sequences),
+            "sequence_ids": _gaia_cmd_sequence_ids(selection),
+            "truncated": False,
+            "max_objects": selection["max_objects"],
+            "query_seconds": 0,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
 def _parse_xyzuvw_csv_ids(raw: Any, default: tuple[str, ...] = ()) -> list[str]:
     values: list[str] = []
     for item in str(raw or "").replace(";", ",").split(","):
@@ -3998,9 +4834,6 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
     if selection["bsmdid"] != "latest":
         params["bsmdid"] = int(selection["bsmdid"])
 
-    likely_filter = ""
-    if selection["likely"]:
-        likely_filter = "AND COALESCE(sam.banyan_prob, cbs.ya_prob) >= 90"
     include_covariances = "errors" in selection["checkboxes"]
     covariance_columns = ""
     covariance_joins = ""
@@ -4049,51 +4882,96 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
             LIMIT 1
         """))
         params["active_bsmdid"] = (
-            active_model_rows[0].get("moca_bsmdid") if active_model_rows else None
+            int(selection["bsmdid"])
+            if selection["bsmdid"] != "latest"
+            else active_model_rows[0].get("moca_bsmdid") if active_model_rows else None
         )
         cbs_public_filter = "AND cbs.is_public = 0" if _is_private_db(args) else ""
-        members_df = _read_sql(conn, f"""
-            SELECT
-                sam.designation,
-                sam.moca_aid,
-                sam.moca_mtid,
-                sam.spectral_type AS spt,
-                sam.dr3_ruwe,
-                sam.moca_oid,
-                sam.x_pc AS x,
-                sam.y_pc AS y,
-                sam.z_pc AS z,
-                {covariance_columns}
-                {XYZUVW_C_VALUE} * sam.u_kms AS u,
-                {XYZUVW_C_VALUE} * sam.v_kms AS v,
-                {XYZUVW_C_VALUE} * sam.w_kms AS w,
-                cbsd.x_opt,
-                cbsd.y_opt,
-                cbsd.z_opt,
-                {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
-                {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
-                {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
-                COALESCE(sam.banyan_prob, cbs.ya_prob) AS ya_prob,
-                cbs.uvw_sep,
-                cbs.xyz_sep,
-                cbs.observables
-            FROM summary_all_members sam
-            {covariance_joins}
-            LEFT JOIN calc_banyan_sigma cbs
-                ON cbs.moca_oid = sam.moca_oid
-                AND cbs.moca_aid = sam.moca_aid
-                AND cbs.moca_bsmdid = :active_bsmdid
-                AND cbs.max_observables = 1
-                {cbs_public_filter}
-            LEFT JOIN calc_banyan_sigma_details cbsd
-                ON cbs.id = cbsd.cbs_id
-                AND cbsd.moca_aid = sam.moca_aid
-            WHERE sam.moca_aid IN ({aid_clause})
-                AND sam.moca_mtid IN ({mtid_clause})
-                {likely_filter}
-            ORDER BY sam.moca_aid, sam.moca_mtid, sam.moca_oid
-            LIMIT {XYZUVW_MAX_OBJECTS}
-        """, params)
+        if selection["likely"]:
+            members_df = _read_sql(conn, f"""
+                SELECT
+                    sam.designation,
+                    cbs.moca_aid,
+                    sam.moca_mtid,
+                    sam.spectral_type AS spt,
+                    sam.dr3_ruwe,
+                    cbs.moca_oid,
+                    sam.x_pc AS x,
+                    sam.y_pc AS y,
+                    sam.z_pc AS z,
+                    {covariance_columns}
+                    {XYZUVW_C_VALUE} * sam.u_kms AS u,
+                    {XYZUVW_C_VALUE} * sam.v_kms AS v,
+                    {XYZUVW_C_VALUE} * sam.w_kms AS w,
+                    cbsd.x_opt,
+                    cbsd.y_opt,
+                    cbsd.z_opt,
+                    {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
+                    {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
+                    {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
+                    cbs.ya_prob,
+                    cbs.uvw_sep,
+                    cbs.xyz_sep,
+                    cbs.observables
+                FROM calc_banyan_sigma cbs
+                JOIN summary_all_members sam
+                    ON sam.moca_oid = cbs.moca_oid
+                    AND sam.moca_aid = cbs.moca_aid
+                    AND sam.moca_mtid IN ({mtid_clause})
+                {covariance_joins}
+                LEFT JOIN calc_banyan_sigma_details cbsd
+                    ON cbs.id = cbsd.cbs_id
+                    AND cbsd.moca_aid = cbs.moca_aid
+                WHERE cbs.moca_aid IN ({aid_clause})
+                    AND cbs.moca_bsmdid = :active_bsmdid
+                    AND cbs.max_observables = 1
+                    {cbs_public_filter}
+                    AND cbs.ya_prob >= 90
+                ORDER BY cbs.moca_aid, sam.moca_mtid, cbs.moca_oid
+                LIMIT {XYZUVW_MAX_OBJECTS}
+            """, params)
+        else:
+            members_df = _read_sql(conn, f"""
+                SELECT
+                    sam.designation,
+                    sam.moca_aid,
+                    sam.moca_mtid,
+                    sam.spectral_type AS spt,
+                    sam.dr3_ruwe,
+                    sam.moca_oid,
+                    sam.x_pc AS x,
+                    sam.y_pc AS y,
+                    sam.z_pc AS z,
+                    {covariance_columns}
+                    {XYZUVW_C_VALUE} * sam.u_kms AS u,
+                    {XYZUVW_C_VALUE} * sam.v_kms AS v,
+                    {XYZUVW_C_VALUE} * sam.w_kms AS w,
+                    cbsd.x_opt,
+                    cbsd.y_opt,
+                    cbsd.z_opt,
+                    {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
+                    {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
+                    {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
+                    COALESCE(sam.banyan_prob, cbs.ya_prob) AS ya_prob,
+                    cbs.uvw_sep,
+                    cbs.xyz_sep,
+                    cbs.observables
+                FROM summary_all_members sam
+                {covariance_joins}
+                LEFT JOIN calc_banyan_sigma cbs
+                    ON cbs.moca_oid = sam.moca_oid
+                    AND cbs.moca_aid = sam.moca_aid
+                    AND cbs.moca_bsmdid = :active_bsmdid
+                    AND cbs.max_observables = 1
+                    {cbs_public_filter}
+                LEFT JOIN calc_banyan_sigma_details cbsd
+                    ON cbs.id = cbsd.cbs_id
+                    AND cbsd.moca_aid = sam.moca_aid
+                WHERE sam.moca_aid IN ({aid_clause})
+                    AND sam.moca_mtid IN ({mtid_clause})
+                ORDER BY sam.moca_aid, sam.moca_mtid, sam.moca_oid
+                LIMIT {XYZUVW_MAX_OBJECTS}
+            """, params)
         models_df = _read_sql(conn, _xyzuvw_model_query(selection, aid_clause), params)
 
         objects_df = pd.DataFrame()
@@ -4221,6 +5099,75 @@ def _search_xyzuvw_objects_from_db(args: dict[str, Any], query: str) -> dict[str
         for row in rows
         if row.get("moca_oid") is not None
     ]
+    return {"options": options, "meta": {"row_count": len(options)}}
+
+
+def _search_gaia_cmd_objects_from_db(args: dict[str, Any], query: str) -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        return {"options": [], "meta": {"row_count": 0}}
+    search_int = int(query) if query.isdigit() else None
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT
+                matches.moca_oid,
+                matches.canonical_designation,
+                matches.matched_designation,
+                matches.match_rank
+            FROM (
+                SELECT
+                    mo.moca_oid,
+                    mo.designation AS canonical_designation,
+                    mo.designation AS matched_designation,
+                    0 AS match_rank
+                FROM moca_objects mo
+                WHERE :search_int IS NOT NULL
+                    AND mo.moca_oid = :search_int
+                UNION ALL
+                SELECT
+                    mo.moca_oid,
+                    mo.designation AS canonical_designation,
+                    mo.designation AS matched_designation,
+                    1 AS match_rank
+                FROM moca_objects mo
+                WHERE mo.designation LIKE :prefix
+                UNION ALL
+                SELECT
+                    mad.moca_oid,
+                    mo.designation AS canonical_designation,
+                    mad.designation AS matched_designation,
+                    2 AS match_rank
+                FROM mechanics_all_designations mad
+                LEFT JOIN moca_objects mo
+                    ON mo.moca_oid = mad.moca_oid
+                WHERE mad.designation IS NOT NULL
+                    AND mad.designation <> ''
+                    AND mad.designation LIKE :prefix
+            ) matches
+            WHERE matches.moca_oid IS NOT NULL
+            ORDER BY matches.match_rank, matches.matched_designation, matches.moca_oid
+            LIMIT 120
+        """, {"search_int": search_int, "prefix": f"{query}%"}))
+    options: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in rows:
+        if row.get("moca_oid") is None:
+            continue
+        oid = int(row["moca_oid"])
+        if oid in seen:
+            continue
+        seen.add(oid)
+        matched = row.get("matched_designation") or row.get("canonical_designation") or f"oid{oid}"
+        options.append({
+            "value": oid,
+            "moca_oid": oid,
+            "designation": matched,
+            "canonical_designation": row.get("canonical_designation"),
+            "label": matched,
+        })
+        if len(options) >= 80:
+            break
     return {"options": options, "meta": {"row_count": len(options)}}
 
 
@@ -4470,6 +5417,7 @@ def _tfage_cache_key(args: dict[str, Any], scope: str, target: int | str | None)
         cfg["username"],
         cfg["dbname"],
         cfg["port"],
+        TRUEFLOW_AGE_CACHE_SCHEMA,
         scope,
         str(target or ""),
         str(int(_tfage_load_posteriors(args))),
@@ -5093,20 +6041,93 @@ def _tfage_curve_payload(curve: _TfAgeCurve) -> dict[str, Any]:
     }
 
 
-def _tfage_target_info(engine, scope: str, target: int | str | None) -> dict[str, Any]:
+def _tfage_object_info_from_engine(engine, target: int) -> dict[str, Any]:
+    info: dict[str, Any] = {"moca_oid": int(target)}
+    has_objects = _tfage_table_exists(engine, "moca_objects")
+    has_designations = _tfage_table_exists(engine, "mechanics_all_designations")
+    if not has_objects and not has_designations:
+        return info
+    with engine.connect() as conn:
+        if has_objects and has_designations:
+            rows = _records(_read_sql(conn, """
+                SELECT
+                    mo.moca_oid,
+                    COALESCE(NULLIF(mo.designation, ''), mad.designation) AS designation
+                FROM moca_objects mo
+                LEFT JOIN (
+                    SELECT moca_oid, MIN(designation) AS designation
+                    FROM mechanics_all_designations
+                    WHERE designation IS NOT NULL
+                        AND designation <> ''
+                    GROUP BY moca_oid
+                ) mad
+                    ON mad.moca_oid = mo.moca_oid
+                WHERE mo.moca_oid = :target
+                LIMIT 1
+            """, {"target": int(target)}))
+        elif has_objects:
+            rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.moca_oid = :target
+                LIMIT 1
+            """, {"target": int(target)}))
+        else:
+            rows = _records(_read_sql(conn, """
+                SELECT
+                    mad.moca_oid,
+                    MIN(mad.designation) AS designation
+                FROM mechanics_all_designations mad
+                WHERE mad.moca_oid = :target
+                    AND mad.designation IS NOT NULL
+                    AND mad.designation <> ''
+                GROUP BY mad.moca_oid
+                LIMIT 1
+            """, {"target": int(target)}))
+    if rows:
+        info.update(rows[0])
+        info["moca_oid"] = int(info.get("moca_oid") or target)
+    return info
+
+
+def _tfage_metadata_object_info(args: dict[str, Any], target: int) -> dict[str, Any]:
+    metadata_args = dict(args)
+    for key in ("dbase", "db", "database"):
+        metadata_args.pop(key, None)
+    try:
+        metadata_engine = _engine(_connection_string(metadata_args))
+        return _tfage_object_info_from_engine(metadata_engine, int(target))
+    except Exception:
+        return {"moca_oid": int(target)}
+
+
+def _tfage_resolve_object_info(engine, args: dict[str, Any], target: int) -> dict[str, Any]:
+    info = _tfage_object_info_from_engine(engine, int(target))
+    if not str(info.get("designation") or "").strip():
+        metadata_info = _tfage_metadata_object_info(args, int(target))
+        if str(metadata_info.get("designation") or "").strip():
+            info.update(metadata_info)
+    return info
+
+
+def _tfage_object_option(row: dict[str, Any]) -> dict[str, Any]:
+    oid = int(row["moca_oid"])
+    designation = row.get("designation")
+    return {
+        "value": oid,
+        "moca_oid": oid,
+        "designation": designation,
+        "label": f"oid{oid}: {designation or 'MOCAdb object'}",
+    }
+
+
+def _tfage_target_info(engine, scope: str, target: int | str | None, args: dict[str, Any] | None = None) -> dict[str, Any]:
     if target in (None, ""):
         return {}
     if scope == "object":
-        if _tfage_table_exists(engine, "moca_objects"):
-            with engine.connect() as conn:
-                rows = _records(_read_sql(conn, """
-                    SELECT mo.moca_oid, mo.designation
-                    FROM moca_objects mo
-                    WHERE mo.moca_oid = :target
-                    LIMIT 1
-                """, {"target": int(target)}))
-            return rows[0] if rows else {"moca_oid": int(target)}
-        return {"moca_oid": int(target)}
+        if args is not None:
+            return _tfage_resolve_object_info(engine, args, int(target))
+        return _tfage_object_info_from_engine(engine, int(target))
     with engine.connect() as conn:
         if _tfage_table_exists(engine, "moca_associations"):
             rows = _records(_read_sql(conn, """
@@ -5174,76 +6195,53 @@ def _search_tfage_objects_from_db(args: dict[str, Any], query: str, selected_oid
     engine = _engine(_tfage_connection_string(args, scope))
     has_objects = _tfage_table_exists(engine, "moca_objects")
     has_designations = _tfage_table_exists(engine, "mechanics_all_designations")
-    if not has_objects and selected_oid is not None:
+    if selected_oid is not None:
+        info = _tfage_resolve_object_info(engine, args, int(selected_oid))
         return {
-            "options": [{"value": selected_oid, "moca_oid": selected_oid, "designation": None, "label": f"oid{selected_oid}"}],
-            "value": selected_oid,
+            "options": [_tfage_object_option(info)],
+            "value": int(selected_oid),
             "meta": {"row_count": 1},
         }
     with engine.connect() as conn:
-        if selected_oid is not None:
+        query = (query or "").strip()
+        if not query:
+            query = str(TRUEFLOW_AGE_DEFAULT_OID)
+        if query.isdigit():
+            rows = [_tfage_resolve_object_info(engine, args, int(query))]
+        elif has_objects and has_designations:
+            params = {"prefix": f"{query}%"}
             rows = _records(_read_sql(conn, """
                 SELECT mo.moca_oid, mo.designation
                 FROM moca_objects mo
-                WHERE mo.moca_oid = :oid
-                LIMIT 1
-            """, {"oid": selected_oid}))
+                WHERE mo.designation LIKE :prefix
+                    OR EXISTS (
+                        SELECT 1
+                        FROM mechanics_all_designations mad
+                        WHERE mad.moca_oid = mo.moca_oid
+                            AND mad.designation LIKE :prefix
+                    )
+                ORDER BY mo.designation, mo.moca_oid
+                LIMIT 40
+            """, params))
+        elif has_objects:
+            rows = _records(_read_sql(conn, """
+                SELECT mo.moca_oid, mo.designation
+                FROM moca_objects mo
+                WHERE mo.designation LIKE :prefix
+                ORDER BY mo.designation, mo.moca_oid
+                LIMIT 40
+            """, {"prefix": f"{query}%"}))
+        elif has_designations:
+            rows = _records(_read_sql(conn, """
+                SELECT mad.moca_oid, mad.designation
+                FROM mechanics_all_designations mad
+                WHERE mad.designation LIKE :prefix
+                ORDER BY mad.designation, mad.moca_oid
+                LIMIT 40
+            """, {"prefix": f"{query}%"}))
         else:
-            query = (query or "").strip()
-            if not query:
-                query = str(TRUEFLOW_AGE_DEFAULT_OID)
-            if query.isdigit() and not has_objects:
-                rows = [{"moca_oid": int(query), "designation": None}]
-            elif query.isdigit():
-                rows = _records(_read_sql(conn, """
-                    SELECT mo.moca_oid, mo.designation
-                    FROM moca_objects mo
-                    WHERE mo.moca_oid = :oid
-                    LIMIT 1
-                """, {"oid": int(query)}))
-            elif has_objects and has_designations:
-                params = {"prefix": f"{query}%"}
-                rows = _records(_read_sql(conn, """
-                    SELECT mo.moca_oid, mo.designation
-                    FROM moca_objects mo
-                    WHERE mo.designation LIKE :prefix
-                        OR EXISTS (
-                            SELECT 1
-                            FROM mechanics_all_designations mad
-                            WHERE mad.moca_oid = mo.moca_oid
-                                AND mad.designation LIKE :prefix
-                        )
-                    ORDER BY mo.designation, mo.moca_oid
-                    LIMIT 40
-                """, params))
-            elif has_objects:
-                rows = _records(_read_sql(conn, """
-                    SELECT mo.moca_oid, mo.designation
-                    FROM moca_objects mo
-                    WHERE mo.designation LIKE :prefix
-                    ORDER BY mo.designation, mo.moca_oid
-                    LIMIT 40
-                """, {"prefix": f"{query}%"}))
-            elif has_designations:
-                rows = _records(_read_sql(conn, """
-                    SELECT mad.moca_oid, mad.designation
-                    FROM mechanics_all_designations mad
-                    WHERE mad.designation LIKE :prefix
-                    ORDER BY mad.designation, mad.moca_oid
-                    LIMIT 40
-                """, {"prefix": f"{query}%"}))
-            else:
-                rows = []
-    options = [
-        {
-            "value": int(row["moca_oid"]),
-            "moca_oid": int(row["moca_oid"]),
-            "designation": row.get("designation"),
-            "label": f"oid{int(row['moca_oid'])}: {row.get('designation') or 'MOCAdb object'}",
-        }
-        for row in rows
-        if row.get("moca_oid") is not None
-    ]
+            rows = []
+    options = [_tfage_object_option(row) for row in rows if row.get("moca_oid") is not None]
     return {"options": options, "value": selected_oid if selected_oid and options else None, "meta": {"row_count": len(options)}}
 
 
@@ -5282,7 +6280,7 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         if curve.source != "MOCAFlows error" and curve.age_myr.size > 1 and np.any(curve.pdf_age > 0)
     ]
     curve_payloads = [_tfage_curve_payload(curve) for curve in displayable]
-    target_info = _tfage_target_info(engine, scope, target)
+    target_info = _tfage_target_info(engine, scope, target, args)
     payload = {
         "selection": {
             "scope": scope,
@@ -5398,7 +6396,12 @@ def _astrometry_db_cache_key(args: dict[str, Any], oid: int) -> str:
         cfg["username"],
         cfg["dbname"],
         str(int(oid)),
+        str(_include_merged_astrometry(args)),
     ])
+
+
+def _include_merged_astrometry(args: dict[str, Any]) -> bool:
+    return any(_as_bool(args.get(key)) for key in ("display_merged", "include_merged", "merged"))
 
 
 def _format_astrometry_reference(row: dict[str, Any] | None, prefix: str) -> str:
@@ -5477,6 +6480,8 @@ def _search_astrometry_objects_from_db(args: dict[str, Any], query: str, selecte
 
 def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str, Any]:
     cache_key = _astrometry_db_cache_key(args, oid)
+    include_merged = _include_merged_astrometry(args)
+    single_epoch_filter = "1 = 1" if include_merged else "deq.single_epoch = 1"
     now = time.time()
     cached = _ASTROMETRY_OBJECT_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -5510,6 +6515,13 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 ) AS raw_ra,
                 deq.`dec` - IFNULL(deq.calibration_delta_dec_mas / (3600 * 1000), 0) AS raw_dec,
                 deq.measurement_epoch_yr,
+                deq.adopt_as_reference,
+                deq.bibcode,
+                deq.moca_pid,
+                deq.mission_name,
+                deq.data_release,
+                deq.origin,
+                deq.comments,
                 deq.pm_corrected,
                 deq.plx_corrected
             FROM data_equatorial_coordinates deq
@@ -5562,12 +6574,13 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 ) AS raw_ra,
                 deq.`dec` - IFNULL(deq.calibration_delta_dec_mas / (3600 * 1000), 0) AS raw_dec,
                 deq.measurement_epoch_yr,
+                deq.single_epoch,
                 deq.ra_unc_mas,
                 deq.dec_unc_mas,
                 COALESCE(deq.measurement_epoch_yr_unc, 0) AS measurement_epoch_yr_unc,
                 CASE
                     WHEN deq.mission_name IS NULL OR TRIM(deq.mission_name) = ''
-                        THEN COALESCE(deq.moca_pid, 'No mission')
+                        THEN COALESCE(CAST(deq.moca_pid AS CHAR), 'No mission')
                     WHEN TRIM(COALESCE(deq.data_release, '')) = ''
                         THEN TRIM(deq.mission_name)
                     ELSE TRIM(CONCAT(deq.mission_name, ' ', deq.data_release))
@@ -5590,10 +6603,10 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 AND mm.data_release = deq.data_release
             WHERE deq.moca_oid = :oid
                 AND deq.ignored = 0
-                AND deq.single_epoch = 1
+                AND {single_epoch_filter}
             ORDER BY deq.measurement_epoch_yr, deq.id
             LIMIT 20000
-        """, {"oid": oid})
+        """.format(single_epoch_filter=single_epoch_filter), {"oid": oid})
 
     rows = _records(rows_df)
     reference = reference_rows[0] if reference_rows else None
@@ -5641,6 +6654,7 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
             "row_count": len(rows),
             "mission_count": len(missions),
             "private_db": _is_private_db(args),
+            "include_merged_astrometry": include_merged,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -5661,7 +6675,7 @@ def _mock_astrometry_search(query: str, selected_oid: int | None = None) -> dict
     return {"options": options, "value": options[0]["value"] if options else None, "meta": {"row_count": len(options)}}
 
 
-def _mock_astrometry_object(oid: int) -> dict[str, Any]:
+def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str, Any]:
     rng = np.random.default_rng(int(oid) % 10000)
     base_ra = 24.2354
     base_dec = 9.5631
@@ -5686,6 +6700,7 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
             "raw_ra": round(ra - (0.008 if calibrated else 0.0) / (math.cos(math.radians(base_dec)) * 3600 * 1000), 9),
             "raw_dec": round(dec + (0.006 if calibrated else 0.0) / (3600 * 1000), 9),
             "measurement_epoch_yr": round(float(epoch), 6),
+            "single_epoch": 1,
             "ra_unc_mas": round(float(rng.uniform(8, 32)), 3),
             "dec_unc_mas": round(float(rng.uniform(8, 32)), 3),
             "measurement_epoch_yr_unc": 0.0,
@@ -5703,6 +6718,38 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
             "calibration_method": "mock recalibration" if calibrated else None,
             "include_in_recalibrated_display": 1 if "Gaia" in mission_name else 0,
         })
+    if include_merged:
+        for merged_index, epoch in enumerate(np.linspace(2011.5, 2023.5, 10)):
+            moca_pid = "mock_merged_pub_a" if merged_index < 5 else "mock_merged_pub_b"
+            dra_mas = pmra * (epoch - epoch_ref) + rng.normal(0, 10)
+            ddec_mas = pmdec * (epoch - epoch_ref) + rng.normal(0, 10)
+            ra = base_ra + dra_mas / (math.cos(math.radians(base_dec)) * 3600 * 1000)
+            dec = base_dec + ddec_mas / (3600 * 1000)
+            rows.append({
+                "id": f"merged-{merged_index + 1}",
+                "ra": round(ra, 9),
+                "dec": round(dec, 9),
+                "raw_ra": round(ra, 9),
+                "raw_dec": round(dec, 9),
+                "measurement_epoch_yr": round(float(epoch), 6),
+                "single_epoch": 0,
+                "ra_unc_mas": round(float(rng.uniform(12, 28)), 3),
+                "dec_unc_mas": round(float(rng.uniform(12, 28)), 3),
+                "measurement_epoch_yr_unc": 0.0,
+                "mission": moca_pid,
+                "moca_pid": moca_pid,
+                "mission_name": None,
+                "data_release": None,
+                "origin": "mock_merged_astrometry",
+                "comments": "Synthetic merged astrometry for local smoke testing",
+                "airmass": None,
+                "moca_psid": None,
+                "calibration_delta_ra_mas": None,
+                "calibration_delta_dec_mas": None,
+                "nstars_calibration": None,
+                "calibration_method": None,
+                "include_in_recalibrated_display": 0,
+            })
     mission_counts: dict[str, int] = {}
     for row in rows:
         mission_counts[row["mission"]] = mission_counts.get(row["mission"], 0) + 1
@@ -5712,7 +6759,19 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
             "designation": "SIMP J013656.5+093347.3" if int(oid) == 602 else "Mock high-motion dwarf",
             "designations": ["SIMP J013656.5+093347.3", "2MASS J01365662+0933473"],
         },
-        "reference": {"id": 1, "ra": base_ra, "dec": base_dec, "measurement_epoch_yr": epoch_ref},
+        "reference": {
+            "id": 1,
+            "ra": base_ra,
+            "dec": base_dec,
+            "measurement_epoch_yr": epoch_ref,
+            "adopt_as_reference": 1,
+            "bibcode": "2026Mock....1A",
+            "moca_pid": "mock",
+            "mission_name": "Mock Reference Survey",
+            "data_release": "DR1",
+            "origin": "mock_astrometry",
+            "comments": "Synthetic adopted reference astrometry for local smoke testing",
+        },
         "pm": {
             "pmra_masyr": pmra,
             "pmdec_masyr": pmdec,
@@ -5735,6 +6794,7 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
             "row_count": len(rows),
             "mission_count": len(mission_counts),
             "private_db": False,
+            "include_merged_astrometry": include_merged,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -5744,7 +6804,10 @@ def _mock_astrometry_object(oid: int) -> dict[str, Any]:
 def index():
     if str(request.script_root or "").rstrip("/").endswith("/js"):
         return send_from_directory(STATIC_DIR, "js_index.html")
-    return send_from_directory(STATIC_DIR, "index.html")
+    prefix = str(request.script_root or "").rstrip("/")
+    target = f"{prefix}/js/"
+    query = request.query_string.decode("utf-8")
+    return redirect(f"{target}?{query}" if query else target, code=302)
 
 
 @app.get("/js")
@@ -5763,6 +6826,18 @@ def js_index_page():
 @app.get("/js/bd_colors_fast")
 def bd_colors_fast_page():
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/gaia-cmd")
+@app.get("/gaia_cmd")
+@app.get("/stellar-gaia-cmd")
+@app.get("/stellar_gaia_cmd")
+@app.get("/js/gaia-cmd")
+@app.get("/js/gaia_cmd")
+@app.get("/js/stellar-gaia-cmd")
+@app.get("/js/stellar_gaia_cmd")
+def gaia_cmd_fast_page():
+    return send_from_directory(STATIC_DIR, "gaia_cmd.html")
 
 
 @app.get("/spectral-typing")
@@ -5811,14 +6886,33 @@ def xyzuvw_fast_page():
     return send_from_directory(STATIC_DIR, "xyzuvw.html")
 
 
+@app.get("/xyz2")
+@app.get("/js/xyz2")
+def xyz2_fast_page():
+    return send_from_directory(STATIC_DIR, "xyz2.html")
+
+
+def _redirect_with_query(path: str):
+    query = request.query_string.decode("utf-8", "ignore")
+    return redirect(f"{path}?{query}" if query else path, code=302)
+
+
 @app.get("/trueflow-age-pdfs")
 @app.get("/trueflow_age_pdfs")
 @app.get("/trueflow-agepdfs")
-@app.get("/age-pdfs")
-@app.get("/age-pdfs-fast")
+def age_pdfs_legacy_redirect():
+    return _redirect_with_query("/age-pdfs")
+
+
 @app.get("/js/trueflow-age-pdfs")
 @app.get("/js/trueflow_age_pdfs")
 @app.get("/js/trueflow-agepdfs")
+def js_age_pdfs_legacy_redirect():
+    return _redirect_with_query("/js/age-pdfs")
+
+
+@app.get("/age-pdfs")
+@app.get("/age-pdfs-fast")
 @app.get("/js/age-pdfs")
 @app.get("/js/age-pdfs-fast")
 def trueflow_age_pdfs_fast_page():
@@ -5839,6 +6933,13 @@ def plotly_js():
 @app.get("/js/static/<path:filename>")
 def js_static_files(filename: str):
     return send_from_directory(STATIC_DIR, filename)
+
+
+@app.route("/js/api/<path:api_path>", methods=["GET", "POST"])
+def js_api_alias(api_path: str):
+    query = request.query_string.decode("utf-8", "ignore")
+    target = f"/api/{api_path.lstrip('/')}"
+    return redirect(f"{target}?{query}" if query else target, code=307)
 
 
 @app.get("/api/bootstrap")
@@ -5975,15 +7076,19 @@ def spectral_typing_search():
             selected_specid = None
     try:
         if args.get("mock") in {"1", "true", "yes"}:
+            mock_specid = int(selected_specid or 450)
+            mock_oid = 10995 if mock_specid == 13510 else 990000 + mock_specid
+            mock_designation = "2MASS J05591914-1404488" if mock_specid == 13510 else "MOCK comparison"
+            mock_spt = "T4.5" if mock_specid == 13510 else "L8.5"
             options = [{
-                "moca_specid": 602,
-                "moca_oid": 990602,
-                "designation": "MOCK comparison",
-                "spectral_type": "L8.5",
-                "label": "specid602,oid990602: MOCK comparison (L8.5)",
-                "value": 602,
+                "moca_specid": mock_specid,
+                "moca_oid": mock_oid,
+                "designation": mock_designation,
+                "spectral_type": mock_spt,
+                "label": f"specid{mock_specid},oid{mock_oid}: {mock_designation} ({mock_spt})",
+                "value": mock_specid,
             }]
-            value = selected_specid if selected_specid == 602 else None
+            value = mock_specid if selected_specid is not None else None
             return jsonify({"ok": True, "source": "mock", "options": options, "value": value, "meta": {"row_count": len(options)}})
         payload = _search_spt_spectra_from_db(args, query, selected_specid)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
@@ -6324,6 +7429,150 @@ def spectra_explorer_clear_cache():
     })
 
 
+@app.get("/api/gaia-cmd/options")
+@app.get("/js/api/gaia-cmd/options")
+def gaia_cmd_options():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({
+                "ok": True,
+                "source": "mock",
+                "photometry": {
+                    "simple": [
+                        {
+                            "value": row["psid"],
+                            "simple_value": key,
+                            "label": row["label"],
+                            "moca_psid": row["psid"],
+                            "system_band_simple": row["simple_band"],
+                        }
+                        for key, row in GAIA_CMD_SIMPLE_BANDS.items()
+                    ],
+                    "advanced": [],
+                },
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "private_db": False,
+                    "default": {"x1": "gaiadr3_bpmag", "x2": "gaiadr3_rpmag", "y": "gaiadr3_gmag"},
+                },
+                "cache": {"hit": False, "ttl_seconds": 0},
+            })
+        payload = _load_gaia_cmd_options_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "photometry": {"simple": [], "advanced": []},
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/gaia-cmd/search")
+@app.get("/js/api/gaia-cmd/search")
+def gaia_cmd_object_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            q = str(query or "").lower()
+            options = [
+                {"value": 602, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "label": "SIMP J013656.5+093347.3"},
+                {"value": 10995, "moca_oid": 10995, "designation": "2MASS J05591914-1404488", "label": "2MASS J05591914-1404488"},
+                {"value": 506921, "moca_oid": 506921, "designation": "V* V2502 Oph", "label": "V* V2502 Oph"},
+            ]
+            if q:
+                options = [
+                    row for row in options
+                    if q in str(row["label"]).lower()
+                    or q in str(row["moca_oid"])
+                    or q in str(row["designation"]).lower()
+                ]
+            return jsonify({"ok": True, "source": "mock", "options": options[:80], "meta": {"row_count": len(options[:80])}})
+        payload = _search_gaia_cmd_objects_from_db(args, query)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/gaia-cmd/associations/search")
+@app.get("/js/api/gaia-cmd/associations/search")
+def gaia_cmd_association_search():
+    args = dict(request.args)
+    query = args.get("q") or args.get("search") or ""
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            q = str(query or "").lower()
+            options = [
+                {"value": "THA", "label": "THA - TW Hydrae Association"},
+                {"value": "BPMG", "label": "BPMG - Beta Pictoris moving group"},
+                {"value": "HYA", "label": "HYA - Hyades"},
+                {"value": "TWA", "label": "TWA - TW Hydrae Association"},
+            ]
+            if q:
+                options = [row for row in options if q in row["label"].lower()]
+            return jsonify({"ok": True, "source": "mock", "options": options[:80], "meta": {"row_count": len(options[:80])}})
+        payload = _search_xyzuvw_associations_from_db(args, query)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/gaia-cmd/data")
+@app.get("/js/api/gaia-cmd/data")
+def gaia_cmd_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_gaia_cmd_payload(args)})
+        payload = _load_gaia_cmd_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": _gaia_cmd_selection(args),
+            "rows": [],
+            "sequences": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "sequence_count": 0,
+                "truncated": False,
+                "max_objects": _gaia_cmd_parse_max_objects(args.get("max_objects") or args.get("limit")),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/gaia-cmd/cache/clear")
+@app.post("/js/api/gaia-cmd/cache/clear")
+def gaia_cmd_clear_cache():
+    gaia_count = len(_GAIA_CMD_CACHE)
+    _GAIA_CMD_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"gaiaCmd": gaia_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
 @app.get("/api/xyzuvw/options")
 def xyzuvw_options():
     args = dict(request.args)
@@ -6437,6 +7686,9 @@ def xyzuvw_clear_cache():
 
 
 @app.get("/api/trueflow-age-pdfs/options")
+@app.get("/api/age-pdfs/options")
+@app.get("/js/api/trueflow-age-pdfs/options")
+@app.get("/js/api/age-pdfs/options")
 def trueflow_age_pdfs_options():
     args = dict(request.args)
     try:
@@ -6456,6 +7708,9 @@ def trueflow_age_pdfs_options():
 
 
 @app.get("/api/trueflow-age-pdfs/search")
+@app.get("/api/age-pdfs/search")
+@app.get("/js/api/trueflow-age-pdfs/search")
+@app.get("/js/api/age-pdfs/search")
 def trueflow_age_pdfs_search():
     args = dict(request.args)
     query = args.get("q") or args.get("search") or ""
@@ -6495,6 +7750,9 @@ def trueflow_age_pdfs_search():
 
 
 @app.get("/api/trueflow-age-pdfs/data")
+@app.get("/api/age-pdfs/data")
+@app.get("/js/api/trueflow-age-pdfs/data")
+@app.get("/js/api/age-pdfs/data")
 def trueflow_age_pdfs_data():
     args = dict(request.args)
     try:
@@ -6526,6 +7784,9 @@ def trueflow_age_pdfs_data():
 
 
 @app.post("/api/trueflow-age-pdfs/cache/clear")
+@app.post("/api/age-pdfs/cache/clear")
+@app.post("/js/api/trueflow-age-pdfs/cache/clear")
+@app.post("/js/api/age-pdfs/cache/clear")
 def trueflow_age_pdfs_clear_cache():
     age_count = len(_TRUEFLOW_AGE_CACHE)
     _TRUEFLOW_AGE_CACHE.clear()
@@ -6569,7 +7830,7 @@ def astrometry_object(oid: int):
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_astrometry_object(oid)})
+            return jsonify({"ok": True, "source": "mock", **_mock_astrometry_object(oid, _include_merged_astrometry(args))})
         payload = _load_astrometry_object_from_db(args, oid)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
@@ -6611,6 +7872,7 @@ def clear_cache():
     spectra_explorer_count = len(_SPECTRA_EXPLORER_CACHE)
     xyzuvw_count = len(_XYZUVW_CACHE)
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
+    gaia_cmd_count = len(_GAIA_CMD_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
     _SPT_GRID_CACHE.clear()
@@ -6621,6 +7883,7 @@ def clear_cache():
     _SPECTRA_EXPLORER_CACHE.clear()
     _XYZUVW_CACHE.clear()
     _TRUEFLOW_AGE_CACHE.clear()
+    _GAIA_CMD_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
@@ -6634,6 +7897,7 @@ def clear_cache():
             "spectraExplorer": spectra_explorer_count,
             "xyzuvw": xyzuvw_count,
             "trueflowAgePdfs": trueflow_age_count,
+            "gaiaCmd": gaia_cmd_count,
         },
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

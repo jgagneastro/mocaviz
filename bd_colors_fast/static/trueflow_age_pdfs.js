@@ -1,4 +1,5 @@
 const tfaDefaultOid = 11266;
+const tfaUniverseAgeMyr = 13800;
 const tfaSourceIds = {
   "MOCAFlows": "tfa-source-mocaflows",
   "Legacy": "tfa-source-legacy",
@@ -25,6 +26,7 @@ const tfaState = {
   focusedKey: null,
   searchTimer: null,
   loadToken: 0,
+  designationCache: new Map(),
 };
 
 const tfaEl = {};
@@ -40,6 +42,10 @@ const tfaAppBaseUrl = (() => {
 
 function tfaAppUrl(path) {
   return new URL(String(path || "").replace(/^\/+/, ""), tfaAppBaseUrl).toString();
+}
+
+function tfaRootUrl(path) {
+  return new URL(String(path || "").replace(/^\/+/, ""), `${window.location.origin}/`).toString();
 }
 
 async function initTrueflowAgePdfs() {
@@ -80,6 +86,9 @@ function collectTrueflowAgeElements() {
     "tfa-hint",
     "tfa-open-report",
     "tfa-export-csv",
+    "tfa-export-tsv",
+    "tfa-export-fits",
+    "tfa-export-votable",
     "tfa-clear-cache",
     "tfa-clear-cache-bottom",
     "tfa-clear-cache-status",
@@ -168,9 +177,12 @@ function bindTrueflowAgeControls() {
     renderTrueflowAgePlot();
     updateTrueflowAgeUrl();
   });
-  tfaEl["tfa-export-csv"].addEventListener("click", exportTrueflowAgeCsv);
+  tfaEl["tfa-export-csv"].addEventListener("click", () => exportTrueflowAge("csv"));
+  tfaEl["tfa-export-tsv"].addEventListener("click", () => exportTrueflowAge("tsv"));
+  tfaEl["tfa-export-fits"].addEventListener("click", () => exportTrueflowAge("fits"));
+  tfaEl["tfa-export-votable"].addEventListener("click", () => exportTrueflowAge("votable"));
   tfaEl["tfa-open-report"].addEventListener("click", openTrueflowAgeReport);
-  tfaEl["tfa-clear-cache"].addEventListener("click", clearTrueflowAgeCache);
+  if (tfaEl["tfa-clear-cache"]) tfaEl["tfa-clear-cache"].addEventListener("click", clearTrueflowAgeCache);
   tfaEl["tfa-clear-cache-bottom"].addEventListener("click", clearTrueflowAgeCache);
   window.addEventListener("resize", debounce(() => {
     if (tfaState.payload) Plotly.Plots.resize(tfaEl["tfa-plot"]);
@@ -182,7 +194,7 @@ function updateTrueflowScopeControls() {
   tfaEl["tfa-object-controls"].hidden = scope !== "object";
   tfaEl["tfa-association-controls"].hidden = scope !== "association";
   tfaEl["tfa-hbm"].disabled = scope !== "association";
-  tfaEl["tfa-open-report"].disabled = scope !== "object" || !parseInteger(tfaEl["tfa-oid-input"].value);
+  tfaEl["tfa-open-report"].disabled = scope !== "object" || !selectedTrueflowObjectOid();
 }
 
 async function loadTrueflowAgeOptions() {
@@ -273,6 +285,7 @@ async function loadTrueflowAgeData() {
       renderEmptyTrueflowAge(payload.error || "Could not load age PDFs");
       return;
     }
+    await hydrateTrueflowTargetDesignation(payload);
     tfaState.payload = payload;
     tfaState.focusedKey = null;
     renderTrueflowAgePlot();
@@ -281,6 +294,35 @@ async function loadTrueflowAgeData() {
     if (token !== tfaState.loadToken) return;
     setTrueflowAgeStatus(error.message || "Could not load age PDFs", "error");
     renderEmptyTrueflowAge(error.message || "Could not load age PDFs");
+  }
+}
+
+async function hydrateTrueflowTargetDesignation(payload) {
+  const selection = payload?.selection || {};
+  if ((selection.scope || currentTrueflowScope()) !== "object") return;
+  payload.target = payload.target || {};
+  if (String(payload.target.designation || "").trim()) return;
+  const oid = selectedTrueflowObjectOid(payload);
+  if (!oid) return;
+  if (tfaState.designationCache.has(oid)) {
+    const cachedDesignation = tfaState.designationCache.get(oid);
+    if (cachedDesignation) payload.target.designation = cachedDesignation;
+    return;
+  }
+  const params = new URLSearchParams();
+  params.set("moca_oid", oid);
+  try {
+    const lookup = await fetchJsonUrl(tfaRootUrl(`api/astrometry/search?${params.toString()}`));
+    const options = lookup.options || [];
+    const match = options.find((option) => normalizedMocaOid(option.moca_oid || option.value) === oid) || options[0];
+    const designation = String(match?.designation || "").trim();
+    tfaState.designationCache.set(oid, designation);
+    if (designation) {
+      payload.target.designation = designation;
+      payload.target.moca_oid = Number(oid);
+    }
+  } catch (_error) {
+    tfaState.designationCache.set(oid, "");
   }
 }
 
@@ -377,7 +419,7 @@ function curveStyle(source, index) {
 }
 
 function trueflowAgeLayout(title, curves, options) {
-  const axisRange = ageAxisRange(curves);
+  const axisRange = ageAxisRange(curves, options);
   const xaxis = {
     title: { text: "Age (Myr)", font: { size: 22 } },
     type: options.useLogX ? "log" : "linear",
@@ -440,8 +482,8 @@ function updateTrueflowAgeSummary(curves) {
   const seconds = Number.isFinite(Number(timing)) ? ` in ${Number(timing).toFixed(1)}s` : "";
   const cacheText = payload?.cache?.hit ? " cache hit" : "";
   tfaEl["tfa-summary"].textContent = `Loaded ${meta.age_row_count || 0} scalar age rows and ${curves.length} visible curves for ${target}${seconds}${cacheText} (${sourceText}).`;
-  tfaEl["tfa-export-csv"].disabled = curves.length === 0;
-  tfaEl["tfa-open-report"].disabled = currentTrueflowScope() !== "object" || !parseInteger(payload?.selection?.moca_oid || tfaEl["tfa-oid-input"].value);
+  setTrueflowAgeExportDisabled(curves.length === 0);
+  tfaEl["tfa-open-report"].disabled = currentTrueflowScope() !== "object" || !selectedTrueflowObjectOid(payload);
   setTrueflowAgeStatus(`${curves.length} curves displayed`, curves.length ? "" : "error");
 }
 
@@ -482,7 +524,7 @@ function renderEmptyTrueflowAge(message) {
   Plotly.react(tfaEl["tfa-plot"], [], layout, plotConfig("mocadb_trueflow_age_pdfs_empty"));
   tfaEl["tfa-summary"].textContent = message || "No data loaded";
   tfaEl["tfa-table"].innerHTML = "";
-  tfaEl["tfa-export-csv"].disabled = true;
+  setTrueflowAgeExportDisabled(true);
 }
 
 function combineTrueflowCurves(curves) {
@@ -613,14 +655,18 @@ function interpPercentile(age, cdf, p) {
   return NaN;
 }
 
-function ageAxisRange(curves) {
+function ageAxisRange(curves, options = {}) {
   const ages = curves.flatMap((curve) => curve.age_myr || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
   if (ages.length < 2) return null;
   const xmin = Math.min(...ages);
   const xmax = Math.max(...ages);
   if (!(xmax > xmin)) return null;
   const logPad = 0.06 * (Math.log10(xmax) - Math.log10(xmin));
-  return [10 ** (Math.log10(xmin) - logPad), 10 ** (Math.log10(xmax) + logPad)];
+  const lower = 10 ** (Math.log10(xmin) - logPad);
+  const upper = 10 ** (Math.log10(xmax) + logPad);
+  if (options.useLogX) return [lower, upper];
+  const cappedUpper = Math.min(upper, tfaUniverseAgeMyr);
+  return [Math.min(lower, cappedUpper * 0.999), cappedUpper];
 }
 
 function plainLogTicks(xmin, xmax) {
@@ -706,8 +752,14 @@ function updateTrueflowAgeUrl() {
 }
 
 function trueflowTargetTitle(payload) {
-  const target = trueflowTargetLabel(payload);
-  return `${target}: age PDFs`;
+  const selection = payload?.selection || {};
+  const target = payload?.target || {};
+  if ((selection.scope || currentTrueflowScope()) === "association") {
+    return `${trueflowTargetLabel(payload)} age PDFs`;
+  }
+  const oid = selectedTrueflowObjectOid(payload);
+  const designation = String(target.designation || "").trim();
+  return designation ? `${designation} (moca_oid=${oid || ""}) age PDFs` : `moca_oid=${oid || ""} age PDFs`;
 }
 
 function trueflowTargetLabel(payload) {
@@ -717,23 +769,37 @@ function trueflowTargetLabel(payload) {
     const aid = target.moca_aid || selection.moca_aid || selection.target || tfaEl["tfa-aid-select"].value || "association";
     return target.name ? `${aid}; ${target.name}` : String(aid);
   }
-  const oid = target.moca_oid || selection.moca_oid || selection.target || tfaEl["tfa-oid-input"].value || "";
-  return target.designation ? `${target.designation} (oid=${oid})` : `oid${oid}`;
+  const oid = selectedTrueflowObjectOid(payload);
+  const designation = String(target.designation || "").trim();
+  return designation ? `${designation} (moca_oid=${oid})` : `moca_oid=${oid || ""}`;
 }
 
-function exportTrueflowAgeCsv() {
+const trueflowAgeExportColumns = ["curve", "source", "age", "calculation_method", "moca_pid", "adopted", "public_adopted", "comments"];
+const trueflowAgeNumericExportColumns = new Set(["age", "moca_pid", "adopted", "public_adopted"]);
+
+function exportTrueflowAge(format) {
   const rows = (tfaState.visibleCurves || []).map((curve) => curve.summary || {});
-  const columns = ["curve", "source", "age", "calculation_method", "moca_pid", "adopted", "public_adopted", "comments"];
-  const csv = [
-    columns.join(","),
-    ...rows.map((row) => columns.map((column) => csvEscape(row[column])).join(",")),
-  ].join("\n");
-  downloadBlob(csv, "mocadb_trueflow_age_pdfs.csv", "text/csv;charset=utf-8");
+  if (!rows.length) return;
+  MocaExport.saveTable(format, {
+    rows,
+    columns: trueflowAgeExportColumns,
+    numericColumns: trueflowAgeNumericExportColumns,
+    filenameBase: "mocadb_trueflow_age_pdfs",
+    tableName: "mocadb_trueflow_age_pdfs",
+    resourceName: "MOCAdb Age PDF Explorer",
+    extName: "AGE_PDFS",
+  });
+}
+
+function setTrueflowAgeExportDisabled(disabled) {
+  for (const id of ["tfa-export-csv", "tfa-export-tsv", "tfa-export-fits", "tfa-export-votable"]) {
+    if (tfaEl[id]) tfaEl[id].disabled = disabled;
+  }
 }
 
 function openTrueflowAgeReport() {
-  const oid = parseInteger(tfaState.payload?.selection?.moca_oid || tfaEl["tfa-oid-input"].value);
-  if (oid !== null) window.open(mocaReportUrl(oid), "_blank", "noopener");
+  const url = mocaReportUrl(selectedTrueflowObjectOid());
+  if (url) window.open(url, "_blank", "noopener");
 }
 
 async function clearTrueflowAgeCache() {
@@ -874,6 +940,23 @@ function countBy(values, fn) {
   return out;
 }
 
+function selectedTrueflowObjectOid(payload = tfaState.payload) {
+  const selection = payload?.selection || {};
+  const target = payload?.target || {};
+  if ((selection.scope || currentTrueflowScope()) !== "object") return "";
+  return normalizedMocaOid(target.moca_oid || selection.moca_oid || selection.target || tfaEl["tfa-oid-input"].value);
+}
+
 function mocaReportUrl(oid) {
-  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(Number(oid).toFixed(0))}%29&search-type=star`;
+  const normalizedOid = normalizedMocaOid(oid);
+  return normalizedOid ? `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(normalizedOid)}%29&search-type=star` : "";
+}
+
+function normalizedMocaOid(oid) {
+  if (oid === null || oid === undefined) return "";
+  const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
 }

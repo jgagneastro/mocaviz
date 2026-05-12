@@ -3,34 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MOCAdb Fast Spatial-Kinematic Explorer</title>
+  <title>MOCAdb Fast XYZ/UVW Explorer</title>
   <link rel="stylesheet" href="static/styles.css">
   <script src="plotly.min.js"></script>
 </head>
-<body class="xyzuvw-page">
+<body class="xyzuvw-page xyz2-page">
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand">MOCAdb Fast Spatial-Kinematic Explorer</div>
-      <div id="xuv-status" class="status loading">Loading XYZUVW data</div>
+      <div class="brand">MOCAdb Fast XYZ/UVW Explorer</div>
+      <div id="xuv-status" class="status loading">Loading XYZ/UVW data</div>
     </header>
 
     <main class="workspace xyzuvw-workspace">
       <aside class="controls">
-        <section class="control-section axes-section">
-          <h2>Axes</h2>
-          <label>
-            Axis 1
-            <select id="xuv-axis-1"></select>
-          </label>
-          <label>
-            Axis 2
-            <select id="xuv-axis-2"></select>
-          </label>
-          <label>
-            Axis 3
-            <select id="xuv-axis-3"></select>
-          </label>
-        </section>
+        <div class="visually-hidden" aria-hidden="true">
+          <select id="xuv-axis-1"></select>
+          <select id="xuv-axis-2"></select>
+          <select id="xuv-axis-3"></select>
+        </div>
 
         <section class="control-section filters-section">
           <h2>Associations</h2>
@@ -102,14 +92,25 @@
             <input id="xuv-asscen" type="checkbox">
             <span>All Labels (slow load)</span>
           </label>
-          <button id="xuv-load" type="button">Load map</button>
+          <button id="xuv-load" type="button">Load maps</button>
         </section>
       </aside>
 
-      <section id="xuv-visual-area" class="visual-area xyzuvw-visual-area">
-        <div class="plot-frame xyzuvw-plot-frame">
-          <div id="xuv-plot"></div>
-          <div id="xuv-plot-loader" class="plot-loader is-visible" aria-label="Loading XYZUVW map">
+      <section id="xuv-visual-area" class="visual-area xyzuvw-visual-area xyz2-visual-area">
+        <div class="xyz2-plot-grid">
+          <section class="xyz2-panel" aria-label="XYZ figure">
+            <h2 class="xyz2-panel-title">XYZ</h2>
+            <div class="plot-frame xyzuvw-plot-frame xyz2-plot-frame">
+              <div id="xuv-plot-xyz"></div>
+            </div>
+          </section>
+          <section class="xyz2-panel" aria-label="UVW figure">
+            <h2 class="xyz2-panel-title">UVW</h2>
+            <div class="plot-frame xyzuvw-plot-frame xyz2-plot-frame">
+              <div id="xuv-plot-uvw"></div>
+            </div>
+          </section>
+          <div id="xuv-plot-loader" class="plot-loader xyz2-plot-loader is-visible" aria-label="Loading XYZ/UVW maps">
             <div class="plot-loader-ring"></div>
           </div>
         </div>
@@ -145,20 +146,19 @@
     <footer class="url-help xyzuvw-url-help">
       <h2>Using URL Parameters</h2>
       <p>
-        The fast spatial-kinematic explorer accepts the same core URL inputs as
-        the legacy Dash page.
+        The dual spatial-kinematic explorer accepts the same core URL inputs as
+        the single-view page, but always renders XYZ and UVW together.
       </p>
       <table>
         <thead>
           <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>axes</code></td><td>Three distinct letters among <code>x,y,z,u,v,w</code></td><td>Sets the 3D axes, for example <code>axes=xyz</code> or <code>axes=xuw</code>.</td></tr>
           <tr><td><code>asso</code>, <code>moca_aid</code>, <code>aid</code></td><td>Comma-separated association IDs</td><td>Selects associations. Defaults to <code>HYA,TWA,THA</code>.</td></tr>
           <tr><td><code>mtid</code></td><td>Comma-separated membership type IDs</td><td>Filters memberships. Defaults to <code>BF,HM,CM</code>.</td></tr>
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated MOCA OIDs</td><td>Overplots highlighted objects.</td></tr>
           <tr><td><code>bsmdid</code></td><td><code>latest</code> or a numeric model version</td><td>Selects the BANYAN Sigma model version.</td></tr>
-          <tr><td><code>showaxes</code></td><td><code>0</code> or <code>1</code></td><td>Hides or shows the 3D axis box. Defaults to <code>0</code>.</td></tr>
+          <tr><td><code>showaxes</code></td><td><code>0</code> or <code>1</code></td><td>Hides or shows the 3D axis boxes. Defaults to <code>0</code>.</td></tr>
           <tr><td><code>checkbox</code></td><td><code>models,errors,hover,assmem,likely,asscen</code></td><td>Enables display options in one URL parameter.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>

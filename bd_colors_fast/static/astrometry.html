@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css">
+  <link rel="stylesheet" href="static/styles.css?v=astrometry-absolute-20260512">
   <script src="plotly.min.js"></script>
 </head>
 <body class="astrometry-page">
@@ -58,6 +58,18 @@
             <span>Bin data for display</span>
           </label>
           <label class="checkline">
+            <input id="atm-display-absolute" type="checkbox">
+            <span>Display absolute coordinates</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-display-merged" type="checkbox">
+            <span>Display merged astrometry data</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-display-reference" type="checkbox" checked>
+            <span>Display reference astrometry</span>
+          </label>
+          <label class="checkline">
             <input id="atm-adjust-reference" type="checkbox" checked>
             <span>Adjust reference astrometry</span>
           </label>
@@ -69,6 +81,12 @@
             <input id="atm-revert-raw" type="checkbox">
             <span>Use raw, non-recalibrated astrometry</span>
           </label>
+          <div class="button-grid astrometry-fit-actions">
+            <button id="atm-fit-pm" type="button" disabled>Fit proper motion</button>
+            <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
+          </div>
+          <button id="atm-clear-fit" type="button" disabled>Clear fit</button>
+          <div id="atm-fit-summary" class="plot-hint">No fit computed</div>
         </section>
       </aside>
 
@@ -83,10 +101,15 @@
           <div id="atm-dec-plot"></div>
         </div>
         <div class="astrometry-toolbar">
-          <div id="atm-summary" class="astrometry-summary">No target loaded</div>
+          <div>
+            <div id="atm-summary" class="astrometry-summary">No target loaded</div>
+            <div id="atm-hint" class="plot-hint">Click or box-select points in either plot.<br>Double-click an empty region of the plot to reset Plotly selection</div>
+          </div>
           <div class="export-actions astrometry-actions">
             <button id="atm-export-csv" type="button" disabled>Export CSV</button>
-            <button id="atm-clear-cache" type="button">Clear cache</button>
+            <button id="atm-export-tsv" type="button" disabled>Export TSV</button>
+            <button id="atm-export-fits" type="button" disabled>Export FITS table</button>
+            <button id="atm-export-votable" type="button" disabled>Export VOTable</button>
           </div>
         </div>
         <div class="selection-area astrometry-table-area">
@@ -118,14 +141,27 @@
           <tr><td><code>subtract_plx</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted parallax motion from the plotted offsets.</td></tr>
           <tr><td><code>phase</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Plots yearly phase instead of absolute epoch.</td></tr>
           <tr><td><code>bin</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Adds display-only binned measurements.</td></tr>
+          <tr><td><code>display_absolute</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Plots absolute R.A. and Decl. with sexagesimal tick labels instead of relative mas offsets.</td></tr>
+          <tr><td><code>display_merged</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Includes merged astrometry rows where <code>single_epoch=0</code>.</td></tr>
+          <tr><td><code>display_reference</code></td><td><code>0</code> disables it</td><td>Shows the adopted reference astrometry as a star by default.</td></tr>
           <tr><td><code>adjust_ref</code></td><td><code>0</code> disables it</td><td>Uses adjusted reference astrometry by default.</td></tr>
           <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated rows, or missions explicitly marked as display-ready, by default.</td></tr>
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
       </table>
+      <h3>Cache</h3>
+      <p>
+        Loaded astrometry payloads are kept in server memory briefly. Clearing
+        the cache forces the next object load to redownload the selected data.
+      </p>
+      <div class="cache-actions">
+        <button id="atm-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="atm-clear-cache-status" class="cache-status"></span>
+      </div>
     </footer>
   </div>
-  <script src="static/astrometry.js"></script>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/astrometry.js?v=fit-longdash-20260512"></script>
 </body>
 </html>

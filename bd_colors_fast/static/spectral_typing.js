@@ -1,6 +1,6 @@
 const sptDefaultNormText = "0.860-1.350, 1.445-1.800, 2.010-2.400";
 const sptDefaultBins = 200;
-const sptDefaultSpecid = 447;
+const sptDefaultSpecid = 450;
 const sptDefaultFixedRv = "3.1";
 const sptDefaultCloudAlpha = "1.7";
 const sptGridColors = ["#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5"];
@@ -109,6 +109,10 @@ function collectSpectralElements() {
     "spt-standard-meta",
     "spt-open-report",
     "spt-open-standard-report",
+    "spt-export-csv",
+    "spt-export-tsv",
+    "spt-export-fits",
+    "spt-export-votable",
     "spt-clear-cache",
     "spt-clear-cache-status",
   ].forEach((id) => {
@@ -191,13 +195,17 @@ function bindSpectralControls() {
   });
   sptEl["spt-open-report"].addEventListener("click", () => {
     const oid = sptState.comparePayload?.comparisonMetadata?.moca_oid;
-    if (oid !== null && oid !== undefined) window.open(mocaReportUrl(oid), "_blank", "noopener");
+    openMocaReport(oid);
   });
   sptEl["spt-open-standard-report"].addEventListener("click", () => {
     const entry = filteredEntries()[sptState.currentIndex];
     const oid = entry?.moca_oid;
-    if (oid !== null && oid !== undefined) window.open(mocaReportUrl(oid), "_blank", "noopener");
+    openMocaReport(oid);
   });
+  sptEl["spt-export-csv"].addEventListener("click", () => exportSpectralTyping("csv"));
+  sptEl["spt-export-tsv"].addEventListener("click", () => exportSpectralTyping("tsv"));
+  sptEl["spt-export-fits"].addEventListener("click", () => exportSpectralTyping("fits"));
+  sptEl["spt-export-votable"].addEventListener("click", () => exportSpectralTyping("votable"));
   sptEl["spt-clear-cache"].addEventListener("click", () => clearSpectralCache());
   window.addEventListener("resize", debounce(() => {
     if (!sptEl["spt-comparison-results"].hidden) positionSearchResultsPopup();
@@ -446,6 +454,7 @@ async function computeSpectralComparison() {
   fillGridSelect(sptState.gridOptions);
   updateSpectralUrl();
   renderSpectralTyping();
+  setSpectralTypingExportDisabled(false);
   const timing = payload.meta?.timings?.compare_total;
   const timingText = finiteNumber(timing) ? Number(timing).toFixed(1) : "";
   const cacheText = payload.cache?.hit ? " from cache" : "";
@@ -693,24 +702,27 @@ function renderSpectrumPlot(payload, entry) {
     title,
     paper_bgcolor: "#eeeeef",
     plot_bgcolor: "#ffffff",
-    margin: { t: 44, r: 120, b: 66, l: 72 },
+    margin: { t: 44, r: 120, b: 86, l: 72 },
     xaxis: {
       title: { text: "Wavelength (μm)", font: { size: 22 } },
+      title_standoff: 10,
       tickfont: { size: 16 },
       range: xRange,
+      ...spectralBoxAxisStyle(),
       zeroline: false,
     },
     yaxis: {
       title: { text: "Normalized flux (<i>F</i><sub>λ</sub>)", font: { size: 22 } },
       tickfont: { size: 16 },
       range: yRange,
+      ...spectralBoxAxisStyle(),
       zeroline: false,
     },
     legend: { orientation: "v", x: 1.02, xanchor: "left", y: 1, bgcolor: "rgba(255,255,255,0.75)" },
     shapes: sptEl["spt-showfeatures"].checked ? featureShapes() : [],
     annotations: [
       ...(sptEl["spt-showfeatures"].checked ? featureAnnotations() : []),
-      metricAnnotation(entry),
+      metricAnnotation(entry, payload),
     ].filter(Boolean),
   };
   Plotly.react(sptEl["spt-plot"], traces, layout, plotConfig(`sptype_specid_${payload.meta?.specid || "unknown"}_${entry.spectral_type || "std"}`));
@@ -736,16 +748,29 @@ function renderChi2Plot(payload, selectedEntry) {
     const rows = adjustedEntries
       .filter((entry) => String(entry.grid) === grid && finiteNumber(entry.spectral_type_number) && finiteNumber(entry.reduced_chi2) && entry.reduced_chi2 > 0)
       .sort((a, b) => a.spectral_type_number - b.spectral_type_number);
+    const color = sptGridColors[gridIndex % sptGridColors.length];
+    const spline = chi2InterpolatingSpline(rows);
+    traces.push({
+      x: spline.x,
+      y: spline.y,
+      type: "scatter",
+      mode: "lines",
+      name: grid,
+      legendgroup: grid,
+      line: { color, width: 3 },
+      hoverinfo: "skip",
+    });
     traces.push({
       x: rows.map((row) => row.spectral_type_number),
       y: rows.map((row) => row.reduced_chi2),
       text: rows.map((row) => row.label || row.spectral_type || ""),
       customdata: rows.map((row) => [row.grid, localIndexForEntry(row)]),
       type: "scatter",
-      mode: "lines+markers",
+      mode: "markers",
       name: grid,
-      line: { color: sptGridColors[gridIndex % sptGridColors.length], width: 3 },
-      marker: { size: 9 },
+      legendgroup: grid,
+      showlegend: false,
+      marker: { size: 9, color },
       hovertemplate: "<b>%{text}</b><br>χ<sup>2</sup>: %{y:.2f}<extra></extra>",
     });
   });
@@ -768,15 +793,16 @@ function renderChi2Plot(payload, selectedEntry) {
     title: `Global goodness of fit for ${comparisonShortName(payload)}`,
     paper_bgcolor: "#eeeeef",
     plot_bgcolor: "#ffffff",
-    margin: { t: 44, r: 210, b: 66, l: 72 },
+    margin: { t: 44, r: 210, b: 86, l: 72 },
     xaxis: {
       title: { text: "Spectral Type", font: { size: 22 } },
-      title_standoff: 8,
+      title_standoff: 10,
       tickfont: { size: 16 },
       tickmode: "array",
       tickvals,
       ticktext: tickvals.map(sptLabelFromNumber),
       range: [xMin - 0.5, xMax + 0.5],
+      ...spectralBoxAxisStyle(),
       zeroline: false,
     },
     yaxis: {
@@ -789,6 +815,7 @@ function renderChi2Plot(payload, selectedEntry) {
         tickvals: yTickSpec.tickvals,
         ticktext: yTickSpec.ticktext,
       } : {}),
+      ...spectralBoxAxisStyle(),
       zeroline: false,
     },
     legend: {
@@ -813,6 +840,92 @@ function renderChi2Plot(payload, selectedEntry) {
     updateSpectralUrl();
     renderSpectralTyping();
   });
+}
+
+function chi2InterpolatingSpline(rows) {
+  const points = rows
+    .map((row) => ({
+      x: Number(row.spectral_type_number),
+      yLog: Math.log10(Number(row.reduced_chi2)),
+    }))
+    .filter((point) => finiteNumber(point.x) && finiteNumber(point.yLog));
+  const filtered = [];
+  for (const point of points) {
+    const previous = filtered[filtered.length - 1];
+    if (previous && previous.x === point.x && previous.yLog === point.yLog) continue;
+    filtered.push(point);
+  }
+  if (filtered.length < 3) {
+    return {
+      x: filtered.map((point) => point.x),
+      y: filtered.map((point) => 10 ** point.yLog),
+    };
+  }
+  const parameter = filtered.map((_, index) => index);
+  const xValues = filtered.map((point) => point.x);
+  const yLogValues = filtered.map((point) => point.yLog);
+  const xSlopes = pchipSlopes(parameter, xValues);
+  const yLogSlopes = pchipSlopes(parameter, yLogValues);
+  const x = [];
+  const y = [];
+  for (let index = 0; index < filtered.length - 1; index += 1) {
+    const distance = Math.hypot(
+      filtered[index + 1].x - filtered[index].x,
+      filtered[index + 1].yLog - filtered[index].yLog,
+    );
+    const samples = Math.max(8, Math.min(32, Math.ceil(distance * 10)));
+    for (let sample = 0; sample <= samples; sample += 1) {
+      if (index > 0 && sample === 0) continue;
+      const t = sample / samples;
+      const h = parameter[index + 1] - parameter[index];
+      x.push(cubicHermiteValue(xValues[index], xValues[index + 1], xSlopes[index] * h, xSlopes[index + 1] * h, t));
+      y.push(10 ** cubicHermiteValue(yLogValues[index], yLogValues[index + 1], yLogSlopes[index] * h, yLogSlopes[index + 1] * h, t));
+    }
+  }
+  return { x, y };
+}
+
+function pchipSlopes(x, y) {
+  const n = x.length;
+  if (n < 2) return new Array(n).fill(0);
+  const h = [];
+  const delta = [];
+  for (let index = 0; index < n - 1; index += 1) {
+    h.push(x[index + 1] - x[index]);
+    delta.push((y[index + 1] - y[index]) / h[index]);
+  }
+  if (n === 2) return [delta[0], delta[0]];
+  const slopes = new Array(n).fill(0);
+  for (let index = 1; index < n - 1; index += 1) {
+    if (delta[index - 1] === 0 || delta[index] === 0 || Math.sign(delta[index - 1]) !== Math.sign(delta[index])) {
+      slopes[index] = 0;
+    } else {
+      const w1 = 2 * h[index] + h[index - 1];
+      const w2 = h[index] + 2 * h[index - 1];
+      slopes[index] = (w1 + w2) / ((w1 / delta[index - 1]) + (w2 / delta[index]));
+    }
+  }
+  slopes[0] = pchipEndpointSlope(h[0], h[1], delta[0], delta[1]);
+  slopes[n - 1] = pchipEndpointSlope(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]);
+  return slopes;
+}
+
+function pchipEndpointSlope(h0, h1, delta0, delta1) {
+  let slope = ((2 * h0 + h1) * delta0 - h0 * delta1) / (h0 + h1);
+  if (Math.sign(slope) !== Math.sign(delta0)) slope = 0;
+  else if (Math.sign(delta0) !== Math.sign(delta1) && Math.abs(slope) > Math.abs(3 * delta0)) slope = 3 * delta0;
+  return slope;
+}
+
+function cubicHermiteValue(y0, y1, m0, m1, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (
+    (2 * t3 - 3 * t2 + 1) * y0
+    + (t3 - 2 * t2 + t) * m0
+    + (-2 * t3 + 3 * t2) * y1
+    + (t3 - t2) * m1
+  );
 }
 
 function updateNavigation(entries, entry) {
@@ -884,6 +997,7 @@ function updateMetadata(payload, entry) {
   const parts = [];
   parts.push(`<strong>${escapeHtml(entry.spectral_type || "Standard")} standard</strong>`);
   parts.push(`Standard: ${escapeHtml(entry.object_designation || entry.designation || "None")}`);
+  parts.push(`Standard moca_specid: ${escapeHtml(entry.moca_specid ?? "None")}`);
   if (entry.bibcode) {
     const url = `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(entry.bibcode)}/abstract`;
     parts.push(`Bibcode for standard: <a href="${url}" target="_blank" rel="noopener">${escapeHtml(entry.bibcode)}</a>`);
@@ -892,9 +1006,9 @@ function updateMetadata(payload, entry) {
   }
   sptEl["spt-standard-meta"].innerHTML = parts.map((part) => `<div>${part}</div>`).join("");
   const oid = payload.comparisonMetadata?.moca_oid;
-  sptEl["spt-open-report"].disabled = oid === null || oid === undefined;
+  sptEl["spt-open-report"].disabled = !normalizedMocaOid(oid);
   const standardOid = entry?.moca_oid;
-  sptEl["spt-open-standard-report"].disabled = standardOid === null || standardOid === undefined;
+  sptEl["spt-open-standard-report"].disabled = !normalizedMocaOid(standardOid);
 }
 
 function renderCorrectionInfo(payload = sptState.comparePayload) {
@@ -957,7 +1071,104 @@ function renderEmptySpectralPlots(message) {
   renderCorrectionInfo();
   sptEl["spt-open-report"].disabled = true;
   sptEl["spt-open-standard-report"].disabled = true;
+  setSpectralTypingExportDisabled(true);
   updateLowResControl(null);
+}
+
+const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
+const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2"]);
+
+function exportSpectralTyping(format) {
+  const rows = spectralTypingExportRows();
+  if (!rows.length) return;
+  const specid = sptState.selectedSpecid || "unknown";
+  MocaExport.saveTable(format, {
+    rows,
+    columns: spectralTypingExportColumns,
+    numericColumns: spectralTypingNumericExportColumns,
+    filenameBase: `mocadb_spectral_typing_specid_${specid}`,
+    tableName: "mocadb_spectral_typing",
+    resourceName: "MOCAdb Spectral Typing",
+    extName: "SPTYPING",
+  });
+}
+
+function spectralTypingExportRows() {
+  const payload = sptState.comparePayload;
+  if (!payload) return [];
+  const comparisonSpecid = payload.meta?.specid || sptState.selectedSpecid || "";
+  const comparisonOid = payload.comparisonMetadata?.moca_oid || "";
+  const entry = filteredEntries()[sptState.currentIndex] || null;
+  const rows = [];
+  (payload.comparison || []).forEach((row) => {
+    rows.push({
+      row_type: "comparison_spectrum",
+      comparison_specid: comparisonSpecid,
+      comparison_oid: comparisonOid,
+      wavelength_um: row.wv,
+      normalized_flux: row.spn,
+      normalized_flux_unc: row.espn ?? "",
+      designation: payload.comparisonMetadata?.designation || "",
+    });
+  });
+  if (entry) {
+    const base = {
+      comparison_specid: comparisonSpecid,
+      comparison_oid: comparisonOid,
+      standard_specid: entry.moca_specid ?? "",
+      standard_oid: entry.moca_oid ?? "",
+      grid: entry.grid || "",
+      spectral_type: entry.spectral_type || "",
+      spectral_type_number: entry.spectral_type_number ?? "",
+      reduced_chi2: entry.reduced_chi2 ?? "",
+      best_parameters: spectralTypingBestParameters(entry),
+      designation: entry.designation || entry.object_designation || "",
+      bibcode: entry.bibcode || "",
+    };
+    (entry.spectrum || []).forEach((row) => {
+      rows.push({ ...base, row_type: "standard_spectrum", correction: "none", wavelength_um: row.wv, normalized_flux: row.spn, normalized_flux_unc: row.espn ?? "" });
+    });
+    const correctedRows = sptEl["spt-deredden"].checked ? entry.spectrum_dered : (sptEl["spt-cloud"].checked ? entry.spectrum_cloud : null);
+    const correction = sptEl["spt-deredden"].checked ? "dereddened" : (sptEl["spt-cloud"].checked ? "bd_slope" : "");
+    (correctedRows || []).forEach((row) => {
+      rows.push({ ...base, row_type: "standard_spectrum", correction, wavelength_um: row.wv, normalized_flux: row.spn, normalized_flux_unc: row.espn ?? "" });
+    });
+  }
+  (payload.entries || []).forEach((candidate) => {
+    rows.push({
+      row_type: "chi2_grid",
+      comparison_specid: comparisonSpecid,
+      comparison_oid: comparisonOid,
+      standard_specid: candidate.moca_specid ?? "",
+      standard_oid: candidate.moca_oid ?? "",
+      grid: candidate.grid || "",
+      spectral_type: candidate.spectral_type || "",
+      spectral_type_number: candidate.spectral_type_number ?? "",
+      reduced_chi2: candidate.reduced_chi2 ?? "",
+      best_parameters: spectralTypingBestParameters(candidate),
+      designation: candidate.designation || candidate.object_designation || "",
+      bibcode: candidate.bibcode || "",
+    });
+  });
+  return rows;
+}
+
+function spectralTypingBestParameters(entry) {
+  if (sptEl["spt-deredden"]?.checked && Array.isArray(entry.A_V)) {
+    const rv = Array.isArray(entry.R_V) ? entry.R_V : [];
+    return entry.A_V.map((av, index) => `A(V)_${index + 1}=${formatNumber(av, 4)}${rv[index] !== undefined ? `; R(V)_${index + 1}=${formatNumber(rv[index], 4)}` : ""}`).join("; ");
+  }
+  if (sptEl["spt-cloud"]?.checked && Array.isArray(entry.cloud_tau0)) {
+    const alpha = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
+    return entry.cloud_tau0.map((tau0, index) => `tau_${index + 1}=${formatNumber(tau0, 5)}${alpha[index] !== undefined ? `; alpha_${index + 1}=${formatNumber(alpha[index], 5)}` : ""}`).join("; ");
+  }
+  return "";
+}
+
+function setSpectralTypingExportDisabled(disabled) {
+  for (const id of ["spt-export-csv", "spt-export-tsv", "spt-export-fits", "spt-export-votable"]) {
+    if (sptEl[id]) sptEl[id].disabled = disabled;
+  }
 }
 
 function moveGrid(delta) {
@@ -1060,16 +1271,24 @@ function featureAnnotations() {
   }));
 }
 
-function metricAnnotation(entry) {
-  const lines = [`χ<sup>2</sup>: ${formatNumber(entry.reduced_chi2, 2)}`];
-  if (sptEl["spt-deredden"].checked && Array.isArray(entry.A_V)) {
+function metricAnnotation(entry, payload = null) {
+  const deredden = Boolean(sptEl["spt-deredden"]?.checked);
+  const cloud = Boolean(sptEl["spt-cloud"]?.checked);
+  const correctionReady = deredden
+    ? Array.isArray(entry.spectrum_dered) && entry.spectrum_dered.length > 0
+    : (!cloud || (Array.isArray(entry.spectrum_cloud) && entry.spectrum_cloud.length > 0));
+  const correctionComputing = Boolean(payload?.meta?.progressive && (deredden || cloud) && !correctionReady);
+  const lines = [`χ<sup>2</sup>: ${correctionComputing ? "(computing)" : formatNumber(entry.reduced_chi2, 2)}`];
+  if (correctionComputing) {
+    lines.push("best_parameters = (computing)");
+  } else if (deredden && Array.isArray(entry.A_V)) {
     const showRv = !spectralRvIsFixed();
     entry.A_V.forEach((av, index) => {
       const rv = Array.isArray(entry.R_V) ? entry.R_V[index] : null;
       lines.push(`${fitLabel("A(V)", index)}: ${formatNumber(av, 2)}`);
       if (showRv) lines.push(`${fitLabel("R(V)", index)}: ${formatNumber(rv, 2)}`);
     });
-  } else if (sptEl["spt-cloud"].checked && Array.isArray(entry.cloud_tau0)) {
+  } else if (cloud && Array.isArray(entry.cloud_tau0)) {
     const showAlpha = !spectralCloudAlphaIsFixed();
     const alphaValues = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
     entry.cloud_tau0.forEach((tau0, index) => {
@@ -1343,6 +1562,19 @@ function setChi2Loading(isLoading) {
   sptEl["spt-chi2-loader"]?.classList.toggle("is-visible", Boolean(isLoading));
 }
 
+function spectralBoxAxisStyle() {
+  return {
+    showline: true,
+    mirror: true,
+    linecolor: "#000000",
+    linewidth: 3,
+    ticks: "outside",
+    ticklen: 8,
+    tickwidth: 2,
+    tickcolor: "#000000",
+  };
+}
+
 function parseInteger(value) {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number.parseInt(String(value), 10);
@@ -1371,6 +1603,8 @@ function spectralCloudAlphaUrlValue(params) {
 }
 
 function finiteNumber(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string" && value.trim() === "") return false;
   return Number.isFinite(Number(value));
 }
 
@@ -1402,6 +1636,21 @@ function debounce(fn, delay) {
   };
 }
 
+function openMocaReport(oid) {
+  const url = mocaReportUrl(oid);
+  if (url) window.open(url, "_blank", "noopener");
+}
+
 function mocaReportUrl(oid) {
-  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(oid)}%29&search-type=star`;
+  const normalizedOid = normalizedMocaOid(oid);
+  return normalizedOid ? `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(normalizedOid)}%29&search-type=star` : "";
+}
+
+function normalizedMocaOid(oid) {
+  if (oid === null || oid === undefined) return "";
+  const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
 }

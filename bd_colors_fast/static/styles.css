@@ -16,6 +16,18 @@
   box-sizing: border-box;
 }
 
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -391,6 +403,19 @@ input:focus {
   visibility: visible !important;
 }
 
+#gcmd-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+#gcmd-plot .modebar {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
 .plot-loader {
   position: absolute;
   inset: 0;
@@ -500,6 +525,23 @@ button:disabled {
 .table-scroll > table {
   width: calc(100% - 24px);
   margin: 10px 12px;
+}
+
+.astrometry-symbol-cell {
+  width: 54px;
+  text-align: center;
+}
+
+.astrometry-table-symbol {
+  display: inline-block;
+  width: var(--atm-symbol-size);
+  height: var(--atm-symbol-size);
+  border: 1.4px solid rgba(255, 255, 255, .82);
+  border-radius: 50%;
+  background: var(--atm-symbol-color);
+  box-shadow: 0 0 0 1px rgba(37, 35, 41, .22);
+  opacity: var(--atm-symbol-opacity);
+  vertical-align: middle;
 }
 
 .selection-table {
@@ -702,12 +744,65 @@ tbody tr:nth-child(odd) {
 }
 
 .js-page-list li {
-  margin: 7px 0;
+  margin: 12px 0 16px;
+}
+
+.js-tool-description {
+  max-width: 720px;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .js-landing-content a {
   color: var(--accent-2);
   font-weight: 750;
+}
+
+.gaia-cmd-workspace {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+.gaia-cmd-visual-area {
+  grid-template-rows: minmax(520px, 70vh) auto minmax(180px, 1fr);
+  row-gap: 8px;
+  overflow: auto;
+}
+
+.gaia-cmd-plot-frame {
+  height: 100%;
+  min-height: 520px;
+}
+
+.gaia-cmd-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 10px 14px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.gaia-cmd-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.gaia-cmd-actions {
+  flex: 0 0 auto;
+  width: auto;
+  justify-content: flex-end;
+}
+
+.gaia-cmd-table-area {
+  min-height: 220px;
 }
 
 .spectral-workspace {
@@ -762,9 +857,28 @@ tbody tr:nth-child(odd) {
 .spectral-report-actions {
   flex: 0 0 auto;
   width: auto;
+  max-width: 100%;
   flex-direction: column;
   align-items: flex-end;
   justify-content: flex-start;
+}
+
+.spectral-report-row,
+.spectral-export-row {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.spectral-report-row {
+  flex-wrap: wrap;
+}
+
+.spectral-export-row {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 1px;
 }
 
 .spectral-report-actions button {
@@ -920,14 +1034,14 @@ tbody tr:nth-child(odd) {
 }
 
 .astrometry-visual-area {
-  grid-template-rows: minmax(360px, 41vh) minmax(360px, 41vh) auto minmax(180px, 24vh);
+  grid-template-rows: minmax(430px, 46vh) minmax(430px, 46vh) auto minmax(180px, 24vh);
   row-gap: 8px;
   overflow: auto;
 }
 
 .astrometry-plot-frame {
   height: 100%;
-  min-height: 360px;
+  min-height: 430px;
 }
 
 #atm-ra-plot,
@@ -989,6 +1103,20 @@ tbody tr:nth-child(odd) {
   min-width: 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.astrometry-fit-actions {
+  margin-top: 12px;
+}
+
+#atm-clear-fit {
+  width: 100%;
+  margin-top: 2px;
+}
+
+#atm-fit-summary {
+  margin-top: 8px;
+  line-height: 1.35;
 }
 
 .astrometry-actions {
@@ -1097,7 +1225,7 @@ tbody tr:nth-child(odd) {
 }
 
 .xyzuvw-visual-area {
-  grid-template-rows: minmax(560px, 70vh) auto minmax(190px, 24vh);
+  grid-template-rows: minmax(560px, 70vh) auto minmax(320px, 32vh);
   row-gap: 8px;
   overflow: auto;
 }
@@ -1113,6 +1241,54 @@ tbody tr:nth-child(odd) {
   width: 100%;
   height: 100%;
   background: var(--plot-bg);
+}
+
+.xyz2-visual-area {
+  position: relative;
+}
+
+.xyz2-plot-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+}
+
+.xyz2-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--plot-bg);
+}
+
+.xyz2-panel-title {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-light);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.xyz2-plot-frame {
+  min-height: 0;
+}
+
+#xuv-plot-xyz,
+#xuv-plot-uvw {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+.xyz2-plot-loader {
+  position: absolute;
 }
 
 .xyzuvw-check-list {
@@ -1185,8 +1361,8 @@ tbody tr:nth-child(odd) {
 }
 
 .xyzuvw-table-area {
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  min-height: 190px;
+  grid-template-rows: auto minmax(130px, 1fr) auto;
+  min-height: 320px;
 }
 
 .xyzuvw-explanation {
@@ -1261,10 +1437,88 @@ tbody tr:nth-child(odd) {
 
 .curve-swatch {
   display: inline-block;
-  width: 48px;
+  width: 29px;
   height: 0;
   border-top: var(--swatch-width, 2px) solid var(--swatch-color, #555555);
   vertical-align: middle;
+}
+
+.table-color-line {
+  width: 25px;
+  --swatch-width: 3px;
+}
+
+.plot-table-marker-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  min-width: 42px;
+  height: 22px;
+  vertical-align: middle;
+}
+
+.plot-table-marker {
+  position: relative;
+  display: inline-block;
+  width: var(--marker-size, 14px);
+  height: var(--marker-size, 14px);
+  border: var(--marker-border-width, 1.4px) solid var(--marker-edge, rgba(255, 255, 255, .82));
+  background: var(--marker-fill, var(--marker-color, #555555));
+  box-shadow: 0 0 0 1px rgba(37, 35, 41, .22);
+  opacity: var(--marker-opacity, 1);
+  vertical-align: middle;
+}
+
+.plot-table-marker.is-circle {
+  border-radius: 50%;
+}
+
+.plot-table-marker.is-square {
+  border-radius: 2px;
+}
+
+.plot-table-marker.is-triangle-up,
+.plot-table-marker.is-star {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.plot-table-marker.is-triangle-up::before,
+.plot-table-marker.is-triangle-up::after,
+.plot-table-marker.is-star::before,
+.plot-table-marker.is-star::after {
+  content: "";
+  position: absolute;
+  display: block;
+}
+
+.plot-table-marker.is-triangle-up::before,
+.plot-table-marker.is-star::before {
+  inset: 0;
+  background: var(--marker-edge, rgba(255, 255, 255, .82));
+}
+
+.plot-table-marker.is-triangle-up::after,
+.plot-table-marker.is-star::after {
+  inset: var(--marker-border-width, 1.4px);
+  background: var(--marker-fill, var(--marker-color, #555555));
+}
+
+.plot-table-marker.is-triangle-up::before,
+.plot-table-marker.is-triangle-up::after {
+  clip-path: polygon(50% 4%, 96% 94%, 4% 94%);
+}
+
+.plot-table-marker.is-star::before,
+.plot-table-marker.is-star::after {
+  clip-path: polygon(50% 0%, 61% 34%, 98% 35%, 68% 56%, 79% 91%, 50% 70%, 21% 91%, 32% 56%, 2% 35%, 39% 34%);
+}
+
+.plot-table-marker.is-open.is-triangle-up::after,
+.plot-table-marker.is-open.is-star::after {
+  background: var(--panel-light);
 }
 
 .curve-swatch.is-dashed {
@@ -1372,7 +1626,7 @@ tbody tr:nth-child(odd) {
   }
 
   .xyzuvw-visual-area {
-    grid-template-rows: 560px auto 230px;
+    grid-template-rows: 560px auto 340px;
   }
 
   .xyzuvw-toolbar {

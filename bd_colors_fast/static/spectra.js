@@ -92,6 +92,9 @@ function collectSpectraElements() {
     "spe-summary",
     "spe-hint",
     "spe-export-csv",
+    "spe-export-tsv",
+    "spe-export-fits",
+    "spe-export-votable",
     "spe-clear-cache",
     "spe-clear-cache-bottom",
     "spe-clear-cache-status",
@@ -159,8 +162,11 @@ function bindSpectraControls() {
     renderSpectra();
     updateSpectraUrl();
   });
-  speEl["spe-export-csv"].addEventListener("click", exportPlottedSpectraCsv);
-  speEl["spe-clear-cache"].addEventListener("click", clearSpectraCache);
+  speEl["spe-export-csv"].addEventListener("click", () => exportPlottedSpectra("csv"));
+  speEl["spe-export-tsv"].addEventListener("click", () => exportPlottedSpectra("tsv"));
+  speEl["spe-export-fits"].addEventListener("click", () => exportPlottedSpectra("fits"));
+  speEl["spe-export-votable"].addEventListener("click", () => exportPlottedSpectra("votable"));
+  if (speEl["spe-clear-cache"]) speEl["spe-clear-cache"].addEventListener("click", clearSpectraCache);
   speEl["spe-clear-cache-bottom"].addEventListener("click", clearSpectraCache);
   window.addEventListener("resize", debounce(() => {
     if (!speEl["spe-results"].hidden) positionSpectraSearchPopup();
@@ -310,7 +316,7 @@ function renderSpectra() {
   speState.processed = processed;
   const traces = [];
   processed.forEach((spectrum, index) => {
-    const color = speColors[index % speColors.length];
+    const color = spectrum.color || speColors[index % speColors.length];
     if (!spectrum.points.length) return;
     if (spectrum.lowRes && !speEl["spe-disable-lowres"].checked) {
       traces.push({
@@ -370,11 +376,13 @@ function renderSpectra() {
   const layout = spectraLayout(processed);
   Plotly.react(speEl["spe-plot"], traces, layout, plotConfig("mocadb_spectral_explorer"));
   bindSpectraPlotEvents();
-  speEl["spe-export-csv"].disabled = processed.every((spectrum) => !spectrum.points.length);
+  setSpectraExportDisabled(processed.every((spectrum) => !spectrum.points.length));
   const rowCount = processed.reduce((sum, spectrum) => sum + spectrum.rawRows.length, 0);
   const cacheText = speState.payload.cache?.hit ? " from cache" : "";
-  setSpectraStatus(`${processed.length} spectra loaded${cacheText}`, "");
-  speEl["spe-summary"].textContent = `${processed.length} spectra loaded, ${rowCount.toLocaleString()} spectral rows`;
+  const spectraCountText = pluralize(processed.length, "spectrum", "spectra");
+  const rowCountText = pluralize(rowCount, "spectral row", "spectral rows");
+  setSpectraStatus(`${spectraCountText} loaded${cacheText}`, "");
+  speEl["spe-summary"].textContent = `${spectraCountText} loaded, ${rowCountText}`;
   speEl["spe-hint"].textContent = speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.";
   renderSpectraTable();
   setSpectraLoading(false);
@@ -402,6 +410,7 @@ function processSpectraPayload() {
   const ylog = speEl["spe-ylog"].checked;
   return (speState.payload.spectra || []).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
+    const color = speColors[index % speColors.length];
     const rawRows = (spectrum.rows || []).map((row, rowIndex) => {
       const lam = wavelengthMicron(row.lam);
       const rawFlambdaUm = Number(row.sp) * 10000.0;
@@ -444,6 +453,7 @@ function processSpectraPayload() {
           normalized: normalize,
           unit: yAxisUnit(),
           rowIndex: row.rowIndex,
+          color,
         },
       };
     }).filter((row) => finite(row.lam) && finite(row.y) && (!ylog || row.y > 0));
@@ -455,7 +465,7 @@ function processSpectraPayload() {
       points,
       lowRes: finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < 100,
       averageResolvingPower: spectrum.meta?.average_resolving_power,
-      color: speColors[index % speColors.length],
+      color,
     };
   });
 }
@@ -538,6 +548,7 @@ function spectraLayout(processed) {
     zeroline: false,
     tickfont: { size: 15 },
     automargin: true,
+    ...spectraBoxAxisStyle(),
   };
   if (xRange) {
     xaxis.range = xlog ? xRange.map((value) => Math.log10(value)) : xRange;
@@ -556,6 +567,7 @@ function spectraLayout(processed) {
     zeroline: false,
     tickfont: { size: 15 },
     automargin: true,
+    ...spectraBoxAxisStyle(),
   };
   if (yRange) {
     yaxis.range = ylog ? yRange.map((value) => Math.log10(value)) : yRange;
@@ -633,8 +645,9 @@ function renderSpectraTable() {
   if (speState.selectedPoints.length) {
     speEl["spe-table-title"].textContent = `${speState.selectedPoints.length} selected spectral rows`;
     speEl["spe-table-subtitle"].textContent = "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um"];
+    const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um"];
     const rows = speState.selectedPoints.map((point) => ({
+      plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
       oid: point.oid,
       wavelength_um: formatNumber(point.lam, 6),
@@ -642,22 +655,35 @@ function renderSpectraTable() {
       display_error: finite(point.yerr) ? formatScientific(point.yerr) : "",
       raw_flambda_w_m2_um: formatScientific(point.rawFlambdaUm),
     }));
-    speEl["spe-table"].innerHTML = tableHtml(columns, rows);
+    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot"]) });
     return;
   }
-  const rows = (speState.processed || []).map((spectrum) => ({
-    specid: spectrum.specid,
-    oid: spectrum.metadata?.moca_oid ?? "",
-    object: spectrum.metadata?.designation || "",
-    spectral_type: spectrum.metadata?.spectral_type || "",
-    instrument: instrumentLabel(spectrum.metadata),
-    rows: spectrum.rawRows.length.toLocaleString(),
-    resolving_power: finite(spectrum.averageResolvingPower) ? Math.round(Number(spectrum.averageResolvingPower)).toLocaleString() : "",
-    report: spectrum.metadata?.moca_oid ? `<a class="report-link" href="${mocaReportUrl(spectrum.metadata.moca_oid)}" target="_blank" rel="noopener">Report</a>` : "",
-  }));
+  const rows = (speState.processed || []).map((spectrum) => {
+    const reportUrl = mocaReportUrl(spectrum.metadata?.moca_oid);
+    return {
+      plot: swatchHtml(spectrum.color),
+      specid: spectrum.specid,
+      oid: normalizedMocaOid(spectrum.metadata?.moca_oid),
+      object: spectrum.metadata?.designation || "",
+      spectral_type: spectrum.metadata?.spectral_type || "",
+      instrument: instrumentLabel(spectrum.metadata),
+      rows: spectrum.rawRows.length.toLocaleString(),
+      resolving_power: finite(spectrum.averageResolvingPower) ? Math.round(Number(spectrum.averageResolvingPower)).toLocaleString() : "",
+      report: reportUrl ? `<a class="report-link" href="${reportUrl}" target="_blank" rel="noopener">Report</a>` : "",
+    };
+  });
   speEl["spe-table-title"].textContent = "Selected spectra";
   speEl["spe-table-subtitle"].textContent = "Click or box-select plotted points to inspect spectral rows.";
-  speEl["spe-table"].innerHTML = tableHtml(["specid", "oid", "object", "spectral_type", "instrument", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["report"]) });
+  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "report"]) });
+}
+
+function spectraColorForSpecid(specid) {
+  const spectrum = (speState.processed || []).find((item) => Number(item.specid) === Number(specid));
+  return spectrum?.color || "#555555";
+}
+
+function swatchHtml(color) {
+  return `<span class="curve-swatch table-color-line" style="--swatch-color: ${escapeHtml(color || "#555555")};"></span>`;
 }
 
 function pointFromPlotly(point) {
@@ -685,7 +711,7 @@ function renderEmptySpectra(message) {
   Plotly.react(speEl["spe-plot"], [], layout, plotConfig("mocadb_spectral_explorer_empty"));
   speEl["spe-summary"].textContent = message;
   speEl["spe-table"].innerHTML = "";
-  speEl["spe-export-csv"].disabled = true;
+  setSpectraExportDisabled(true);
   setSpectraLoading(false);
   setSpectraStatus(message, message.includes("Could not") ? "error" : "");
 }
@@ -709,31 +735,47 @@ function downloadRawSpectrumCsv(specid) {
   downloadBlob(lines.join("\n"), `mocadb_spectrum_specid${specid}.csv`, "text/csv;charset=utf-8");
 }
 
-function exportPlottedSpectraCsv() {
+const plottedSpectraExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized"];
+const plottedSpectraNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "normalized"]);
+
+function exportPlottedSpectra(format) {
   const columns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized"];
   const rows = [];
   (speState.processed || []).forEach((spectrum) => {
     spectrum.points.forEach((point) => {
-      rows.push([
-        spectrum.specid,
-        spectrum.metadata?.moca_oid || "",
-        point.lam,
-        point.y,
-        point.yerr ?? "",
-        point.rawFlambdaUm,
-        point.rawErrFlambdaUm ?? "",
-        yAxisUnit(),
-        speEl["spe-normalize"].checked ? 1 : 0,
-      ]);
+      rows.push({
+        moca_specid: spectrum.specid,
+        moca_oid: spectrum.metadata?.moca_oid || "",
+        wavelength_um: point.lam,
+        display_flux: point.y,
+        display_error: point.yerr ?? "",
+        raw_flambda_w_m2_um: point.rawFlambdaUm,
+        raw_flambda_unc_w_m2_um: point.rawErrFlambdaUm ?? "",
+        display_unit: yAxisUnit(),
+        normalized: speEl["spe-normalize"].checked ? 1 : 0,
+      });
     });
   });
   if (!rows.length) return;
-  const csv = [columns.join(","), ...rows.map((row) => row.map(csvCell).join(","))].join("\n");
-  downloadBlob(csv, "mocadb_spectral_explorer_plotted.csv", "text/csv;charset=utf-8");
+  MocaExport.saveTable(format, {
+    rows,
+    columns,
+    numericColumns: plottedSpectraNumericExportColumns,
+    filenameBase: "mocadb_spectral_explorer_plotted",
+    tableName: "mocadb_spectral_explorer_plotted",
+    resourceName: "MOCAdb Spectral Explorer",
+    extName: "SPECTRA",
+  });
+}
+
+function setSpectraExportDisabled(disabled) {
+  for (const id of ["spe-export-csv", "spe-export-tsv", "spe-export-fits", "spe-export-votable"]) {
+    if (speEl[id]) speEl[id].disabled = disabled;
+  }
 }
 
 async function clearSpectraCache() {
-  speEl["spe-clear-cache"].disabled = true;
+  if (speEl["spe-clear-cache"]) speEl["spe-clear-cache"].disabled = true;
   speEl["spe-clear-cache-bottom"].disabled = true;
   speEl["spe-clear-cache-status"].textContent = "Clearing...";
   speEl["spe-clear-cache-status"].classList.remove("error");
@@ -747,7 +789,7 @@ async function clearSpectraCache() {
     speEl["spe-clear-cache-status"].textContent = error.message;
     speEl["spe-clear-cache-status"].classList.add("error");
   } finally {
-    speEl["spe-clear-cache"].disabled = false;
+    if (speEl["spe-clear-cache"]) speEl["spe-clear-cache"].disabled = false;
     speEl["spe-clear-cache-bottom"].disabled = false;
   }
 }
@@ -951,8 +993,36 @@ function setBoolParam(params, key, checked) {
   else params.delete(key);
 }
 
+function pluralize(count, singular, plural) {
+  const formatted = Number(count || 0).toLocaleString();
+  return `${formatted} ${Number(count) === 1 ? singular : plural}`;
+}
+
+function spectraBoxAxisStyle() {
+  return {
+    showline: true,
+    mirror: true,
+    linecolor: "#000000",
+    linewidth: 3,
+    ticks: "outside",
+    ticklen: 8,
+    tickwidth: 2,
+    tickcolor: "#000000",
+  };
+}
+
 function mocaReportUrl(oid) {
-  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(oid)}%29&search-type=star`;
+  const normalizedOid = normalizedMocaOid(oid);
+  return normalizedOid ? `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(normalizedOid)}%29&search-type=star` : "";
+}
+
+function normalizedMocaOid(oid) {
+  if (oid === null || oid === undefined) return "";
+  const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
 }
 
 function uniqueIntegers(values) {

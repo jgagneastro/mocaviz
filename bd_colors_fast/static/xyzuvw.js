@@ -7,10 +7,27 @@ const xuvAxes = [
   { value: "w", label: "W", unit: "km/s" },
 ];
 
-const xuvDefaultAids = ["HYA", "TWA", "THA"];
+const xuvDefaultAids = ["HYA", "TWA", "CBER", "PERI", "BL1", "BPMG"];
 const xuvDefaultMtids = ["BF", "HM", "CM"];
 const xuvDefaultAxes = ["x", "y", "z"];
-const xuvDefaultCamera = { eye: { x: 1.55, y: 1.55, z: 1.25 } };
+const xuvCleanReferenceRadii = [10, 100, 1000];
+const xuvCleanVelocityReferenceRadii = [10, 50, 100];
+const xuvDefaultCameraReferencePc = Math.max(...xuvCleanReferenceRadii);
+const xuvDefaultCameraDistancePc = 500;
+const xuvDefaultCamera = cameraFromReferenceDistance(
+  { x: 1.55, y: 1.55, z: 1.25 },
+  xuvDefaultCameraDistancePc / xuvDefaultCameraReferencePc,
+);
+const xuvCleanSceneBackground = "#08090c";
+const xuvCleanCircleColor = "#00a8ff";
+const xuvCleanReferenceColor = "rgba(0,168,255,0.29)";
+const xuvCleanMinorReferenceColor = "rgba(0,168,255,0.145)";
+const xuvCleanPlaneColor = "#73c9ff";
+const xuvDualMode = document.body?.classList.contains("xyz2-page");
+const xuvDualPanels = [
+  { key: "xyz", axes: ["x", "y", "z"], plotId: "xuv-plot-xyz", label: "XYZ" },
+  { key: "uvw", axes: ["u", "v", "w"], plotId: "xuv-plot-uvw", label: "UVW" },
+];
 const xuvRvRange = Array.from({ length: 50 }, (_value, index) => -50 + index * (100 / 49));
 const xuvKappa = 0.004743717361;
 const xuvTgal = [
@@ -32,13 +49,20 @@ const xuvState = {
   selectedMtids: [...xuvDefaultMtids],
   selectedOids: [],
   payload: null,
+  payloads: {},
   displayedRows: [],
   selectedRows: [],
   camera: xuvDefaultCamera,
+  panelCameras: {
+    main: xuvDefaultCamera,
+    xyz: xuvDefaultCamera,
+    uvw: xuvDefaultCamera,
+  },
   aidSearchTimer: null,
   cValue: 8,
   searchTimer: null,
   loadToken: 0,
+  pendingCameraRestore: null,
 };
 
 const xuvEl = {};
@@ -87,15 +111,21 @@ function collectXyzuvwElements() {
     "xuv-errors",
     "xuv-assmem",
     "xuv-hover",
+    "xuv-show-axes",
     "xuv-likely",
     "xuv-asscen",
     "xuv-load",
     "xuv-plot",
+    "xuv-plot-xyz",
+    "xuv-plot-uvw",
     "xuv-plot-loader",
     "xuv-summary",
     "xuv-hint",
     "xuv-open-report",
     "xuv-export-csv",
+    "xuv-export-tsv",
+    "xuv-export-fits",
+    "xuv-export-votable",
     "xuv-clear-cache",
     "xuv-clear-cache-bottom",
     "xuv-clear-cache-status",
@@ -129,11 +159,14 @@ function readXyzuvwUrlState() {
   for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen"]) {
     if (asBool(params.get(key))) checkbox.add(key);
   }
+  if (!hasCheckboxParam && !params.has("models")) checkbox.add("models");
   if (!hasCheckboxParam && !params.has("likely")) checkbox.add("likely");
+  if (!hasCheckboxParam && !params.has("assmem")) checkbox.add("assmem");
   xuvEl["xuv-models"].checked = checkbox.has("models");
   xuvEl["xuv-errors"].checked = checkbox.has("errors");
   xuvEl["xuv-assmem"].checked = checkbox.has("assmem");
   xuvEl["xuv-hover"].checked = checkbox.has("hover");
+  xuvEl["xuv-show-axes"].checked = params.has("showaxes") ? asBool(params.get("showaxes")) : false;
   xuvEl["xuv-likely"].checked = checkbox.has("likely");
   xuvEl["xuv-asscen"].checked = checkbox.has("asscen");
 }
@@ -200,7 +233,7 @@ function bindXyzuvwControls() {
       updateXyzuvwUrl();
     }
   });
-  for (const id of ["xuv-assmem", "xuv-hover"]) {
+  for (const id of ["xuv-assmem", "xuv-hover", "xuv-show-axes"]) {
     xuvEl[id].addEventListener("change", () => {
       renderXyzuvw();
       updateXyzuvwUrl();
@@ -211,9 +244,12 @@ function bindXyzuvwControls() {
     xuvEl[id].addEventListener("change", loadXyzuvwData);
   }
   xuvEl["xuv-load"].addEventListener("click", loadXyzuvwData);
-  xuvEl["xuv-export-csv"].addEventListener("click", exportXyzuvwCsv);
+  xuvEl["xuv-export-csv"].addEventListener("click", () => exportXyzuvw("csv"));
+  xuvEl["xuv-export-tsv"].addEventListener("click", () => exportXyzuvw("tsv"));
+  xuvEl["xuv-export-fits"].addEventListener("click", () => exportXyzuvw("fits"));
+  xuvEl["xuv-export-votable"].addEventListener("click", () => exportXyzuvw("votable"));
   xuvEl["xuv-open-report"].addEventListener("click", openSelectedXyzuvwReport);
-  xuvEl["xuv-clear-cache"].addEventListener("click", clearXyzuvwCache);
+  if (xuvEl["xuv-clear-cache"]) xuvEl["xuv-clear-cache"].addEventListener("click", clearXyzuvwCache);
   xuvEl["xuv-clear-cache-bottom"].addEventListener("click", clearXyzuvwCache);
   window.addEventListener("resize", debounce(() => {
     if (!xuvEl["xuv-object-results"].hidden) positionObjectPopup();
@@ -250,6 +286,28 @@ async function loadXyzuvwData() {
   const token = ++xuvState.loadToken;
   setXyzuvwLoading(true);
   setXyzuvwStatus("Loading XYZUVW data", "loading");
+  if (xuvDualMode) {
+    const payloadEntries = await Promise.all(xuvDualPanels.map(async (panel) => {
+      const params = buildXyzuvwParams(panel.axes);
+      const payload = await fetchJsonUrl(xuvAppUrl(`api/xyzuvw/data?${params.toString()}`));
+      return [panel.key, payload];
+    }));
+    if (token !== xuvState.loadToken) return;
+    xuvState.payloads = Object.fromEntries(payloadEntries);
+    const failedPayload = payloadEntries.map((entry) => entry[1]).find((payload) => !payload.ok);
+    if (failedPayload) {
+      xuvState.payload = failedPayload;
+      setXyzuvwStatus(failedPayload.error || "Could not load XYZUVW data", "error");
+      renderEmptyXyzuvw(failedPayload.error || "Could not load XYZUVW data");
+      return;
+    }
+    xuvState.payload = xuvState.payloads.xyz;
+    xuvState.cValue = Number(xuvState.payloads.xyz?.meta?.c_value || xuvState.payloads.uvw?.meta?.c_value || 8);
+    xuvState.selectedRows = [];
+    renderXyzuvw();
+    updateXyzuvwUrl();
+    return;
+  }
   const params = buildXyzuvwParams();
   const payload = await fetchJsonUrl(xuvAppUrl(`api/xyzuvw/data?${params.toString()}`));
   if (token !== xuvState.loadToken) return;
@@ -489,6 +547,10 @@ function renderOidChips() {
 }
 
 function renderXyzuvw() {
+  if (xuvDualMode) {
+    renderXyz2();
+    return;
+  }
   if (!xuvState.payload) {
     renderEmptyXyzuvw("No data loaded");
     return;
@@ -498,49 +560,109 @@ function renderXyzuvw() {
     renderEmptyXyzuvw("Please select distinct axes");
     return;
   }
+  const showAxes = xuvEl["xuv-show-axes"].checked;
   setXyzuvwLoading(true);
   const rows = preparedMemberRows(axes);
   const overlayRows = preparedOverlayRows(axes);
   xuvState.displayedRows = [...rows, ...overlayRows];
   const colormap = associationColors(xuvState.selectedAids);
+  const memberAids = new Set(rows.map((row) => String(row.moca_aid || "Unassigned")));
+  const contextTraces = [];
+  if (xuvEl["xuv-models"].checked) contextTraces.push(...modelTraces(axes, colormap));
+  if (xuvEl["xuv-errors"].checked) contextTraces.push(...errorTraces(axes, rows, colormap));
+  const referenceContext = cleanReferenceContext(axes, xuvState.displayedRows, contextTraces);
+  let ranges = xyzuvwRanges(axes, xuvState.displayedRows, showAxes, referenceContext);
   const traces = [];
-  if (xuvEl["xuv-asscen"].checked) traces.push(...labelTraces(axes, colormap));
-  if (xuvEl["xuv-models"].checked) traces.push(...modelTraces(axes, colormap));
-  if (xuvEl["xuv-errors"].checked) traces.push(...errorTraces(axes, rows, colormap));
-  const ranges = cubicRange(xuvState.displayedRows);
+  traces.push(...referenceTraces(axes, showAxes, referenceContext));
+  traces.push(...contextTraces);
   traces.push(...memberTraces(rows, colormap));
+  if (xuvEl["xuv-asscen"].checked) traces.push(...labelTraces(axes, colormap, memberAids, showAxes));
   traces.push(...overlayTraces(axes, overlayRows));
-  traces.push(...referenceTraces(axes));
-  const layout = xyzuvwLayout(axes, xuvState.displayedRows, ranges);
+  traces.push(...associationCenterLabelTraces(rows, colormap, ranges, showAxes));
+  const layout = xyzuvwLayout(axes, xuvState.displayedRows, ranges, showAxes);
   Plotly.react(xuvEl["xuv-plot"], traces, layout, plotConfig("mocadb_xyzuvw_fast"));
   bindXyzuvwPlotEvents();
   const cacheText = xuvState.payload.cache?.hit ? " from cache" : "";
   const truncatedText = xuvState.payload.meta?.truncated ? `, truncated at ${Number(xuvState.payload.meta.max_objects || 0).toLocaleString()}` : "";
   setXyzuvwStatus(`${rows.length.toLocaleString()} members loaded${cacheText}`, "");
   xuvEl["xuv-summary"].textContent = `${rows.length.toLocaleString()} members, ${(xuvState.payload.models || []).length.toLocaleString()} model components, ${overlayRows.length.toLocaleString()} highlighted objects${truncatedText}`;
-  xuvEl["xuv-hint"].textContent = xuvEl["xuv-assmem"].checked ? "Assumed-membership coordinates are used when available." : "Empirical XYZUVW coordinates are used.";
-  xuvEl["xuv-export-csv"].disabled = xuvState.displayedRows.length === 0;
+  renderXyzuvwHint();
+  setXyzuvwExportDisabled(xuvState.displayedRows.length === 0);
   renderXyzuvwTable();
   setXyzuvwLoading(false);
 }
 
-function preparedMemberRows(axes) {
-  const assume = xuvEl["xuv-assmem"].checked;
-  return (xuvState.payload.members || []).map((row) => {
-    const out = { ...row, kind: "member", label: row.designation || `oid${row.moca_oid}` };
-    axes.forEach((axis, index) => {
-      out[`plot${index}`] = rowValue(row, axis, assume);
-    });
-    return out;
-  }).filter((row) => axes.every((_axis, index) => finite(row[`plot${index}`])));
+function renderXyz2() {
+  if (!xuvState.payloads.xyz || !xuvState.payloads.uvw) {
+    renderEmptyXyzuvw("No data loaded");
+    return;
+  }
+  const showAxes = xuvEl["xuv-show-axes"].checked;
+  setXyzuvwLoading(true);
+  const colormap = associationColors(xuvState.selectedAids);
+  const panelOutputs = xuvDualPanels.map((panel) => {
+    const payload = xuvState.payloads[panel.key];
+    const output = buildXyzuvwPanel(panel.axes, payload, showAxes, colormap, panel.key);
+    const plotEl = xuvEl[panel.plotId];
+    Plotly.react(plotEl, output.traces, output.layout, plotConfig(`mocadb_xyz2_${panel.key}`));
+    bindXyzuvwPlotEvents(plotEl, panel.key, panel.axes);
+    return { ...panel, ...output };
+  });
+  const xyzOutput = panelOutputs.find((panel) => panel.key === "xyz") || panelOutputs[0];
+  xuvState.payload = xuvState.payloads.xyz;
+  xuvState.displayedRows = [...xyzOutput.rows, ...xyzOutput.overlayRows];
+  const cacheText = xuvState.payloads.xyz?.cache?.hit && xuvState.payloads.uvw?.cache?.hit ? " from cache" : "";
+  const truncatedText = xuvState.payloads.xyz?.meta?.truncated ? `, truncated at ${Number(xuvState.payloads.xyz.meta.max_objects || 0).toLocaleString()}` : "";
+  setXyzuvwStatus(`${xyzOutput.rows.length.toLocaleString()} members loaded${cacheText}`, "");
+  const uvwOutput = panelOutputs.find((panel) => panel.key === "uvw") || { rows: [], overlayRows: [] };
+  xuvEl["xuv-summary"].textContent = `XYZ: ${xyzOutput.rows.length.toLocaleString()} members, ${(xuvState.payloads.xyz.models || []).length.toLocaleString()} model components; UVW: ${uvwOutput.rows.length.toLocaleString()} members, ${(xuvState.payloads.uvw.models || []).length.toLocaleString()} model components; ${xyzOutput.overlayRows.length.toLocaleString()} highlighted objects${truncatedText}`;
+  renderXyzuvwHint();
+  setXyzuvwExportDisabled(xuvState.displayedRows.length === 0);
+  renderXyzuvwTable();
+  setXyzuvwLoading(false);
 }
 
-function preparedOverlayRows(axes) {
-  return (xuvState.payload.objects || []).map((row) => {
-    const out = { ...row, kind: "highlight", label: row.designation || `oid${row.moca_oid}` };
-    axes.forEach((axis, index) => {
-      out[`plot${index}`] = rowValue(row, axis, false);
-    });
+function buildXyzuvwPanel(axes, payload, showAxes, colormap, panelKey = "main") {
+  const rows = preparedMemberRows(axes, payload);
+  const overlayRows = preparedOverlayRows(axes, payload);
+  const memberAids = new Set(rows.map((row) => String(row.moca_aid || "Unassigned")));
+  const contextTraces = [];
+  if (xuvEl["xuv-models"].checked) contextTraces.push(...modelTraces(axes, colormap, payload));
+  if (xuvEl["xuv-errors"].checked) contextTraces.push(...errorTraces(axes, rows, colormap));
+  const displayedRows = [...rows, ...overlayRows];
+  const referenceContext = cleanReferenceContext(axes, displayedRows, contextTraces);
+  let ranges = xyzuvwRanges(axes, displayedRows, showAxes, referenceContext);
+  const traces = [];
+  traces.push(...referenceTraces(axes, showAxes, referenceContext));
+  traces.push(...contextTraces);
+  traces.push(...memberTraces(rows, colormap));
+  if (xuvEl["xuv-asscen"].checked) traces.push(...labelTraces(axes, colormap, memberAids, showAxes, payload));
+  traces.push(...overlayTraces(axes, overlayRows));
+  traces.push(...associationCenterLabelTraces(rows, colormap, ranges, showAxes));
+  const layout = xyzuvwLayout(axes, displayedRows, ranges, showAxes, panelKey);
+  return { rows, overlayRows, traces, layout };
+}
+
+function renderXyzuvwHint() {
+  const lines = [
+    xuvEl["xuv-assmem"].checked
+      ? "Assumed-membership coordinates are used when available."
+      : "Empirical XYZUVW coordinates are used.",
+  ];
+  if (xuvEl["xuv-models"].checked) {
+    lines.push("BANYAN Σ models are displayed as 68%, 95% and 99% probability isodensity surfaces.");
+  }
+  xuvEl["xuv-hint"].innerHTML = lines.map(escapeHtml).join("<br>");
+}
+
+function preparedMemberRows(axes, payload = xuvState.payload) {
+  const assume = xuvEl["xuv-assmem"].checked;
+  return plottedRowsForAxes(payload?.members || [], axes, assume, "member");
+}
+
+function preparedOverlayRows(axes, payload = xuvState.payload) {
+  return (payload?.objects || []).map((row) => {
+    const out = withPlotValues(row, axes, false, "highlight");
     out.rvLine = axes.some((axis, index) => !finite(out[`plot${index}`]) && ["u", "v", "w"].includes(axis))
       ? rvLineForObject(row, axes)
       : null;
@@ -548,43 +670,99 @@ function preparedOverlayRows(axes) {
   }).filter((row) => axes.every((_axis, index) => finite(row[`plot${index}`])) || row.rvLine);
 }
 
+function plottedRowsForAxes(rows, axes, assumeMembership = xuvEl["xuv-assmem"].checked, kind = null) {
+  return (rows || []).map((row) => withPlotValues(row, axes, assumeMembership, kind))
+    .filter((row) => axes.every((_axis, index) => finite(row[`plot${index}`])));
+}
+
+function withPlotValues(row, axes, assumeMembership, kind = null) {
+  const out = {
+    ...row,
+    kind: kind || row.kind,
+    label: row.label || row.designation || `oid${row.moca_oid}`,
+  };
+  axes.forEach((axis, index) => {
+    out[`plot${index}`] = rowValue(row, axis, assumeMembership);
+  });
+  return out;
+}
+
 function memberTraces(rows, colormap) {
   const hoverinfo = xuvEl["xuv-hover"].checked ? "text" : "none";
   const traces = [];
-  if (rows.length) {
-    traces.push({
-      type: "scatter3d",
-      mode: "markers",
-      name: "Members",
-      showlegend: false,
-      x: rows.map((row) => row.plot0),
-      y: rows.map((row) => row.plot1),
-      z: rows.map((row) => row.plot2),
-      customdata: rows,
-      text: rows.map(hoverTextForRow),
-      hoverinfo,
-      marker: {
-        color: rows.map((row) => colormap[row.moca_aid] || "#555"),
-        size: 3.4,
-        opacity: 1,
-        line: { width: 0 },
-      },
-    });
-  }
-  for (const aid of xuvState.selectedAids) {
+  const rowsByAid = new Map();
+  rows.forEach((row) => {
+    const aid = String(row.moca_aid || "Unassigned");
+    if (!rowsByAid.has(aid)) rowsByAid.set(aid, []);
+    rowsByAid.get(aid).push(row);
+  });
+  const orderedAids = [
+    ...xuvState.selectedAids.filter((aid) => rowsByAid.has(String(aid))),
+    ...[...rowsByAid.keys()].filter((aid) => !xuvState.selectedAids.includes(aid)),
+  ];
+  orderedAids.forEach((aid) => {
+    const aidRows = rowsByAid.get(String(aid)) || [];
+    if (!aidRows.length) return;
     traces.push({
       type: "scatter3d",
       mode: "markers",
       name: aid,
       legendgroup: aid,
-      x: [null],
-      y: [null],
-      z: [null],
-      hoverinfo: "skip",
-      marker: { color: colormap[aid] || "#555", size: 7, opacity: 1, line: { width: 0 } },
+      showlegend: true,
+      x: aidRows.map((row) => row.plot0),
+      y: aidRows.map((row) => row.plot1),
+      z: aidRows.map((row) => row.plot2),
+      customdata: aidRows,
+      text: aidRows.map(hoverTextForRow),
+      hoverinfo,
+      marker: {
+        color: colormap[aid] || "#555",
+        size: 3.4,
+        opacity: 1,
+        line: { width: 0 },
+      },
     });
-  }
+  });
   return traces;
+}
+
+function associationCenterLabelTraces(rows, colormap, ranges, showAxes) {
+  const rowsByAid = new Map();
+  rows.forEach((row) => {
+    const aid = String(row.moca_aid || "Unassigned");
+    if (!rowsByAid.has(aid)) rowsByAid.set(aid, []);
+    rowsByAid.get(aid).push(row);
+  });
+  const verticalOffset = associationLabelVerticalOffset(ranges);
+  const fontSize = xyzuvwSunFontSize(showAxes);
+  return [...rowsByAid.entries()].map(([aid, aidRows]) => {
+    const center = [0, 1, 2].map((index) => robustMedian(aidRows.map((row) => row[`plot${index}`]).filter(finite).map(Number)));
+    center[2] += verticalOffset;
+    return {
+      type: "scatter3d",
+      mode: "text",
+      name: `${aid} label`,
+      legendgroup: aid,
+      showlegend: false,
+      x: [center[0]],
+      y: [center[1]],
+      z: [center[2]],
+      text: [aid],
+      textposition: "middle center",
+      textfont: { color: colormap[aid] || "#555", size: fontSize },
+      hoverinfo: "skip",
+    };
+  }).filter((trace) => trace.x.every(finite) && trace.y.every(finite) && trace.z.every(finite));
+}
+
+function associationLabelVerticalOffset(ranges) {
+  const range = ranges?.[2];
+  if (!Array.isArray(range) || !finite(range[0]) || !finite(range[1])) return 0;
+  return Math.max(0, Number(range[1]) - Number(range[0])) * 0.035;
+}
+
+function xyzuvwSunFontSize(showAxes) {
+  return showAxes ? 12 : 9;
 }
 
 function overlayTraces(axes, rows) {
@@ -622,18 +800,20 @@ function overlayTraces(axes, rows) {
   return traces;
 }
 
-function modelTraces(axes, colormap) {
-  const surfaceRows = xuvState.payload.modelSurfaces || xuvState.payload.model_surfaces || [];
+function modelTraces(axes, colormap, payload = xuvState.payload) {
+  const surfaceRows = payload?.modelSurfaces || payload?.model_surfaces || [];
   if (surfaceRows.length) {
+    const visibleModelLegends = new Set();
     return surfaceRows.map((surface) => {
       const aid = surface.moca_aid || "model";
-      const label = surface.label || `${Math.round(Number(surface.contour || 0) * 100)}%`;
       const color = colormap[aid] || "#555";
+      const showlegend = !visibleModelLegends.has(aid);
+      visibleModelLegends.add(aid);
       return {
         type: "mesh3d",
-        name: `${aid} model (${label})`,
+        name: `${aid} model`,
         legendgroup: `${aid}-model`,
-        showlegend: true,
+        showlegend,
         x: surface.x || [],
         y: surface.y || [],
         z: surface.z || [],
@@ -656,7 +836,7 @@ function modelTraces(axes, colormap) {
     { label: "68%", contour: 0.68, opacity: 0.3 },
   ];
   const modelsByAid = new Map();
-  for (const model of xuvState.payload.models || []) {
+  for (const model of payload?.models || []) {
     const aid = model.moca_aid;
     if (!aid) continue;
     if (!modelsByAid.has(aid)) modelsByAid.set(aid, []);
@@ -666,14 +846,17 @@ function modelTraces(axes, colormap) {
     const color = colormap[aid] || "#555";
     const grid = gmmDensityGrid(models, axes);
     if (!grid) continue;
+    let hasModelLegend = false;
     for (const level of levels) {
       const threshold = densityThreshold(grid.values, level.contour);
       if (!finite(threshold) || threshold <= 0 || threshold >= grid.maxValue) continue;
+      const showlegend = !hasModelLegend;
+      hasModelLegend = true;
       traces.push({
         type: "isosurface",
-        name: `${aid} model (${level.label})`,
-        legendgroup: `${aid}-model-${level.label}`,
-        showlegend: true,
+        name: `${aid} model`,
+        legendgroup: `${aid}-model`,
+        showlegend,
         x: grid.x,
         y: grid.y,
         z: grid.z,
@@ -801,15 +984,20 @@ function lerp(start, end, t) {
   return start + (end - start) * t;
 }
 
-function labelTraces(axes, colormap) {
-  const labels = xuvState.payload.labels || [];
+function labelTraces(axes, colormap, excludeAids = new Set(), showAxes = false, payload = xuvState.payload) {
+  const labels = payload?.labels || [];
   if (!labels.length) return [];
   const rows = labels.map((row) => ({
     ...row,
     plot0: Number(row[axes[0]]),
     plot1: Number(row[axes[1]]),
     plot2: Number(row[axes[2]]),
-  })).filter((row) => finite(row.plot0) && finite(row.plot1) && finite(row.plot2));
+  })).filter((row) => (
+    finite(row.plot0)
+    && finite(row.plot1)
+    && finite(row.plot2)
+    && !excludeAids.has(String(row.moca_aid || "Unassigned"))
+  ));
   if (!rows.length) return [];
   return [{
     type: "scatter3d",
@@ -819,7 +1007,7 @@ function labelTraces(axes, colormap) {
     y: rows.map((row) => row.plot1),
     z: rows.map((row) => row.plot2),
     text: rows.map((row) => row.moca_aid),
-    textfont: { color: rows.map((row) => colormap[row.moca_aid] || "#555"), size: 12 },
+    textfont: { color: rows.map((row) => colormap[row.moca_aid] || "#555"), size: xyzuvwSunFontSize(showAxes) },
     opacity: 0.45,
     hoverinfo: "skip",
   }];
@@ -856,9 +1044,152 @@ function errorTraces(axes, rows, colormap) {
   }));
 }
 
-function referenceTraces(axes) {
-  const origin = [0, 0, 0];
-  const traces = [{
+function cleanReferenceContext(axes, rows, traces) {
+  const plane = cleanReferencePlaneSpec(axes);
+  if (!plane) return { plane: null, radius: 0, majorRadii: [], minorRadii: [] };
+  const radius = plane.dynamicRadius ? cleanReferenceRadius(axes, rows, traces, plane) : plane.fallbackRadius;
+  return {
+    plane,
+    radius,
+    majorRadii: plane.majorRadii.filter((value) => referencePlanePlotRadius(plane, value) <= radius + 1e-9),
+    minorRadii: cleanMinorReferenceRadii(plane, radius),
+  };
+}
+
+function cleanReferencePlaneSpec(axes) {
+  if (axes.includes("x") && axes.includes("y")) {
+    return {
+      kind: "spatial",
+      axes: ["x", "y"],
+      labels: ["X", "Y"],
+      unit: "pc",
+      radiusScale: 1,
+      majorRadii: xuvCleanReferenceRadii,
+      fallbackRadius: Math.max(...xuvCleanReferenceRadii),
+      dynamicRadius: true,
+    };
+  }
+  if (axes.includes("u") && axes.includes("v")) {
+    return {
+      kind: "velocity",
+      axes: ["u", "v"],
+      labels: ["U", "V"],
+      unit: "km/s",
+      radiusScale: velocityReferenceScale(),
+      majorRadii: xuvCleanVelocityReferenceRadii,
+      fallbackRadius: Math.max(...xuvCleanVelocityReferenceRadii) * velocityReferenceScale(),
+      dynamicRadius: true,
+    };
+  }
+  return null;
+}
+
+function velocityReferenceScale() {
+  const scale = Number(xuvState.cValue);
+  return finite(scale) && scale > 0 ? scale : 1;
+}
+
+function cleanReferenceRadius(axes, rows, traces, plane) {
+  let radius = 0;
+  rows.forEach((row) => {
+    radius = Math.max(radius, referenceRadiusFromRow(row, axes, plane));
+  });
+  traces.forEach((trace) => {
+    radius = Math.max(radius, referenceRadiusFromTrace(trace, axes, plane));
+  });
+  const minRadius = referencePlanePlotRadius(plane, plane.majorRadii[0] || 10);
+  return finite(radius) && radius > 0 ? Math.max(minRadius, radius) : plane.fallbackRadius;
+}
+
+function cleanMinorReferenceRadii(plane, radius) {
+  if (!plane) return [];
+  if (plane.kind === "velocity") return cleanVelocityMinorReferenceRadii(plane, radius);
+  const majorRadii = new Set(plane.majorRadii);
+  const maxMinor = Math.floor((Number(radius) + 1e-9) / 100) * 100;
+  const radii = [];
+  for (let value = 200; value <= maxMinor; value += 100) {
+    if (!majorRadii.has(value)) radii.push(value);
+  }
+  return radii;
+}
+
+function cleanVelocityMinorReferenceRadii(plane, radius) {
+  const majorRadii = new Set(plane.majorRadii);
+  const maxMajor = Math.max(...plane.majorRadii);
+  const maxVelocity = Math.min(maxMajor, Math.floor((Number(radius) / referencePlanePlotRadius(plane, 1) + 1e-9) / 10) * 10);
+  const radii = [];
+  for (let value = 10; value <= maxVelocity; value += 10) {
+    if (!majorRadii.has(value)) radii.push(value);
+  }
+  return radii;
+}
+
+function spatialRadiusFromRow(row, axes) {
+  const values = ["x", "y", "z"].map((axis) => {
+    const plotIndex = axes.indexOf(axis);
+    if (plotIndex >= 0) return row[`plot${plotIndex}`];
+    return row[axis];
+  }).filter(finite).map(Number);
+  return values.length ? Math.hypot(...values) : 0;
+}
+
+function spatialRadiusFromTrace(trace, axes) {
+  if (!trace || !trace.x || !trace.y || !trace.z) return 0;
+  const arrays = [trace.x, trace.y, trace.z];
+  const length = Math.min(arrays[0].length || 0, arrays[1].length || 0, arrays[2].length || 0);
+  let radius = 0;
+  for (let index = 0; index < length; index += 1) {
+    const values = [];
+    axes.forEach((axis, axisIndex) => {
+      if (["x", "y", "z"].includes(axis) && finite(arrays[axisIndex][index])) {
+        values.push(Number(arrays[axisIndex][index]));
+      }
+    });
+    if (values.length) radius = Math.max(radius, Math.hypot(...values));
+  }
+  return radius;
+}
+
+function referenceRadiusFromRow(row, axes, plane) {
+  if (!plane) return 0;
+  if (plane.kind === "spatial") return spatialRadiusFromRow(row, axes);
+  const values = plane.axes.map((axis) => {
+    const plotIndex = axes.indexOf(axis);
+    if (plotIndex >= 0) return row[`plot${plotIndex}`];
+    return row[axis];
+  }).filter(finite).map(Number);
+  return values.length ? Math.hypot(...values) : 0;
+}
+
+function referenceRadiusFromTrace(trace, axes, plane) {
+  if (!plane) return 0;
+  if (plane.kind === "spatial") return spatialRadiusFromTrace(trace, axes);
+  if (!trace || !trace.x || !trace.y || !trace.z) return 0;
+  const arrays = [trace.x, trace.y, trace.z];
+  const length = Math.min(arrays[0].length || 0, arrays[1].length || 0, arrays[2].length || 0);
+  let radius = 0;
+  for (let index = 0; index < length; index += 1) {
+    const values = [];
+    axes.forEach((axis, axisIndex) => {
+      if (plane.axes.includes(axis) && finite(arrays[axisIndex][index])) {
+        values.push(Number(arrays[axisIndex][index]));
+      }
+    });
+    if (values.length) radius = Math.max(radius, Math.hypot(...values));
+  }
+  return radius;
+}
+
+function referencePlanePlotRadius(plane, radius) {
+  const scale = finite(plane?.radiusScale) ? Number(plane.radiusScale) : 1;
+  return Number(radius) * scale;
+}
+
+function referenceTraces(axes, showAxes, referenceContext = null) {
+  const context = referenceContext || cleanReferenceContext(axes, [], []);
+  const traces = [];
+  if (!showAxes && context.plane) traces.push(...xyPlaneReferencePlaneTraces(axes, context));
+  traces.push({
     type: "scatter3d",
     mode: "markers+text",
     name: "Sun",
@@ -867,34 +1198,149 @@ function referenceTraces(axes) {
     z: [0],
     text: ["Sun"],
     textposition: "top center",
-    marker: { color: "#111111", size: 5, symbol: "cross" },
+    textfont: { color: showAxes ? "#111111" : xuvCleanCircleColor, size: xyzuvwSunFontSize(showAxes) },
+    marker: { color: showAxes ? "#111111" : xuvCleanCircleColor, size: 5, symbol: "cross" },
+    showlegend: false,
     hoverinfo: "skip",
-  }];
+  });
   const hasSpatialOnly = axes.every((axis) => ["x", "y", "z"].includes(axis));
-  if (hasSpatialOnly) {
-    const radius = 25;
-    const circle = Array.from({ length: 97 }, (_value, index) => 2 * Math.PI * index / 96);
-    traces.push({
-      type: "scatter3d",
-      mode: "lines",
-      name: "25 pc",
-      x: circle.map((t) => radius * Math.cos(t)),
-      y: circle.map((t) => radius * Math.sin(t)),
-      z: circle.map(() => 0),
-      line: { color: "rgba(0,0,0,0.35)", width: 2 },
-      hoverinfo: "skip",
-    });
+  if (showAxes) {
+    if (hasSpatialOnly) traces.push(...xyPlaneCircleTraces(axes, [25], "rgba(0,0,0,0.35)", 2));
+  } else {
+    if (context.plane) {
+      traces.push(...xyPlaneAxisGuideTraces(axes, context));
+      traces.push(...xyPlaneCircleTraces(axes, context.minorRadii, xuvCleanMinorReferenceColor, 1, { labelRadii: false, showlegend: false, plane: context.plane }));
+      traces.push(...xyPlaneCircleTraces(axes, context.majorRadii, xuvCleanReferenceColor, 4, { labelRadii: true, showlegend: false, plane: context.plane }));
+    }
   }
   return traces;
 }
 
-function xyzuvwLayout(axes, rows, ranges = null) {
-  const axisRanges = ranges || cubicRange(rows);
-  const axisTitles = axes.map((axis) => `${axis.toUpperCase()} (${axisUnit(axis)})`);
+function xyPlaneAxisGuideTraces(axes, context) {
+  const { plane, radius } = context;
+  if (!plane) return [];
+  const axisGuides = plane.axes.map((axis, index) => ({ axis, label: plane.labels[index] }));
+  const verticalAxis = axes.find((axis) => !plane.axes.includes(axis));
+  if (verticalAxis) axisGuides.push({ axis: verticalAxis, label: verticalAxis.toUpperCase() });
+  return axisGuides.map((guide) => {
+    const coordinates = axes.map((axis) => {
+      if (axis === guide.axis) return [0, radius];
+      return [0, 0];
+    });
+    return {
+      type: "scatter3d",
+      mode: "lines+text",
+      name: `${guide.label} guide`,
+      showlegend: false,
+      x: coordinates[0],
+      y: coordinates[1],
+      z: coordinates[2],
+      text: ["", guide.label],
+      textposition: "top center",
+      textfont: { color: xuvCleanReferenceColor, size: 13 },
+      line: { color: xuvCleanReferenceColor, width: 2 },
+      hoverinfo: "skip",
+    };
+  });
+}
+
+function xyPlaneReferencePlaneTraces(axes, context) {
+  const { plane, radius } = context;
+  if (!plane || !plane.axes.every((axis) => axes.includes(axis))) return [];
+  const segments = 144;
+  const disk = [null];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = 2 * Math.PI * index / segments;
+    disk.push(angle);
+  }
+  const coordinates = axes.map((axis) => disk.map((angle) => {
+    if (angle === null) return 0;
+    return referencePlaneCoordinate(axis, plane, radius, angle);
+  }));
+  const triangles = Array.from({ length: segments }, (_value, index) => ({
+    i: 0,
+    j: index + 1,
+    k: index === segments - 1 ? 1 : index + 2,
+  }));
+  return [{
+    type: "mesh3d",
+    name: `${plane.labels.join("")} plane`,
+    showlegend: false,
+    x: coordinates[0],
+    y: coordinates[1],
+    z: coordinates[2],
+    i: triangles.map((triangle) => triangle.i),
+    j: triangles.map((triangle) => triangle.j),
+    k: triangles.map((triangle) => triangle.k),
+    color: xuvCleanPlaneColor,
+    opacity: 0.12,
+    flatshading: true,
+    hoverinfo: "skip",
+  }];
+}
+
+function xyPlaneCircleTraces(axes, radii, color, width, options = {}) {
+  const plane = options.plane || cleanReferencePlaneSpec(axes);
+  if (!plane || !plane.axes.every((axis) => axes.includes(axis)) || !radii.length) return [];
+  const labelRadii = options.labelRadii ?? radii.length > 1;
+  const circle = Array.from({ length: 145 }, (_value, index) => 2 * Math.PI * index / 144);
+  const traces = radii.map((radius) => {
+    const plotRadius = referencePlanePlotRadius(plane, radius);
+    const coordinates = axes.map((axis) => circle.map((angle) => referencePlaneCoordinate(axis, plane, plotRadius, angle)));
+    return {
+      type: "scatter3d",
+      mode: "lines",
+      name: `${radius} ${plane.unit}`,
+      x: coordinates[0],
+      y: coordinates[1],
+      z: coordinates[2],
+      line: { color, width },
+      showlegend: options.showlegend ?? radii.length === 1,
+      opacity: options.opacity ?? 1,
+      hoverinfo: "skip",
+    };
+  });
+  if (labelRadii) traces.push(xyPlaneCircleLabelTrace(axes, radii, color, plane));
+  return traces;
+}
+
+function xyPlaneCircleLabelTrace(axes, radii, color, plane) {
+  const labelAngle = -Math.PI / 2;
+  const coordinates = axes.map((axis) => radii.map((radius) => referencePlaneCoordinate(axis, plane, referencePlanePlotRadius(plane, radius), labelAngle)));
   return {
-    paper_bgcolor: "#eeeeef",
-    plot_bgcolor: "#ffffff",
-    margin: { l: 0, r: 0, t: 0, b: 0 },
+    type: "scatter3d",
+    mode: "text",
+    name: "Reference radius labels",
+    showlegend: false,
+    x: coordinates[0],
+    y: coordinates[1],
+    z: coordinates[2],
+    text: radii.map((radius) => `${radius} ${plane.unit}`),
+    textposition: "bottom center",
+    textfont: { color, size: 9 },
+    hoverinfo: "skip",
+  };
+}
+
+function referencePlaneCoordinate(axis, plane, radius, angle) {
+  if (axis === plane.axes[0]) return radius * Math.cos(angle);
+  if (axis === plane.axes[1]) return radius * Math.sin(angle);
+  return 0;
+}
+
+function xyzuvwLayout(axes, rows, ranges = null, showAxes = true, panelKey = "main") {
+  const axisRanges = ranges || xyzuvwRanges(axes, rows, showAxes, cleanReferenceContext(axes, rows, []));
+  const axisTitles = axes.map((axis) => `${axis.toUpperCase()} (${axisUnit(axis)})`);
+  const backgroundColor = showAxes ? "#eeeeef" : xuvCleanSceneBackground;
+  const annotations = showAxes ? cleanAxesWatermarkAnnotations(axes) : [];
+  const camera = xuvDualMode
+    ? (xuvState.panelCameras[panelKey] || xuvDefaultCamera)
+    : (xuvState.camera || xuvDefaultCamera);
+  return {
+    uirevision: `xyzuvw-view-${panelKey}`,
+    paper_bgcolor: backgroundColor,
+    plot_bgcolor: showAxes ? "#ffffff" : backgroundColor,
+    margin: showAxes ? { l: 18, r: 18, t: 18, b: 18 } : { l: 0, r: 0, t: 0, b: 0 },
     hovermode: "closest",
     legend: {
       orientation: "h",
@@ -902,54 +1348,102 @@ function xyzuvwLayout(axes, rows, ranges = null) {
       y: 0,
       xanchor: "right",
       x: 1,
-      bgcolor: "rgba(238,238,239,0.86)",
-      font: { size: 12 },
+      bgcolor: showAxes ? "rgba(238,238,239,0.86)" : "rgba(8,9,12,0.72)",
+      font: showAxes ? { size: 12 } : { size: 12, color: "#e8edf4" },
+      groupclick: "togglegroup",
     },
     scene: {
-      xaxis: sceneAxis(axisTitles[0], axisRanges[0]),
-      yaxis: sceneAxis(axisTitles[1], axisRanges[1]),
-      zaxis: sceneAxis(axisTitles[2], axisRanges[2]),
+      uirevision: `xyzuvw-scene-${panelKey}`,
+      bgcolor: showAxes ? "#ffffff" : backgroundColor,
+      xaxis: showAxes ? sceneAxis(axisTitles[0], axisRanges[0]) : cleanSceneAxis(axisRanges[0]),
+      yaxis: showAxes ? sceneAxis(axisTitles[1], axisRanges[1]) : cleanSceneAxis(axisRanges[1]),
+      zaxis: showAxes ? sceneAxis(axisTitles[2], axisRanges[2]) : cleanSceneAxis(axisRanges[2]),
       aspectmode: "data",
-      camera: xuvState.camera || xuvDefaultCamera,
+      camera,
     },
-    annotations: [
-      {
-        text: "MOCAdb",
-        x: 0,
-        y: 1,
-        xref: "paper",
-        yref: "paper",
-        showarrow: false,
-        align: "left",
-        font: { family: "Courier New, monospace", size: 16, color: "rgb(150,154,162)" },
-        opacity: 0.8,
-      },
-      {
-        text: `${axes.map((axis) => axis.toUpperCase()).join("")} Galactic coordinates`,
-        x: 0,
-        y: 0,
-        xref: "paper",
-        yref: "paper",
-        showarrow: false,
-        align: "left",
-        font: { family: "Courier New, monospace", size: 16, color: "rgb(150,154,162)" },
-        opacity: 0.8,
-      },
-    ],
+    annotations,
   };
+}
+
+function cleanAxesWatermarkAnnotations(axes) {
+  return [
+    {
+      text: "MOCAdb",
+      x: 0,
+      y: 1,
+      xref: "paper",
+      yref: "paper",
+      showarrow: false,
+      align: "left",
+      font: { family: "Courier New, monospace", size: 16, color: "rgb(150,154,162)" },
+      opacity: 0.8,
+    },
+    {
+      text: `${axes.map((axis) => axis.toUpperCase()).join("")} Galactic coordinates`,
+      x: 0,
+      y: 0,
+      xref: "paper",
+      yref: "paper",
+      showarrow: false,
+      align: "left",
+      font: { family: "Courier New, monospace", size: 16, color: "rgb(150,154,162)" },
+      opacity: 0.8,
+    },
+  ];
 }
 
 function sceneAxis(title, range) {
   return {
-    title: { text: title, font: { size: 18 } },
+    title: { text: title, font: { size: 18, color: "#111111" } },
+    titlefont: { size: 18, color: "#111111" },
     range,
     showspikes: false,
+    visible: true,
     showbackground: true,
     backgroundcolor: "#ffffff",
+    showgrid: true,
     gridcolor: "#e5e5e5",
+    zeroline: true,
     zerolinecolor: "#bdbdbd",
-    tickfont: { size: 11 },
+    showline: true,
+    linecolor: "#111111",
+    linewidth: 4,
+    showticklabels: true,
+    ticks: "outside",
+    tickcolor: "#111111",
+    tickfont: { size: 11, color: "#111111" },
   };
+}
+
+function cleanSceneAxis(range) {
+  return {
+    range,
+    visible: false,
+    showbackground: false,
+    showgrid: false,
+    zeroline: false,
+    showline: false,
+    showspikes: false,
+    showticklabels: false,
+    ticks: "",
+    title: { text: "" },
+  };
+}
+
+function xyzuvwRanges(axes, rows, showAxes, referenceContext = null) {
+  const ranges = cubicRange(rows);
+  return showAxes ? ranges : expandRangesForCleanReferences(axes, ranges, referenceContext);
+}
+
+function expandRangesForCleanReferences(axes, ranges, referenceContext = null) {
+  const plane = referenceContext?.plane || cleanReferencePlaneSpec(axes);
+  if (!plane) return ranges;
+  const maxRadius = referenceContext?.radius || plane.fallbackRadius;
+  return ranges.map((range, index) => {
+    const axis = axes[index];
+    if (plane.axes.includes(axis)) return [Math.min(range[0], -maxRadius), Math.max(range[1], maxRadius)];
+    return [Math.min(range[0], 0), Math.max(range[1], 0)];
+  });
 }
 
 function cubicRange(rows) {
@@ -967,47 +1461,141 @@ function cubicRange(rows) {
   return center.map((value) => [value - extent, value + extent]);
 }
 
-function bindXyzuvwPlotEvents() {
-  if (xuvEl["xuv-plot"].dataset.bound === "1" || typeof xuvEl["xuv-plot"].on !== "function") return;
-  xuvEl["xuv-plot"].dataset.bound = "1";
-  xuvEl["xuv-plot"].on("plotly_click", (event) => {
-    xuvState.selectedRows = (event?.points || []).map((point) => point.customdata).filter((row) => row && row.moca_oid);
-    renderXyzuvwTable();
+function selectXyzuvwPlotRows(rows) {
+  xuvState.selectedRows = (rows || []).filter((row) => row && normalizedMocaOid(row.moca_oid));
+  renderXyzuvwTable();
+}
+
+function bindXyzuvwPlotEvents(plotEl = xuvEl["xuv-plot"], panelKey = "main", axes = selectedAxes()) {
+  if (!plotEl || plotEl.dataset.bound === "1" || typeof plotEl.on !== "function") return;
+  plotEl.dataset.bound = "1";
+  plotEl.on("plotly_click", (event) => {
+    selectXyzuvwPlotRows((event?.points || []).map((point) => point.customdata));
   });
-  xuvEl["xuv-plot"].on("plotly_selected", (event) => {
-    xuvState.selectedRows = (event?.points || []).map((point) => point.customdata).filter((row) => row && row.moca_oid);
-    renderXyzuvwTable();
+  plotEl.on("plotly_selected", (event) => {
+    selectXyzuvwPlotRows((event?.points || []).map((point) => point.customdata));
   });
-  xuvEl["xuv-plot"].on("plotly_deselect", () => {
+  plotEl.on("plotly_deselect", () => {
     xuvState.selectedRows = [];
     renderXyzuvwTable();
   });
+  plotEl.on("plotly_relayout", (event) => {
+    updateXyzuvwCamera(event, panelKey);
+  });
+  plotEl.on("plotly_legendclick", () => {
+    preserveXyzuvwCameraAfterLegendToggle(plotEl, panelKey);
+  });
+  plotEl.on("plotly_legenddoubleclick", () => {
+    preserveXyzuvwCameraAfterLegendToggle(plotEl, panelKey);
+  });
+  plotEl.on("plotly_restyle", () => {
+    restorePendingXyzuvwCamera();
+  });
+  plotEl.dataset.axes = axes.join("");
+}
+
+function updateXyzuvwCamera(event, panelKey = "main") {
+  const directCamera = event?.["scene.camera"];
+  if (directCamera && typeof directCamera === "object") {
+    setStoredXyzuvwCamera(panelKey, directCamera);
+    return;
+  }
+  const current = clonePlainObject(storedXyzuvwCamera(panelKey));
+  let changed = false;
+  Object.entries(event || {}).forEach(([key, value]) => {
+    if (!key.startsWith("scene.camera.")) return;
+    const path = key.replace("scene.camera.", "").split(".");
+    let target = current;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const part = path[index];
+      if (!target[part] || typeof target[part] !== "object") target[part] = {};
+      target = target[part];
+    }
+    target[path[path.length - 1]] = value;
+    changed = true;
+  });
+  if (changed) setStoredXyzuvwCamera(panelKey, current);
+}
+
+function preserveXyzuvwCameraAfterLegendToggle(plotEl = xuvEl["xuv-plot"], panelKey = "main") {
+  const camera = currentXyzuvwCamera(plotEl, panelKey);
+  if (!camera) return;
+  setStoredXyzuvwCamera(panelKey, camera);
+  xuvState.pendingCameraRestore = { panelKey, camera: clonePlainObject(camera) };
+  window.setTimeout(restorePendingXyzuvwCamera, 0);
+  window.setTimeout(restorePendingXyzuvwCamera, 80);
+  window.setTimeout(() => {
+    xuvState.pendingCameraRestore = null;
+  }, 250);
+}
+
+function restorePendingXyzuvwCamera() {
+  const pending = xuvState.pendingCameraRestore;
+  if (!pending || typeof Plotly?.relayout !== "function") return;
+  const plotEl = plotForXyzuvwPanel(pending.panelKey);
+  if (!plotEl) return;
+  Plotly.relayout(plotEl, { "scene.camera": pending.camera });
+  setStoredXyzuvwCamera(pending.panelKey, pending.camera);
+}
+
+function currentXyzuvwCamera(plotEl = xuvEl["xuv-plot"], panelKey = "main") {
+  const camera = plotEl?._fullLayout?.scene?.camera || plotEl?.layout?.scene?.camera || storedXyzuvwCamera(panelKey);
+  return camera ? clonePlainObject(camera) : null;
+}
+
+function storedXyzuvwCamera(panelKey = "main") {
+  return xuvDualMode ? (xuvState.panelCameras[panelKey] || xuvDefaultCamera) : (xuvState.camera || xuvDefaultCamera);
+}
+
+function setStoredXyzuvwCamera(panelKey = "main", camera = xuvDefaultCamera) {
+  const cleanCamera = clonePlainObject(camera);
+  if (xuvDualMode) xuvState.panelCameras[panelKey] = cleanCamera;
+  else xuvState.camera = cleanCamera;
+}
+
+function plotForXyzuvwPanel(panelKey = "main") {
+  if (!xuvDualMode || panelKey === "main") return xuvEl["xuv-plot"];
+  const panel = xuvDualPanels.find((candidate) => candidate.key === panelKey);
+  return panel ? xuvEl[panel.plotId] : null;
+}
+
+function clonePlainObject(value) {
+  return JSON.parse(JSON.stringify(value || {}));
 }
 
 function renderXyzuvwTable() {
   const rows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows.slice(0, 500);
   xuvEl["xuv-table-title"].textContent = xuvState.selectedRows.length ? `${xuvState.selectedRows.length} selected objects` : "Displayed objects";
   xuvEl["xuv-table-subtitle"].textContent = xuvState.selectedRows.length ? "Click Open selected report for a single selected object." : "Showing the first 500 displayed rows.";
-  xuvEl["xuv-open-report"].disabled = xuvState.selectedRows.length !== 1;
+  xuvEl["xuv-open-report"].disabled = xuvState.selectedRows.length !== 1 || !mocaReportUrl(xuvState.selectedRows[0]?.moca_oid);
   if (!rows.length) {
     xuvEl["xuv-table"].innerHTML = `<div class="selection-table">No objects to display.</div>`;
     return;
   }
-  const axes = selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", axes[0], axes[1], axes[2], "ya_prob", "report"];
-  const tableRows = rows.map((row) => ({
-    moca_oid: Number(row.moca_oid).toFixed(0),
-    designation: row.designation || "",
-    moca_aid: row.moca_aid || "",
-    moca_mtid: row.moca_mtid || "",
-    spt: row.spt || "",
-    [axes[0]]: formatNumber(row.plot0, 2),
-    [axes[1]]: formatNumber(row.plot1, 2),
-    [axes[2]]: formatNumber(row.plot2, 2),
-    ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
-    report: `<a class="report-link" href="${mocaReportUrl(row.moca_oid)}" target="_blank" rel="noopener">Report</a>`,
-  }));
+  const axes = xuvDualMode ? ["x", "y", "z", "u", "v", "w"] : selectedAxes();
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "report"];
+  const tableRows = rows.map((row) => {
+    const reportUrl = mocaReportUrl(row.moca_oid);
+    const out = {
+      moca_oid: normalizedMocaOid(row.moca_oid),
+      designation: row.designation || "",
+      moca_aid: row.moca_aid || "",
+      moca_mtid: row.moca_mtid || "",
+      spt: row.spt || "",
+      ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+      report: reportUrl ? `<a class="report-link" href="${reportUrl}" target="_blank" rel="noopener">Report</a>` : "",
+    };
+    axes.forEach((axis, index) => {
+      out[axis] = formatNumber(tableAxisValue(row, axis, index), 2);
+    });
+    return out;
+  });
   xuvEl["xuv-table"].innerHTML = tableHtml(columns, tableRows, { htmlColumns: new Set(["report"]) });
+}
+
+function tableAxisValue(row, axis, index) {
+  if (!xuvDualMode && finite(row[`plot${index}`])) return row[`plot${index}`];
+  return rowValue(row, axis, xuvEl["xuv-assmem"].checked);
 }
 
 function renderEmptyXyzuvw(message) {
@@ -1029,10 +1617,20 @@ function renderEmptyXyzuvw(message) {
       font: { size: 18 },
     }],
   };
-  Plotly.react(xuvEl["xuv-plot"], [], layout, plotConfig("mocadb_xyzuvw_empty"));
+  if (xuvDualMode) {
+    xuvDualPanels.forEach((panel) => {
+      const panelLayout = {
+        ...layout,
+        annotations: [{ ...layout.annotations[0], text: `${panel.label}: ${message}` }],
+      };
+      if (xuvEl[panel.plotId]) Plotly.react(xuvEl[panel.plotId], [], panelLayout, plotConfig(`mocadb_xyz2_${panel.key}_empty`));
+    });
+  } else {
+    Plotly.react(xuvEl["xuv-plot"], [], layout, plotConfig("mocadb_xyzuvw_empty"));
+  }
   xuvEl["xuv-summary"].textContent = message;
   xuvEl["xuv-table"].innerHTML = "";
-  xuvEl["xuv-export-csv"].disabled = true;
+  setXyzuvwExportDisabled(true);
   setXyzuvwLoading(false);
 }
 
@@ -1194,6 +1792,7 @@ function hoverTextForRow(row) {
 }
 
 function selectedAxes() {
+  if (xuvDualMode) return ["x", "y", "z"];
   return [xuvEl["xuv-axis-1"].value, xuvEl["xuv-axis-2"].value, xuvEl["xuv-axis-3"].value];
 }
 
@@ -1209,9 +1808,10 @@ function associationColors(aids) {
   return out;
 }
 
-function buildXyzuvwParams() {
+function buildXyzuvwParams(axesOverride = null) {
   const params = apiParams();
-  params.set("axes", selectedAxes().join(""));
+  const axes = axesOverride || selectedAxes();
+  params.set("axes", axes.join(""));
   params.set("asso", xuvState.selectedAids.join(","));
   params.set("mtid", xuvState.selectedMtids.join(","));
   if (xuvState.selectedOids.length) params.set("oid", xuvState.selectedOids.join(","));
@@ -1235,7 +1835,8 @@ function checkboxValues() {
 
 function updateXyzuvwUrl() {
   const params = new URLSearchParams(window.location.search);
-  params.set("axes", selectedAxes().join(""));
+  if (xuvDualMode) params.delete("axes");
+  else params.set("axes", selectedAxes().join(""));
   if (xuvState.selectedAids.length) params.set("asso", xuvState.selectedAids.join(","));
   else params.delete("asso");
   params.delete("moca_aid");
@@ -1247,6 +1848,8 @@ function updateXyzuvwUrl() {
   params.delete("moca_oid");
   if (xuvEl["xuv-bsmdid"].value && xuvEl["xuv-bsmdid"].value !== "latest") params.set("bsmdid", xuvEl["xuv-bsmdid"].value);
   else params.delete("bsmdid");
+  if (xuvEl["xuv-show-axes"].checked) params.set("showaxes", "1");
+  else params.delete("showaxes");
   const checkbox = checkboxValues();
   if (checkbox.length) params.set("checkbox", checkbox.join(","));
   else params.delete("checkbox");
@@ -1256,34 +1859,53 @@ function updateXyzuvwUrl() {
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
 
-function exportXyzuvwCsv() {
+const xyzuvwNumericExportColumns = new Set(["moca_oid", "x", "y", "z", "u", "v", "w", "ya_prob", "dr3_ruwe"]);
+
+function exportXyzuvw(format) {
   const rows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows;
   if (!rows.length) return;
-  const axes = selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", axes[0], axes[1], axes[2], "ya_prob", "dr3_ruwe"];
-  const csvRows = rows.map((row) => [
-    Number(row.moca_oid).toFixed(0),
-    row.designation || "",
-    row.moca_aid || "",
-    row.moca_mtid || "",
-    row.spt || "",
-    row.plot0,
-    row.plot1,
-    row.plot2,
-    row.ya_prob ?? "",
-    row.dr3_ruwe ?? "",
-  ]);
-  const csv = [columns.join(","), ...csvRows.map((row) => row.map(csvCell).join(","))].join("\n");
-  downloadBlob(csv, "mocadb_xyzuvw_fast.csv", "text/csv;charset=utf-8");
+  const axes = xuvDualMode ? ["x", "y", "z", "u", "v", "w"] : selectedAxes();
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "dr3_ruwe"];
+  const exportRows = rows.map((row) => {
+    const out = {
+      moca_oid: normalizedMocaOid(row.moca_oid),
+      designation: row.designation || "",
+      moca_aid: row.moca_aid || "",
+      moca_mtid: row.moca_mtid || "",
+      spt: row.spt || "",
+      ya_prob: row.ya_prob ?? "",
+      dr3_ruwe: row.dr3_ruwe ?? "",
+    };
+    axes.forEach((axis, index) => {
+      out[axis] = tableAxisValue(row, axis, index);
+    });
+    return out;
+  });
+  MocaExport.saveTable(format, {
+    rows: exportRows,
+    columns,
+    numericColumns: xyzuvwNumericExportColumns,
+    filenameBase: "mocadb_xyzuvw_fast",
+    tableName: "mocadb_xyzuvw_fast",
+    resourceName: "MOCAdb Spatial-Kinematic Explorer",
+    extName: "XYZUVW",
+  });
+}
+
+function setXyzuvwExportDisabled(disabled) {
+  for (const id of ["xuv-export-csv", "xuv-export-tsv", "xuv-export-fits", "xuv-export-votable"]) {
+    if (xuvEl[id]) xuvEl[id].disabled = disabled;
+  }
 }
 
 function openSelectedXyzuvwReport() {
   if (xuvState.selectedRows.length !== 1) return;
-  window.open(mocaReportUrl(xuvState.selectedRows[0].moca_oid), "_blank", "noopener");
+  const url = mocaReportUrl(xuvState.selectedRows[0].moca_oid);
+  if (url) window.open(url, "_blank", "noopener");
 }
 
 async function clearXyzuvwCache() {
-  xuvEl["xuv-clear-cache"].disabled = true;
+  if (xuvEl["xuv-clear-cache"]) xuvEl["xuv-clear-cache"].disabled = true;
   xuvEl["xuv-clear-cache-bottom"].disabled = true;
   xuvEl["xuv-clear-cache-status"].textContent = "Clearing...";
   xuvEl["xuv-clear-cache-status"].classList.remove("error");
@@ -1298,7 +1920,7 @@ async function clearXyzuvwCache() {
     xuvEl["xuv-clear-cache-status"].textContent = error.message;
     xuvEl["xuv-clear-cache-status"].classList.add("error");
   } finally {
-    xuvEl["xuv-clear-cache"].disabled = false;
+    if (xuvEl["xuv-clear-cache"]) xuvEl["xuv-clear-cache"].disabled = false;
     xuvEl["xuv-clear-cache-bottom"].disabled = false;
   }
 }
@@ -1390,7 +2012,17 @@ function tableHtml(columns, rows, options = {}) {
 }
 
 function mocaReportUrl(oid) {
-  return `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(Number(oid).toFixed(0))}%29&search-type=star`;
+  const normalizedOid = normalizedMocaOid(oid);
+  return normalizedOid ? `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(normalizedOid)}%29&search-type=star` : "";
+}
+
+function normalizedMocaOid(oid) {
+  if (oid === null || oid === undefined) return "";
+  const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
 }
 
 function robustMedian(values) {
@@ -1414,6 +2046,18 @@ function parseInteger(value) {
 
 function asBool(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function cameraFromReferenceDistance(direction, distance) {
+  const length = Math.hypot(Number(direction.x), Number(direction.y), Number(direction.z));
+  const scale = finite(length) && length > 0 ? Number(distance) / length : 1;
+  return {
+    eye: {
+      x: Number(direction.x) * scale,
+      y: Number(direction.y) * scale,
+      z: Number(direction.z) * scale,
+    },
+  };
 }
 
 function formatNumber(value, digits) {

@@ -65,7 +65,7 @@ For a network-free smoke test, use:
 
 ```text
 http://127.0.0.1:8061/?mock=1
-http://127.0.0.1:8061/spectral-typing?mock=1&specid=602
+http://127.0.0.1:8061/spectral-typing?mock=1&specid=450
 http://127.0.0.1:8061/astrometry?mock=1&moca_oid=602
 http://127.0.0.1:8061/spectra?mock=1&moca_specid=13510
 http://127.0.0.1:8061/xyzuvw?mock=1&axes=xyz&asso=HYA,TWA
