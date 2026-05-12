@@ -546,6 +546,16 @@ def _read_sql(conn, sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
     return pd.read_sql_query(text(sql), conn, params=params or {})
 
 
+def _db_table_exists(conn, table_name: str) -> bool:
+    query = text("""
+        SELECT COUNT(*) AS n
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+            AND table_name = :table_name
+    """)
+    return int(conn.execute(query, {"table_name": table_name}).scalar() or 0) > 0
+
+
 def _selection_sql_parts(args: dict[str, Any]) -> tuple[str, dict[str, Any], str, bool, int | None]:
     range_clause, range_params, spt_label, include_photometric_spt, spt_min = _range_sql(args)
     object_limit = _object_limit(args, spt_min, include_photometric_spt)
@@ -3883,62 +3893,65 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     with engine.connect() as conn:
         started = time.time()
         frames: list[pd.DataFrame] = []
-        field_df = _read_sql(conn, f"""
-            SELECT
-                g.moca_oid,
-                COALESCE(mo.designation, field.designation) AS designation,
-                field.source_id,
-                'Field' AS sample,
-                NULL AS moca_aid,
-                NULL AS ya_prob,
-                0 AS highlighted,
-                CASE
-                    WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
-                        OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
-                    THEN 1 ELSE 0
-                END AS is_binary,
-                'pcat_gaiadr3_100pc_field' AS photometry_source,
-                field.ruwe,
-                1000 / field.parallax AS distance_pc,
-                1000 * field.parallax_error / (field.parallax * field.parallax) AS distance_pc_unc,
-                0 AS distance_photometric_estimate,
-                field.{x1_raw_col} AS x1_mag,
-                NULL AS x1_mag_unc,
-                field.{x2_raw_col} AS x2_mag,
-                NULL AS x2_mag_unc,
-                field.{y_raw_col} AS y_mag,
-                NULL AS y_mag_unc,
-                :x1_psid AS x1_psid,
-                :x2_psid AS x2_psid,
-                :y_psid AS y_psid,
-                field.{x1_raw_col} - field.{x2_raw_col} AS x,
-                field.{y_raw_col} - 5 * LOG10(1000 / field.parallax) + 5 AS y,
-                NULL AS x1_extinction_a,
-                NULL AS x2_extinction_a,
-                NULL AS y_extinction_a,
-                NULL AS x_original,
-                NULL AS y_original,
-                NULL AS age_myr,
-                CASE
-                    WHEN g.moca_oid IS NULL THEN NULL
-                    ELSE CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star')
-                END AS report_url
-            FROM pcat_gaiadr3_100pc_field field
-            LEFT JOIN cat_gaiadr3 g
-                ON g.source_id = field.source_id
-            LEFT JOIN moca_objects mo
-                ON mo.moca_oid = g.moca_oid
-            LEFT JOIN mechanics_object_properties_combined mopc
-                ON mopc.moca_oid = g.moca_oid
-            WHERE field.parallax IS NOT NULL
-                AND field.parallax > 0
-                AND (field.ruwe IS NULL OR field.ruwe < 1.4)
-                AND field.{x1_raw_col} IS NOT NULL
-                AND field.{x2_raw_col} IS NOT NULL
-                AND field.{y_raw_col} IS NOT NULL
-            LIMIT {selection["max_objects"]}
-        """, params)
-        frames.append(field_df)
+        field_table = "pcat_gaiadr3_100pc_field" if _is_private_db(args) else "cat_gaiadr3_100pc_field"
+        field_table_available = _db_table_exists(conn, field_table)
+        if field_table_available:
+            field_df = _read_sql(conn, f"""
+                SELECT
+                    g.moca_oid,
+                    COALESCE(mo.designation, field.designation) AS designation,
+                    field.source_id,
+                    'Field' AS sample,
+                    NULL AS moca_aid,
+                    NULL AS ya_prob,
+                    0 AS highlighted,
+                    CASE
+                        WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                            OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                        THEN 1 ELSE 0
+                    END AS is_binary,
+                    '{field_table}' AS photometry_source,
+                    field.ruwe,
+                    1000 / field.parallax AS distance_pc,
+                    1000 * field.parallax_error / (field.parallax * field.parallax) AS distance_pc_unc,
+                    0 AS distance_photometric_estimate,
+                    field.{x1_raw_col} AS x1_mag,
+                    NULL AS x1_mag_unc,
+                    field.{x2_raw_col} AS x2_mag,
+                    NULL AS x2_mag_unc,
+                    field.{y_raw_col} AS y_mag,
+                    NULL AS y_mag_unc,
+                    :x1_psid AS x1_psid,
+                    :x2_psid AS x2_psid,
+                    :y_psid AS y_psid,
+                    field.{x1_raw_col} - field.{x2_raw_col} AS x,
+                    field.{y_raw_col} - 5 * LOG10(1000 / field.parallax) + 5 AS y,
+                    NULL AS x1_extinction_a,
+                    NULL AS x2_extinction_a,
+                    NULL AS y_extinction_a,
+                    NULL AS x_original,
+                    NULL AS y_original,
+                    NULL AS age_myr,
+                    CASE
+                        WHEN g.moca_oid IS NULL THEN NULL
+                        ELSE CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star')
+                    END AS report_url
+                FROM {field_table} field
+                LEFT JOIN cat_gaiadr3 g
+                    ON g.source_id = field.source_id
+                LEFT JOIN moca_objects mo
+                    ON mo.moca_oid = g.moca_oid
+                LEFT JOIN mechanics_object_properties_combined mopc
+                    ON mopc.moca_oid = g.moca_oid
+                WHERE field.parallax IS NOT NULL
+                    AND field.parallax > 0
+                    AND (field.ruwe IS NULL OR field.ruwe < 1.4)
+                    AND field.{x1_raw_col} IS NOT NULL
+                    AND field.{x2_raw_col} IS NOT NULL
+                    AND field.{y_raw_col} IS NOT NULL
+                LIMIT {selection["max_objects"]}
+            """, params)
+            frames.append(field_df)
 
         if selection["associations"]:
             if selection["raw_gaia"]:
@@ -4343,7 +4356,8 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "truncated": len(rows) >= selection["max_objects"],
             "max_objects": selection["max_objects"],
             "query_seconds": query_seconds,
-            "field_table": "pcat_gaiadr3_100pc_field",
+            "field_table": field_table,
+            "field_table_available": field_table_available,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
