@@ -5,7 +5,7 @@ dash-core-components==2.0.0
 dash-html-components==2.0.0
 dash-table==5.0.0
 Flask==2.2.2
-greenlet==2.0.2
+greenlet==3.1.1
 gunicorn==20.1.0
 importlib-metadata==6.0.0
 itsdangerous==2.1.2
@@ -16,6 +16,8 @@ numpy==1.24.2
 pandas==1.4.4
 pandasql==0.7.3
 plotly==5.13.0
+playwright==1.48.0
+pyee==12.0.0
 PyAstronomy==0.22.0
 PyMySQL==1.0.2
 python-dateutil==2.8.2

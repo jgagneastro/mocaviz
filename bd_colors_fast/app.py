@@ -6900,6 +6900,22 @@ def xyzuvw_fast_page():
     return send_from_directory(STATIC_DIR, "xyzuvw.html")
 
 
+@app.get("/xyzuvw-three")
+@app.get("/xyzuvw_three")
+@app.get("/js/xyzuvw-three")
+@app.get("/js/xyzuvw_three")
+def xyzuvw_three_page():
+    return send_from_directory(STATIC_DIR, "xyzuvw_three.html")
+
+
+@app.get("/xyz2-three")
+@app.get("/xyz2_three")
+@app.get("/js/xyz2-three")
+@app.get("/js/xyz2_three")
+def xyz2_three_page():
+    return send_from_directory(STATIC_DIR, "xyz2_three.html")
+
+
 @app.get("/xyz2")
 @app.get("/js/xyz2")
 def xyz2_fast_page():
