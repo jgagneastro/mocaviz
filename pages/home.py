@@ -9,6 +9,8 @@ default_text = \
 " This web page contains several tools that will allow you to interactively explore the contents of the MOCA database." + \
 " You can also access the Python codes used to run these visualizations" + \
 " [on my GitHub](https://github.com/jgagneastro/mocaviz) and run them locally.\n\n" + \
+" These are legacy pages based on Dash apps. Faster JavaScript pages are available at " + \
+" [dataviz.mocadb.ca/js](https://dataviz.mocadb.ca/js).\n\n" + \
 " Please choose one of the following tools:\n" + \
 " * Explore the 3D XYZUVW spatial positions of MOCAdb data with the [MOCA spatial-kinematic explorer](/xyzuvw?#args#).\n" + \
 " * Explore hierarchical association structures with a [Sunburst graph](/group-hierarchy?#args#).\n" + \
