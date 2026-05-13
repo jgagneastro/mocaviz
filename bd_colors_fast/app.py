@@ -6886,40 +6886,64 @@ def spectra_fast_page():
     return send_from_directory(STATIC_DIR, "spectra.html")
 
 
+@app.get("/xyz")
+@app.get("/js/xyz")
+def xyzuvw_three_page():
+    return send_from_directory(STATIC_DIR, "xyzuvw_three.html")
+
+
+@app.get("/xyz-dual")
+@app.get("/xyz_dual")
+@app.get("/js/xyz-dual")
+@app.get("/js/xyz_dual")
+def xyz2_three_page():
+    return send_from_directory(STATIC_DIR, "xyz2_three.html")
+
+
+@app.get("/xyz-plotly")
+@app.get("/xyz_plotly")
+@app.get("/js/xyz-plotly")
+@app.get("/js/xyz_plotly")
+def xyzuvw_plotly_page():
+    return send_from_directory(STATIC_DIR, "xyzuvw.html")
+
+
+@app.get("/xyz-dual-plotly")
+@app.get("/xyz_dual_plotly")
+@app.get("/js/xyz-dual-plotly")
+@app.get("/js/xyz_dual_plotly")
+def xyz2_plotly_page():
+    return send_from_directory(STATIC_DIR, "xyz2.html")
+
+
 @app.get("/xyzuvw")
 @app.get("/xyzuvw-fast")
 @app.get("/xyzuvw_fast")
+@app.get("/xyzuvw-three")
+@app.get("/xyzuvw_three")
 @app.get("/spatial-kinematics")
 @app.get("/spatial-kinematics-fast")
 @app.get("/js/xyzuvw")
 @app.get("/js/xyzuvw-fast")
 @app.get("/js/xyzuvw_fast")
-@app.get("/js/spatial-kinematics")
-@app.get("/js/spatial-kinematics-fast")
-def xyzuvw_fast_page():
-    return send_from_directory(STATIC_DIR, "xyzuvw.html")
-
-
-@app.get("/xyzuvw-three")
-@app.get("/xyzuvw_three")
 @app.get("/js/xyzuvw-three")
 @app.get("/js/xyzuvw_three")
-def xyzuvw_three_page():
-    return send_from_directory(STATIC_DIR, "xyzuvw_three.html")
-
-
-@app.get("/xyz2-three")
-@app.get("/xyz2_three")
-@app.get("/js/xyz2-three")
-@app.get("/js/xyz2_three")
-def xyz2_three_page():
-    return send_from_directory(STATIC_DIR, "xyz2_three.html")
+@app.get("/js/spatial-kinematics")
+@app.get("/js/spatial-kinematics-fast")
+def xyzuvw_legacy_redirect():
+    path = "/js/xyz" if request.path.startswith("/js/") else "/xyz"
+    return _redirect_with_query(path)
 
 
 @app.get("/xyz2")
 @app.get("/js/xyz2")
-def xyz2_fast_page():
-    return send_from_directory(STATIC_DIR, "xyz2.html")
+@app.get("/xyz2-three")
+@app.get("/xyz2_three")
+@app.get("/js/xyz2-three")
+@app.get("/js/xyz2_three")
+def xyz2_legacy_redirect():
+    path = "/js/xyz-dual" if request.path.startswith("/js/") else "/xyz-dual"
+    return _redirect_with_query(path)
 
 
 def _redirect_with_query(path: str):
