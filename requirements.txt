@@ -11,6 +11,7 @@ importlib-metadata==6.0.0
 itsdangerous==2.1.2
 Jinja2==3.1.2
 MarkupSafe==2.1.2
+matplotlib==3.7.1
 mocapy @ git+https://github.com/jgagneastro/mocapy.git@cffd2ea747489cc335feefe06ed3ce119dc93a00
 numpy==1.24.2
 pandas==1.4.4
