@@ -7333,10 +7333,10 @@ RVBAM_DEFAULT_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_MAX_SAMPLES", "18
 RVBAM_HARD_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_HARD_MAX_SAMPLES", "8000"))
 RVBAM_ARRAY_CACHE_SECONDS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_SECONDS", "900"))
 RVBAM_ARRAY_CACHE_MAX_ITEMS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_ITEMS", "8"))
-RVBAM_PACKAGE_DIR = Path(os.environ.get(
-    "RVBAM_PACKAGE_DIR",
-    "/Users/jonathan/Documents/Python/Python_Packages/rvbam",
-))
+RVBAM_VENDOR_PACKAGE_DIR = BASE_DIR / "vendor"
+RVBAM_SOURCE_PACKAGE_DIR = Path("/Users/jonathan/Documents/Python/Python_Packages/rvbam")
+RVBAM_DEFAULT_PACKAGE_DIR = RVBAM_VENDOR_PACKAGE_DIR if (RVBAM_VENDOR_PACKAGE_DIR / "rvbam").is_dir() else RVBAM_SOURCE_PACKAGE_DIR
+RVBAM_PACKAGE_DIR = Path(os.environ.get("RVBAM_PACKAGE_DIR") or str(RVBAM_DEFAULT_PACKAGE_DIR))
 RVBAM_LOCAL_MODEL_DIR = Path(os.environ.get(
     "RVBAM_MODEL_GRID_HDF5_DIR",
     "/Volumes/T3_EXT/model_grids_hdf5",
@@ -7353,9 +7353,22 @@ RVBAM_REQUIRED_TABLES = (
 def _prepare_rvbam_imports() -> None:
     import sys
 
-    rvbam_path = str(RVBAM_PACKAGE_DIR)
-    if rvbam_path not in sys.path:
-        sys.path.insert(0, rvbam_path)
+    candidates = [RVBAM_PACKAGE_DIR, RVBAM_VENDOR_PACKAGE_DIR, RVBAM_SOURCE_PACKAGE_DIR]
+    seen: set[Path] = set()
+    existing_candidates: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in seen or not (resolved / "rvbam").is_dir():
+            continue
+        seen.add(resolved)
+        existing_candidates.append(resolved)
+
+    for package_dir in reversed(existing_candidates):
+        rvbam_path = str(package_dir)
+        if rvbam_path not in sys.path:
+            sys.path.insert(0, rvbam_path)
+
+    active_package_dir = existing_candidates[0] if existing_candidates else RVBAM_PACKAGE_DIR
 
     if sys.version_info >= (3, 10):
         return
@@ -7376,9 +7389,11 @@ def _prepare_rvbam_imports() -> None:
             setattr(parent_module, attr_name, module)
         return module
 
-    ensure_package("rvbam", RVBAM_PACKAGE_DIR / "rvbam")
-    ensure_package("rvbam.grid", RVBAM_PACKAGE_DIR / "rvbam" / "grid")
-    ensure_package("rvbam.db", RVBAM_PACKAGE_DIR / "rvbam" / "db")
+    ensure_package("rvbam", active_package_dir / "rvbam")
+    ensure_package("rvbam.grid", active_package_dir / "rvbam" / "grid")
+    ensure_package("rvbam.db", active_package_dir / "rvbam" / "db")
+    ensure_package("rvbam.model", active_package_dir / "rvbam" / "model")
+    ensure_package("rvbam.plots", active_package_dir / "rvbam" / "plots")
 
     for module_name, relative_path in (
         ("rvbam.grid.axes", "rvbam/grid/axes.py"),
@@ -7386,7 +7401,7 @@ def _prepare_rvbam_imports() -> None:
     ):
         if module_name in sys.modules:
             continue
-        path = RVBAM_PACKAGE_DIR / relative_path
+        path = active_package_dir / relative_path
         if not path.is_file():
             continue
         parent_name, _, attr_name = module_name.rpartition(".")
