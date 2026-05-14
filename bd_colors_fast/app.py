@@ -7368,10 +7368,11 @@ RVBAM_VENDOR_PACKAGE_DIR = BASE_DIR / "vendor"
 RVBAM_SOURCE_PACKAGE_DIR = Path("/Users/jonathan/Documents/Python/Python_Packages/rvbam")
 RVBAM_DEFAULT_PACKAGE_DIR = RVBAM_VENDOR_PACKAGE_DIR if (RVBAM_VENDOR_PACKAGE_DIR / "rvbam").is_dir() else RVBAM_SOURCE_PACKAGE_DIR
 RVBAM_PACKAGE_DIR = Path(os.environ.get("RVBAM_PACKAGE_DIR") or str(RVBAM_DEFAULT_PACKAGE_DIR))
-RVBAM_LOCAL_MODEL_DIR = Path(os.environ.get(
-    "RVBAM_MODEL_GRID_HDF5_DIR",
-    "/Volumes/T3_EXT/model_grids_hdf5",
-))
+RVBAM_DEFAULT_LOCAL_MODEL_DIRS = (
+    Path(os.environ.get("RVBAM_MODEL_GRID_HDF5_DIR", "/Volumes/T3_ext/model_grids_hdf5")),
+    Path("/Volumes/T3_EXT/model_grids_hdf5"),
+    Path("/Users/jonathan/Documents/Planetarium_Projects/Science/model_grids_hdf5"),
+)
 RVBAM_REBUILT_FIT_AUTO_SCALE_VERSION = "rvbam-diagnostic-v1"
 RVBAM_REBUILT_FIT_LOG_OVERSAMPLE = 10.0
 RVBAM_REBUILT_FIT_CONV_GRID = "data"
@@ -7382,6 +7383,31 @@ RVBAM_REQUIRED_TABLES = (
     "pcat_sampling_parameters",
     "pcat_sampling_payloads",
 )
+
+
+def _rvbam_model_grid_dirs_from_env() -> list[Path]:
+    raw = os.environ.get("RVBAM_MODEL_GRID_HDF5_DIRS", "")
+    return [Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip()]
+
+
+def _rvbam_unique_paths(paths: list[Path] | tuple[Path, ...]) -> tuple[Path, ...]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        expanded = Path(path).expanduser()
+        key = os.path.normcase(str(expanded))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(expanded)
+    return tuple(out)
+
+
+RVBAM_LOCAL_MODEL_DIRS = _rvbam_unique_paths([
+    *_rvbam_model_grid_dirs_from_env(),
+    *RVBAM_DEFAULT_LOCAL_MODEL_DIRS,
+])
+RVBAM_LOCAL_MODEL_DIR = RVBAM_LOCAL_MODEL_DIRS[0]
 
 
 def _prepare_rvbam_imports() -> None:
@@ -7494,17 +7520,18 @@ def _rvbam_available_columns(conn, table_name: str) -> set[str]:
 def _rvbam_local_model_candidates(moca_mgridid: Any, template_name: Any = None) -> list[Path]:
     candidates: list[Path] = []
     seen: set[str] = set()
+    roots = RVBAM_LOCAL_MODEL_DIRS
 
     def add(path: Path | str | None) -> None:
         if path is None:
             return
         candidate = Path(path).expanduser()
-        if not candidate.is_absolute():
-            candidate = RVBAM_LOCAL_MODEL_DIR / candidate
-        key = str(candidate)
-        if key not in seen:
-            seen.add(key)
-            candidates.append(candidate)
+        paths = [candidate] if candidate.is_absolute() else [root / candidate for root in roots]
+        for item in paths:
+            key = os.path.normcase(str(item))
+            if key not in seen:
+                seen.add(key)
+                candidates.append(item)
 
     for raw in (moca_mgridid, template_name):
         text_value = str(raw or "").strip()
@@ -7526,18 +7553,29 @@ def _rvbam_local_model_candidates(moca_mgridid: Any, template_name: Any = None) 
     return candidates
 
 
+def _rvbam_model_base_dir_for_status(status: dict[str, Any]) -> Path:
+    for key in ("model_base_dir", "base_dir"):
+        value = str(status.get(key) or "").strip()
+        if value:
+            return Path(value).expanduser()
+    return RVBAM_LOCAL_MODEL_DIR
+
+
 def _rvbam_local_model_status(moca_mgridid: Any, template_name: Any = None) -> dict[str, Any]:
     import importlib.util
 
     mgridid = str(moca_mgridid or "").strip()
-    base_exists = RVBAM_LOCAL_MODEL_DIR.is_dir()
+    existing_base_dirs = [path for path in RVBAM_LOCAL_MODEL_DIRS if path.is_dir()]
+    configured_base_exists = bool(existing_base_dirs)
     candidates = _rvbam_local_model_candidates(moca_mgridid, template_name)
     model_path = next((path for path in candidates if path.is_file()), candidates[0] if candidates else None)
     model_exists = bool(model_path and model_path.is_file())
+    model_base_dir = model_path.parent if model_exists and model_path is not None else (existing_base_dirs[0] if existing_base_dirs else RVBAM_LOCAL_MODEL_DIR)
+    base_exists = configured_base_exists or model_exists
     h5py_available = importlib.util.find_spec("h5py") is not None
     available = bool(base_exists and model_exists and h5py_available)
-    if not base_exists:
-        message = "Local RVBAM HDF5 model directory is not available on this server."
+    if not configured_base_exists and not model_exists:
+        message = "No configured local RVBAM HDF5 model directories are available on this server."
     elif not model_exists:
         message = "Local RVBAM HDF5 model file is not available on this server."
     elif not h5py_available:
@@ -7546,8 +7584,11 @@ def _rvbam_local_model_status(moca_mgridid: Any, template_name: Any = None) -> d
         message = ""
     return {
         "available": available,
-        "base_dir": str(RVBAM_LOCAL_MODEL_DIR),
+        "base_dir": str(model_base_dir),
+        "base_dirs": [str(path) for path in RVBAM_LOCAL_MODEL_DIRS],
+        "existing_base_dirs": [str(path) for path in existing_base_dirs],
         "base_exists": base_exists,
+        "model_base_dir": str(model_base_dir),
         "model_file": str(model_path) if model_path else "",
         "model_exists": model_exists,
         "h5py_available": h5py_available,
@@ -9920,7 +9961,7 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
         store = LocalHdf5ModelStore(
             conn,
             str(row["moca_mgridid"]),
-            config=LocalModelConfig(base_dir=RVBAM_LOCAL_MODEL_DIR),
+            config=LocalModelConfig(base_dir=_rvbam_model_base_dir_for_status(status)),
             use_db_file_index=False,
         )
         par_list, axes, tuple_to_fileid = store.load_grid_index()
@@ -11428,6 +11469,7 @@ def rvbam_explorer_segment_rebuilt_fit(segment_id: int):
                 "python_version": sys.version,
                 "rvbam_package_dir": str(RVBAM_PACKAGE_DIR),
                 "rvbam_model_grid_hdf5_dir": str(RVBAM_LOCAL_MODEL_DIR),
+                "rvbam_model_grid_hdf5_dirs": [str(path) for path in RVBAM_LOCAL_MODEL_DIRS],
             })
         return jsonify({
             "ok": False,
