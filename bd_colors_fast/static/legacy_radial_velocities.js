@@ -170,6 +170,7 @@ function ensureDatasetOption(dataset) {
 }
 
 async function loadLegacyRvData() {
+  updateLegacyRvUrl();
   const dataset = lrvEl["lrv-dataset"].value || lrvState.requestedDataset;
   if (!dataset) {
     renderEmptyLegacyRv("No dataset selected");

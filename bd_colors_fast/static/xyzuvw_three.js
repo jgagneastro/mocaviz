@@ -22,12 +22,15 @@ const xuvDefaultMtids = ["BF", "HM", "CM"];
 const xuvDefaultAxes = ["x", "y", "z"];
 const xuvCleanReferenceRadii = [10, 100, 1000];
 const xuvCleanVelocityReferenceRadii = [10, 50, 100];
+const xuvCleanVelocityMaxReferenceRadius = 100;
 const xuvCleanSceneBackground = "#08090c";
 const xuvCleanCircleColor = "#00a8ff";
 const xuvCleanReferenceColor = "#00a8ff";
 const xuvCleanPlaneColor = "#73c9ff";
 const xuvMemberPointSize = 4.4;
 const xuvOverlayPointRadius = 4.8;
+const xuvHighlightSizeScale = 0.4;
+const xuvHighlightLineWidth = 1.0;
 const xuvDataPointOpacity = 0.7;
 const xuvSelectionColor = "#ffd21a";
 const xuvHighlightMarkerColor = "#ffea00";
@@ -77,6 +80,7 @@ const xuvState = {
   lastCameraAxes: "",
   pointerDown: null,
   selectionMarkerRadius: 7,
+  threeUnavailable: false,
   threePanels: [],
   panelPayloads: {},
   three: {
@@ -111,8 +115,18 @@ async function initXyzuvwThree() {
   collectXyzuvwElements();
   populateAxisSelects();
   readXyzuvwUrlState();
-  setupThreeScene();
   bindXyzuvwControls();
+  try {
+    setupThreeScene();
+  } catch (error) {
+    xuvState.threeUnavailable = true;
+    console.error(error);
+    setXyzuvwStatus("WebGL context unavailable; URL controls remain active", "error");
+    setXyzuvwLoading(false);
+    renderOidChips();
+    updateXyzuvwUrl();
+    return;
+  }
   renderOidChips();
   await loadXyzuvwOptions();
   await loadXyzuvwData();
@@ -555,6 +569,12 @@ async function loadXyzuvwOptions() {
 
 async function loadXyzuvwData() {
   syncGalaxyBackgroundControl();
+  updateXyzuvwUrl();
+  if (xuvState.threeUnavailable) {
+    setXyzuvwStatus("WebGL context unavailable; URL controls remain active", "error");
+    setXyzuvwLoading(false);
+    return;
+  }
   if (!xuvState.selectedAids.length || !xuvState.selectedMtids.length) {
     renderEmptyXyzuvw("Select at least one association and membership type");
     return;
@@ -678,8 +698,9 @@ function renderXyzuvwThreePanel(payload, forceCamera = false) {
   const modelSurfaces = xuvEl["xuv-models"].checked ? (xuvState.payload.modelSurfaces || xuvState.payload.model_surfaces || []) : [];
   const colormap = xyzuvwAssociationColors([payload], rows);
   const bounds = sceneBounds(axes, displayedRows, modelSurfaces);
-  const referenceContext = cleanReferenceContext(axes, displayedRows, modelSurfaces);
+  const referenceContext = cleanReferenceContext(axes, displayedRows);
   xuvState.selectionMarkerRadius = Math.max(4, Math.min(14, bounds.radius * 0.012));
+  xuvState.three.bounds = bounds;
 
   xuvState.three.scene.background = new THREE.Color(showAxes ? "#eeeeef" : xuvCleanSceneBackground);
   ensureGalaxyBackground();
@@ -766,12 +787,14 @@ function addOverlayObjects(rows, showAxes = false) {
   rows.forEach((row) => {
     if (row.rvLine) {
       const points = row.rvLine.x.map((value, index) => new THREE.Vector3(value, row.rvLine.y[index], row.rvLine.z[index]));
-      const line = lineFromPoints(points, "#f8f8f8", 2.5, 0.9);
+      const line = lineFromPoints(points, "#f8f8f8", xuvHighlightLineWidth, 0.9);
       line.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight-line", row };
       xuvState.three.dataGroup.add(line);
       return;
     }
-    xuvState.three.dataGroup.add(highlightObjectMarker(row, showAxes));
+    const marker = highlightObjectMarker(row, showAxes);
+    xuvState.three.dataGroup.add(marker);
+    xuvState.three.pickObjects.push(marker);
   });
 }
 
@@ -782,9 +805,10 @@ function highlightObjectMarker(row, showAxes = false) {
   marker.renderOrder = 900;
 
   const color = showAxes ? "#000000" : xuvHighlightMarkerColor;
-  const radius = Math.max(xuvOverlayPointRadius * 1.35, xuvState.selectionMarkerRadius * 0.75);
-  const axisLength = Math.max(radius * 5.2, xuvState.selectionMarkerRadius * 4.2);
-  const axisRadius = Math.max(0.56, radius * 0.12);
+  const baseRadius = Math.max(xuvOverlayPointRadius * 1.35, xuvState.selectionMarkerRadius * 0.75);
+  const radius = baseRadius * xuvHighlightSizeScale;
+  const axisLength = Math.max(baseRadius * 5.2, xuvState.selectionMarkerRadius * 4.2) * xuvHighlightSizeScale;
+  const axisRadius = Math.max(0.22, baseRadius * 0.12 * xuvHighlightSizeScale);
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 24, 16),
     new THREE.MeshBasicMaterial({
@@ -1371,18 +1395,55 @@ function onThreePointerUp(event) {
   const dx = event.clientX - xuvState.pointerDown.x;
   const dy = event.clientY - xuvState.pointerDown.y;
   xuvState.pointerDown = null;
-  if (pointerDown.button !== 0 || event.button !== 0) return;
+  if (pointerDown.panelKey !== xuvState.three?.key) return;
   if (Math.hypot(dx, dy) > 4) return;
+  if (pointerDown.button === 2 && event.button === 2) {
+    centerCameraOnPickedPoint(event);
+    return;
+  }
+  if (pointerDown.button !== 0 || event.button !== 0) return;
   const hit = pickThreePoint(event);
   if (!hit) {
     xuvState.selectedRows = [];
   } else {
-    const rows = hit.object.userData?.rows || [];
-    const row = rows[hit.index];
+    const row = rowFromPickHit(hit);
     xuvState.selectedRows = row ? [row] : [];
   }
   renderSelectedMarkers();
   renderXyzuvwTable();
+}
+
+function centerCameraOnPickedPoint(event) {
+  const hit = pickThreePoint(event);
+  const row = rowFromPickHit(hit);
+  const position = plotPositionForRow(row);
+  if (!position) return false;
+  centerCurrentThreePanelCameraOn(position);
+  return true;
+}
+
+function plotPositionForRow(row) {
+  if (!row || ![row.plot0, row.plot1, row.plot2].every(finite)) return null;
+  return new THREE.Vector3(Number(row.plot0), Number(row.plot1), Number(row.plot2));
+}
+
+function centerCurrentThreePanelCameraOn(target) {
+  const panel = xuvState.three;
+  const { camera, controls } = panel;
+  if (!camera || !controls || !target) return;
+  let offset = camera.position.clone().sub(controls.target);
+  if (offset.lengthSq() <= 1e-8) {
+    const radius = Math.max(20, panel.bounds?.radius || 500);
+    offset = new THREE.Vector3(1.25, -1.55, 0.9).normalize().multiplyScalar(Math.max(500, radius * 1.65));
+  }
+  const dampingEnabled = controls.enableDamping;
+  controls.enableDamping = false;
+  controls.target.copy(target);
+  camera.position.copy(target).add(offset);
+  controls.update();
+  controls.enableDamping = dampingEnabled;
+  updateGalaxyBackground();
+  updateCameraTargetMarker();
 }
 
 function onThreePointerMove(event) {
@@ -1395,7 +1456,7 @@ function onThreePointerMove(event) {
     hideThreeTooltip();
     return;
   }
-  const row = (hit.object.userData?.rows || [])[hit.index];
+  const row = rowFromPickHit(hit);
   if (!row) {
     hideThreeTooltip();
     return;
@@ -1420,8 +1481,20 @@ function pickThreePoint(event) {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const intersections = raycaster.intersectObjects(pickObjects.filter((object) => object.visible), false);
+  const intersections = raycaster.intersectObjects(pickObjects.filter((object) => object.visible), true);
   return intersections.length ? intersections[0] : null;
+}
+
+function rowFromPickHit(hit) {
+  if (!hit?.object) return null;
+  const rows = hit.object.userData?.rows;
+  if (rows?.length && Number.isInteger(hit.index)) return rows[hit.index] || null;
+  let object = hit.object;
+  while (object) {
+    if (object.userData?.row) return object.userData.row;
+    object = object.parent;
+  }
+  return null;
 }
 
 function createPointTexture() {
@@ -1459,6 +1532,7 @@ function renderXyzuvwHint() {
   if (isGalaxyBackgroundActive()) {
     lines.push("Galaxy background image: ESO/S. Brunier.");
   }
+  lines.push("Right-click a plotted star to center the camera on it.");
   lines.push("Legend toggles are handled in Three.js without resetting the camera.");
   xuvEl["xuv-hint-text"].innerHTML = lines.map(escapeHtml).join("<br>");
 }
@@ -1476,18 +1550,24 @@ function recenterXyzuvwCameraOnSun() {
 }
 
 function recenterCurrentThreePanelOnSun() {
-  const { camera, controls } = xuvState.three;
+  const panel = xuvState.three;
+  const { camera, controls } = panel;
   if (!camera || !controls) return;
   const sun = new THREE.Vector3(0, 0, 0);
   let offset = camera.position.clone().sub(controls.target);
-  if (offset.lengthSq() <= 0) {
-    offset = new THREE.Vector3(1.25, -1.55, 0.9).normalize().multiplyScalar(500);
-  }
+  const direction = offset.lengthSq() > 1e-8
+    ? offset.normalize()
+    : new THREE.Vector3(1.25, -1.55, 0.9).normalize();
+  const radius = Math.max(20, panel.bounds?.radius || 500);
+  const distance = Math.max(500, radius * 1.65);
   const dampingEnabled = controls.enableDamping;
   controls.enableDamping = false;
-  controls.update();
+  camera.up.set(0, 0, 1);
   controls.target.copy(sun);
-  camera.position.copy(sun).add(offset);
+  camera.position.copy(sun).add(direction.multiplyScalar(distance));
+  camera.near = Math.max(0.1, distance / 10000);
+  camera.far = Math.max(20000, distance * 12);
+  camera.updateProjectionMatrix();
   controls.update();
   controls.enableDamping = dampingEnabled;
   updateGalaxyBackground();
@@ -1544,10 +1624,10 @@ function tableAxisValueForAxes(row, axes, axis, plotIndex) {
   return rowValue(row, axis, xuvEl["xuv-assmem"].checked);
 }
 
-function cleanReferenceContext(axes, rows, modelSurfaces) {
+function cleanReferenceContext(axes, rows) {
   const plane = cleanReferencePlaneSpec(axes);
   if (!plane) return { plane: null, radius: 0, majorRadii: [], minorRadii: [] };
-  const radius = cleanReferenceRadius(axes, rows, modelSurfaces, plane);
+  const radius = cleanReferenceRadius(axes, rows, plane);
   return {
     plane,
     radius,
@@ -1582,36 +1662,18 @@ function cleanReferencePlaneSpec(axes) {
   return null;
 }
 
-function cleanReferenceRadius(axes, rows, modelSurfaces, plane) {
+function cleanReferenceRadius(axes, rows, plane) {
   let radius = 0;
   rows.forEach((row) => {
-    const values = plane.axes.map((axis) => {
-      const plotIndex = axes.indexOf(axis);
-      if (plotIndex >= 0) return row[`plot${plotIndex}`];
-      return row[axis];
-    }).filter(finite).map(Number);
-    if (values.length) radius = Math.max(radius, Math.hypot(...values));
-  });
-  (modelSurfaces || []).forEach((surface) => {
-    const arrays = [surface.x || [], surface.y || [], surface.z || []];
-    const length = Math.min(arrays[0].length, arrays[1].length, arrays[2].length);
-    for (let index = 0; index < length; index += 1) {
-      const values = [];
-      axes.forEach((axis, axisIndex) => {
-        if (plane.axes.includes(axis) && finite(arrays[axisIndex][index])) values.push(Number(arrays[axisIndex][index]));
-      });
-      if (values.length) radius = Math.max(radius, Math.hypot(...values));
-    }
+    radius = Math.max(radius, referenceRadiusFromRow(row, axes, plane));
   });
   if (!finite(radius) || radius <= 0) return plane.fallbackRadius;
-  const minRadius = referencePlanePlotRadius(plane, plane.majorRadii[0] || 10);
-  if (plane.kind === "velocity") {
-    const scale = referencePlanePlotRadius(plane, 1);
-    const velocityRadius = Math.ceil((radius / scale) / 10) * 10;
-    return Math.max(minRadius, velocityRadius * scale);
-  }
-  if (radius <= 100) return Math.max(minRadius, Math.ceil(radius / 10) * 10);
-  return Math.max(minRadius, Math.ceil(radius / 100) * 100);
+  return cleanReferenceRadiusLimit(plane, radius);
+}
+
+function cleanReferenceRadiusLimit(plane, radius) {
+  if (plane?.kind !== "velocity") return radius;
+  return Math.min(radius, referencePlanePlotRadius(plane, xuvCleanVelocityMaxReferenceRadius));
 }
 
 function cleanMinorReferenceRadii(plane, radius) {
@@ -1628,12 +1690,23 @@ function cleanMinorReferenceRadii(plane, radius) {
 
 function cleanVelocityMinorReferenceRadii(plane, radius) {
   const majorRadii = new Set(plane.majorRadii);
-  const maxVelocity = Math.floor((Number(radius) / referencePlanePlotRadius(plane, 1) + 1e-9) / 10) * 10;
+  const maxMajor = Math.max(...plane.majorRadii);
+  const maxVelocity = Math.min(maxMajor, Math.floor((Number(radius) / referencePlanePlotRadius(plane, 1) + 1e-9) / 10) * 10);
   const radii = [];
   for (let value = 10; value <= maxVelocity; value += 10) {
     if (!majorRadii.has(value)) radii.push(value);
   }
   return radii;
+}
+
+function referenceRadiusFromRow(row, axes, plane) {
+  if (!plane) return 0;
+  const values = plane.axes.map((axis) => {
+    const plotIndex = axes.indexOf(axis);
+    if (plotIndex >= 0) return row[`plot${plotIndex}`];
+    return row[axis];
+  }).filter(finite).map(Number);
+  return values.length ? Math.hypot(...values) : 0;
 }
 
 function referencePlanePlotRadius(plane, radius) {
@@ -2319,7 +2392,7 @@ function buildFrozenPanelSnapshot(panel) {
   const displayedRows = [...rows, ...overlayRows];
   const rawModelSurfaces = xuvEl["xuv-models"].checked ? (payload.modelSurfaces || payload.model_surfaces || []) : [];
   const bounds = sceneBounds(axes, displayedRows, rawModelSurfaces);
-  const referenceContext = cleanReferenceContext(axes, displayedRows, rawModelSurfaces);
+  const referenceContext = cleanReferenceContext(axes, displayedRows);
   const colormap = frozenAssociationColorMap(displayedRows, rawModelSurfaces, payload);
   return {
     key: panel.key,
@@ -2436,7 +2509,7 @@ async function buildFrozenStandaloneHtml(snapshot) {
     galaxyDataUrl,
   ] = await Promise.all([
     fetchFrozenAssetText("static/styles.css"),
-    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=highlight-marker-axis-color-20260513"),
+    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=xyz-three-uvw-cap-20260514"),
     fetchFrozenAssetText("static/vendor/three/three.module.min.js"),
     fetchFrozenAssetText("static/vendor/three/controls/OrbitControls.js"),
     fetchFrozenAssetText("static/vendor/three/renderers/CSS2DRenderer.js"),

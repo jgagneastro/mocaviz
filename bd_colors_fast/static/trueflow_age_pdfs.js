@@ -1,4 +1,6 @@
 const tfaDefaultOid = 11266;
+const tfaDefaultAid = "ABDMG";
+const tfaDefaultSources = ["Legacy", "Scalar Gaussian"];
 const tfaUniverseAgeMyr = 13800;
 const tfaSourceIds = {
   "MOCAFlows": "tfa-source-mocaflows",
@@ -103,15 +105,17 @@ function collectTrueflowAgeElements() {
 function readTrueflowAgeUrlState() {
   const params = new URLSearchParams(window.location.search);
   const scopeRaw = String(params.get("target") || params.get("scope") || params.get("mode") || "").toLowerCase();
-  const scope = scopeRaw === "association" || params.get("moca_aid") || params.get("aid") ? "association" : "object";
+  let scope = "association";
+  if (scopeRaw === "object" || params.get("moca_oid") || params.get("oid")) scope = "object";
+  if (scopeRaw === "association" || params.get("moca_aid") || params.get("aid")) scope = "association";
   tfaEl["tfa-scope-object"].checked = scope === "object";
   tfaEl["tfa-scope-association"].checked = scope === "association";
   tfaEl["tfa-oid-input"].value = parseInteger(params.get("moca_oid") || params.get("oid")) ?? tfaDefaultOid;
-  const aid = String(params.get("moca_aid") || params.get("aid") || "TWA").trim().toUpperCase();
+  const aid = String(params.get("moca_aid") || params.get("aid") || tfaDefaultAid).trim().toUpperCase();
   tfaEl["tfa-aid-select"].innerHTML = `<option value="${escapeHtml(aid)}">${escapeHtml(aid)}</option>`;
   tfaEl["tfa-aid-select"].value = aid;
 
-  const sources = parseCsv(params.get("sources"), ["MOCAFlows", "Legacy", "Scalar Gaussian"]);
+  const sources = parseCsv(params.get("sources"), tfaDefaultSources);
   for (const [source, id] of Object.entries(tfaSourceIds)) {
     tfaEl[id].checked = sources.includes(source);
   }
@@ -209,7 +213,7 @@ async function loadTrueflowAgeOptions() {
 }
 
 function renderTrueflowAssociationOptions() {
-  const current = String(tfaEl["tfa-aid-select"].value || "TWA").toUpperCase();
+  const current = String(tfaEl["tfa-aid-select"].value || tfaDefaultAid).toUpperCase();
   let rows = tfaState.associations;
   if (tfaState.associationFilter) {
     rows = rows.filter((row) => String(row.label || row.value).toLowerCase().includes(tfaState.associationFilter));
@@ -219,7 +223,7 @@ function renderTrueflowAssociationOptions() {
     rows = [{ value: current, label: current }, ...rows];
   }
   if (!rows.length) {
-    rows = [{ value: current || "TWA", label: current || "TWA" }];
+    rows = [{ value: current || tfaDefaultAid, label: current || tfaDefaultAid }];
   }
   tfaEl["tfa-aid-select"].innerHTML = rows.map((row) => {
     const value = row.value || "";
@@ -275,6 +279,7 @@ async function loadTrueflowAgeData() {
   setTrueflowAgeLoading(true);
   setTrueflowAgeStatus("Loading age PDFs", "loading");
   updateTrueflowScopeControls();
+  updateTrueflowAgeUrl();
   const params = buildTrueflowAgeParams();
   try {
     const payload = await fetchJsonUrl(tfaAppUrl(`api/trueflow-age-pdfs/data?${params.toString()}`));
@@ -409,13 +414,14 @@ function curveStyle(source, index) {
     return { line: { width: 4, color: "#000000", dash: "solid" }, opacity: 0.9 };
   }
   const color = tfaColors[((index || 0) % tfaColors.length + tfaColors.length) % tfaColors.length];
+  const mocaflowsVisible = Boolean(tfaEl["tfa-source-mocaflows"]?.checked);
   if (source === "Scalar Gaussian") {
-    return { line: { width: 1.8, color, dash: "dash" }, opacity: 0.58 };
+    return { line: { width: 1.8, color, dash: mocaflowsVisible ? "dash" : "solid" }, opacity: 0.58 };
   }
   if (source === "MOCAFlows") {
     return { line: { width: 2.5, color, dash: "solid" }, opacity: 0.82 };
   }
-  return { line: { width: 2.1, color, dash: "dot" }, opacity: 0.72 };
+  return { line: { width: 2.1, color, dash: mocaflowsVisible ? "dot" : "solid" }, opacity: 0.72 };
 }
 
 function trueflowAgeLayout(title, curves, options) {
@@ -707,7 +713,7 @@ function buildTrueflowAgeParams() {
   const scope = currentTrueflowScope();
   params.set("target", scope);
   if (scope === "association") {
-    params.set("moca_aid", String(tfaEl["tfa-aid-select"].value || "TWA").toUpperCase());
+    params.set("moca_aid", String(tfaEl["tfa-aid-select"].value || tfaDefaultAid).toUpperCase());
   } else {
     const oid = parseInteger(tfaEl["tfa-oid-input"].value) ?? tfaDefaultOid;
     params.set("moca_oid", oid);
@@ -732,7 +738,7 @@ function updateTrueflowAgeUrl() {
   if (scope === "association") {
     params.delete("moca_oid");
     params.delete("oid");
-    params.set("moca_aid", String(tfaEl["tfa-aid-select"].value || "TWA").toUpperCase());
+    params.set("moca_aid", String(tfaEl["tfa-aid-select"].value || tfaDefaultAid).toUpperCase());
   } else {
     params.delete("moca_aid");
     params.delete("aid");

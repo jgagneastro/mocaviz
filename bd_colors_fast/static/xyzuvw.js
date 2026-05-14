@@ -301,6 +301,7 @@ async function loadXyzuvwOptions() {
 }
 
 async function loadXyzuvwData() {
+  updateXyzuvwUrl();
   if (!xuvState.selectedAids.length || !xuvState.selectedMtids.length) {
     renderEmptyXyzuvw("Select at least one association and membership type");
     return;

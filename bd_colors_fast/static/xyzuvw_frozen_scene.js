@@ -16,6 +16,8 @@ const cleanPlaneColor = "#73c9ff";
 const dataPointOpacity = 0.7;
 const memberPointSize = 4.4;
 const overlayPointRadius = 4.8;
+const highlightSizeScale = 0.4;
+const highlightLineWidth = 1.0;
 const selectionColor = "#ffd21a";
 const highlightMarkerColor = "#ffea00";
 const verticalReferenceAxisScale = 0.25;
@@ -96,6 +98,7 @@ function setupFrozenPanel(panelData) {
     pickObjects: [],
     raycaster: new THREE.Raycaster(),
     pointer: new THREE.Vector2(),
+    pointerDown: null,
     pointTexture: createPointTexture(),
     galaxyMesh: null,
   };
@@ -107,11 +110,18 @@ function setupFrozenPanel(panelData) {
   addErrorObjects(panel);
   addMemberObjects(panel);
   addOverlayObjects(panel);
-  addAssociationCenterLabels(panel);
+  if (panelData.showAssociationLabels !== false) addAssociationCenterLabels(panel);
   renderSelectedMarker(panel);
-  renderLegend(panel);
+  if (panelData.showLegend === false) {
+    if (legendEl) legendEl.hidden = true;
+  } else {
+    renderLegend(panel);
+  }
   applyLegendVisibility();
 
+  renderer.domElement.addEventListener("pointerdown", (event) => {
+    panel.pointerDown = { x: event.clientX, y: event.clientY, button: event.button };
+  });
   renderer.domElement.addEventListener("pointerup", (event) => onPointerUp(panel, event));
   renderer.domElement.addEventListener("pointermove", (event) => onPointerMove(panel, event));
   renderer.domElement.addEventListener("pointerleave", () => hideTooltip(panel));
@@ -379,12 +389,14 @@ function addOverlayObjects(panel) {
   (panel.data.overlayRows || []).forEach((row) => {
     if (row.rvLine) {
       const points = row.rvLine.x.map((value, index) => new THREE.Vector3(value, row.rvLine.y[index], row.rvLine.z[index]));
-      const line = lineFromPoints(points, "#f8f8f8", 0.9);
+      const line = lineFromPoints(points, "#f8f8f8", highlightLineWidth);
       line.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight-line", row };
       panel.dataGroup.add(line);
       return;
     }
-    panel.dataGroup.add(highlightObjectMarker(row, Boolean(panel.data.showAxes)));
+    const marker = highlightObjectMarker(row, Boolean(panel.data.showAxes));
+    panel.dataGroup.add(marker);
+    panel.pickObjects.push(marker);
   });
 }
 
@@ -395,9 +407,10 @@ function highlightObjectMarker(row, showAxes = false) {
   marker.renderOrder = 900;
 
   const color = showAxes ? "#000000" : highlightMarkerColor;
-  const radius = overlayPointRadius * 1.35;
-  const axisLength = radius * 5.2;
-  const axisRadius = Math.max(0.56, radius * 0.12);
+  const baseRadius = overlayPointRadius * 1.35;
+  const radius = baseRadius * highlightSizeScale;
+  const axisLength = baseRadius * 5.2 * highlightSizeScale;
+  const axisRadius = Math.max(0.22, baseRadius * 0.12 * highlightSizeScale);
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 24, 16),
     new THREE.MeshBasicMaterial({
@@ -565,16 +578,54 @@ function applyLegendVisibility() {
 }
 
 function onPointerUp(panel, event) {
-  if (event.button !== 0) return;
+  const pointerDown = panel.pointerDown;
+  panel.pointerDown = null;
+  if (!pointerDown) return;
+  if (Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) return;
+  if (pointerDown.button === 2 && event.button === 2) {
+    centerCameraOnPickedPoint(panel, event);
+    return;
+  }
+  if (pointerDown.button !== 0 || event.button !== 0) return;
   const hit = pickPoint(panel, event);
   if (!hit) {
     frozenState.selectedOid = "";
   } else {
-    const row = (hit.object.userData?.rows || [])[hit.index];
+    const row = rowFromPickHit(hit);
     frozenState.selectedOid = normalizedMocaOid(row?.moca_oid);
   }
   renderSelectedMarkers();
   renderFrozenTable();
+}
+
+function centerCameraOnPickedPoint(panel, event) {
+  const hit = pickPoint(panel, event);
+  const row = rowFromPickHit(hit);
+  const position = plotPositionForRow(row);
+  if (!position) return false;
+  centerPanelCameraOn(panel, position);
+  return true;
+}
+
+function plotPositionForRow(row) {
+  if (!row || ![row.plot0, row.plot1, row.plot2].every(finite)) return null;
+  return new THREE.Vector3(Number(row.plot0), Number(row.plot1), Number(row.plot2));
+}
+
+function centerPanelCameraOn(panel, target) {
+  if (!panel?.camera || !panel?.controls || !target) return;
+  let offset = panel.camera.position.clone().sub(panel.controls.target);
+  if (offset.lengthSq() <= 1e-8) {
+    const radius = Math.max(20, Number(panel.data?.bounds?.radius || 500));
+    offset = new THREE.Vector3(1.25, -1.55, 0.9).normalize().multiplyScalar(Math.max(500, radius * 1.65));
+  }
+  const dampingEnabled = panel.controls.enableDamping;
+  panel.controls.enableDamping = false;
+  panel.controls.target.copy(target);
+  panel.camera.position.copy(target).add(offset);
+  panel.controls.update();
+  panel.controls.enableDamping = dampingEnabled;
+  updateGalaxyBackground(panel);
 }
 
 function onPointerMove(panel, event) {
@@ -583,7 +634,7 @@ function onPointerMove(panel, event) {
     hideTooltip(panel);
     return;
   }
-  const row = (hit.object.userData?.rows || [])[hit.index];
+  const row = rowFromPickHit(hit);
   if (!row || !panel.tooltipEl) return;
   panel.tooltipEl.innerHTML = hoverTextForRow(row);
   panel.tooltipEl.hidden = false;
@@ -601,8 +652,20 @@ function pickPoint(panel, event) {
   panel.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   panel.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   panel.raycaster.setFromCamera(panel.pointer, panel.camera);
-  const intersections = panel.raycaster.intersectObjects(panel.pickObjects.filter((object) => object.visible), false);
+  const intersections = panel.raycaster.intersectObjects(panel.pickObjects.filter((object) => object.visible), true);
   return intersections.length ? intersections[0] : null;
+}
+
+function rowFromPickHit(hit) {
+  if (!hit?.object) return null;
+  const rows = hit.object.userData?.rows;
+  if (rows?.length && Number.isInteger(hit.index)) return rows[hit.index] || null;
+  let object = hit.object;
+  while (object) {
+    if (object.userData?.row) return object.userData.row;
+    object = object.parent;
+  }
+  return null;
 }
 
 function renderSelectedMarkers() {
@@ -678,6 +741,7 @@ function renderSummary() {
   if (hint) {
     const lines = [`Frozen export created ${sceneData.exportedAt || ""}.`];
     if ((sceneData.panels || []).some((panel) => panel.galaxyActive)) lines.push(`Galaxy background image: ${sceneData.galaxyCredit || "ESO/S. Brunier"}.`);
+    lines.push("Right-click a plotted star to center the camera on it.");
     lines.push("Use a local web server if your browser blocks file:// module loading.");
     hint.innerHTML = lines.map(escapeHtml).join("<br>");
   }
@@ -686,10 +750,21 @@ function renderSummary() {
 function recenterAllPanelsOnSun() {
   frozenState.panels.forEach((panel) => {
     const offset = panel.camera.position.clone().sub(panel.controls.target);
-    const cleanOffset = offset.lengthSq() > 0 ? offset : new THREE.Vector3(1.25, -1.55, 0.9).normalize().multiplyScalar(500);
+    const direction = offset.lengthSq() > 1e-8
+      ? offset.normalize()
+      : new THREE.Vector3(1.25, -1.55, 0.9).normalize();
+    const radius = Math.max(20, Number(panel.data?.bounds?.radius || 500));
+    const distance = Math.max(500, radius * 1.65);
+    const dampingEnabled = panel.controls.enableDamping;
+    panel.controls.enableDamping = false;
+    panel.camera.up.set(0, 0, 1);
     panel.controls.target.set(0, 0, 0);
-    panel.camera.position.copy(cleanOffset);
+    panel.camera.position.copy(direction.multiplyScalar(distance));
+    panel.camera.near = Math.max(0.1, distance / 10000);
+    panel.camera.far = Math.max(20000, distance * 12);
+    panel.camera.updateProjectionMatrix();
     panel.controls.update();
+    panel.controls.enableDamping = dampingEnabled;
   });
 }
 

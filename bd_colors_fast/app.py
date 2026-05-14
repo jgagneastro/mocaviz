@@ -654,6 +654,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
         selected_oids = [int(row["moca_oid"]) for row in objects if row.get("moca_oid") is not None]
         dd_oid_filter = _oid_filter_sql("dd", selected_oids)
+        spectra_oid_filter = _oid_filter_sql("ms", selected_oids)
         include_photometric_dist = _include_photometric_dist(args)
         dd_phot_filter = "1 = 1" if include_photometric_dist else "dd.photometric_estimate = 0"
         dp_oid_filter = _oid_filter_sql("dp", selected_oids)
@@ -732,6 +733,19 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             ORDER BY dp.moca_oid, dp.moca_psid
         """.format(dp_oid_filter=dp_oid_filter, dp_phot_filter=dp_phot_filter), dp_phot_params)
 
+        spectra = read_records("spectra", """
+            SELECT
+                ms.moca_oid,
+                ms.moca_specid
+            FROM moca_spectra ms
+            WHERE ms.moca_specid IS NOT NULL
+                AND ms.moca_oid IS NOT NULL
+                AND (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+                AND COALESCE(ms.ignored, 0) = 0
+                AND {spectra_oid_filter}
+            ORDER BY ms.moca_oid, ms.moca_specid
+        """.format(spectra_oid_filter=spectra_oid_filter))
+
         median_colors = read_records("median_colors", """
             SELECT
                 moca_pid,
@@ -782,6 +796,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "objects": objects,
             "distances": distances,
             "photometry": photometry,
+            "spectra": spectra,
             "designations": [],
             "spectralIndices": [],
             "equivalentWidths": [],
@@ -800,6 +815,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "object_limit_applied": object_limit is not None and len(objects) >= object_limit,
             "object_count": len(objects),
             "photometry_count": len(photometry),
+            "spectra_count": len(spectra),
             "photometry_psids": photometry_psids,
             "photometry_simplebands": photometry_simplebands,
             "sequence_key": _sequence_key(args),
@@ -1006,6 +1022,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 SELECT
                     dsi.moca_oid,
                     dsi.moca_siid,
+                    MIN(dsi.moca_specid) AS moca_specid,
                     MIN(dsi.index_value) AS index_value,
                     MIN(dsi.index_value_unc) AS index_value_unc,
                     MIN(msi.description) AS description,
@@ -1033,6 +1050,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 SELECT
                     dew.moca_oid,
                     dew.moca_spid,
+                    MIN(dew.moca_specid) AS moca_specid,
                     MIN(dew.ew_angstrom) AS ew_angstrom,
                     MIN(dew.ew_angstrom_unc) AS ew_angstrom_unc,
                     MIN(mcs.description) AS description,
@@ -1185,6 +1203,7 @@ def _mock_payload() -> dict[str, Any]:
     objects = []
     distances = []
     photometry = []
+    spectra = []
     designations = []
     spectral_indices = []
     equivalent_widths = []
@@ -1264,9 +1283,13 @@ def _mock_payload() -> dict[str, Any]:
                 "photometry_ref": "mock",
             })
 
+        for specid in [200000 + oid, 210000 + oid, 220000 + oid, 230000 + oid, 240000 + oid]:
+            spectra.append({"moca_oid": oid, "moca_specid": specid})
+
         spectral_indices.append({
             "moca_oid": oid,
             "moca_siid": "h2o_j",
+            "moca_specid": 200000 + oid,
             "index_value": round(0.95 - 0.015 * spt + rng.gauss(0, 0.02), 4),
             "index_value_unc": 0.02,
             "description": "H2O-J spectral index",
@@ -1275,6 +1298,7 @@ def _mock_payload() -> dict[str, Any]:
         spectral_indices.append({
             "moca_oid": oid,
             "moca_siid": "ch4_h",
+            "moca_specid": 210000 + oid,
             "index_value": round(1.05 - 0.012 * spt + rng.gauss(0, 0.02), 4),
             "index_value_unc": 0.025,
             "description": "CH4-H spectral index",
@@ -1283,6 +1307,7 @@ def _mock_payload() -> dict[str, Any]:
         equivalent_widths.append({
             "moca_oid": oid,
             "moca_spid": "li",
+            "moca_specid": 220000 + oid,
             "ew_angstrom": round(max(0, rng.gauss(0.25 if spt > 16 else 0.05, 0.08)), 4),
             "ew_angstrom_unc": 0.03,
             "description": "Lithium 6708",
@@ -1291,6 +1316,7 @@ def _mock_payload() -> dict[str, Any]:
         equivalent_widths.append({
             "moca_oid": oid,
             "moca_spid": "na_i_8190",
+            "moca_specid": 230000 + oid,
             "ew_angstrom": round(max(0, rng.gauss(2.0 - 0.03 * spt, 0.25)), 4),
             "ew_angstrom_unc": 0.12,
             "description": "Na I 8190",
@@ -1323,6 +1349,7 @@ def _mock_payload() -> dict[str, Any]:
             "objects": objects,
             "distances": distances,
             "photometry": photometry,
+            "spectra": spectra,
             "designations": designations,
             "spectralIndices": spectral_indices,
             "equivalentWidths": equivalent_widths,
@@ -1334,6 +1361,7 @@ def _mock_payload() -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "object_count": len(objects),
             "photometry_count": len(photometry),
+            "spectra_count": len(spectra),
             "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
             "include_photometric_spt": True,
             "include_risky_photometric_spt": False,
@@ -7344,6 +7372,9 @@ RVBAM_LOCAL_MODEL_DIR = Path(os.environ.get(
     "RVBAM_MODEL_GRID_HDF5_DIR",
     "/Volumes/T3_EXT/model_grids_hdf5",
 ))
+RVBAM_REBUILT_FIT_AUTO_SCALE_VERSION = "rvbam-diagnostic-v1"
+RVBAM_REBUILT_FIT_LOG_OVERSAMPLE = 10.0
+RVBAM_REBUILT_FIT_CONV_GRID = "data"
 RVBAM_REQUIRED_TABLES = (
     "pcat_rv_sampling_runs",
     "pcat_rv_sampling_segments",
@@ -8710,8 +8741,8 @@ def _mock_rvbam_segment_payload(args: dict[str, Any], segment_id: int) -> dict[s
         "payloads": payloads,
         "images": {"model_fit_url": "", "corner_url": ""},
         "localModelFit": _rvbam_local_model_status(
-            segment_payload["run"].get("moca_mgridid"),
-            segment_payload["run"].get("template_name"),
+            run_payload["run"].get("moca_mgridid"),
+            run_payload["run"].get("template_name"),
         ),
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -9671,29 +9702,56 @@ def _rvbam_fit_series_records(
     return records
 
 
+def _rvbam_default_rebuilt_fit_lsf_sigma_kms(run: dict[str, Any]) -> float:
+    pipeline = str(run.get("pipeline_version") or "").lower()
+    instrument = str(run.get("moca_instid") or "").lower()
+    if "g395h" in pipeline or "nirspec" in instrument:
+        return float(299792.458 / 2700.0 / 2.355)
+    return 20.0
+
+
+def _rvbam_grid_midpoint_theta(
+    par_list: list[str],
+    axes: Any,
+    grid_bounds: dict[str, tuple[float, float]] | None,
+    lsf_sigma_kms: float,
+) -> dict[str, float]:
+    theta: dict[str, float] = {}
+    for parameter in par_list:
+        bounds = (grid_bounds or {}).get(parameter)
+        if bounds is not None:
+            lo = _safe_float(bounds[0])
+            hi = _safe_float(bounds[1])
+            if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
+                theta[parameter] = float(0.5 * (lo + hi))
+                continue
+        values = np.asarray(axes.axes[parameter], dtype=float)
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            theta[parameter] = float(0.5 * (np.nanmin(finite) + np.nanmax(finite)))
+    theta.update({
+        "rv_kms": 0.0,
+        "lsf_sigma_kms": float(lsf_sigma_kms),
+        "blaze_left": 1.0,
+        "blaze_right": 1.0,
+        "E_floor": 0.0,
+    })
+    return theta
+
+
 def _rvbam_auto_model_flux_scale(
     data: Any,
     fetcher: Any,
     par_list: list[str],
     axes: Any,
     forward_config: Any,
-) -> float:
+    grid_bounds: dict[str, tuple[float, float]] | None,
+    lsf_sigma_kms: float,
+) -> tuple[float, str]:
     _prepare_rvbam_imports()
     from rvbam.model.segment_loglike import SegmentLogLikelihood as RvbamSegmentLogLikelihood
 
-    test_theta = {}
-    for parameter in par_list:
-        values = np.asarray(axes.axes[parameter], dtype=float)
-        finite = values[np.isfinite(values)]
-        if finite.size:
-            test_theta[parameter] = float(0.5 * (np.nanmin(finite) + np.nanmax(finite)))
-    test_theta.update({
-        "rv_kms": 0.0,
-        "lsf_sigma_kms": 20.0,
-        "blaze_left": 1.0,
-        "blaze_right": 1.0,
-        "E_floor": 0.0,
-    })
+    test_theta = _rvbam_grid_midpoint_theta(par_list, axes, grid_bounds, lsf_sigma_kms)
     try:
         tmp = RvbamSegmentLogLikelihood(
             data,
@@ -9701,15 +9759,20 @@ def _rvbam_auto_model_flux_scale(
             forward_config=forward_config,
             model_flux_scale=1.0,
         )
+    except Exception:
+        return 1.0, "fallback"
+
+    try:
         model_on_data = tmp.model_on_data(test_theta)
         finite = np.isfinite(data.flux) & np.isfinite(model_on_data)
-        med_data = float(np.nanmedian(data.flux[finite]))
-        med_model = float(np.nanmedian(model_on_data[finite]))
-        if np.isfinite(med_data) and np.isfinite(med_model) and med_model != 0:
-            return float(med_data / med_model)
+        if np.any(finite):
+            med_data = float(np.nanmedian(data.flux[finite]))
+            med_model = float(np.nanmedian(model_on_data[finite]))
+            if np.isfinite(med_data) and np.isfinite(med_model) and med_model != 0:
+                return float(med_data / med_model), "rvbam-diagnostic-grid-midpoint"
     except Exception:
         pass
-    return 1.0
+    return 1.0, "fallback"
 
 
 def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
@@ -9722,7 +9785,7 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
         segment_id,
         max_data_points,
         max_model_points,
-        requested_model_flux_scale if requested_model_flux_scale is not None else "auto",
+        requested_model_flux_scale if requested_model_flux_scale is not None else f"auto-{RVBAM_REBUILT_FIT_AUTO_SCALE_VERSION}",
     )
     now = time.time()
     cached = _RVBAM_CACHE.get(cache_key)
@@ -9872,6 +9935,10 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
             require_full_corners=require_full,
         )
         fetcher.set_segment_range(w0, w1)
+        try:
+            grid_bounds = store.parameter_bounds()
+        except Exception:
+            grid_bounds = {}
         data = SegmentData(
             wavelength=wavelength,
             flux=flux,
@@ -9884,10 +9951,23 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
             window_number=row.get("window_number"),
             segment_number=row.get("segment_number"),
         )
-        forward_config = ForwardModelConfig()
+        forward_config = ForwardModelConfig(
+            log_grid_oversample=RVBAM_REBUILT_FIT_LOG_OVERSAMPLE,
+            conv_grid=RVBAM_REBUILT_FIT_CONV_GRID,
+        )
+        auto_scale_lsf_sigma_kms = _rvbam_default_rebuilt_fit_lsf_sigma_kms(row)
         model_flux_scale = requested_model_flux_scale
+        model_flux_scale_source = "request"
         if model_flux_scale is None:
-            model_flux_scale = _rvbam_auto_model_flux_scale(data, fetcher, par_list, axes, forward_config)
+            model_flux_scale, model_flux_scale_source = _rvbam_auto_model_flux_scale(
+                data,
+                fetcher,
+                par_list,
+                axes,
+                forward_config,
+                grid_bounds,
+                auto_scale_lsf_sigma_kms,
+            )
         loglike = SegmentLogLikelihood(
             data,
             fetcher,
@@ -9950,6 +10030,10 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
             "model_file": status.get("model_file"),
             "model_grid_mode": getattr(store, "mode", None),
             "model_flux_scale": _pythonize(float(model_flux_scale)),
+            "model_flux_scale_source": model_flux_scale_source,
+            "model_flux_scale_lsf_sigma_kms": _pythonize(float(auto_scale_lsf_sigma_kms)),
+            "forward_model_conv_grid": RVBAM_REBUILT_FIT_CONV_GRID,
+            "forward_model_log_grid_oversample": _pythonize(float(RVBAM_REBUILT_FIT_LOG_OVERSAMPLE)),
             "private_db": _is_private_db(args),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -10222,13 +10306,14 @@ def preload():
                 )
             }
             catalog["objects"] = [row for row in catalog["objects"] if int(row["moca_oid"]) in keep_oids]
-            for key in ("distances", "photometry", "designations", "spectralIndices", "equivalentWidths", "ages"):
+            for key in ("distances", "photometry", "spectra", "designations", "spectralIndices", "equivalentWidths", "ages"):
                 catalog[key] = [row for row in catalog[key] if int(row["moca_oid"]) in keep_oids]
         payload["meta"] = {
             **payload["meta"],
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "object_count": len(catalog["objects"]),
             "photometry_count": len(catalog["photometry"]),
+            "spectra_count": len(catalog.get("spectra", [])),
             "include_photometric_spt": include_photometric_spt,
             "include_risky_photometric_spt": include_risky_photometric_spt,
             "preload_omitted_photometric_spt": not include_photometric_spt,

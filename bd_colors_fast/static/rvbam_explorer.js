@@ -10,17 +10,22 @@ const rvbState = {
   selectedIds: null,
   requestedRunId: null,
   requestedSegmentId: null,
+  requestedTab: null,
   requestedXParam: "",
   requestedYParam: "",
+  autoRebuiltFitSegmentId: null,
+  autoRebuiltCornerSegmentId: null,
   loadToken: 0,
   segmentToken: 0,
   posteriorToken: 0,
   globalCornerToken: 0,
-  plotEventsBound: false,
+  ignorePlotlyDeselectUntil: 0,
   activeTab: "fit",
 };
 
 const rvbEl = {};
+
+const RVB_SHOW_GLOBAL_CORNER_TAB = false;
 
 const rvbScatterYAxisOptions = {
   rv_kms: { key: "rv_kms", label: "RV", axisTitle: "RV (km/s)", errorKey: "rv_kms_unc", unit: "km/s", digits: 3 },
@@ -52,6 +57,7 @@ async function initRvbamExplorer() {
   collectRvbamElements();
   readRvbamUrlState();
   bindRvbamControls();
+  activateRvbamTab(rvbState.activeTab);
   renderEmptyRvbam("Loading RVBAM runs");
   await loadRvbamRuns();
   await loadSelectedRvbamRun();
@@ -124,6 +130,11 @@ function readRvbamUrlState() {
   rvbState.requestedSegmentId = numberOrNull(params.get("segment_id") || params.get("moca_rv_sampling_segment_id"));
   rvbState.requestedXParam = params.get("x") || params.get("x_param") || "";
   rvbState.requestedYParam = params.get("y") || params.get("y_param") || "";
+  const requestedTab = params.get("tab") || params.get("rvb_tab");
+  if (isRvbamTabName(requestedTab)) {
+    rvbState.requestedTab = requestedTab;
+    rvbState.activeTab = requestedTab;
+  }
   if (params.has("q")) rvbEl["rvb-search"].value = params.get("q") || "";
   if (params.has("moca_oid") || params.has("oid")) rvbEl["rvb-oid"].value = params.get("moca_oid") || params.get("oid") || "";
   if (params.has("moca_specid") || params.has("specid")) rvbEl["rvb-specid"].value = params.get("moca_specid") || params.get("specid") || "";
@@ -148,8 +159,15 @@ function bindRvbamControls() {
     await loadSelectedRvbamRun();
   });
   rvbEl["rvb-load-run"].addEventListener("click", loadSelectedRvbamRun);
-  rvbEl["rvb-run"].addEventListener("change", loadSelectedRvbamRun);
+  rvbEl["rvb-run"].addEventListener("change", () => {
+    rvbState.requestedRunId = numberOrNull(rvbEl["rvb-run"].value);
+    rvbState.requestedSegmentId = null;
+    rvbState.selectedSegmentId = null;
+    updateRvbamUrl();
+    loadSelectedRvbamRun();
+  });
   rvbEl["rvb-include-ignored"].addEventListener("change", async () => {
+    updateRvbamUrl();
     await loadRvbamRuns();
     await loadSelectedRvbamRun();
   });
@@ -203,7 +221,11 @@ function bindRvbamControls() {
   rvbEl["rvb-export-fits"].addEventListener("click", () => exportRvbamSegments("fits"));
   rvbEl["rvb-export-votable"].addEventListener("click", () => exportRvbamSegments("votable"));
   document.querySelectorAll("[data-rvb-tab]").forEach((button) => {
-    button.addEventListener("click", () => activateRvbamTab(button.dataset.rvbTab || "fit"));
+    button.addEventListener("click", () => {
+      rvbState.requestedTab = null;
+      activateRvbamTab(button.dataset.rvbTab || "fit");
+      updateRvbamUrl();
+    });
   });
   window.addEventListener("resize", debounce(() => {
     for (const id of ["rvb-segment-plot", "rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot"]) {
@@ -318,6 +340,8 @@ async function loadSelectedRvbamRun() {
     rvbState.rebuiltCorner = null;
     rvbState.globalCorner = null;
     rvbState.rebuiltFit = null;
+    rvbState.autoRebuiltFitSegmentId = null;
+    rvbState.autoRebuiltCornerSegmentId = null;
     rvbState.segmentDetail = null;
     rvbState.selectedIds = null;
     const segments = payload.segments || [];
@@ -435,15 +459,17 @@ function renderRvbamSegmentPlot() {
   const selectedRows = selectedRvbamRows();
   const averageRows = filteredAverageRvbamRows(selectedRows);
   const filteredOutRows = averageFilteredOutRvbamRows(selectedRows);
+  const filteredOutIds = new Set(filteredOutRows.map((row) => Number(row.moca_rv_sampling_segment_id)).filter(Boolean));
   const stats = averageSegmentStats(averageRows, ySpec);
   const activeRows = rows.filter((row) => !Number(row.ignored || 0));
   const ignoredRows = rows.filter((row) => Number(row.ignored || 0));
+  const rangeRows = rows.length ? rows : averageRows;
   const traces = [];
-  traces.push(segmentTrace(activeRows, "Segments", "circle", false, showErrors, 8, false, ySpec));
+  traces.push(segmentTrace(activeRows, "Segments", "circle", false, showErrors, 8, false, ySpec, filteredOutIds));
   if (ignoredRows.length) traces.push(segmentTrace(ignoredRows, "Ignored", "x-thin", true, showErrors, 13, false, ySpec));
+  if (filteredOutRows.length) traces.push(filteredAverageLegendTrace());
   const selected = rows.filter((row) => Number(row.moca_rv_sampling_segment_id) === Number(rvbState.selectedSegmentId));
-  if (selected.length) traces.push(segmentTrace(selected, "Selected", "circle", false, showErrors, 13, true, ySpec));
-  if (filteredOutRows.length) traces.push(filteredAverageTrace(filteredOutRows, ySpec));
+  if (selected.length) traces.push(segmentTrace(selected, "Selected", "star", false, showErrors, 18, true, ySpec));
   const shapes = [];
   if (stats.n) {
     shapes.push(rvbamAverageLine(stats.mean, "rgba(168, 18, 18, 0.82)", 4, "solid"));
@@ -460,20 +486,21 @@ function renderRvbamSegmentPlot() {
   const titlePrefix = `${designation} | ${modelName}`;
   const filterNote = averageFilterNote(selectedRows.length, averageRows.length);
   const title = stats.n
-    ? `${titlePrefix}<br>${averageStatsLabel(stats, ySpec)}${filterNote}`
+    ? `${titlePrefix}<br>${averageStatsLabel(stats, ySpec, { compactRvUncertainty: true })}${filterNote}`
     : `${titlePrefix}<br>${ySpec.label} average unavailable${filterNote}`;
-  const xRange = scatterAxisRange(averageRows, (row) => segmentWavelengthMicron(row));
-  const yRange = scatterAxisRange(averageRows, (row) => asNumber(row[ySpec.key]));
+  const xRange = scatterAxisRange(rangeRows, (row) => segmentWavelengthMicron(row));
+  const yRange = scatterAxisRange(rangeRows, (row) => asNumber(row[ySpec.key]));
 
   const layout = {
-    title: { text: title, x: 0.5, y: 0.98, xanchor: "center", yanchor: "top", font: { size: 16 } },
+    title: { text: title, x: 0.5, y: 0.965, xanchor: "center", yanchor: "top", font: { size: 12.8 } },
     margin: { l: 64, r: 24, t: 52, b: 58 },
     paper_bgcolor: "#ffffff",
     plot_bgcolor: "#ffffff",
     hovermode: "closest",
+    clickmode: "event",
     dragmode: "lasso",
     xaxis: {
-      title: "Wavelength center (micron)",
+      title: "Wavelength center (μm)",
       range: xRange || undefined,
       zerolinecolor: "lightgray",
       gridcolor: "rgba(211,211,211,0.65)",
@@ -501,6 +528,7 @@ function renderRvbamSegmentPlot() {
     legend: { x: 0.02, y: 0.98, bgcolor: "rgba(255,255,255,0.72)" },
     shapes,
     uirevision: `${rvbState.payload?.run?.moca_rv_sample_run_id || "rvbam-explorer"}:${ySpec.key}`,
+    selectionrevision: selectedIdsKey(),
   };
   Plotly.react(rvbEl["rvb-segment-plot"], traces.filter(Boolean), layout, plotConfig("rvbam_segments"))
     .then(bindRvbamPlotEvents);
@@ -511,9 +539,10 @@ function scatterYAxisSpec() {
   return rvbScatterYAxisOptions[key] || rvbScatterYAxisOptions.rv_kms;
 }
 
-function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTrace, ySpec) {
+function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTrace, ySpec, filteredOutIds = null) {
   if (!rows.length) return null;
   const selectedpoints = selectedPointIndices(rows);
+  const isFilteredOut = (row) => !ignored && !selectedTrace && filteredOutIds?.has(Number(row.moca_rv_sampling_segment_id));
   return {
     type: "scatter",
     mode: "markers",
@@ -530,15 +559,20 @@ function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTra
     } : undefined,
     marker: ignored
       ? { color: "#9c2f2f", size, symbol, line: { color: "#9c2f2f", width: 2.5 } }
+      : selectedTrace
+        ? { color: "#ffffff", size, symbol, opacity: 1, line: { color: "#d6a100", width: 4.2 } }
       : {
-        color: "#ffffff",
-        size,
-        symbol,
+        color: rows.map((row) => isFilteredOut(row) ? "rgba(168,18,18,0.96)" : "#ffffff"),
+        size: rows.map((row) => isFilteredOut(row) ? 16 : size),
+        symbol: rows.map((row) => isFilteredOut(row) ? "x-thin" : symbol),
         opacity: selectedTrace ? 1 : 0.98,
-        line: { color: "#000000", width: selectedTrace ? 3.2 : 2.2 },
+        line: {
+          color: rows.map((row) => isFilteredOut(row) ? "rgba(168,18,18,0.96)" : "#000000"),
+          width: rows.map((row) => isFilteredOut(row) ? 2 : 2.2),
+        },
       },
     customdata: rows.map((row) => Number(row.moca_rv_sampling_segment_id)),
-    text: rows.map((row) => segmentHover(row, ySpec)),
+    text: rows.map((row) => isFilteredOut(row) ? `${segmentHover(row, ySpec)}<br><b>Filtered from average</b>` : segmentHover(row, ySpec)),
     hoverinfo: "text",
     selectedpoints,
     selected: { marker: { opacity: 1 } },
@@ -546,22 +580,21 @@ function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTra
   };
 }
 
-function filteredAverageTrace(rows, ySpec) {
+function filteredAverageLegendTrace() {
   return {
     type: "scatter",
     mode: "markers",
     name: "Filtered from average",
-    x: rows.map(segmentWavelengthMicron),
-    y: rows.map((row) => asNumber(row[ySpec.key])),
+    x: [null],
+    y: [null],
     marker: {
       symbol: "x-thin",
       color: "rgba(168,18,18,0.96)",
-      size: 18,
+      size: 16,
       line: { color: "rgba(168,18,18,0.96)", width: 2 },
     },
-    customdata: rows.map((row) => Number(row.moca_rv_sampling_segment_id)),
-    text: rows.map((row) => `${segmentHover(row, ySpec)}<br><b>Filtered from average</b>`),
-    hoverinfo: "text",
+    hoverinfo: "skip",
+    showlegend: true,
   };
 }
 
@@ -587,6 +620,11 @@ function selectedPointIndices(rows) {
   return indices;
 }
 
+function selectedIdsKey() {
+  if (!rvbState.selectedIds?.size) return "none";
+  return Array.from(rvbState.selectedIds).sort((a, b) => a - b).join(",");
+}
+
 function rvbamAverageLine(y, color, width, dash) {
   return {
     type: "line",
@@ -602,23 +640,68 @@ function rvbamAverageLine(y, color, width, dash) {
 }
 
 function bindRvbamPlotEvents() {
-  if (rvbState.plotEventsBound || !rvbEl["rvb-segment-plot"]?.on) return;
-  rvbState.plotEventsBound = true;
-  rvbEl["rvb-segment-plot"].on("plotly_selected", (event) => {
-    const ids = new Set((event?.points || []).map((point) => Number(point.customdata)).filter(Boolean));
-    rvbState.selectedIds = ids.size ? ids : null;
-    renderRvbamSegmentPlot();
+  const plot = rvbEl["rvb-segment-plot"];
+  if (!plot?.on) return;
+  rebindPlotlyEvent(plot, "plotly_selected", handleRvbamPlotSelected);
+  rebindPlotlyEvent(plot, "plotly_deselect", handleRvbamPlotDeselect);
+  rebindPlotlyEvent(plot, "plotly_click", handleRvbamPlotClick);
+}
+
+function rebindPlotlyEvent(plot, eventName, handler) {
+  if (plot.removeListener) plot.removeListener(eventName, handler);
+  plot.on(eventName, handler);
+}
+
+function handleRvbamPlotSelected(event) {
+  const ids = rvbamSegmentIdsFromPlotEvent(event);
+  if (!ids.size) return;
+  rvbState.selectedIds = ids.size ? ids : null;
+  rvbState.ignorePlotlyDeselectUntil = Date.now() + 800;
+  const singleId = ids.size === 1 ? Array.from(ids)[0] : null;
+  if (singleId) {
+    selectRvbamSegment(singleId);
     renderRvbamSummary();
-  });
-  rvbEl["rvb-segment-plot"].on("plotly_deselect", () => {
-    rvbState.selectedIds = null;
-    renderRvbamSegmentPlot();
-    renderRvbamSummary();
-  });
-  rvbEl["rvb-segment-plot"].on("plotly_click", (event) => {
-    const id = Number(event?.points?.[0]?.customdata);
-    if (id) selectRvbamSegment(id);
-  });
+    return;
+  }
+  renderRvbamSegmentPlot();
+  renderRvbamSummary();
+}
+
+function handleRvbamPlotDeselect() {
+  if (Date.now() < rvbState.ignorePlotlyDeselectUntil) return;
+  rvbState.selectedIds = null;
+  renderRvbamSegmentPlot();
+  renderRvbamSummary();
+}
+
+function handleRvbamPlotClick(event) {
+  const id = rvbamSegmentIdFromPlotPoint(event?.points?.[0]);
+  if (!id) return;
+  rvbState.ignorePlotlyDeselectUntil = Date.now() + 800;
+  selectRvbamSegment(id);
+}
+
+function rvbamSegmentIdsFromPlotEvent(event) {
+  const ids = new Set();
+  for (const point of event?.points || []) {
+    const id = rvbamSegmentIdFromPlotPoint(point);
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function rvbamSegmentIdFromPlotPoint(point) {
+  const candidates = [
+    point?.customdata,
+    Array.isArray(point?.data?.customdata) && Number.isInteger(point?.pointNumber)
+      ? point.data.customdata[point.pointNumber]
+      : null,
+  ];
+  for (const value of candidates) {
+    const id = numberOrNull(Array.isArray(value) ? value[0] : value);
+    if (id) return id;
+  }
+  return null;
 }
 
 function selectRvbamSegment(id) {
@@ -626,6 +709,8 @@ function selectRvbamSegment(id) {
   rvbState.posterior = null;
   rvbState.rebuiltCorner = null;
   rvbState.rebuiltFit = null;
+  rvbState.autoRebuiltFitSegmentId = null;
+  rvbState.autoRebuiltCornerSegmentId = null;
   renderRvbamSegmentsTable();
   renderRvbamSegmentPlot();
   updateRvbamUrl();
@@ -646,6 +731,8 @@ async function loadRvbamSegment(segmentId) {
     rvbState.posterior = null;
     rvbState.rebuiltCorner = null;
     rvbState.rebuiltFit = null;
+    rvbState.autoRebuiltFitSegmentId = null;
+    rvbState.autoRebuiltCornerSegmentId = null;
     renderRvbamSegmentDetail();
     setRvbamStatus("Segment loaded", "");
   } catch (error) {
@@ -676,6 +763,8 @@ function renderRvbamSegmentDetail() {
     ? fitStatus.message
     : "Rebuilt fit not loaded";
   renderEmptyRebuiltFit(fitMessage);
+  activateRequestedRvbamTabIfReady();
+  maybeAutoLoadRvbamActiveTab();
 }
 
 function updateRvbamLocalModelControls(localModelFit) {
@@ -684,7 +773,7 @@ function updateRvbamLocalModelControls(localModelFit) {
   const button = rvbEl["rvb-load-rebuilt-fit"];
   const tab = document.querySelector('[data-rvb-tab="rebuilt"]');
   if (button) {
-    button.hidden = !fileAvailable;
+    button.hidden = true;
     button.disabled = !available || !rvbState.selectedSegmentId;
   }
   if (tab) tab.hidden = !fileAvailable;
@@ -696,7 +785,7 @@ function updateRvbamRebuiltCornerControls(payloads) {
   const button = rvbEl["rvb-load-rebuilt-corner"];
   const tab = document.querySelector('[data-rvb-tab="rebuilt-corner"]');
   if (button) {
-    button.hidden = !available;
+    button.hidden = true;
     button.disabled = !available || !rvbState.selectedSegmentId;
   }
   if (tab) tab.hidden = !available;
@@ -706,6 +795,13 @@ function updateRvbamRebuiltCornerControls(payloads) {
 function updateRvbamGlobalCornerControls() {
   const button = rvbEl["rvb-load-global-corner"];
   if (!button) return;
+  const tab = document.querySelector('[data-rvb-tab="global-corner"]');
+  if (tab) tab.hidden = !RVB_SHOW_GLOBAL_CORNER_TAB;
+  if (!RVB_SHOW_GLOBAL_CORNER_TAB) {
+    button.disabled = true;
+    if (rvbState.activeTab === "global-corner") ensureRvbamActiveTabVisible();
+    return;
+  }
   const runId = currentRvbamRunId();
   const segments = rvbState.payload?.segments || [];
   const includeIgnored = Boolean(rvbEl["rvb-include-ignored"]?.checked);
@@ -717,6 +813,37 @@ function currentRvbamRunId() {
   return numberOrNull(rvbState.payload?.run?.moca_rv_sample_run_id)
     || numberOrNull(rvbEl["rvb-run"]?.value)
     || rvbState.requestedRunId;
+}
+
+function isRvbamTabName(name) {
+  return ["fit", "rebuilt", "corner", "rebuilt-corner", "global-corner", "posterior", "params", "payload"].includes(String(name || ""));
+}
+
+function activateRequestedRvbamTabIfReady() {
+  const requested = rvbState.requestedTab;
+  if (!isRvbamTabName(requested)) return;
+  const button = document.querySelector(`[data-rvb-tab="${requested}"]`);
+  if (!button || button.hidden) return;
+  rvbState.requestedTab = null;
+  if (rvbState.activeTab !== requested) activateRvbamTab(requested);
+}
+
+function maybeAutoLoadRvbamActiveTab() {
+  const segmentId = Number(rvbState.selectedSegmentId);
+  if (!segmentId || !rvbState.segmentDetail?.segment) return;
+  const activeButton = document.querySelector(`[data-rvb-tab="${rvbState.activeTab}"]`);
+  if (activeButton?.hidden) return;
+
+  if (rvbState.activeTab === "rebuilt") {
+    const available = Boolean(rvbState.segmentDetail?.localModelFit?.available);
+    if (!available || rvbState.rebuiltFit || rvbState.autoRebuiltFitSegmentId === segmentId) return;
+    rvbState.autoRebuiltFitSegmentId = segmentId;
+    loadRvbamRebuiltFit();
+  } else if (rvbState.activeTab === "rebuilt-corner") {
+    if (!hasRvbamChainPayload() || rvbState.rebuiltCorner || rvbState.autoRebuiltCornerSegmentId === segmentId) return;
+    rvbState.autoRebuiltCornerSegmentId = segmentId;
+    loadRvbamRebuiltCorner();
+  }
 }
 
 function updateRvbamFigureTabs(detail) {
@@ -761,7 +888,16 @@ function ensureRvbamActiveTabVisible() {
 }
 
 function firstVisibleRvbamTab() {
-  const order = ["rebuilt", "fit", "rebuilt-corner", "global-corner", "corner", "posterior", "params", "payload"];
+  const order = [
+    "rebuilt",
+    "fit",
+    "rebuilt-corner",
+    ...(RVB_SHOW_GLOBAL_CORNER_TAB ? ["global-corner"] : []),
+    "corner",
+    "posterior",
+    "params",
+    "payload",
+  ];
   for (const name of order) {
     const button = document.querySelector(`[data-rvb-tab="${name}"]`);
     if (button && !button.hidden) return name;
@@ -1058,7 +1194,7 @@ function renderRvbamRebuiltCorner() {
     hoverinfo: "skip",
     showlegend: false,
   }];
-  Plotly.react(rvbEl["rvb-rebuilt-corner-plot"], traces, layout, plotConfig("rvbam_rebuilt_corner", { saveImage: true }));
+  Plotly.react(rvbEl["rvb-rebuilt-corner-plot"], traces, layout, plotConfig("rvbam_rebuilt_corner", { saveImage: true, imageScale: 4 }));
   renderRvbamRebuiltCornerMeta(payload, params);
   setTimeout(() => Plotly.Plots.resize(rvbEl["rvb-rebuilt-corner-plot"]), 0);
 }
@@ -1105,7 +1241,7 @@ function renderRvbamGlobalCorner() {
     hoverinfo: "skip",
     showlegend: false,
   }];
-  Plotly.react(rvbEl["rvb-global-corner-plot"], traces, layout, plotConfig("rvbam_global_corner", { saveImage: true }));
+  Plotly.react(rvbEl["rvb-global-corner-plot"], traces, layout, plotConfig("rvbam_global_corner", { saveImage: true, imageScale: 4 }));
   renderRvbamGlobalCornerMeta(payload);
   setTimeout(() => Plotly.Plots.resize(rvbEl["rvb-global-corner-plot"]), 0);
 }
@@ -1216,7 +1352,7 @@ function renderRvbamGlobalCornerMeta(payload) {
 function renderEmptyRebuiltCorner(message) {
   if (!rvbEl["rvb-rebuilt-corner-plot"]) return;
   const text = message === "Rebuilt corner not loaded"
-    ? 'Rebuilt corner not loaded<br><span style="font-size:12px;">Use the Load Rebuilt Corner button in this tab</span>'
+    ? "Corner plot is being generated"
     : (message || "Rebuilt corner not loaded");
   rvbEl["rvb-rebuilt-corner-plot"].style.width = "";
   rvbEl["rvb-rebuilt-corner-plot"].style.height = "";
@@ -1471,6 +1607,8 @@ function renderRvbamRebuiltFitMeta(payload) {
   const infoRows = [
     { key: "model_file", value: modelInfo.model_file || meta.model_file },
     { key: "grid_parameters", value: (payload.gridParameters || []).join(", ") },
+    { key: "model_flux_scale", value: meta.model_flux_scale },
+    { key: "model_flux_scale_source", value: meta.model_flux_scale_source },
     { key: "data_points", value: `${meta.returned_data_point_count || 0}/${meta.data_point_count || 0}` },
     { key: "model_points", value: `${meta.returned_model_point_count || 0}/${meta.model_point_count || 0}` },
   ];
@@ -1483,7 +1621,7 @@ function renderRvbamRebuiltFitMeta(payload) {
 function renderEmptyRebuiltFit(message) {
   if (!rvbEl["rvb-rebuilt-fit-plot"]) return;
   const text = message === "Rebuilt fit not loaded"
-    ? 'Rebuilt fit not loaded<br><span style="font-size:12px;">Use the Load Rebuilt Fit button in this tab</span>'
+    ? "Model fit is being generated"
     : (message || "Rebuilt fit not loaded");
   Plotly.react(rvbEl["rvb-rebuilt-fit-plot"], [], emptyLayout(text), plotConfig("rvbam_rebuilt_empty"));
   if (rvbEl["rvb-rebuilt-fit-meta"]) rvbEl["rvb-rebuilt-fit-meta"].innerHTML = "";
@@ -1500,7 +1638,7 @@ function renderRvbamSummary() {
     averageFilterSummary(selectedRows.length, rows.length),
   ];
   if (average.n) {
-    parts.push(averageStatsLabel(average, ySpec));
+    parts.push(averageStatsLabel(average, ySpec, { compactRvUncertainty: true }));
   }
   rvbEl["rvb-summary"].textContent = parts.join(" | ");
   updateRvbamReportButton();
@@ -1606,15 +1744,41 @@ function averageSegmentStats(rows, ySpec) {
   return { n: values.length, mean, unc, weighted: false };
 }
 
-function averageStatsLabel(stats, ySpec) {
+function averageStatsLabel(stats, ySpec, options = {}) {
   const prefix = stats.weighted ? `weighted ${ySpec.label}` : `mean ${ySpec.label}`;
   const unit = ySpec.unit ? ` ${ySpec.unit}` : "";
   const digits = Number.isFinite(ySpec.digits) ? ySpec.digits : 3;
-  const meanText = `${formatFixed(stats.mean, digits)}${unit}`;
   if (stats.unc !== null && stats.unc > 0) {
+    if (options.compactRvUncertainty && ySpec.key === "rv_kms") {
+      const rounded = oneSignificantUncertaintyLabel(stats.mean, stats.unc);
+      if (rounded) return `${prefix} = ${rounded.value}${unit} +/- ${rounded.unc}${unit}`;
+    }
+    const meanText = `${formatFixed(stats.mean, digits)}${unit}`;
     return `${prefix} = ${meanText} +/- ${formatFixed(stats.unc, digits)}${unit}`;
   }
+  const meanText = `${formatFixed(stats.mean, digits)}${unit}`;
   return `${prefix} = ${meanText}`;
+}
+
+function oneSignificantUncertaintyLabel(value, uncertainty) {
+  const valueNumber = asNumber(value);
+  const uncertaintyNumber = asNumber(uncertainty);
+  if (valueNumber === null || uncertaintyNumber === null || uncertaintyNumber <= 0) return null;
+  let decimals = Math.max(0, -Math.floor(Math.log10(Math.abs(uncertaintyNumber))));
+  let roundedUncertainty = roundToDecimals(Math.abs(uncertaintyNumber), decimals);
+  if (roundedUncertainty > 0) {
+    decimals = Math.max(0, -Math.floor(Math.log10(roundedUncertainty)));
+    roundedUncertainty = roundToDecimals(Math.abs(uncertaintyNumber), decimals);
+  }
+  return {
+    value: roundToDecimals(valueNumber, decimals).toFixed(decimals),
+    unc: roundedUncertainty.toFixed(decimals),
+  };
+}
+
+function roundToDecimals(value, decimals) {
+  const factor = 10 ** Math.max(0, decimals);
+  return Math.round(value * factor) / factor;
 }
 
 function renderRvbamSegmentError(message) {
@@ -1729,6 +1893,7 @@ function activateRvbamTab(name) {
       if (rvbEl[id]) Plotly.Plots.resize(rvbEl[id]);
     }
   }, 0);
+  maybeAutoLoadRvbamActiveTab();
 }
 
 function updateRvbamExportButtons() {
@@ -1817,6 +1982,8 @@ function updateRvbamUrl() {
   if (rvbEl["rvb-param-x"].value) params.set("x", rvbEl["rvb-param-x"].value);
   if (rvbEl["rvb-param-y"].value) params.set("y", rvbEl["rvb-param-y"].value);
   params.set("max_points", String(numberInputValue("rvb-max-points", 1800)));
+  if (rvbState.activeTab && rvbState.activeTab !== "fit") params.set("tab", rvbState.activeTab);
+  else params.delete("tab");
   const next = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", next);
 }
@@ -1977,7 +2144,7 @@ function plotConfig(name, options = {}) {
     responsive: true,
     displaylogo: false,
     modeBarButtonsToRemove: removeButtons,
-    toImageButtonOptions: { format: "png", filename: name || "rvbam_explorer", scale: 2 },
+    toImageButtonOptions: { format: "png", filename: name || "rvbam_explorer", scale: options.imageScale || 2 },
   };
 }
 

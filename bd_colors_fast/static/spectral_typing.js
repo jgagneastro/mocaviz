@@ -132,6 +132,9 @@ function readSpectralUrlState() {
   sptEl["spt-norm"].value = params.get("norm") || sptDefaultNormText;
   sptEl["spt-deredden"].checked = asSpectralBool(params.get("deredden"));
   sptEl["spt-cloud"].checked = asSpectralBool(params.get("cloud")) || asSpectralBool(params.get("cloud_correction"));
+  sptEl["spt-allred"].checked = !asFalse(params.get("allred"));
+  sptEl["spt-showfeatures"].checked = !asFalse(params.get("showfeatures"));
+  sptEl["spt-disable-lowres"].checked = asSpectralBool(params.get("disable_lowres"));
   if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
   sptState.fixedRvValue = spectralFixedRvUrlValue(params);
   sptState.cloudAlphaValue = spectralCloudAlphaUrlValue(params);
@@ -189,7 +192,10 @@ function bindSpectralControls() {
     sptEl[id].addEventListener("change", () => computeSpectralComparison());
   }
   for (const id of ["spt-allred", "spt-showfeatures", "spt-disable-lowres"]) {
-    sptEl[id].addEventListener("change", () => renderSpectralTyping());
+    sptEl[id].addEventListener("change", () => {
+      updateSpectralUrl();
+      renderSpectralTyping();
+    });
   }
   sptEl["spt-reset-norm"].addEventListener("click", () => {
     sptEl["spt-norm"].value = sptDefaultNormText;
@@ -1495,6 +1501,12 @@ function updateSpectralUrl() {
   if (sptEl["spt-deredden"].checked) {
     params.set("fix_rv", fixedValue || "free");
   }
+  if (!sptEl["spt-allred"].checked) params.set("allred", "0");
+  else params.delete("allred");
+  if (!sptEl["spt-showfeatures"].checked) params.set("showfeatures", "0");
+  else params.delete("showfeatures");
+  if (sptEl["spt-disable-lowres"].checked) params.set("disable_lowres", "1");
+  else params.delete("disable_lowres");
   const nextUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", nextUrl);
 }
@@ -1585,6 +1597,10 @@ function parseInteger(value) {
 
 function asSpectralBool(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function asFalse(value) {
+  return ["0", "false", "no", "off"].includes(String(value || "").toLowerCase());
 }
 
 function spectralFixedRvUrlValue(params) {

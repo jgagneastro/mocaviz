@@ -137,6 +137,7 @@ function bindAstrometryControls() {
     clearAstrometryFit({ render: false });
     renderMissionList();
     renderAstrometry();
+    updateAstrometryUrl();
   });
   atmEl["atm-missions-none"].addEventListener("click", () => {
     atmState.selectedMissions.clear();
@@ -144,6 +145,7 @@ function bindAstrometryControls() {
     clearAstrometryFit({ render: false });
     renderMissionList();
     renderAstrometry();
+    updateAstrometryUrl();
   });
   for (const id of ["atm-subtract-pm", "atm-subtract-plx", "atm-phase-yearly", "atm-bin", "atm-display-absolute", "atm-display-reference"]) {
     atmEl[id].addEventListener("change", () => {
@@ -273,6 +275,7 @@ function selectAstrometryTarget(option, options = {}) {
 }
 
 async function loadAstrometryObject() {
+  updateAstrometryUrl();
   if (atmState.selectedOid === null) {
     renderEmptyAstrometry("Select a target");
     return;

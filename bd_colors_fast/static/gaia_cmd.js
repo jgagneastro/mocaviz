@@ -184,11 +184,15 @@ function bindGaiaCmdControls() {
   }
   gcmdEl["gcmd-highlight-binaries"].addEventListener("change", () => {
     renderGaiaCmdPlot();
+    updateGaiaCmdUrl();
     if (gcmdState.payload?.selection) {
       gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(gcmdState.payload.selection);
     }
   });
-  gcmdEl["gcmd-field-hover"].addEventListener("change", () => renderGaiaCmdPlot());
+  gcmdEl["gcmd-field-hover"].addEventListener("change", () => {
+    renderGaiaCmdPlot();
+    updateGaiaCmdUrl();
+  });
   for (const id of ["gcmd-ruwe", "gcmd-highlight-oids"]) {
     gcmdEl[id].addEventListener("keydown", (event) => {
       if (event.key === "Enter") loadGaiaCmdData();
@@ -322,6 +326,7 @@ function normalizeGaiaCmdBand(value) {
 }
 
 async function loadGaiaCmdData() {
+  updateGaiaCmdUrl();
   const token = ++gcmdState.loadToken;
   setGaiaCmdStatus("Loading Gaia CMD", "loading");
   setGaiaCmdLoader(true);
@@ -379,6 +384,39 @@ function gaiaCmdApiParams() {
   if (gcmdEl["gcmd-extcorr-vectors"].checked) params.set("extinction_vectors", "1");
   if (!gcmdEl["gcmd-show-sequences"].checked) params.set("sequences", "0");
   return params;
+}
+
+function updateGaiaCmdUrl() {
+  const params = gaiaCmdApiParams();
+  params.delete("moca_aid");
+  params.delete("aid");
+  params.delete("moca_oid");
+  params.delete("oids");
+  params.delete("moca_oids");
+  params.set("binaries", gcmdEl["gcmd-highlight-binaries"].checked ? "1" : "0");
+  params.set("field_hover", gcmdEl["gcmd-field-hover"].checked ? "1" : "0");
+  if (!gcmdEl["gcmd-color-age"].checked) {
+    params.delete("color_age");
+    params.delete("color_by_age");
+    params.delete("age");
+  }
+  if (!gcmdEl["gcmd-raw-gaia"].checked) {
+    params.delete("raw_gaia");
+    params.delete("raw_photometry");
+    params.delete("use_raw_gaia");
+  }
+  if (!gcmdEl["gcmd-extcorr-only"].checked) {
+    params.delete("extinction_corrected");
+    params.delete("extcorr");
+    params.delete("extinction_corrected_only");
+  }
+  if (!gcmdEl["gcmd-extcorr-vectors"].checked) {
+    params.delete("extinction_vectors");
+    params.delete("extcorr_vectors");
+    params.delete("show_extinction_vectors");
+  }
+  const query = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
 }
 
 function combinedHighlightOids() {

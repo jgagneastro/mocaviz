@@ -449,7 +449,10 @@ function photometricSptCatalogReady() {
 function buildBootstrapParams() {
   const params = new URLSearchParams(window.location.search);
   params.set("spt_range", el["spt-range"].value || "L2+");
-  params.set("moca_oid", backendHighlightOidValue());
+  const oidValue = backendHighlightOidValue();
+  if (oidValue) params.set("moca_oid", oidValue);
+  else params.delete("moca_oid");
+  params.delete("oid");
   params.delete("designation");
   params.delete("designations");
   if (state.selectedDesignations.length) {
@@ -463,12 +466,35 @@ function buildBootstrapParams() {
   params.set("yaxis_type", el["y-axis-type"].value || "absolute_magnitude");
   normalizeBroadSampleCap(params);
   for (const axis of ["x", "y"]) {
-    const value1 = el[`${axis}-value-1`].value;
-    const value2 = el[`${axis}-value-2`].value;
+    const value1Control = el[`${axis}-value-1`];
+    const value2Control = el[`${axis}-value-2`];
+    const controlsReady = state.raw || value1Control.options.length > 0 || value2Control.options.length > 0;
+    if (!controlsReady) continue;
+    params.delete(`${axis}axis_value_1`);
+    params.delete(`${axis}axis_value_2`);
+    const value1 = value1Control.value;
+    const value2 = value2Control.value;
     if (value1) params.set(`${axis}axis_value_1`, value1);
     if (value2) params.set(`${axis}axis_value_2`, value2);
   }
   return params;
+}
+
+function updateUrlFromControls() {
+  const params = buildBootstrapParams();
+  params.set("errors", el["show-errors"].checked ? "1" : "0");
+  params.set("binaries", el["include-binaries"].checked ? "1" : "0");
+  params.set("agecolor", el["color-by-age"].checked ? "1" : "0");
+  copyInputValueToParam(params, "xerr_max", "xerr-max");
+  copyInputValueToParam(params, "yerr_max", "yerr-max");
+  const query = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+}
+
+function copyInputValueToParam(params, paramName, elementId) {
+  const value = String(el[elementId]?.value || "").trim();
+  if (value) params.set(paramName, value);
+  else params.delete(paramName);
 }
 
 function backendHighlightOidValue() {
@@ -1019,6 +1045,7 @@ function buildMaps(catalog) {
   const designationsByOid = new Map();
   const oidsByDesignation = new Map();
   const designationRows = [];
+  const spectrumSpecidsByOid = new Map();
   const spectralIndexByOid = new Map();
   const equivalentWidthByOid = new Map();
   const ageByOid = new Map();
@@ -1036,6 +1063,7 @@ function buildMaps(catalog) {
   }
   addNestedRows(photometryByOid, catalog.photometry || [], "moca_psid");
   addSimplePhotometryRows(simplePhotometryByOid, catalog.photometry || []);
+  addSpectrumRows(spectrumSpecidsByOid, catalog.spectra || []);
   addDesignationRows(designationsByOid, oidsByDesignation, designationRows, catalog.designations || []);
   addNestedRows(spectralIndexByOid, catalog.spectralIndices || [], "moca_siid");
   addNestedRows(equivalentWidthByOid, catalog.equivalentWidths || [], "moca_spid");
@@ -1051,10 +1079,25 @@ function buildMaps(catalog) {
     designationsByOid,
     oidsByDesignation,
     designationRows,
+    spectrumSpecidsByOid,
     spectralIndexByOid,
     equivalentWidthByOid,
     ageByOid,
   };
+}
+
+function addSpectrumRows(target, rows) {
+  for (const row of rows) {
+    const oid = Number(row.moca_oid);
+    const specid = normalizedMocaSpecid(row.moca_specid);
+    if (!Number.isFinite(oid) || !specid) continue;
+    if (!target.has(oid)) target.set(oid, []);
+    const specids = target.get(oid);
+    if (!specids.includes(specid)) specids.push(specid);
+  }
+  for (const specids of target.values()) {
+    specids.sort((a, b) => Number(a) - Number(b));
+  }
 }
 
 function addSimplePhotometryRows(target, rows) {
@@ -1390,6 +1433,7 @@ function optionHtml(value, label) {
 }
 
 function render() {
+  updateUrlFromControls();
   if (!state.raw || !state.maps) return;
   if (applyAxisErrorDefaults()) requestInitialAxisRange();
   if (deferRenderUntilPhotometricDistancesLoaded()) return;
@@ -1611,6 +1655,7 @@ function axisValue(object, spec, includePhotdist) {
         label: row.description || spec.value1,
         value: Number(row.index_value),
         error: numericValue(row.index_value_unc),
+        moca_specid: normalizedMocaSpecid(row.moca_specid),
       }],
     };
   }
@@ -1630,6 +1675,7 @@ function axisValue(object, spec, includePhotdist) {
         value: Number(row.ew_angstrom) * scale,
         error: numericValue(row.ew_angstrom_unc) * scale,
         unit,
+        moca_specid: normalizedMocaSpecid(row.moca_specid),
       }],
     };
   }
@@ -2919,10 +2965,13 @@ function renderTable(oids) {
     return;
   }
   const selected = state.rows.filter((row) => oids.includes(row.moca_oid));
+  const showAllSpectraLinks = selected.some((row) => allSpectrumSpecidsForRow(row).length);
+  const showSpectrumLinks = selected.some((row) => spectrumSpecidsForRow(row).length);
   const columns = [
     tableColumn("moca_oid"),
     tableColumn("designation"),
     tableColumn("spectral_type"),
+    ...(showSpectrumLinks ? [spectrumSpecidTableColumn()] : []),
     tableColumn("x"),
     tableColumn("y"),
     ...inputTableColumns(selected),
@@ -2930,7 +2979,13 @@ function renderTable(oids) {
   if (el["color-by-age"].checked) {
     columns.push(tableColumn("age_myr"), tableColumn("age_sample"));
   }
-  const headerCells = ["plot", "report", ...columns.map((col) => col.label)]
+  const headerCells = [
+    "plot",
+    "report",
+    ...(showAllSpectraLinks ? ["all spectra"] : []),
+    ...(showSpectrumLinks ? ["spectrum"] : []),
+    ...columns.map((col) => col.label),
+  ]
     .map((col) => `<th>${escapeHtml(plainText(col))}</th>`)
     .join("");
   el["selection-table"].innerHTML = `
@@ -2943,6 +2998,8 @@ function renderTable(oids) {
             <tr>
               <td>${bdTableMarkerHtml(row)}</td>
               <td>${reportUrl ? `<a class="report-link" href="${escapeHtml(reportUrl)}" target="_blank" rel="noopener">Report</a>` : ""}</td>
+              ${showAllSpectraLinks ? `<td>${allSpectraLinkHtml(row)}</td>` : ""}
+              ${showSpectrumLinks ? `<td>${spectrumLinkHtml(row)}</td>` : ""}
               ${columns.map((col) => `<td>${escapeHtml(col.value(row))}</td>`).join("")}
             </tr>
           `;
@@ -2983,6 +3040,81 @@ function tableColumn(key) {
   };
 }
 
+function spectrumSpecidTableColumn() {
+  return {
+    label: "moca_specid",
+    value: (row) => spectrumSpecidsForRow(row).join(", "),
+  };
+}
+
+function spectrumSpecidsForRow(row) {
+  const seen = new Set();
+  const specids = [];
+  for (const input of row.input_data || []) {
+    if (!isSpectrumInput(input)) continue;
+    const specid = normalizedMocaSpecid(input.moca_specid);
+    if (!specid || seen.has(specid)) continue;
+    seen.add(specid);
+    specids.push(specid);
+  }
+  return specids;
+}
+
+function allSpectrumSpecidsForRow(row) {
+  const oid = Number(row?.moca_oid);
+  if (!Number.isFinite(oid)) return [];
+  return state.maps?.spectrumSpecidsByOid?.get(oid) || [];
+}
+
+function isSpectrumInput(input) {
+  const key = String(input?.key || "");
+  return key.startsWith("spectral_index:") || key.startsWith("equivalent_width:");
+}
+
+function spectrumLinkHtml(row) {
+  const url = spectraExplorerUrlForRow(row);
+  if (!url) return "";
+  return `<a class="report-link spectrum-link" role="button" href="${escapeHtml(url)}" target="_blank" rel="noopener">View spectrum</a>`;
+}
+
+function allSpectraLinkHtml(row) {
+  const url = allSpectraExplorerUrlForRow(row);
+  if (!url) return "";
+  return `<a class="report-link all-spectra-link" role="button" href="${escapeHtml(url)}" target="_blank" rel="noopener">View all spectra</a>`;
+}
+
+function spectraExplorerUrlForRow(row) {
+  const specids = spectrumSpecidsForRow(row);
+  return spectraExplorerUrlForSpecids(specids);
+}
+
+function allSpectraExplorerUrlForRow(row) {
+  const specids = allSpectrumSpecidsForRow(row);
+  return spectraExplorerUrlForSpecids(specids);
+}
+
+function spectraExplorerUrlForSpecids(specids) {
+  if (!specids.length) return "";
+  const url = new URL("spectra", appBaseUrl);
+  const params = spectraExplorerUrlParams();
+  params.set("moca_specid", specids.join(","));
+  url.search = params.toString();
+  return url.toString();
+}
+
+function spectraExplorerUrlParams() {
+  const source = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams();
+  for (const key of ["host", "user", "pwd", "dbase", "database", "db", "mock"]) {
+    if (source.has(key)) params.set(key, source.get(key));
+  }
+  if (!params.has("dbase")) {
+    const databaseName = source.get("database") || source.get("db");
+    if (databaseName) params.set("dbase", databaseName);
+  }
+  return params;
+}
+
 function formatIntegerCell(value) {
   const number = Number(value);
   return Number.isFinite(number) ? String(Math.trunc(number)) : "";
@@ -3016,6 +3148,15 @@ function mocaReportUrl(oid) {
 function normalizedMocaOid(oid) {
   if (oid === null || oid === undefined) return "";
   const text = String(oid).trim();
+  if (!text) return "";
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return number.toFixed(0);
+}
+
+function normalizedMocaSpecid(specid) {
+  if (specid === null || specid === undefined) return "";
+  const text = String(specid).trim();
   if (!text) return "";
   const number = Number(text);
   if (!Number.isFinite(number) || number <= 0) return "";

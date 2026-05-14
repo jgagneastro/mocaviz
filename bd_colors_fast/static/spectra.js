@@ -282,6 +282,7 @@ function renderSelectedSpectra() {
 }
 
 async function loadSpectra() {
+  updateSpectraUrl();
   if (!speState.selected.length) {
     renderEmptySpectra("Select one or more spectra");
     return;
