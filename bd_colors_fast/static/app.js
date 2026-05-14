@@ -2964,11 +2964,13 @@ function toggleLegendValue(hiddenValues, value) {
 }
 
 function renderTable(oids) {
-  if (!oids.length) {
-    el["selection-table"].textContent = "No points selected.";
+  const selected = oids.length
+    ? state.rows.filter((row) => oids.includes(row.moca_oid))
+    : state.rows;
+  if (!selected.length) {
+    el["selection-table"].textContent = "No points to show.";
     return;
   }
-  const selected = state.rows.filter((row) => oids.includes(row.moca_oid));
   const showAllSpectraLinks = selected.some((row) => allSpectrumSpecidsForRow(row).length);
   const showSpectrumLinks = selected.some((row) => spectrumSpecidsForRow(row).length);
   const columns = [
