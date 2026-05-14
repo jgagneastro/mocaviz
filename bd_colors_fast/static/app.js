@@ -1869,6 +1869,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   if (highlightedRows.length) {
     traces.push(...highlightedPointTraces(highlightedRows));
   }
+  traces.push(selectedPointTrace(selectedMarkerRows(plottedRows)));
 
   const plotSize = syncPlotGeometry();
   const layout = {
@@ -2318,6 +2319,50 @@ function highlightedPointTraces(rows) {
       name: "Highlighted",
     },
   ].filter(Boolean);
+}
+
+function selectedMarkerRows(rows = state.rows) {
+  if (!state.selectedOids.length) return [];
+  const selected = new Set(state.selectedOids);
+  return rows.filter((row) => selected.has(row.moca_oid));
+}
+
+function selectedPointTrace(rows) {
+  return {
+    type: "scattergl",
+    uid: "selected-point-marker",
+    mode: "markers",
+    x: rows.map(plotX),
+    y: rows.map(plotY),
+    text: rows.map((row) => row.hover),
+    customdata: rows.map((row) => row.moca_oid),
+    hoverinfo: "text",
+    marker: {
+      symbol: "star",
+      size: 22,
+      color: "#ffffff",
+      opacity: 1,
+      line: { color: "#d69e00", width: 3.2 },
+    },
+    name: "Selected",
+    showlegend: false,
+  };
+}
+
+function updateSelectedPointMarker() {
+  const traceIndex = selectedPointTraceIndex();
+  if (traceIndex < 0 || !el.plot?._fullLayout) return;
+  const trace = selectedPointTrace(selectedMarkerRows());
+  Plotly.restyle(el.plot, {
+    x: [trace.x],
+    y: [trace.y],
+    text: [trace.text],
+    customdata: [trace.customdata],
+  }, [traceIndex]);
+}
+
+function selectedPointTraceIndex() {
+  return (el.plot?.data || []).findIndex((trace) => trace.uid === "selected-point-marker");
 }
 
 function binaryOverlayTraces(rows, opacityByOid, pointOpacity) {
@@ -2836,16 +2881,19 @@ function bindPlotEvents() {
   el.plot.on("plotly_selected", (event) => {
     state.selectedOids = event?.points?.map((point) => Number(point.customdata)).filter(Number.isFinite) || [];
     renderTable(state.selectedOids);
+    updateSelectedPointMarker();
   });
   el.plot.on("plotly_deselect", () => {
     state.selectedOids = [];
     renderTable([]);
+    updateSelectedPointMarker();
   });
   el.plot.on("plotly_click", (event) => {
     const oid = clickedPlotOid(event);
     if (Number.isFinite(oid)) {
       state.selectedOids = [oid];
       renderTable(state.selectedOids);
+      updateSelectedPointMarker();
     }
   });
   el.plot.on("plotly_legendclick", (event) => {
