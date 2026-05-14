@@ -2746,7 +2746,7 @@ function photometrySimpleBandForValue(value) {
 function axisLayout(axis, label, rows, initialRange) {
   const layout = {
     title: {
-      text: label,
+      text: axisTitleLabel(label),
       font: { size: 18 },
       standoff: axis === "x" ? 14 : 12,
     },
@@ -2781,6 +2781,10 @@ function axisLayout(axis, label, rows, initialRange) {
     layout.autorange = "reversed";
   }
   return layout;
+}
+
+function axisTitleLabel(label) {
+  return String(label ?? "").replace(/\bCO2\b/g, "CO<sub>2</sub>");
 }
 
 function errorBarTrace(rows, opacity = 0.2, uid = "error-bars") {
