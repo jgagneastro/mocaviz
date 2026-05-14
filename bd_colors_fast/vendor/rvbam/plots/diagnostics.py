@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import json
+import os
 import numpy as np
 
 import matplotlib
-import os
-if "MPLBACKEND" not in os.environ:
-    matplotlib.use("Agg")
+os.environ["MPLBACKEND"] = "Agg"
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 try:
     import corner

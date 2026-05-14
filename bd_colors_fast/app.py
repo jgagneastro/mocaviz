@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLBACKEND"] = "Agg"
+
 import numpy as np
 import pandas as pd
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
@@ -9160,8 +9163,8 @@ def _load_rvbam_rebuilt_corner_from_db(args: dict[str, Any], segment_id: int) ->
     _prepare_rvbam_imports()
     mpl_config_dir = Path(os.environ.get("MPLCONFIGDIR", "/tmp/matplotlib"))
     mpl_config_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
-    os.environ.setdefault("MPLBACKEND", "Agg")
+    os.environ["MPLCONFIGDIR"] = str(mpl_config_dir)
+    os.environ["MPLBACKEND"] = "Agg"
     from rvbam.plots.diagnostics import save_corner_plot
 
     with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
@@ -9541,8 +9544,8 @@ def _load_rvbam_global_corner_from_db(args: dict[str, Any], run_id: int) -> dict
     _prepare_rvbam_imports()
     mpl_config_dir = Path(os.environ.get("MPLCONFIGDIR", "/tmp/matplotlib"))
     mpl_config_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
-    os.environ.setdefault("MPLBACKEND", "Agg")
+    os.environ["MPLCONFIGDIR"] = str(mpl_config_dir)
+    os.environ["MPLBACKEND"] = "Agg"
     from rvbam.plots.diagnostics import save_corner_plot
 
     labels = [*selected_names, "wavelength_um"]
