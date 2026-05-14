@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RVBAM Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=rvbam-20260513f">
+  <link rel="stylesheet" href="static/styles.css?v=rvbam-20260513g">
   <script src="plotly.min.js"></script>
 </head>
 <body class="rvbam-page">
@@ -127,6 +127,7 @@
               <button type="button" data-rvb-tab="rebuilt" hidden>Rebuild Model Fit</button>
               <button type="button" data-rvb-tab="corner">Corner Plot</button>
               <button type="button" data-rvb-tab="rebuilt-corner" hidden>Rebuild Corner Plot</button>
+              <button type="button" data-rvb-tab="global-corner">Global Corner Plot</button>
               <button type="button" data-rvb-tab="posterior">Posteriors</button>
               <button type="button" data-rvb-tab="params">Parameters</button>
               <button type="button" data-rvb-tab="payload">Payload</button>
@@ -152,6 +153,14 @@
               </div>
               <div id="rvb-rebuilt-corner-plot"></div>
               <div id="rvb-rebuilt-corner-meta" class="rvb-rebuilt-meta"></div>
+            </div>
+
+            <div id="rvb-tab-global-corner" class="rvb-tab-panel rvb-global-corner-panel">
+              <div class="rvb-tab-actions">
+                <button id="rvb-load-global-corner" type="button" disabled>Build Global Corner Plot</button>
+              </div>
+              <div id="rvb-global-corner-plot"></div>
+              <div id="rvb-global-corner-meta" class="rvb-rebuilt-meta"></div>
             </div>
 
             <div id="rvb-tab-rebuilt" class="rvb-tab-panel rvb-rebuilt-panel">

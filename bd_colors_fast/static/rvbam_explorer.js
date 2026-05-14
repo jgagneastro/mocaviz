@@ -4,6 +4,7 @@ const rvbState = {
   segmentDetail: null,
   posterior: null,
   rebuiltCorner: null,
+  globalCorner: null,
   rebuiltFit: null,
   selectedSegmentId: null,
   selectedIds: null,
@@ -14,6 +15,7 @@ const rvbState = {
   loadToken: 0,
   segmentToken: 0,
   posteriorToken: 0,
+  globalCornerToken: 0,
   plotEventsBound: false,
   activeTab: "fit",
 };
@@ -80,6 +82,7 @@ function collectRvbamElements() {
     "rvb-max-points",
     "rvb-load-posterior",
     "rvb-load-rebuilt-corner",
+    "rvb-load-global-corner",
     "rvb-load-rebuilt-fit",
     "rvb-segment-plot",
     "rvb-plot-loader",
@@ -102,6 +105,8 @@ function collectRvbamElements() {
     "rvb-correlation-plot",
     "rvb-rebuilt-corner-plot",
     "rvb-rebuilt-corner-meta",
+    "rvb-global-corner-plot",
+    "rvb-global-corner-meta",
     "rvb-rebuilt-fit-plot",
     "rvb-rebuilt-fit-meta",
     "rvb-params-table",
@@ -181,6 +186,7 @@ function bindRvbamControls() {
   }
   rvbEl["rvb-load-posterior"].addEventListener("click", loadRvbamPosterior);
   rvbEl["rvb-load-rebuilt-corner"].addEventListener("click", loadRvbamRebuiltCorner);
+  rvbEl["rvb-load-global-corner"].addEventListener("click", loadRvbamGlobalCorner);
   rvbEl["rvb-load-rebuilt-fit"].addEventListener("click", loadRvbamRebuiltFit);
   rvbEl["rvb-param-x"].addEventListener("change", () => {
     rvbState.requestedXParam = rvbEl["rvb-param-x"].value;
@@ -200,7 +206,7 @@ function bindRvbamControls() {
     button.addEventListener("click", () => activateRvbamTab(button.dataset.rvbTab || "fit"));
   });
   window.addEventListener("resize", debounce(() => {
-    for (const id of ["rvb-segment-plot", "rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-rebuilt-fit-plot"]) {
+    for (const id of ["rvb-segment-plot", "rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot"]) {
       if (rvbEl[id]) Plotly.Plots.resize(rvbEl[id]);
     }
   }, 150));
@@ -310,6 +316,7 @@ async function loadSelectedRvbamRun() {
     rvbState.payload = payload;
     rvbState.posterior = null;
     rvbState.rebuiltCorner = null;
+    rvbState.globalCorner = null;
     rvbState.rebuiltFit = null;
     rvbState.segmentDetail = null;
     rvbState.selectedIds = null;
@@ -344,6 +351,8 @@ function renderRvbamRun() {
   renderRvbamSegmentsTable();
   renderRvbamSegmentPlot();
   renderRvbamSummary();
+  updateRvbamGlobalCornerControls();
+  if (!rvbState.globalCorner) renderEmptyGlobalCorner("Global corner not loaded");
   updateRvbamExportButtons();
 }
 
@@ -694,6 +703,22 @@ function updateRvbamRebuiltCornerControls(payloads) {
   if (!available && rvbState.activeTab === "rebuilt-corner") activateRvbamTab("corner");
 }
 
+function updateRvbamGlobalCornerControls() {
+  const button = rvbEl["rvb-load-global-corner"];
+  if (!button) return;
+  const runId = currentRvbamRunId();
+  const segments = rvbState.payload?.segments || [];
+  const includeIgnored = Boolean(rvbEl["rvb-include-ignored"]?.checked);
+  const available = segments.some((row) => row.moca_sample_run_id && Number(row.chain_payloads || 0) > 0 && (includeIgnored || !Number(row.ignored || 0)));
+  button.disabled = !runId || !available;
+}
+
+function currentRvbamRunId() {
+  return numberOrNull(rvbState.payload?.run?.moca_rv_sample_run_id)
+    || numberOrNull(rvbEl["rvb-run"]?.value)
+    || rvbState.requestedRunId;
+}
+
 function updateRvbamFigureTabs(detail) {
   const hasOnline = hasRvbamOnlineFigureSet(detail);
   const checkbox = rvbEl["rvb-use-online-figures"];
@@ -736,7 +761,7 @@ function ensureRvbamActiveTabVisible() {
 }
 
 function firstVisibleRvbamTab() {
-  const order = ["rebuilt", "fit", "rebuilt-corner", "corner", "posterior", "params", "payload"];
+  const order = ["rebuilt", "fit", "rebuilt-corner", "global-corner", "corner", "posterior", "params", "payload"];
   for (const name of order) {
     const button = document.querySelector(`[data-rvb-tab="${name}"]`);
     if (button && !button.hidden) return name;
@@ -941,6 +966,42 @@ async function loadRvbamRebuiltCorner() {
   }
 }
 
+async function loadRvbamGlobalCorner() {
+  const runId = currentRvbamRunId();
+  if (!runId) return;
+  const token = ++rvbState.globalCornerToken;
+  setRvbamStatus("Building global corner plot", "loading");
+  rvbEl["rvb-load-global-corner"].disabled = true;
+  const params = connectionParams();
+  if (rvbEl["rvb-include-ignored"].checked) params.set("include_ignored", "1");
+  const names = rebuiltCornerParameterNames();
+  if (names.length) params.set("params", names.join(","));
+  params.set("max_params", "10");
+  params.set("max_total_samples", "12000");
+  params.set("max_segment_samples", "1200");
+  params.set("corner_keep_weight", "0.99");
+  try {
+    const payload = await fetchJsonUrl(rvbAppUrl(`api/rvbam-explorer/run/${runId}/global-corner?${params.toString()}`));
+    if (token !== rvbState.globalCornerToken) return;
+    if (!payload.ok) throw new Error(payload.error || "Could not build global corner plot");
+    rvbState.globalCorner = payload;
+    activateRvbamTab("global-corner");
+    renderRvbamGlobalCorner();
+    if (payload.available) {
+      setRvbamStatus(`Global corner from ${payload.meta?.returned_sample_count || 0} samples across ${payload.meta?.used_segment_count || 0} segments`, "");
+    } else {
+      setRvbamStatus(payload.meta?.message || "No global corner image", "error");
+    }
+  } catch (error) {
+    if (token !== rvbState.globalCornerToken) return;
+    setRvbamStatus(error.message || "Could not build global corner plot", "error");
+    renderEmptyGlobalCorner(error.message || "Could not build global corner plot");
+    activateRvbamTab("global-corner");
+  } finally {
+    updateRvbamGlobalCornerControls();
+  }
+}
+
 function rebuiltCornerParameterNames() {
   const parameters = rvbState.segmentDetail?.parameters || [];
   return parameters
@@ -1000,6 +1061,53 @@ function renderRvbamRebuiltCorner() {
   Plotly.react(rvbEl["rvb-rebuilt-corner-plot"], traces, layout, plotConfig("rvbam_rebuilt_corner", { saveImage: true }));
   renderRvbamRebuiltCornerMeta(payload, params);
   setTimeout(() => Plotly.Plots.resize(rvbEl["rvb-rebuilt-corner-plot"]), 0);
+}
+
+function renderRvbamGlobalCorner() {
+  const payload = rvbState.globalCorner || {};
+  const image = payload.image || {};
+  if (!payload.available || !image.data_url) {
+    renderEmptyGlobalCorner(payload.meta?.message || "No global corner image");
+    return;
+  }
+  rvbEl["rvb-global-corner-plot"].style.width = "100%";
+  rvbEl["rvb-global-corner-plot"].style.height = "100%";
+  const layout = {
+    autosize: true,
+    margin: { l: 0, r: 0, t: 0, b: 0 },
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    showlegend: false,
+    hovermode: false,
+    dragmode: "zoom",
+    xaxis: { visible: false, range: [0, 1], fixedrange: false, constrain: "domain" },
+    yaxis: { visible: false, range: [0, 1], fixedrange: false, scaleanchor: "x", scaleratio: 1, constrain: "domain" },
+    images: [{
+      source: image.data_url,
+      xref: "x",
+      yref: "y",
+      x: 0,
+      y: 1,
+      sizex: 1,
+      sizey: 1,
+      xanchor: "left",
+      yanchor: "top",
+      sizing: "contain",
+      layer: "above",
+    }],
+  };
+  const traces = [{
+    type: "scatter",
+    mode: "markers",
+    x: [0, 1],
+    y: [0, 1],
+    marker: { size: 1, opacity: 0 },
+    hoverinfo: "skip",
+    showlegend: false,
+  }];
+  Plotly.react(rvbEl["rvb-global-corner-plot"], traces, layout, plotConfig("rvbam_global_corner", { saveImage: true }));
+  renderRvbamGlobalCornerMeta(payload);
+  setTimeout(() => Plotly.Plots.resize(rvbEl["rvb-global-corner-plot"]), 0);
 }
 
 function rebuiltCornerSummaryMap(payload) {
@@ -1101,6 +1209,10 @@ function renderRvbamRebuiltCornerMeta(payload, params) {
   rvbEl["rvb-rebuilt-corner-meta"].innerHTML = "";
 }
 
+function renderRvbamGlobalCornerMeta(payload) {
+  rvbEl["rvb-global-corner-meta"].innerHTML = "";
+}
+
 function renderEmptyRebuiltCorner(message) {
   if (!rvbEl["rvb-rebuilt-corner-plot"]) return;
   const text = message === "Rebuilt corner not loaded"
@@ -1110,6 +1222,17 @@ function renderEmptyRebuiltCorner(message) {
   rvbEl["rvb-rebuilt-corner-plot"].style.height = "";
   Plotly.react(rvbEl["rvb-rebuilt-corner-plot"], [], emptyLayout(text), plotConfig("rvbam_rebuilt_corner_empty"));
   if (rvbEl["rvb-rebuilt-corner-meta"]) rvbEl["rvb-rebuilt-corner-meta"].innerHTML = "";
+}
+
+function renderEmptyGlobalCorner(message) {
+  if (!rvbEl["rvb-global-corner-plot"]) return;
+  const text = message === "Global corner not loaded"
+    ? 'Global corner not loaded<br><span style="font-size:12px;">Use the Build Global Corner Plot button in this tab</span>'
+    : (message || "Global corner not loaded");
+  rvbEl["rvb-global-corner-plot"].style.width = "";
+  rvbEl["rvb-global-corner-plot"].style.height = "";
+  Plotly.react(rvbEl["rvb-global-corner-plot"], [], emptyLayout(text), plotConfig("rvbam_global_corner_empty"));
+  if (rvbEl["rvb-global-corner-meta"]) rvbEl["rvb-global-corner-meta"].innerHTML = "";
 }
 
 function shortParamName(name) {
@@ -1520,6 +1643,7 @@ function renderEmptyRvbam(message) {
   rvbState.segmentDetail = null;
   rvbState.posterior = null;
   rvbState.rebuiltCorner = null;
+  rvbState.globalCorner = null;
   rvbState.selectedSegmentId = null;
   renderEmptyPlot(message);
   rvbEl["rvb-summary"].textContent = message;
@@ -1527,6 +1651,8 @@ function renderEmptyRvbam(message) {
   rvbEl["rvb-info"].innerHTML = "";
   rvbEl["rvb-segments-table"].innerHTML = `<div class="rvb-empty-detail">${escapeHtml(message)}</div>`;
   renderRvbamSegmentError(message);
+  renderEmptyGlobalCorner(message);
+  updateRvbamGlobalCornerControls();
   updateRvbamExportButtons();
 }
 
@@ -1599,7 +1725,7 @@ function activateRvbamTab(name) {
     panel.classList.toggle("is-active", panel.id === `rvb-tab-${name}`);
   });
   setTimeout(() => {
-    for (const id of ["rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-rebuilt-fit-plot"]) {
+    for (const id of ["rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot"]) {
       if (rvbEl[id]) Plotly.Plots.resize(rvbEl[id]);
     }
   }, 0);

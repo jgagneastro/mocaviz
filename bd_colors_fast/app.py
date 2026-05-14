@@ -9208,6 +9208,391 @@ def _load_rvbam_rebuilt_corner_from_db(args: dict[str, Any], segment_id: int) ->
     return payload
 
 
+def _rvbam_wavelength_micron(value: Any) -> float | None:
+    number = _safe_float(value)
+    if number is None:
+        return None
+    return float(number / 10000.0 if abs(number) > 1000 else number)
+
+
+def _rvbam_segment_wavelength_bounds_micron(segment: dict[str, Any]) -> tuple[float, float] | None:
+    left = _rvbam_wavelength_micron(segment.get("wv_min"))
+    right = _rvbam_wavelength_micron(segment.get("wv_max"))
+    if left is None or right is None:
+        center = _rvbam_wavelength_micron(segment.get("wv_center"))
+        if center is None:
+            return None
+        return center, center
+    if right < left:
+        left, right = right, left
+    return float(left), float(right)
+
+
+def _rvbam_global_corner_names(
+    args: dict[str, Any],
+    segment_payloads: list[dict[str, Any]],
+) -> list[str]:
+    max_params = _rvbam_limit_arg(args, "max_params", 8, 11)
+    if not segment_payloads:
+        return []
+    available_sets = [
+        {str(param.get("param_name") or "") for param in item["used_parameters"] if param.get("param_name")}
+        for item in segment_payloads
+    ]
+    common = set.intersection(*available_sets) if available_sets else set()
+    raw = str(args.get("params") or "").strip()
+    if raw and raw.lower() not in {"all", "*"}:
+        requested = [item.strip() for item in raw.split(",") if item.strip()]
+        return [name for name in requested if name in common][:max_params]
+
+    first_params = segment_payloads[0]["used_parameters"]
+    ordered_common = [
+        str(param.get("param_name"))
+        for param in first_params
+        if param.get("param_name")
+        and str(param.get("param_name")) in common
+        and (raw.lower() in {"all", "*"} or not _as_bool(param.get("is_fixed")))
+    ]
+    preferred = [name for name in ("rv_kms", "lsf_sigma_kms", "vsini_kms") if name in ordered_common]
+    for name in ordered_common:
+        if name not in preferred:
+            preferred.append(name)
+    return preferred[:max_params]
+
+
+def _load_rvbam_global_corner_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]:
+    keep_weight = _safe_float(args.get("corner_keep_weight") or args.get("keep_weight"))
+    if keep_weight is None:
+        keep_weight = 0.99
+    keep_weight = min(max(float(keep_weight), 0.0), 1.0)
+    q_low = _safe_float(args.get("q_low"))
+    q_high = _safe_float(args.get("q_high"))
+    q_low = 0.005 if q_low is None else min(max(float(q_low), 0.0), 0.49)
+    q_high = 0.995 if q_high is None else min(max(float(q_high), 0.51), 1.0)
+    max_total_samples = _rvbam_limit_arg(args, "max_total_samples", 12000, 60000)
+    max_segment_samples = _rvbam_limit_arg(args, "max_segment_samples", 1200, 8000)
+    seed = _rvbam_int_arg(args, "seed")
+    if seed is None:
+        seed = int(hashlib.sha1(f"rvbam-global-corner:{run_id}".encode("utf-8")).hexdigest()[:8], 16)
+    cache_key = _rvbam_cache_key(
+        args,
+        "global-corner",
+        run_id,
+        args.get("params") or "",
+        args.get("max_params") or "",
+        args.get("include_ignored") or args.get("show_ignored") or "",
+        keep_weight,
+        q_low,
+        q_high,
+        max_total_samples,
+        max_segment_samples,
+        seed,
+    )
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    rng = np.random.default_rng(int(seed) % (2**32 - 1))
+    skipped_segments: list[dict[str, Any]] = []
+    segment_payloads: list[dict[str, Any]] = []
+    candidate_segment_count = 0
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "available": False,
+                "run": {"moca_rv_sample_run_id": int(run_id)},
+                "selectedParams": [],
+                "image": {},
+                "segments": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "missing_tables": missing,
+                    "private_db": _is_private_db(args),
+                    "message": "RVBAM payload tables are not available.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+
+        run_rows = _records(_read_sql(conn, """
+            SELECT
+                r.moca_rv_sample_run_id,
+                r.moca_oid,
+                mo.designation,
+                r.moca_instid,
+                r.moca_specid,
+                ms.spectrum_name,
+                r.moca_mgridid,
+                r.pipeline_version,
+                r.target_name,
+                r.template_name,
+                r.ignored
+            FROM pcat_rv_sampling_runs r
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = r.moca_oid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = r.moca_specid
+            WHERE r.moca_rv_sample_run_id = :run_id
+        """, {"run_id": int(run_id)}))
+        run = run_rows[0] if run_rows else {"moca_rv_sample_run_id": int(run_id)}
+        ignored_clause = "" if _as_bool(args.get("include_ignored") or args.get("show_ignored")) else "AND COALESCE(s.ignored, 0) = 0"
+        segments = _records(_read_sql(conn, f"""
+            SELECT
+                s.moca_rv_sampling_segment_id,
+                s.moca_rv_sample_run_id,
+                s.moca_sample_run_id,
+                s.order_number,
+                s.window_number,
+                s.segment_number,
+                s.wv_min,
+                s.wv_max,
+                s.wv_center,
+                s.ignored,
+                sr.n_walkers
+            FROM pcat_rv_sampling_segments s
+            LEFT JOIN pcat_sampling_runs sr
+                ON sr.moca_sample_run_id = s.moca_sample_run_id
+            WHERE s.moca_rv_sample_run_id = :run_id
+                AND s.moca_sample_run_id IS NOT NULL
+                {ignored_clause}
+            ORDER BY s.order_number, s.window_number, s.segment_number, s.wv_min, s.moca_rv_sampling_segment_id
+        """, {"run_id": int(run_id)}))
+        candidate_segment_count = len(segments)
+
+        for segment in segments:
+            segment_id = segment.get("moca_rv_sampling_segment_id")
+            sample_run_id = segment.get("moca_sample_run_id")
+            bounds = _rvbam_segment_wavelength_bounds_micron(segment)
+            if bounds is None:
+                skipped_segments.append({"segment_id": segment_id, "reason": "missing wavelength bounds"})
+                continue
+            parameters = _rvbam_parameter_order(_records(_read_sql(conn, """
+                SELECT
+                    moca_sampling_parameter_id,
+                    moca_sample_run_id,
+                    param_name,
+                    param_index,
+                    units,
+                    mean_value,
+                    median_value,
+                    std_value,
+                    p16_value,
+                    p84_value,
+                    is_fixed,
+                    fixed_value,
+                    lower_bound,
+                    upper_bound,
+                    prior_type,
+                    prior_details,
+                    init_guess,
+                    proposal_scale,
+                    ignored
+                FROM pcat_sampling_parameters
+                WHERE moca_sample_run_id = :sample_run_id
+                    AND COALESCE(ignored, 0) = 0
+                ORDER BY param_index, param_name
+            """, {"sample_run_id": int(sample_run_id)})))
+            chain_payload = _rvbam_fetch_chain_payload(conn, int(sample_run_id))
+            if chain_payload is None:
+                skipped_segments.append({"segment_id": segment_id, "reason": "missing chains payload"})
+                continue
+            try:
+                chain_array = _decode_rvbam_payload_array(chain_payload)
+                matrix, used_parameters = _rvbam_chain_matrix(chain_array, parameters)
+                if matrix.size == 0:
+                    skipped_segments.append({"segment_id": segment_id, "reason": "empty chains payload"})
+                    continue
+                weights, weights_meta = _rvbam_corner_weights(
+                    conn,
+                    int(sample_run_id),
+                    int(chain_payload.get("n_stored_samples") or 0),
+                    live_points=segment.get("n_walkers"),
+                )
+                if weights.size != matrix.shape[0]:
+                    weights, weights_meta = np.ones(matrix.shape[0], dtype=float), {
+                        "weights_source": "uniform fallback",
+                        "weights_note": f"Stored weight vector length did not match chain matrix rows ({weights.size} != {matrix.shape[0]}).",
+                    }
+            except Exception as exc:
+                skipped_segments.append({"segment_id": segment_id, "reason": f"{type(exc).__name__}: {exc}"})
+                continue
+            segment_payloads.append({
+                "segment": segment,
+                "bounds": bounds,
+                "matrix": matrix,
+                "weights": weights,
+                "used_parameters": used_parameters,
+                "chain_payload": chain_payload,
+                "weights_meta": weights_meta,
+            })
+
+    selected_names = _rvbam_global_corner_names(args, segment_payloads)
+    if not selected_names:
+        return {
+            "available": False,
+            "run": run,
+            "selectedParams": [],
+            "image": {},
+            "segments": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "segment_count": candidate_segment_count,
+                "used_segment_count": len(segment_payloads),
+                "skipped_segments": skipped_segments[:20],
+                "private_db": _is_private_db(args),
+                "message": "No common posterior parameters were found across segment chains.",
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    per_segment_limit = max(1, min(max_segment_samples, math.ceil(max_total_samples / max(len(segment_payloads), 1))))
+    combined_arrays: list[np.ndarray] = []
+    combined_weights: list[np.ndarray] = []
+    segment_summaries: list[dict[str, Any]] = []
+    for item in segment_payloads:
+        name_to_index = {str(param.get("param_name")): index for index, param in enumerate(item["used_parameters"])}
+        columns = [name_to_index[name] for name in selected_names if name in name_to_index and name_to_index[name] < item["matrix"].shape[1]]
+        if len(columns) != len(selected_names):
+            skipped_segments.append({
+                "segment_id": item["segment"].get("moca_rv_sampling_segment_id"),
+                "reason": "missing selected parameter columns",
+            })
+            continue
+        selected_matrix = np.asarray(item["matrix"][:, columns], dtype=float)
+        weights = np.asarray(item["weights"], dtype=float)
+        finite_rows = np.all(np.isfinite(selected_matrix), axis=1) & np.isfinite(weights) & (weights > 0)
+        selected_matrix = selected_matrix[finite_rows]
+        weights = weights[finite_rows]
+        finite_count = int(selected_matrix.shape[0])
+        selected_matrix, weights = _rvbam_apply_corner_keep_weight(selected_matrix, weights, keep_weight)
+        if selected_matrix.shape[0] <= selected_matrix.shape[1]:
+            skipped_segments.append({
+                "segment_id": item["segment"].get("moca_rv_sampling_segment_id"),
+                "reason": "too few weighted posterior samples",
+            })
+            continue
+        if selected_matrix.shape[0] > per_segment_limit:
+            p = weights / np.sum(weights) if np.sum(weights) > 0 else None
+            keep = rng.choice(selected_matrix.shape[0], size=per_segment_limit, replace=False, p=p)
+            selected_matrix = selected_matrix[keep]
+            weights = weights[keep]
+        w0, w1 = item["bounds"]
+        if w1 > w0:
+            wavelength = rng.uniform(w0, w1, size=selected_matrix.shape[0])
+        else:
+            wavelength = np.full(selected_matrix.shape[0], w0, dtype=float)
+        combined_arrays.append(np.column_stack([selected_matrix, wavelength]))
+        weight_sum = float(np.sum(weights))
+        combined_weights.append(weights / weight_sum if weight_sum > 0 else np.full(weights.shape[0], 1.0 / weights.shape[0]))
+        segment_summaries.append({
+            "moca_rv_sampling_segment_id": item["segment"].get("moca_rv_sampling_segment_id"),
+            "moca_sample_run_id": item["segment"].get("moca_sample_run_id"),
+            "segment_number": item["segment"].get("segment_number"),
+            "wavelength_min_um": _pythonize(w0),
+            "wavelength_max_um": _pythonize(w1),
+            "finite_sample_count": finite_count,
+            "returned_sample_count": int(selected_matrix.shape[0]),
+            "weights_source": item["weights_meta"].get("weights_source"),
+        })
+
+    if not combined_arrays:
+        return {
+            "available": False,
+            "run": run,
+            "selectedParams": [*selected_names, "wavelength_um"],
+            "image": {},
+            "segments": segment_summaries,
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "segment_count": candidate_segment_count,
+                "used_segment_count": 0,
+                "skipped_segments": skipped_segments[:20],
+                "private_db": _is_private_db(args),
+                "message": "No segment had enough finite weighted posterior samples for a global corner plot.",
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    combined_matrix = np.vstack(combined_arrays)
+    combined_weight = np.concatenate(combined_weights)
+    if combined_matrix.shape[0] <= combined_matrix.shape[1]:
+        return {
+            "available": False,
+            "run": run,
+            "selectedParams": [*selected_names, "wavelength_um"],
+            "image": {},
+            "segments": segment_summaries,
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "sample_count": int(combined_matrix.shape[0]),
+                "returned_sample_count": int(combined_matrix.shape[0]),
+                "private_db": _is_private_db(args),
+                "message": "Too few combined posterior samples to build a global corner plot.",
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    _prepare_rvbam_imports()
+    mpl_config_dir = Path(os.environ.get("MPLCONFIGDIR", "/tmp/matplotlib"))
+    mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    from rvbam.plots.diagnostics import save_corner_plot
+
+    labels = [*selected_names, "wavelength_um"]
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        save_corner_plot(
+            Path(tmp.name),
+            combined_matrix,
+            combined_weight,
+            labels,
+            q_low=q_low,
+            q_high=q_high,
+        )
+        tmp.seek(0)
+        png_bytes = tmp.read()
+    if not png_bytes:
+        raise ValueError("RVBAM global corner plot generation returned an empty image.")
+    encoded = base64.b64encode(png_bytes).decode("ascii")
+    payload = {
+        "available": True,
+        "run": run,
+        "selectedParams": labels,
+        "image": {
+            "mime_type": "image/png",
+            "data_url": f"data:image/png;base64,{encoded}",
+            "byte_count": len(png_bytes),
+        },
+        "segments": segment_summaries,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "segment_count": candidate_segment_count,
+            "used_segment_count": len(segment_summaries),
+            "skipped_segments": skipped_segments[:20],
+            "sample_count": int(sum(item.get("finite_sample_count", 0) for item in segment_summaries)),
+            "returned_sample_count": int(combined_matrix.shape[0]),
+            "per_segment_sample_limit": int(per_segment_limit),
+            "max_total_samples": int(max_total_samples),
+            "keep_weight": keep_weight,
+            "q_low": q_low,
+            "q_high": q_high,
+            "seed": int(seed),
+            "weights_source": "segment-normalized posterior weights",
+            "wavelength_source": "uniform random draw within each segment wavelength range",
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
 def _rvbam_segment_bounds_angstrom(wv_min: Any, wv_max: Any) -> tuple[float, float]:
     left = _safe_float(wv_min)
     right = _safe_float(wv_max)
@@ -10859,6 +11244,57 @@ def rvbam_explorer_segment_rebuilt_corner(segment_id: int):
             "selectedParams": [],
             "image": {},
             "payload": {},
+            "meta": meta,
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/run/<int:run_id>/global-corner")
+@app.get("/api/rvbam-explorer/run/<int:run_id>/global-corner-plot")
+@app.get("/api/rvbam_explorer/run/<int:run_id>/global-corner")
+@app.get("/api/rvbam_explorer/run/<int:run_id>/global-corner-plot")
+@app.get("/js/api/rvbam-explorer/run/<int:run_id>/global-corner")
+@app.get("/js/api/rvbam-explorer/run/<int:run_id>/global-corner-plot")
+@app.get("/js/api/rvbam_explorer/run/<int:run_id>/global-corner")
+@app.get("/js/api/rvbam_explorer/run/<int:run_id>/global-corner-plot")
+def rvbam_explorer_run_global_corner(run_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({
+                "ok": True,
+                "source": "mock",
+                "available": False,
+                "run": {"moca_rv_sample_run_id": int(run_id)},
+                "selectedParams": [],
+                "image": {},
+                "segments": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "message": "Mock RVBAM runs do not have persisted weighted corner payloads.",
+                },
+                "cache": {"hit": False, "ttl_seconds": 0},
+            })
+        payload = _load_rvbam_global_corner_from_db(args, int(run_id))
+        return jsonify({"ok": True, "source": "MOCAdb+RVBAM-global-corner", **payload})
+    except Exception as exc:
+        app.logger.exception("RVBAM global corner failed for run_id=%s", run_id)
+        meta = {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "sample_count": 0,
+            "returned_sample_count": 0,
+        }
+        if _is_local_app_request():
+            meta["traceback"] = traceback.format_exc()
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "available": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "run": {"moca_rv_sample_run_id": int(run_id)},
+            "selectedParams": [],
+            "image": {},
+            "segments": [],
             "meta": meta,
             "cache": {"hit": False, "ttl_seconds": 0},
         }), 500

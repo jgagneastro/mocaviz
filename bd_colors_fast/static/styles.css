@@ -2030,12 +2030,14 @@ tbody tr:nth-child(odd) {
   background: var(--line);
 }
 
-.rvb-rebuilt-corner-panel {
+.rvb-rebuilt-corner-panel,
+.rvb-global-corner-panel {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
 .rvb-rebuilt-panel.is-active,
-.rvb-rebuilt-corner-panel.is-active {
+.rvb-rebuilt-corner-panel.is-active,
+.rvb-global-corner-panel.is-active {
   display: grid;
 }
 
@@ -2055,6 +2057,7 @@ tbody tr:nth-child(odd) {
 #rvb-posterior-plot,
 #rvb-correlation-plot,
 #rvb-rebuilt-corner-plot,
+#rvb-global-corner-plot,
 #rvb-rebuilt-fit-plot {
   min-width: 0;
   min-height: 0;
@@ -2064,7 +2067,8 @@ tbody tr:nth-child(odd) {
   background: #ffffff;
 }
 
-.rvb-rebuilt-corner-panel .rvb-rebuilt-meta {
+.rvb-rebuilt-corner-panel .rvb-rebuilt-meta,
+.rvb-global-corner-panel .rvb-rebuilt-meta {
   display: none;
 }
 
