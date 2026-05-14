@@ -1492,7 +1492,7 @@ function renderCountSummary(rows, plotRanges = currentPlotRanges()) {
 
 function renderPlotHint() {
   const jitterText = hasSpectralTypeAxis() ? " Spectral-type axes use ±0.3 subtype jitter." : "";
-  el["plot-hint"].innerHTML = `Click a data point to open its MOCAdb report${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
+  el["plot-hint"].innerHTML = `Click a data point to select it${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function hasSpectralTypeAxis() {
@@ -2842,10 +2842,10 @@ function bindPlotEvents() {
     renderTable([]);
   });
   el.plot.on("plotly_click", (event) => {
-    const oid = Number(event?.points?.[0]?.customdata);
+    const oid = clickedPlotOid(event);
     if (Number.isFinite(oid)) {
-      const reportUrl = mocaReportUrl(oid);
-      if (reportUrl) window.open(reportUrl, "_blank");
+      state.selectedOids = [oid];
+      renderTable(state.selectedOids);
     }
   });
   el.plot.on("plotly_legendclick", (event) => {
@@ -2860,6 +2860,14 @@ function bindPlotEvents() {
     renderCountSummary(state.rows);
   });
   state.plotBound = true;
+}
+
+function clickedPlotOid(event) {
+  for (const point of event?.points || []) {
+    const oid = Number(point?.customdata);
+    if (Number.isFinite(oid)) return oid;
+  }
+  return NaN;
 }
 
 function handleLegendClick(trace) {
