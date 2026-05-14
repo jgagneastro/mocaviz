@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import base64
 import copy
+import gzip
 import hashlib
 import math
 import os
 import random
 import re
+import tempfile
 import time
+import traceback
+import types
 import zlib
 from datetime import date, datetime
 from decimal import Decimal
@@ -58,6 +63,9 @@ _SPECTRA_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _XYZUVW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _TRUEFLOW_AGE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _GAIA_CMD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_LEGACY_RV_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_RVBAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_RVBAM_ARRAY_CACHE: dict[str, tuple[float, np.ndarray]] = {}
 _PLOTLY_JS: str | None = None
 
 SPT_WV_MIN = 0.85
@@ -70,7 +78,7 @@ SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
 SPECTRA_EXPLORER_DEFAULT_SPECIDS = (13510,)
 SPECTRA_EXPLORER_MAX_SELECTED = int(os.environ.get("SPECTRA_EXPLORER_MAX_SELECTED", "30"))
-SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "200"))
+SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "0"))
 XYZUVW_DEFAULT_AIDS = ("HYA", "TWA", "THA")
 XYZUVW_DEFAULT_MTIDS = ("BF", "HM", "CM")
 XYZUVW_C_VALUE = 8.0
@@ -4481,11 +4489,19 @@ def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
         for item in str(args.get("checkbox") or "").replace(";", ",").split(",")
         if item.strip()
     }
-    for key in ("models", "errors", "hover", "assmem", "likely", "asscen"):
+    agecolor_aliases = {"age", "agecolor", "age_color", "color_age", "color-by-age", "color_by_age", "colorbyage"}
+    if checkbox_values.intersection(agecolor_aliases):
+        checkbox_values.difference_update(agecolor_aliases)
+        checkbox_values.add("agecolor")
+    for key in ("models", "errors", "hover", "assmem", "likely", "asscen", "subgroups", "agecolor"):
         if _as_bool(args.get(key)):
             checkbox_values.add(key)
+    if any(_as_bool(args.get(key)) for key in ("color_age", "color_by_age", "age_color")):
+        checkbox_values.add("agecolor")
     if not has_checkbox_param and args.get("likely") is None:
         checkbox_values.add("likely")
+    if not has_checkbox_param and args.get("subgroups") is None:
+        checkbox_values.add("subgroups")
     bsmdid_raw = str(args.get("bsmdid") or args.get("banyan_version") or "latest").strip()
     bsmdid = bsmdid_raw if bsmdid_raw == "latest" or bsmdid_raw.isdigit() else "latest"
     return {
@@ -4496,6 +4512,8 @@ def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
         "bsmdid": bsmdid,
         "likely": "likely" in checkbox_values,
         "labels": "asscen" in checkbox_values,
+        "subgroups": "subgroups" in checkbox_values,
+        "color_by_age": "agecolor" in checkbox_values,
         "checkboxes": sorted(checkbox_values),
     }
 
@@ -4522,6 +4540,7 @@ def _xyzuvw_db_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
+        "folded-subgroups-v1",
         "".join(selection["axes"]),
         ",".join(selection["aids"]),
         ",".join(selection["mtids"]),
@@ -4529,6 +4548,8 @@ def _xyzuvw_db_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str
         str(selection["bsmdid"]),
         str(int(selection["likely"])),
         str(int(selection["labels"])),
+        str(int(selection["subgroups"])),
+        str(int(selection["color_by_age"])),
         str(int("models" in selection["checkboxes"])),
         str(int("errors" in selection["checkboxes"])),
     ])
@@ -4626,9 +4647,48 @@ def _search_xyzuvw_associations_from_db(args: dict[str, Any], query: str) -> dic
     return {"options": options, "meta": {"row_count": len(options)}}
 
 
-def _xyzuvw_model_query(selection: dict[str, Any], aid_clause: str) -> str:
+def _xyzuvw_requested_aids_query(selection: dict[str, Any]) -> str:
+    requested_aids = "\n                UNION\n".join(
+        f"                SELECT :aid_{index} AS moca_aid FROM DUAL"
+        for index, _aid in enumerate(selection["aids"])
+    ) or "                SELECT NULL AS moca_aid FROM DUAL"
+    return requested_aids
+
+
+def _xyzuvw_member_aids_query(selection: dict[str, Any], requested_aids_query: str, aid_clause: str) -> str:
+    if not selection["subgroups"]:
+        return f"""
+                SELECT requested_aids.moca_aid, requested_aids.moca_aid AS member_moca_aid
+                FROM (
+{requested_aids_query}
+                ) requested_aids
+        """
+    return f"""
+                SELECT requested_aids.moca_aid, requested_aids.moca_aid AS member_moca_aid
+                FROM (
+{requested_aids_query}
+                ) requested_aids
+                UNION
+                SELECT mar.parent AS moca_aid, mar.moca_aid AS member_moca_aid
+                FROM mechanics_all_association_relationships mar
+                WHERE mar.parent IN ({aid_clause})
+    """
+
+
+def _xyzuvw_association_age_query() -> str:
+    return """
+        SELECT daa.moca_aid, MIN(daa.age_myr) AS age_myr
+        FROM data_association_ages daa
+        WHERE daa.adopted = 1
+            AND daa.age_myr IS NOT NULL
+        GROUP BY daa.moca_aid
+    """
+
+
+def _xyzuvw_model_query(selection: dict[str, Any], selected_aids_query: str) -> str:
     columns = """
         dbs2.moca_aid,
+        daa.age_myr,
         dbs2.moca_bsmdid,
         dbs2.coeff_index,
         dbs2.coeff_amplitude,
@@ -4667,16 +4727,30 @@ def _xyzuvw_model_query(selection: dict[str, Any], aid_clause: str) -> str:
             JOIN (
                 SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, dbs.moca_aid
                 FROM data_banyan_sigma_models dbs
-                WHERE dbs.moca_aid IN ({aid_clause})
+                JOIN (
+{selected_aids_query}
+                ) selected_aids
+                    ON selected_aids.moca_aid = dbs.moca_aid
                 GROUP BY dbs.moca_aid
             ) inq USING(moca_aid, moca_bsmdid)
+            LEFT JOIN (
+{_xyzuvw_association_age_query()}
+            ) daa
+                ON daa.moca_aid = dbs2.moca_aid
             ORDER BY dbs2.moca_aid, dbs2.coeff_index
         """
     return f"""
         SELECT {columns}
         FROM data_banyan_sigma_models dbs2
-        WHERE dbs2.moca_aid IN ({aid_clause})
-            AND dbs2.moca_bsmdid = :bsmdid
+        JOIN (
+{selected_aids_query}
+        ) selected_aids
+            ON selected_aids.moca_aid = dbs2.moca_aid
+        LEFT JOIN (
+{_xyzuvw_association_age_query()}
+        ) daa
+            ON daa.moca_aid = dbs2.moca_aid
+        WHERE dbs2.moca_bsmdid = :bsmdid
         ORDER BY dbs2.moca_aid, dbs2.coeff_index
     """
 
@@ -4819,6 +4893,14 @@ def _xyzuvw_model_surfaces(models: list[dict[str, Any]], axes: list[str]) -> lis
             ])
             surfaces.append({
                 "moca_aid": aid,
+                "age_myr": next(
+                    (
+                        _pythonize(model.get("age_myr"))
+                        for model in aid_models
+                        if _safe_float(model.get("age_myr")) is not None
+                    ),
+                    None,
+                ),
                 "label": label,
                 "contour": contour,
                 "opacity": opacity,
@@ -4845,12 +4927,13 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
     aid_clause, aid_params = _sql_in_clause("aid", selection["aids"])
     mtid_clause, mtid_params = _sql_in_clause("mtid", selection["mtids"])
     params: dict[str, Any] = {**aid_params, **mtid_params}
+    requested_aids_query = _xyzuvw_requested_aids_query(selection)
+    member_aids_query = _xyzuvw_member_aids_query(selection, requested_aids_query, aid_clause)
     if selection["bsmdid"] != "latest":
         params["bsmdid"] = int(selection["bsmdid"])
 
     include_covariances = "errors" in selection["checkboxes"]
     covariance_columns = ""
-    covariance_joins = ""
     if include_covariances:
         spatial_covariances = {"xx_covar", "yy_covar", "zz_covar", "xy_covar", "xz_covar", "yz_covar"}
         requested_covariances = []
@@ -4867,25 +4950,8 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
         )
         if covariance_columns:
             covariance_columns += "\n"
-        join_parts = []
-        if xyz_covariances:
-            join_parts.append("""
-            LEFT JOIN calc_xyz xyz
-                ON xyz.moca_oid = sam.moca_oid
-                {xyz_public_filter}
-            """)
-        if uvw_covariances:
-            join_parts.append("""
-            LEFT JOIN calc_uvw uvw
-                ON uvw.moca_oid = sam.moca_oid
-                AND uvw.moca_aid = sam.moca_aid
-                {uvw_public_filter}
-            """)
-        covariance_joins = "".join(join_parts).format(
-            xyz_public_filter="AND xyz.is_public = 0" if _is_private_db(args) else "",
-            uvw_public_filter="AND uvw.is_public = 0" if _is_private_db(args) else "",
-        )
 
+    private_db = _is_private_db(args)
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
         active_model_rows = _records(_read_sql(conn, """
@@ -4900,93 +4966,119 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
             if selection["bsmdid"] != "latest"
             else active_model_rows[0].get("moca_bsmdid") if active_model_rows else None
         )
-        cbs_public_filter = "AND cbs.is_public = 0" if _is_private_db(args) else ""
-        if selection["likely"]:
-            members_df = _read_sql(conn, f"""
+        xyz_public_filter = "AND xyz.is_public = 0" if private_db else ""
+        uvw_public_filter = "AND uvw.is_public = 0" if private_db else ""
+        cbs_public_filter = "AND cbs.is_public = 0" if private_db else ""
+        cbs_probability_filter = "AND cbs.ya_prob >= 90" if selection["likely"] else ""
+        require_banyan_filter = "AND best_cbs.cbs_id IS NOT NULL" if selection["likely"] else ""
+        members_df = _read_sql(conn, f"""
+            SELECT
+                mo.designation,
+                folded_members.moca_aid,
+                folded_members.source_moca_aids,
+                cbs.moca_aid AS bsigma_moca_aid,
+                folded_members.moca_mtid,
+                daa.age_myr,
+                cspt.spectral_type AS spt,
+                dr3.ruwe AS dr3_ruwe,
+                folded_members.moca_oid,
+                xyz.x_pc AS x,
+                xyz.y_pc AS y,
+                xyz.z_pc AS z,
+                {covariance_columns}
+                {XYZUVW_C_VALUE} * uvw.u_kms AS u,
+                {XYZUVW_C_VALUE} * uvw.v_kms AS v,
+                {XYZUVW_C_VALUE} * uvw.w_kms AS w,
+                cbsd.x_opt,
+                cbsd.y_opt,
+                cbsd.z_opt,
+                {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
+                {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
+                {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
+                cbs.ya_prob,
+                cbs.uvw_sep,
+                cbs.xyz_sep,
+                cbs.observables
+            FROM (
                 SELECT
-                    sam.designation,
-                    cbs.moca_aid,
-                    sam.moca_mtid,
-                    sam.spectral_type AS spt,
-                    sam.dr3_ruwe,
-                    cbs.moca_oid,
-                    sam.x_pc AS x,
-                    sam.y_pc AS y,
-                    sam.z_pc AS z,
-                    {covariance_columns}
-                    {XYZUVW_C_VALUE} * sam.u_kms AS u,
-                    {XYZUVW_C_VALUE} * sam.v_kms AS v,
-                    {XYZUVW_C_VALUE} * sam.w_kms AS w,
-                    cbsd.x_opt,
-                    cbsd.y_opt,
-                    cbsd.z_opt,
-                    {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
-                    {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
-                    {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
-                    cbs.ya_prob,
-                    cbs.uvw_sep,
-                    cbs.xyz_sep,
-                    cbs.observables
-                FROM calc_banyan_sigma cbs
-                JOIN summary_all_members sam
-                    ON sam.moca_oid = cbs.moca_oid
-                    AND sam.moca_aid = cbs.moca_aid
-                    AND sam.moca_mtid IN ({mtid_clause})
-                {covariance_joins}
-                LEFT JOIN calc_banyan_sigma_details cbsd
-                    ON cbs.id = cbsd.cbs_id
-                    AND cbsd.moca_aid = cbs.moca_aid
-                WHERE cbs.moca_aid IN ({aid_clause})
+                    selected_aids.moca_aid,
+                    mmp.moca_oid,
+                    mmp.moca_mtid,
+                    GROUP_CONCAT(DISTINCT mmp.moca_aid ORDER BY mmp.moca_aid SEPARATOR ',') AS source_moca_aids
+                FROM mechanics_memberships_propagated mmp
+                JOIN (
+{member_aids_query}
+                ) selected_aids
+                    ON selected_aids.member_moca_aid = mmp.moca_aid
+                WHERE mmp.moca_mtid IN ({mtid_clause})
+                GROUP BY selected_aids.moca_aid, mmp.moca_oid, mmp.moca_mtid
+            ) folded_members
+            JOIN moca_objects mo
+                ON mo.moca_oid = folded_members.moca_oid
+            LEFT JOIN data_spectral_types cspt
+                ON cspt.moca_oid = folded_members.moca_oid
+                AND cspt.adopted = 1
+            LEFT JOIN cat_gaiadr3 dr3
+                ON dr3.moca_oid = folded_members.moca_oid
+            LEFT JOIN calc_xyz xyz
+                ON xyz.moca_oid = folded_members.moca_oid
+                AND xyz.ignored = 0
+                {xyz_public_filter}
+            LEFT JOIN calc_uvw uvw
+                ON uvw.moca_oid = folded_members.moca_oid
+                AND uvw.moca_aid = folded_members.moca_aid
+                AND uvw.ignored = 0
+                {uvw_public_filter}
+            LEFT JOIN (
+                SELECT
+                    selected_aids.moca_aid,
+                    mmp.moca_oid,
+                    mmp.moca_mtid,
+                    CAST(SUBSTRING_INDEX(
+                        GROUP_CONCAT(
+                            cbs.id
+                            ORDER BY
+                                cbs.ya_prob DESC,
+                                IF(selected_aids.member_moca_aid = selected_aids.moca_aid, 1, 0) DESC,
+                                cbs.id DESC
+                            SEPARATOR ','
+                        ),
+                        ',',
+                        1
+                    ) AS UNSIGNED) AS cbs_id
+                FROM mechanics_memberships_propagated mmp
+                JOIN (
+{member_aids_query}
+                ) selected_aids
+                    ON selected_aids.member_moca_aid = mmp.moca_aid
+                JOIN calc_banyan_sigma cbs
+                    ON cbs.moca_oid = mmp.moca_oid
+                    AND cbs.moca_aid = selected_aids.member_moca_aid
                     AND cbs.moca_bsmdid = :active_bsmdid
                     AND cbs.max_observables = 1
                     {cbs_public_filter}
-                    AND cbs.ya_prob >= 90
-                ORDER BY cbs.moca_aid, sam.moca_mtid, cbs.moca_oid
-                LIMIT {XYZUVW_MAX_OBJECTS}
-            """, params)
-        else:
-            members_df = _read_sql(conn, f"""
-                SELECT
-                    sam.designation,
-                    sam.moca_aid,
-                    sam.moca_mtid,
-                    sam.spectral_type AS spt,
-                    sam.dr3_ruwe,
-                    sam.moca_oid,
-                    sam.x_pc AS x,
-                    sam.y_pc AS y,
-                    sam.z_pc AS z,
-                    {covariance_columns}
-                    {XYZUVW_C_VALUE} * sam.u_kms AS u,
-                    {XYZUVW_C_VALUE} * sam.v_kms AS v,
-                    {XYZUVW_C_VALUE} * sam.w_kms AS w,
-                    cbsd.x_opt,
-                    cbsd.y_opt,
-                    cbsd.z_opt,
-                    {XYZUVW_C_VALUE} * cbsd.u_opt AS u_opt,
-                    {XYZUVW_C_VALUE} * cbsd.v_opt AS v_opt,
-                    {XYZUVW_C_VALUE} * cbsd.w_opt AS w_opt,
-                    COALESCE(sam.banyan_prob, cbs.ya_prob) AS ya_prob,
-                    cbs.uvw_sep,
-                    cbs.xyz_sep,
-                    cbs.observables
-                FROM summary_all_members sam
-                {covariance_joins}
-                LEFT JOIN calc_banyan_sigma cbs
-                    ON cbs.moca_oid = sam.moca_oid
-                    AND cbs.moca_aid = sam.moca_aid
-                    AND cbs.moca_bsmdid = :active_bsmdid
-                    AND cbs.max_observables = 1
-                    {cbs_public_filter}
-                LEFT JOIN calc_banyan_sigma_details cbsd
-                    ON cbs.id = cbsd.cbs_id
-                    AND cbsd.moca_aid = sam.moca_aid
-                WHERE sam.moca_aid IN ({aid_clause})
-                    AND sam.moca_mtid IN ({mtid_clause})
-                ORDER BY sam.moca_aid, sam.moca_mtid, sam.moca_oid
-                LIMIT {XYZUVW_MAX_OBJECTS}
-            """, params)
-        models_df = _read_sql(conn, _xyzuvw_model_query(selection, aid_clause), params)
+                WHERE mmp.moca_mtid IN ({mtid_clause})
+                    {cbs_probability_filter}
+                GROUP BY selected_aids.moca_aid, mmp.moca_oid, mmp.moca_mtid
+            ) best_cbs
+                ON best_cbs.moca_aid = folded_members.moca_aid
+                AND best_cbs.moca_oid = folded_members.moca_oid
+                AND best_cbs.moca_mtid = folded_members.moca_mtid
+            LEFT JOIN calc_banyan_sigma cbs
+                ON cbs.id = best_cbs.cbs_id
+            LEFT JOIN calc_banyan_sigma_details cbsd
+                ON cbs.id = cbsd.cbs_id
+                AND cbsd.moca_aid = cbs.moca_aid
+            LEFT JOIN (
+{_xyzuvw_association_age_query()}
+            ) daa
+                ON daa.moca_aid = folded_members.moca_aid
+            WHERE 1 = 1
+                {require_banyan_filter}
+            ORDER BY folded_members.moca_aid, folded_members.moca_mtid, folded_members.moca_oid
+            LIMIT {XYZUVW_MAX_OBJECTS}
+        """, params)
+        models_df = _read_sql(conn, _xyzuvw_model_query(selection, requested_aids_query), params)
 
         objects_df = pd.DataFrame()
         if selection["oids"]:
@@ -5203,6 +5295,7 @@ def _mock_xyzuvw_payload(args: dict[str, Any]) -> dict[str, Any]:
     models = []
     labels = []
     for aid_index, aid in enumerate(selection["aids"]):
+        age_myr = round(float(10 ** (0.7 + 0.28 * aid_index)), 1)
         center = np.asarray([
             -30 + 45 * aid_index,
             20 - 25 * aid_index,
@@ -5212,10 +5305,11 @@ def _mock_xyzuvw_payload(args: dict[str, Any]) -> dict[str, Any]:
             XYZUVW_C_VALUE * (-6 + aid_index),
         ], dtype=float)
         spread = np.asarray([18, 12, 10, 4 * XYZUVW_C_VALUE, 3 * XYZUVW_C_VALUE, 2.5 * XYZUVW_C_VALUE], dtype=float)
-        label = {"moca_aid": aid, "x": center[0], "y": center[1], "z": center[2], "u": center[3], "v": center[4], "w": center[5]}
+        label = {"moca_aid": aid, "age_myr": age_myr, "x": center[0], "y": center[1], "z": center[2], "u": center[3], "v": center[4], "w": center[5]}
         labels.append(label)
         models.append({
             "moca_aid": aid,
+            "age_myr": age_myr,
             "moca_bsmdid": 16,
             "coeff_index": 0,
             "coeff_amplitude": 1.0,
@@ -5255,6 +5349,7 @@ def _mock_xyzuvw_payload(args: dict[str, Any]) -> dict[str, Any]:
                 "designation": f"Mock {aid} member {index:02d}",
                 "moca_aid": aid,
                 "moca_mtid": mtid,
+                "age_myr": age_myr,
                 "spt": ["M5", "L1", "T2"][index % 3],
                 "dr3_ruwe": round(float(rng.uniform(0.9, 1.6)), 2),
                 "moca_oid": oid,
@@ -6071,7 +6166,8 @@ def _tfage_object_info_from_engine(engine, target: int) -> dict[str, Any]:
                 LEFT JOIN (
                     SELECT moca_oid, MIN(designation) AS designation
                     FROM mechanics_all_designations
-                    WHERE designation IS NOT NULL
+                    WHERE moca_oid = :target
+                        AND designation IS NOT NULL
                         AND designation <> ''
                     GROUP BY moca_oid
                 ) mad
@@ -6170,12 +6266,15 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         with engine.connect() as conn:
             if _tfage_table_exists(engine, "moca_associations"):
                 rows = _records(_read_sql(conn, """
-                    SELECT DISTINCT daa.moca_aid, ma.name
-                    FROM data_association_ages daa
+                    SELECT aid_rows.moca_aid, ma.name
+                    FROM (
+                        SELECT DISTINCT daa.moca_aid
+                        FROM data_association_ages daa
+                        WHERE daa.moca_aid IS NOT NULL
+                    ) aid_rows
                     LEFT JOIN moca_associations ma
-                        ON ma.moca_aid = daa.moca_aid
-                    WHERE daa.moca_aid IS NOT NULL
-                    ORDER BY daa.moca_aid
+                        ON ma.moca_aid = aid_rows.moca_aid
+                    ORDER BY aid_rows.moca_aid
                 """))
             else:
                 rows = _records(_read_sql(conn, """
@@ -6814,6 +6913,2648 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
     }
 
 
+def _legacy_rv_dataset_value(target_name: Any, template_name: Any, pipeline_version: Any) -> str:
+    return "|".join(str(value or "") for value in (target_name, template_name, pipeline_version))
+
+
+def _legacy_rv_dataset_selection(args: dict[str, Any]) -> tuple[str, str, str] | None:
+    target_name = args.get("target_name") or args.get("target")
+    template_name = args.get("template_name") or args.get("template")
+    pipeline_version = args.get("pipeline_version") or args.get("version")
+    if target_name and template_name and pipeline_version:
+        return str(target_name), str(template_name), str(pipeline_version)
+
+    raw_dataset = args.get("dataset") or args.get("rv_dataset")
+    if not raw_dataset:
+        return None
+    parts = str(raw_dataset).split("|", 2)
+    if len(parts) != 3 or not all(parts):
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def _legacy_rv_cache_key(args: dict[str, Any], *parts: Any) -> str:
+    return "|".join([_spt_db_cache_key(args), "legacy-radial-velocities", *[str(part) for part in parts]])
+
+
+def _legacy_rv_option_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    value = _legacy_rv_dataset_value(row.get("target_name"), row.get("template_name"), row.get("pipeline_version"))
+    count = row.get("row_count")
+    suffix = f" ({count} segments)" if count is not None else ""
+    return {
+        "value": value,
+        "label": f"{value}{suffix}",
+        "target_name": row.get("target_name"),
+        "template_name": row.get("template_name"),
+        "pipeline_version": row.get("pipeline_version"),
+        "row_count": count,
+        "moca_oid": row.get("moca_oid"),
+        "moca_specid": row.get("moca_specid"),
+        "moca_instid": row.get("moca_instid"),
+    }
+
+
+def _mock_legacy_rv_options() -> dict[str, Any]:
+    rows = [
+        {
+            "target_name": "target_13510",
+            "template_name": "sonora_mock_template_a.fits",
+            "pipeline_version": "legacy_mock_v1",
+            "row_count": 42,
+            "moca_oid": 602,
+            "moca_specid": 13510,
+            "moca_instid": "spex_irtf",
+        },
+        {
+            "target_name": "target_450",
+            "template_name": "sonora_mock_template_b.fits",
+            "pipeline_version": "legacy_mock_v2",
+            "row_count": 36,
+            "moca_oid": 10995,
+            "moca_specid": 450,
+            "moca_instid": "nires_keck",
+        },
+    ]
+    options = [_legacy_rv_option_from_row(row) for row in rows]
+    return {
+        "options": options,
+        "value": options[0]["value"],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "dataset_count": len(options),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_legacy_rv_payload(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _legacy_rv_dataset_selection(args) or ("target_13510", "sonora_mock_template_a.fits", "legacy_mock_v1")
+    target_name, template_name, pipeline_version = selection
+    seed = int(hashlib.sha1(_legacy_rv_dataset_value(*selection).encode("utf-8")).hexdigest()[:8], 16)
+    rng = np.random.default_rng(seed)
+    instid = "spex_irtf" if "13510" in target_name else "nires_keck"
+    specid = 13510 if "13510" in target_name else 450
+    oid = 602 if specid == 13510 else 10995
+    n_rows = 42 if specid == 13510 else 36
+    base_rv = -18.4 if specid == 13510 else 12.7
+    rows: list[dict[str, Any]] = []
+    for index in range(n_rows):
+        wave_min = 0.86 + 0.034 * index
+        wave_max = wave_min + 0.045
+        rv_unc = float(rng.uniform(0.55, 2.2))
+        data_contrast = float(rng.uniform(0.018, 0.09))
+        model_contrast = float(rng.uniform(0.14, 0.42))
+        lsf = float(rng.normal(1.12, 0.08))
+        if index in {6, 24}:
+            data_contrast = 0.004
+        if index in {14}:
+            model_contrast = 0.045
+        if index in {31}:
+            lsf = 1.72
+        if index in {38} and n_rows > 40:
+            rv_unc = 0.0
+        rows.append({
+            "id": 900000 + index,
+            "moca_oid": oid,
+            "moca_instid": instid,
+            "moca_specid": specid,
+            "moca_fsid": 9100 + index,
+            "pipeline_version": pipeline_version,
+            "target_name": target_name,
+            "template_name": template_name,
+            "berv_kms": 18.233,
+            "berv_kms_unc": 0.013,
+            "order_number": 1 + index // 7,
+            "window_number": 1 + (index // 2) % 4,
+            "segment_number": index + 1,
+            "wave_min": round(wave_min, 5),
+            "wave_max": round(wave_max, 5),
+            "segment_wavelength": round((wave_min + wave_max) / 2, 5),
+            "nwindows": 7,
+            "nsegments": n_rows,
+            "npoints": int(rng.integers(45, 140)),
+            "radial_velocity_kms": round(base_rv + 1.3 * math.sin(index / 4.7) + float(rng.normal(0, rv_unc * 0.55)), 4),
+            "radial_velocity_kms_unc": round(rv_unc, 4),
+            "origin": "mock_mcmc_rv_pipeline",
+            "blaze0": round(float(rng.normal(-0.03, 0.08)), 4),
+            "blaze0_unc": round(float(rng.uniform(0.01, 0.05)), 4),
+            "blaze1": round(float(rng.normal(0.02, 0.08)), 4),
+            "blaze1_unc": round(float(rng.uniform(0.01, 0.05)), 4),
+            "vsini_kms": round(float(rng.uniform(4, 32)), 4),
+            "vsini_kms_unc": round(float(rng.uniform(0.4, 3.4)), 4),
+            "lsf": round(lsf, 4),
+            "lsf_unc": round(float(rng.uniform(0.01, 0.07)), 4),
+            "best_chi2": round(float(rng.uniform(0.8, 2.4)), 4),
+            "lnp_avg": round(float(rng.normal(-1240, 40)), 4),
+            "lnp_mad": round(float(rng.uniform(4, 18)), 4),
+            "lnp_std": round(float(rng.uniform(8, 28)), 4),
+            "lnp_median": round(float(rng.normal(-1235, 40)), 4),
+            "lnp_max": round(float(rng.normal(-1210, 35)), 4),
+            "mean_acceptance_rate": round(float(rng.uniform(0.14, 0.42)), 5),
+            "mean_finite_fraction": round(float(rng.uniform(0.91, 1.0)), 5),
+            "mean_outofbounds_fraction": round(float(rng.uniform(0.0, 0.07)), 5),
+            "parscale_rv": 25.0,
+            "rv_min_bound": -150.0,
+            "rv_max_bound": 150.0,
+            "niter_mcmc": 8000,
+            "nburnin_mcmc": 2000,
+            "nchains_mcmc": 24,
+            "model_contrast": round(model_contrast, 5),
+            "nmodel_10p_contrast": int(rng.integers(18, 95)),
+            "data_contrast": round(data_contrast, 5),
+            "model_fit_url": "",
+            "ignored": 0,
+            "comments": "Synthetic legacy RV row for local smoke testing",
+        })
+    dataset_info = _legacy_rv_dataset_info(rows[0] if rows else {})
+    return {
+        "selection": {
+            "dataset": _legacy_rv_dataset_value(*selection),
+            "target_name": target_name,
+            "template_name": template_name,
+            "pipeline_version": pipeline_version,
+        },
+        "datasetInfo": dataset_info,
+        "rows": rows,
+        "images": {"chi2_url": "", "best_model_fit_url": ""},
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _load_legacy_rv_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = _legacy_rv_cache_key(args, "options")
+    now = time.time()
+    cached = _LEGACY_RV_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT
+                target_name,
+                template_name,
+                pipeline_version,
+                COUNT(*) AS row_count,
+                MIN(moca_oid) AS moca_oid,
+                MIN(moca_specid) AS moca_specid,
+                MIN(moca_instid) AS moca_instid
+            FROM pcat_mcmc_rv_pipeline
+            WHERE target_name IS NOT NULL
+                AND template_name IS NOT NULL
+                AND pipeline_version IS NOT NULL
+                AND LOWER(CONCAT_WS('|', target_name, template_name, pipeline_version)) NOT LIKE '%spirou%'
+            GROUP BY target_name, template_name, pipeline_version
+            ORDER BY target_name, template_name, pipeline_version
+        """))
+    options = [_legacy_rv_option_from_row(row) for row in rows]
+    payload = {
+        "options": options,
+        "value": options[0]["value"] if options else None,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "dataset_count": len(options),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _LEGACY_RV_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _legacy_rv_dataset_info(first_row: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "pipeline_version",
+        "target_name",
+        "template_name",
+        "moca_oid",
+        "moca_specid",
+        "moca_instid",
+        "berv_kms",
+        "berv_kms_unc",
+        "nwindows",
+        "nsegments",
+        "npoints",
+        "origin",
+        "parscale_rv",
+        "rv_min_bound",
+        "rv_max_bound",
+        "niter_mcmc",
+        "nburnin_mcmc",
+        "nchains_mcmc",
+    ]
+    return {key: first_row.get(key) for key in keys if first_row.get(key) is not None}
+
+
+def _legacy_rv_specid_from_selection(target_name: str, rows: list[dict[str, Any]]) -> int | None:
+    for row in rows:
+        try:
+            if row.get("moca_specid") is not None:
+                return int(row["moca_specid"])
+        except (TypeError, ValueError):
+            pass
+    parts = str(target_name or "").split("_")
+    for part in parts:
+        if part.isdigit():
+            return int(part)
+    return None
+
+
+def _legacy_rv_model_grid_images(conn, specid: int | None, template_name: str) -> dict[str, str]:
+    if specid is None or not template_name:
+        return {"chi2_url": "", "best_model_fit_url": ""}
+    rows = _records(_read_sql(conn, """
+        SELECT
+            mfs.description,
+            MIN(mf.url) AS url
+        FROM calc_model_grid_fits cmgf
+        JOIN data_model_grid_files dmgf
+            ON dmgf.moca_mgridfileid = cmgf.moca_mgridfileid
+        JOIN mechanics_file_sets mfs
+            ON mfs.moca_fsid = cmgf.moca_fsid
+        JOIN mechanics_files mf
+            ON mf.moca_fid = mfs.moca_fid
+        WHERE cmgf.moca_specid = :specid
+            AND CONCAT(cmgf.moca_mgridid, '_', dmgf.file_name) = :template_name
+            AND (mfs.description = 'All model fit chi2' OR mfs.description = 'Best model fit')
+        GROUP BY mfs.description
+    """, {"specid": int(specid), "template_name": template_name}))
+    by_description = {str(row.get("description") or ""): str(row.get("url") or "") for row in rows}
+    return {
+        "chi2_url": by_description.get("All model fit chi2", ""),
+        "best_model_fit_url": by_description.get("Best model fit", ""),
+    }
+
+
+def _load_legacy_rv_dataset_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    selection = _legacy_rv_dataset_selection(args)
+    if selection is None:
+        options_payload = _load_legacy_rv_options_from_db(args)
+        default_value = options_payload.get("value")
+        if default_value:
+            selection = _legacy_rv_dataset_selection({"dataset": default_value})
+    if selection is None:
+        return {
+            "selection": {},
+            "datasetInfo": {},
+            "rows": [],
+            "images": {"chi2_url": "", "best_model_fit_url": ""},
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "private_db": _is_private_db(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    target_name, template_name, pipeline_version = selection
+    dataset_value = _legacy_rv_dataset_value(target_name, template_name, pipeline_version)
+    cache_key = _legacy_rv_cache_key(args, "data", hashlib.sha1(dataset_value.encode("utf-8")).hexdigest())
+    now = time.time()
+    cached = _LEGACY_RV_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT
+                rv.id,
+                rv.moca_oid,
+                rv.moca_instid,
+                rv.moca_specid,
+                rv.moca_fsid,
+                rv.pipeline_version,
+                rv.target_name,
+                rv.template_name,
+                rv.berv_kms,
+                rv.berv_kms_unc,
+                rv.order_number,
+                rv.window_number,
+                rv.segment_number,
+                rv.wave_min,
+                rv.wave_max,
+                ((rv.wave_min + rv.wave_max) / 2.0) AS segment_wavelength,
+                rv.nwindows,
+                rv.nsegments,
+                rv.npoints,
+                rv.radial_velocity_kms,
+                rv.radial_velocity_kms_unc,
+                rv.origin,
+                rv.blaze0,
+                rv.blaze0_unc,
+                rv.blaze1,
+                rv.blaze1_unc,
+                rv.vsini_kms,
+                rv.vsini_kms_unc,
+                rv.lsf,
+                rv.lsf_unc,
+                rv.best_chi2,
+                rv.lnp_avg,
+                rv.lnp_mad,
+                rv.lnp_std,
+                rv.lnp_median,
+                rv.lnp_max,
+                rv.mean_acceptance_rate,
+                rv.mean_finite_fraction,
+                rv.mean_outofbounds_fraction,
+                rv.parscale_rv,
+                rv.rv_min_bound,
+                rv.rv_max_bound,
+                rv.niter_mcmc,
+                rv.nburnin_mcmc,
+                rv.nchains_mcmc,
+                rv.model_contrast,
+                rv.nmodel_10p_contrast,
+                rv.data_contrast,
+                rv.ignored,
+                rv.comments,
+                fit.model_fit_url
+            FROM pcat_mcmc_rv_pipeline rv
+            LEFT JOIN (
+                SELECT
+                    mfs.moca_fsid,
+                    MIN(mf.url) AS model_fit_url
+                FROM mechanics_file_sets mfs
+                JOIN mechanics_files mf
+                    ON mf.moca_fid = mfs.moca_fid
+                WHERE mfs.description = 'MCMC RV model fit'
+                GROUP BY mfs.moca_fsid
+            ) fit
+                ON fit.moca_fsid = rv.moca_fsid
+            WHERE rv.target_name = :target_name
+                AND rv.template_name = :template_name
+                AND rv.pipeline_version = :pipeline_version
+            ORDER BY rv.order_number, rv.window_number, rv.segment_number, rv.id
+        """, {
+            "target_name": target_name,
+            "template_name": template_name,
+            "pipeline_version": pipeline_version,
+        }))
+        specid = _legacy_rv_specid_from_selection(target_name, rows)
+        images = _legacy_rv_model_grid_images(conn, specid, template_name)
+
+    dataset_info = _legacy_rv_dataset_info(rows[0] if rows else {
+        "target_name": target_name,
+        "template_name": template_name,
+        "pipeline_version": pipeline_version,
+    })
+    payload = {
+        "selection": {
+            "dataset": dataset_value,
+            "target_name": target_name,
+            "template_name": template_name,
+            "pipeline_version": pipeline_version,
+        },
+        "datasetInfo": dataset_info,
+        "rows": rows,
+        "images": images,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _LEGACY_RV_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+RVBAM_DEFAULT_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_MAX_SAMPLES", "1800"))
+RVBAM_HARD_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_HARD_MAX_SAMPLES", "8000"))
+RVBAM_ARRAY_CACHE_SECONDS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_SECONDS", "900"))
+RVBAM_ARRAY_CACHE_MAX_ITEMS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_ITEMS", "8"))
+RVBAM_PACKAGE_DIR = Path(os.environ.get(
+    "RVBAM_PACKAGE_DIR",
+    "/Users/jonathan/Documents/Python/Python_Packages/rvbam",
+))
+RVBAM_LOCAL_MODEL_DIR = Path(os.environ.get(
+    "RVBAM_MODEL_GRID_HDF5_DIR",
+    "/Volumes/T3_EXT/model_grids_hdf5",
+))
+RVBAM_REQUIRED_TABLES = (
+    "pcat_rv_sampling_runs",
+    "pcat_rv_sampling_segments",
+    "pcat_sampling_runs",
+    "pcat_sampling_parameters",
+    "pcat_sampling_payloads",
+)
+
+
+def _prepare_rvbam_imports() -> None:
+    import sys
+
+    rvbam_path = str(RVBAM_PACKAGE_DIR)
+    if rvbam_path not in sys.path:
+        sys.path.insert(0, rvbam_path)
+
+    if sys.version_info >= (3, 10):
+        return
+
+    def ensure_package(package_name: str, directory: Path) -> types.ModuleType:
+        existing = sys.modules.get(package_name)
+        if existing is not None:
+            return existing
+        parent_name, _, attr_name = package_name.rpartition(".")
+        parent_module = ensure_package(parent_name, directory.parent) if parent_name else None
+        module = types.ModuleType(package_name)
+        init_path = directory / "__init__.py"
+        module.__file__ = str(init_path) if init_path.is_file() else None
+        module.__package__ = package_name
+        module.__path__ = [str(directory)]
+        sys.modules[package_name] = module
+        if parent_module is not None:
+            setattr(parent_module, attr_name, module)
+        return module
+
+    ensure_package("rvbam", RVBAM_PACKAGE_DIR / "rvbam")
+    ensure_package("rvbam.grid", RVBAM_PACKAGE_DIR / "rvbam" / "grid")
+    ensure_package("rvbam.db", RVBAM_PACKAGE_DIR / "rvbam" / "db")
+
+    for module_name, relative_path in (
+        ("rvbam.grid.axes", "rvbam/grid/axes.py"),
+        ("rvbam.db.atmosphere_repo", "rvbam/db/atmosphere_repo.py"),
+    ):
+        if module_name in sys.modules:
+            continue
+        path = RVBAM_PACKAGE_DIR / relative_path
+        if not path.is_file():
+            continue
+        parent_name, _, attr_name = module_name.rpartition(".")
+        parent_module = sys.modules.get(parent_name)
+        source = path.read_text(encoding="utf-8")
+        first_lines = source.splitlines()[:5]
+        if "from __future__ import annotations" not in first_lines:
+            source = "from __future__ import annotations\n" + source
+        module = types.ModuleType(module_name)
+        module.__file__ = str(path)
+        module.__package__ = parent_name
+        sys.modules[module_name] = module
+        if parent_module is not None:
+            setattr(parent_module, attr_name, module)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+
+
+def _rvbam_cache_key(args: dict[str, Any], *parts: Any) -> str:
+    return "|".join([_spt_db_cache_key(args), "rvbam-explorer", *[str(part) for part in parts]])
+
+
+def _rvbam_int_arg(args: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = args.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _rvbam_limit_arg(args: dict[str, Any], key: str, default: int, hard_max: int) -> int:
+    value = _rvbam_int_arg(args, key)
+    if value is None:
+        return default
+    return max(1, min(int(value), hard_max))
+
+
+def _rvbam_required_tables_available(conn) -> tuple[bool, list[str]]:
+    missing = [table for table in RVBAM_REQUIRED_TABLES if not _db_table_exists(conn, table)]
+    return not missing, missing
+
+
+def _rvbam_available_columns(conn, table_name: str) -> set[str]:
+    rows = conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+            AND table_name = :table_name
+    """), {"table_name": table_name}).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _rvbam_local_model_candidates(moca_mgridid: Any, template_name: Any = None) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | str | None) -> None:
+        if path is None:
+            return
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = RVBAM_LOCAL_MODEL_DIR / candidate
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    for raw in (moca_mgridid, template_name):
+        text_value = str(raw or "").strip()
+        if not text_value:
+            continue
+        basename = Path(text_value).name
+        add(text_value)
+        add(basename)
+        if basename.endswith(".h5"):
+            stem = basename[:-3]
+            add(f"{stem}.h5")
+            if stem.startswith("models_"):
+                add(f"{stem}.h5")
+            else:
+                add(f"models_{stem}.h5")
+        else:
+            add(f"{basename}.h5")
+            add(f"models_{basename}.h5")
+    return candidates
+
+
+def _rvbam_local_model_status(moca_mgridid: Any, template_name: Any = None) -> dict[str, Any]:
+    import importlib.util
+
+    mgridid = str(moca_mgridid or "").strip()
+    base_exists = RVBAM_LOCAL_MODEL_DIR.is_dir()
+    candidates = _rvbam_local_model_candidates(moca_mgridid, template_name)
+    model_path = next((path for path in candidates if path.is_file()), candidates[0] if candidates else None)
+    model_exists = bool(model_path and model_path.is_file())
+    h5py_available = importlib.util.find_spec("h5py") is not None
+    available = bool(base_exists and model_exists and h5py_available)
+    if not base_exists:
+        message = "Local RVBAM HDF5 model directory is not available on this server."
+    elif not model_exists:
+        message = "Local RVBAM HDF5 model file is not available on this server."
+    elif not h5py_available:
+        message = "h5py is not installed in the Python environment running this server."
+    else:
+        message = ""
+    return {
+        "available": available,
+        "base_dir": str(RVBAM_LOCAL_MODEL_DIR),
+        "base_exists": base_exists,
+        "model_file": str(model_path) if model_path else "",
+        "model_exists": model_exists,
+        "h5py_available": h5py_available,
+        "moca_mgridid": mgridid,
+        "template_name": str(template_name or "").strip(),
+        "candidate_files": [str(path) for path in candidates[:8]],
+        "message": message,
+    }
+
+
+def _rvbam_refresh_local_model_status(payload: dict[str, Any]) -> dict[str, Any]:
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    previous = payload.get("localModelFit") if isinstance(payload.get("localModelFit"), dict) else {}
+    payload["localModelFit"] = _rvbam_local_model_status(
+        run.get("moca_mgridid") or previous.get("moca_mgridid"),
+        run.get("template_name") or previous.get("template_name"),
+    )
+    return payload
+
+
+def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
+    runs = [
+        {
+            "moca_rv_sample_run_id": 910001,
+            "moca_oid": 602,
+            "designation": "2MASS J00361617+1821104",
+            "moca_instid": "spex_irtf",
+            "moca_specid": 13510,
+            "spectrum_name": "mock_spex_prism_13510",
+            "moca_mgridid": "sonora_bobcat",
+            "pipeline_version": "rvbam-dev",
+            "target_name": "2MASS J00361617+1821104",
+            "template_name": "sonora_mock_t1800_logg5.0.fits",
+            "nwindows": 5,
+            "nsegments": 34,
+            "segment_count": 34,
+            "sample_segment_count": 34,
+            "payload_segment_count": 34,
+            "wv_min": 0.88,
+            "wv_max": 2.38,
+            "rv_mean_kms": -18.2,
+            "rv_median_kms": -18.4,
+            "rv_unc_median_kms": 1.1,
+            "berv_kms": 18.23,
+            "origin": "mock_rvbam",
+            "ignored": 0,
+            "modified_timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+        },
+        {
+            "moca_rv_sample_run_id": 910002,
+            "moca_oid": 10995,
+            "designation": "WISE J104915.57-531906.1",
+            "moca_instid": "nires_keck",
+            "moca_specid": 450,
+            "spectrum_name": "mock_nires_450",
+            "moca_mgridid": "sonora_cholla",
+            "pipeline_version": "rvbam-dev",
+            "target_name": "WISE J104915.57-531906.1",
+            "template_name": "sonora_mock_t1300_logg5.0.fits",
+            "nwindows": 4,
+            "nsegments": 28,
+            "segment_count": 28,
+            "sample_segment_count": 28,
+            "payload_segment_count": 28,
+            "wv_min": 0.94,
+            "wv_max": 2.31,
+            "rv_mean_kms": 21.3,
+            "rv_median_kms": 21.0,
+            "rv_unc_median_kms": 0.8,
+            "berv_kms": -6.74,
+            "origin": "mock_rvbam",
+            "ignored": 0,
+            "modified_timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+        },
+    ]
+    selected = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
+    if selected and not any(int(row["moca_rv_sample_run_id"]) == selected for row in runs):
+        selected = None
+    return {
+        "runs": runs,
+        "value": selected or runs[0]["moca_rv_sample_run_id"],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "run_count": len(runs),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_rvbam_segments(run_id: int) -> list[dict[str, Any]]:
+    seed = int(hashlib.sha1(str(run_id).encode("utf-8")).hexdigest()[:8], 16)
+    rng = np.random.default_rng(seed)
+    n_rows = 34 if run_id == 910001 else 28
+    base_rv = -18.4 if run_id == 910001 else 21.0
+    segments: list[dict[str, Any]] = []
+    for index in range(n_rows):
+        wv_min = 0.88 + 0.045 * index
+        wv_max = wv_min + float(rng.uniform(0.03, 0.07))
+        rv_unc = float(rng.uniform(0.35, 2.1))
+        segments.append({
+            "moca_rv_sampling_segment_id": run_id * 100 + index + 1,
+            "moca_rv_sample_run_id": run_id,
+            "moca_sample_run_id": run_id * 1000 + index + 1,
+            "order_number": 1 + index // 7,
+            "window_number": 1 + (index // 3) % 5,
+            "segment_number": index + 1,
+            "wv_min": round(wv_min, 6),
+            "wv_max": round(wv_max, 6),
+            "wv_center": round((wv_min + wv_max) / 2.0, 6),
+            "rv_kms": round(base_rv + 1.2 * math.sin(index / 4.0) + float(rng.normal(0.0, rv_unc * 0.45)), 5),
+            "rv_kms_unc": round(rv_unc, 5),
+            "lsf": round(float(rng.uniform(9.0, 24.0)), 5),
+            "lsf_unc": round(float(rng.uniform(0.4, 2.3)), 5),
+            "vsini_kms": round(float(rng.uniform(6.0, 42.0)), 5),
+            "vsini_kms_unc": round(float(rng.uniform(0.7, 5.0)), 5),
+            "moca_fsid": 400000 + index,
+            "sampler_type": "nested",
+            "sampler_name": "ultranest",
+            "sampler_variant": "reactive",
+            "n_parameters": 5,
+            "n_walkers": None,
+            "n_iterations": int(rng.integers(3500, 9000)),
+            "mean_acceptance_rate": round(float(rng.uniform(0.22, 0.58)), 5),
+            "best_chi2": round(float(rng.uniform(0.7, 1.9)), 5),
+            "lnp_median": round(float(rng.normal(-820.0, 40.0)), 5),
+            "lnp_max": round(float(rng.normal(-790.0, 35.0)), 5),
+            "mean_finite_fraction": round(float(rng.uniform(0.96, 1.0)), 5),
+            "mean_outofbounds_fraction": round(float(rng.uniform(0.0, 0.04)), 5),
+            "param_count": 5,
+            "payload_count": 2,
+            "chain_payloads": 1,
+            "lnp_payloads": 1,
+            "total_stored_samples": int(rng.integers(6000, 18000)),
+            "model_fit_url": "",
+            "corner_url": "",
+            "ignored": 0,
+            "comments": "Synthetic RVBAM segment for local smoke testing",
+        })
+    return segments
+
+
+def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> dict[str, Any]:
+    run_payload = _mock_rvbam_runs(args)
+    selected_id = int(run_id or _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id") or run_payload["value"])
+    run = next((row for row in run_payload["runs"] if int(row["moca_rv_sample_run_id"]) == selected_id), run_payload["runs"][0])
+    selected_id = int(run["moca_rv_sample_run_id"])
+    segments = _mock_rvbam_segments(selected_id)
+    return {
+        "run": run,
+        "segments": segments,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "segment_count": len(segments),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_rvbam_parameters(sample_run_id: int) -> list[dict[str, Any]]:
+    rng = np.random.default_rng(sample_run_id % (2**32 - 1))
+    rv = float(rng.normal(-18.0 if sample_run_id // 1000 == 910001 else 21.0, 0.7))
+    return [
+        {"moca_sampling_parameter_id": sample_run_id * 10 + 1, "moca_sample_run_id": sample_run_id, "param_name": "rv_kms", "param_index": 0, "units": "km/s", "median_value": rv, "p16_value": rv - 0.8, "p84_value": rv + 0.8, "std_value": 0.75, "is_fixed": 0, "prior_type": "uniform", "lower_bound": -150.0, "upper_bound": 150.0},
+        {"moca_sampling_parameter_id": sample_run_id * 10 + 2, "moca_sample_run_id": sample_run_id, "param_name": "lsf_sigma_kms", "param_index": 1, "units": "km/s", "median_value": 15.0, "p16_value": 12.0, "p84_value": 19.5, "std_value": 3.2, "is_fixed": 0, "prior_type": "lognormal"},
+        {"moca_sampling_parameter_id": sample_run_id * 10 + 3, "moca_sample_run_id": sample_run_id, "param_name": "vsini_kms", "param_index": 2, "units": "km/s", "median_value": 22.0, "p16_value": 16.0, "p84_value": 31.0, "std_value": 5.5, "is_fixed": 0, "prior_type": "uniform"},
+        {"moca_sampling_parameter_id": sample_run_id * 10 + 4, "moca_sample_run_id": sample_run_id, "param_name": "blaze_left", "param_index": 3, "units": None, "median_value": -0.03, "p16_value": -0.08, "p84_value": 0.02, "std_value": 0.04, "is_fixed": 0, "prior_type": "uniform"},
+        {"moca_sampling_parameter_id": sample_run_id * 10 + 5, "moca_sample_run_id": sample_run_id, "param_name": "blaze_right", "param_index": 4, "units": None, "median_value": 0.04, "p16_value": -0.01, "p84_value": 0.09, "std_value": 0.05, "is_fixed": 0, "prior_type": "uniform"},
+    ]
+
+
+def _rvbam_run_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    clauses: list[str] = ["COALESCE(seg.segment_count, 0) > 0"]
+    params: dict[str, Any] = {}
+    if not _as_bool(args.get("include_ignored") or args.get("show_ignored")):
+        clauses.append("COALESCE(r.ignored, 0) = 0")
+
+    moca_oid = _rvbam_int_arg(args, "moca_oid", "oid")
+    if moca_oid is not None:
+        clauses.append("r.moca_oid = :moca_oid")
+        params["moca_oid"] = moca_oid
+
+    moca_specid = _rvbam_int_arg(args, "moca_specid", "specid")
+    if moca_specid is not None:
+        clauses.append("r.moca_specid = :moca_specid")
+        params["moca_specid"] = moca_specid
+
+    pipeline = str(args.get("pipeline_version") or args.get("pipeline") or "").strip()
+    if pipeline:
+        clauses.append("r.pipeline_version = :pipeline_version")
+        params["pipeline_version"] = pipeline
+
+    mgridid = str(args.get("moca_mgridid") or args.get("mgridid") or "").strip()
+    if mgridid:
+        clauses.append("r.moca_mgridid = :moca_mgridid")
+        params["moca_mgridid"] = mgridid
+
+    instid = str(args.get("moca_instid") or args.get("instid") or "").strip()
+    if instid:
+        clauses.append("r.moca_instid = :moca_instid")
+        params["moca_instid"] = instid
+
+    query = str(args.get("q") or args.get("search") or "").strip()
+    if query:
+        like = f"%{query}%"
+        clauses.append("""
+            (
+                r.target_name LIKE :query_like
+                OR r.template_name LIKE :query_like
+                OR r.pipeline_version LIKE :query_like
+                OR r.moca_mgridid LIKE :query_like
+                OR r.moca_instid LIKE :query_like
+                OR mo.designation LIKE :query_like
+                OR ms.spectrum_name LIKE :query_like
+                OR CAST(r.moca_oid AS CHAR) = :query_exact
+                OR CAST(r.moca_specid AS CHAR) = :query_exact
+            )
+        """)
+        params["query_like"] = like
+        params["query_exact"] = query
+
+    return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    limit = _rvbam_limit_arg(args, "limit", 250, 2000)
+    cache_key = _rvbam_cache_key(
+        args,
+        "runs",
+        args.get("q") or args.get("search") or "",
+        args.get("moca_oid") or args.get("oid") or "",
+        args.get("moca_specid") or args.get("specid") or "",
+        args.get("pipeline_version") or args.get("pipeline") or "",
+        args.get("moca_mgridid") or args.get("mgridid") or "",
+        args.get("moca_instid") or args.get("instid") or "",
+        args.get("include_ignored") or args.get("show_ignored") or "",
+        limit,
+    )
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "runs": [],
+                "value": None,
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "run_count": 0,
+                    "private_db": _is_private_db(args),
+                    "missing_tables": missing,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        where_sql, params = _rvbam_run_filter_sql(args)
+        rows = _records(_read_sql(conn, f"""
+            SELECT
+                r.moca_rv_sample_run_id,
+                r.moca_oid,
+                mo.designation,
+                r.moca_instid,
+                r.moca_specid,
+                ms.spectrum_name,
+                ms.data_collection_date,
+                ms.epoch_mjd,
+                r.moca_mgridid,
+                r.moca_fsid,
+                r.datadir,
+                r.pipeline_version,
+                r.target_name,
+                r.template_name,
+                r.nwindows,
+                r.nsegments,
+                r.npoints,
+                r.berv_kms,
+                r.berv_kms_unc,
+                r.window_ranges,
+                r.origin,
+                r.rls,
+                r.is_public,
+                r.ignored,
+                r.created_timestamp,
+                r.modified_timestamp,
+                COALESCE(seg.segment_count, 0) AS segment_count,
+                COALESCE(seg.sample_segment_count, 0) AS sample_segment_count,
+                COALESCE(seg.payload_segment_count, 0) AS payload_segment_count,
+                seg.wv_min,
+                seg.wv_max,
+                seg.rv_mean_kms,
+                seg.rv_unc_mean_kms
+            FROM pcat_rv_sampling_runs r
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = r.moca_oid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = r.moca_specid
+            LEFT JOIN (
+                SELECT
+                    s.moca_rv_sample_run_id,
+                    COUNT(*) AS segment_count,
+                    SUM(CASE WHEN s.moca_sample_run_id IS NOT NULL THEN 1 ELSE 0 END) AS sample_segment_count,
+                    COUNT(DISTINCT CASE WHEN pl.moca_payload_id IS NOT NULL THEN s.moca_rv_sampling_segment_id ELSE NULL END) AS payload_segment_count,
+                    MIN(s.wv_min) AS wv_min,
+                    MAX(s.wv_max) AS wv_max,
+                    AVG(s.rv_kms) AS rv_mean_kms,
+                    AVG(s.rv_kms_unc) AS rv_unc_mean_kms
+                FROM pcat_rv_sampling_segments s
+                LEFT JOIN pcat_sampling_payloads pl
+                    ON pl.moca_sample_run_id = s.moca_sample_run_id
+                    AND pl.payload_kind = 'chains'
+                GROUP BY s.moca_rv_sample_run_id
+            ) seg
+                ON seg.moca_rv_sample_run_id = r.moca_rv_sample_run_id
+            {where_sql}
+            ORDER BY r.modified_timestamp DESC, r.moca_rv_sample_run_id DESC
+            LIMIT {limit}
+        """, params))
+
+    selected = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
+    if selected is not None and not any(row.get("moca_rv_sample_run_id") == selected for row in rows):
+        selected = None
+    payload = {
+        "runs": rows,
+        "value": selected or (rows[0]["moca_rv_sample_run_id"] if rows else None),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "run_count": len(rows),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]:
+    cache_key = _rvbam_cache_key(args, "run", run_id, args.get("include_ignored") or args.get("show_ignored") or "")
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "run": {},
+                "segments": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "segment_count": 0,
+                    "private_db": _is_private_db(args),
+                    "missing_tables": missing,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        run_rows = _records(_read_sql(conn, """
+            SELECT
+                r.*,
+                mo.designation,
+                ms.spectrum_name,
+                ms.data_collection_date,
+                ms.epoch_mjd,
+                ms.min_wavelength_angstrom,
+                ms.max_wavelength_angstrom,
+                ms.median_spectral_resolving_power
+            FROM pcat_rv_sampling_runs r
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = r.moca_oid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = r.moca_specid
+            WHERE r.moca_rv_sample_run_id = :run_id
+        """, {"run_id": int(run_id)}))
+        run = run_rows[0] if run_rows else {}
+        if not run:
+            return {
+                "run": {},
+                "segments": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "segment_count": 0,
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        ignored_clause = "" if _as_bool(args.get("include_ignored") or args.get("show_ignored")) else "AND COALESCE(s.ignored, 0) = 0"
+        segments = _records(_read_sql(conn, f"""
+            SELECT
+                s.moca_rv_sampling_segment_id,
+                s.moca_rv_sample_run_id,
+                s.moca_sample_run_id,
+                s.order_number,
+                s.window_number,
+                s.segment_number,
+                s.wv_min,
+                s.wv_max,
+                s.wv_center,
+                s.rv_kms,
+                s.rv_kms_unc,
+                s.lsf,
+                s.lsf_unc,
+                s.vsini_kms,
+                s.vsini_kms_unc,
+                s.moca_fsid,
+                s.moca_rvsysid,
+                s.origin,
+                s.rls,
+                s.is_public,
+                s.ignored,
+                s.comments,
+                sr.sampler_type,
+                sr.sampler_name,
+                sr.sampler_variant,
+                sr.sampler_version,
+                sr.pipeline_version AS sampling_pipeline_version,
+                sr.n_parameters,
+                sr.n_walkers,
+                sr.n_iterations,
+                sr.burnin_iterations,
+                sr.thinning_interval,
+                sr.convergence_criterion,
+                sr.rhat_max,
+                sr.ess_min,
+                sr.autocorr_time_max,
+                sr.mean_acceptance_rate,
+                sr.best_chi2,
+                sr.lnp_avg,
+                sr.lnp_median,
+                sr.lnp_std,
+                sr.lnp_max,
+                sr.mean_finite_fraction,
+                sr.mean_outofbounds_fraction,
+                sr.random_seed,
+                fig.model_fit_url,
+                fig.corner_url,
+                COALESCE(params.param_count, 0) AS param_count,
+                COALESCE(params.free_param_count, 0) AS free_param_count,
+                COALESCE(payloads.payload_count, 0) AS payload_count,
+                COALESCE(payloads.chain_payloads, 0) AS chain_payloads,
+                COALESCE(payloads.lnp_payloads, 0) AS lnp_payloads,
+                payloads.total_stored_samples
+            FROM pcat_rv_sampling_segments s
+            LEFT JOIN pcat_sampling_runs sr
+                ON sr.moca_sample_run_id = s.moca_sample_run_id
+            LEFT JOIN (
+                SELECT
+                    mfs.moca_fsid,
+                    MAX(CASE WHEN mfs.description = 'RVBAM model fit' THEN mf.url ELSE NULL END) AS model_fit_url,
+                    MAX(CASE WHEN mfs.description = 'RVBAM corner plot' THEN mf.url ELSE NULL END) AS corner_url
+                FROM mechanics_file_sets mfs
+                JOIN mechanics_files mf
+                    ON mf.moca_fid = mfs.moca_fid
+                WHERE mfs.description IN ('RVBAM model fit', 'RVBAM corner plot')
+                GROUP BY mfs.moca_fsid
+            ) fig
+                ON fig.moca_fsid = s.moca_fsid
+            LEFT JOIN (
+                SELECT
+                    moca_sample_run_id,
+                    COUNT(*) AS param_count,
+                    SUM(CASE WHEN COALESCE(is_fixed, 0) = 0 THEN 1 ELSE 0 END) AS free_param_count
+                FROM pcat_sampling_parameters
+                GROUP BY moca_sample_run_id
+            ) params
+                ON params.moca_sample_run_id = s.moca_sample_run_id
+            LEFT JOIN (
+                SELECT
+                    moca_sample_run_id,
+                    COUNT(*) AS payload_count,
+                    SUM(CASE WHEN payload_kind = 'chains' THEN 1 ELSE 0 END) AS chain_payloads,
+                    SUM(CASE WHEN payload_kind = 'lnp' THEN 1 ELSE 0 END) AS lnp_payloads,
+                    SUM(COALESCE(n_stored_samples, 0)) AS total_stored_samples
+                FROM pcat_sampling_payloads
+                GROUP BY moca_sample_run_id
+            ) payloads
+                ON payloads.moca_sample_run_id = s.moca_sample_run_id
+            WHERE s.moca_rv_sample_run_id = :run_id
+                {ignored_clause}
+            ORDER BY s.order_number, s.window_number, s.segment_number, s.wv_min, s.moca_rv_sampling_segment_id
+        """, {"run_id": int(run_id)}))
+
+    payload = {
+        "run": run,
+        "segments": segments,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "segment_count": len(segments),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _rvbam_segment_images(conn, moca_fsid: int | None) -> dict[str, str]:
+    if moca_fsid is None:
+        return {"model_fit_url": "", "corner_url": ""}
+    rows = _records(_read_sql(conn, """
+        SELECT
+            mfs.description,
+            MIN(mf.url) AS url
+        FROM mechanics_file_sets mfs
+        JOIN mechanics_files mf
+            ON mf.moca_fid = mfs.moca_fid
+        WHERE mfs.moca_fsid = :moca_fsid
+            AND mfs.description IN ('RVBAM model fit', 'RVBAM corner plot')
+        GROUP BY mfs.description
+    """, {"moca_fsid": int(moca_fsid)}))
+    by_description = {str(row.get("description") or ""): str(row.get("url") or "") for row in rows}
+    return {
+        "model_fit_url": by_description.get("RVBAM model fit", ""),
+        "corner_url": by_description.get("RVBAM corner plot", ""),
+    }
+
+
+def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    cache_key = _rvbam_cache_key(args, "segment", segment_id)
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        _rvbam_refresh_local_model_status(payload)
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "segment": {},
+                "run": {},
+                "samplingRun": {},
+                "parameters": [],
+                "payloads": [],
+                "images": {"model_fit_url": "", "corner_url": ""},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "private_db": _is_private_db(args),
+                    "missing_tables": missing,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        rows = _records(_read_sql(conn, """
+            SELECT
+                s.*,
+                r.moca_oid,
+                mo.designation,
+                r.moca_instid,
+                r.moca_specid,
+                ms.spectrum_name,
+                r.moca_mgridid,
+                r.pipeline_version AS rv_pipeline_version,
+                r.target_name,
+                r.template_name,
+                r.berv_kms,
+                r.berv_kms_unc,
+                r.nwindows,
+                r.nsegments,
+                r.npoints AS run_npoints,
+                r.window_ranges,
+                r.datadir,
+                r.origin AS run_origin,
+                r.ignored AS run_ignored,
+                sr.sampler_type,
+                sr.sampler_name,
+                sr.sampler_variant,
+                sr.sampler_version,
+                sr.pipeline_version AS sampling_pipeline_version,
+                sr.n_parameters,
+                sr.n_walkers,
+                sr.n_iterations,
+                sr.burnin_iterations,
+                sr.thinning_interval,
+                sr.convergence_criterion,
+                sr.rhat_max,
+                sr.ess_min,
+                sr.autocorr_time_max,
+                sr.mean_acceptance_rate,
+                sr.best_chi2,
+                sr.lnp_avg,
+                sr.lnp_median,
+                sr.lnp_std,
+                sr.lnp_max,
+                sr.mean_finite_fraction,
+                sr.mean_outofbounds_fraction,
+                sr.random_seed,
+                sr.origin AS sampling_origin,
+                sr.ignored AS sampling_ignored,
+                sr.comments AS sampling_comments
+            FROM pcat_rv_sampling_segments s
+            JOIN pcat_rv_sampling_runs r
+                ON r.moca_rv_sample_run_id = s.moca_rv_sample_run_id
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = r.moca_oid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = r.moca_specid
+            LEFT JOIN pcat_sampling_runs sr
+                ON sr.moca_sample_run_id = s.moca_sample_run_id
+            WHERE s.moca_rv_sampling_segment_id = :segment_id
+        """, {"segment_id": int(segment_id)}))
+        row = rows[0] if rows else {}
+        if not row:
+            return {
+                "segment": {},
+                "run": {},
+                "samplingRun": {},
+                "parameters": [],
+                "payloads": [],
+                "images": {"model_fit_url": "", "corner_url": ""},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        sample_run_id = row.get("moca_sample_run_id")
+        parameters = _records(_read_sql(conn, """
+            SELECT
+                moca_sampling_parameter_id,
+                moca_sample_run_id,
+                param_name,
+                param_index,
+                units,
+                mean_value,
+                median_value,
+                std_value,
+                p16_value,
+                p84_value,
+                is_fixed,
+                fixed_value,
+                lower_bound,
+                upper_bound,
+                prior_type,
+                prior_details,
+                init_guess,
+                proposal_scale,
+                origin,
+                rls,
+                is_public,
+                ignored,
+                comments
+            FROM pcat_sampling_parameters
+            WHERE moca_sample_run_id = :sample_run_id
+            ORDER BY param_index, param_name
+        """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
+        payloads = _records(_read_sql(conn, """
+            SELECT
+                moca_payload_id,
+                moca_sample_run_id,
+                moca_sampling_parameter_id,
+                payload_kind,
+                payload_subkind,
+                dtype,
+                compression,
+                order_comment,
+                n_dim,
+                dim1,
+                dim2,
+                dim3,
+                dim4,
+                burnin_iterations,
+                thinning_interval,
+                n_stored_samples,
+                series_count,
+                origin,
+                rls,
+                is_public,
+                ignored,
+                comments
+            FROM pcat_sampling_payloads
+            WHERE moca_sample_run_id = :sample_run_id
+            ORDER BY payload_kind, payload_subkind, moca_payload_id
+        """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
+        images = _rvbam_segment_images(conn, row.get("moca_fsid"))
+
+    segment_keys = [
+        "moca_rv_sampling_segment_id", "moca_rv_sample_run_id", "moca_sample_run_id",
+        "order_number", "window_number", "segment_number", "wv_min", "wv_max", "wv_center",
+        "rv_kms", "rv_kms_unc", "lsf", "lsf_unc", "vsini_kms", "vsini_kms_unc",
+        "moca_fsid", "moca_rvsysid", "origin", "rls", "is_public", "ignored", "comments",
+    ]
+    run_keys = [
+        "moca_rv_sample_run_id", "moca_oid", "designation", "moca_instid", "moca_specid",
+        "spectrum_name", "moca_mgridid", "rv_pipeline_version", "target_name", "template_name",
+        "berv_kms", "berv_kms_unc", "nwindows", "nsegments", "run_npoints", "window_ranges",
+        "datadir", "run_origin", "run_ignored",
+    ]
+    sampling_keys = [
+        "moca_sample_run_id", "sampler_type", "sampler_name", "sampler_variant", "sampler_version",
+        "sampling_pipeline_version", "n_parameters", "n_walkers", "n_iterations", "burnin_iterations",
+        "thinning_interval", "convergence_criterion", "rhat_max", "ess_min", "autocorr_time_max",
+        "mean_acceptance_rate", "best_chi2", "lnp_avg", "lnp_median", "lnp_std", "lnp_max",
+        "mean_finite_fraction", "mean_outofbounds_fraction", "random_seed", "sampling_origin",
+        "sampling_ignored", "sampling_comments",
+    ]
+    payload = {
+        "segment": {key: row.get(key) for key in segment_keys if row.get(key) is not None},
+        "run": {key: row.get(key) for key in run_keys if row.get(key) is not None},
+        "samplingRun": {key: row.get(key) for key in sampling_keys if row.get(key) is not None},
+        "parameters": parameters,
+        "payloads": payloads,
+        "images": images,
+        "localModelFit": _rvbam_local_model_status(row.get("moca_mgridid"), row.get("template_name")),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "parameter_count": len(parameters),
+            "payload_count": len(payloads),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _rvbam_payload_dtype(dtype_name: Any) -> np.dtype:
+    mapping = {
+        "f4": np.dtype("float32"),
+        "f8": np.dtype("float64"),
+        "i4": np.dtype("int32"),
+        "i8": np.dtype("int64"),
+        "u4": np.dtype("uint32"),
+        "u8": np.dtype("uint64"),
+    }
+    dtype = mapping.get(str(dtype_name or "f4").lower())
+    if dtype is None:
+        raise ValueError(f"Unsupported RVBAM payload dtype: {dtype_name}")
+    return dtype
+
+
+def _rvbam_payload_shape(row: dict[str, Any]) -> tuple[int, ...]:
+    dims: list[int] = []
+    n_dim = _safe_float(row.get("n_dim"))
+    for key in ("dim1", "dim2", "dim3", "dim4"):
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            dim = int(value)
+        except (TypeError, ValueError):
+            continue
+        if dim > 0:
+            dims.append(dim)
+    if n_dim is not None and int(n_dim) > 0:
+        dims = dims[:int(n_dim)]
+    return tuple(dims)
+
+
+def _rvbam_array_cache_key(row: dict[str, Any]) -> str:
+    return "|".join([
+        "payload",
+        str(row.get("moca_payload_id")),
+        str(row.get("modified_timestamp") or ""),
+        str(row.get("dtype") or ""),
+        str(row.get("compression") or ""),
+        str(row.get("dim1") or ""),
+        str(row.get("dim2") or ""),
+        str(row.get("dim3") or ""),
+        str(row.get("dim4") or ""),
+    ])
+
+
+def _rvbam_prune_array_cache() -> None:
+    now = time.time()
+    expired = [key for key, (stamp, _array) in _RVBAM_ARRAY_CACHE.items() if now - stamp > RVBAM_ARRAY_CACHE_SECONDS]
+    for key in expired:
+        _RVBAM_ARRAY_CACHE.pop(key, None)
+    while len(_RVBAM_ARRAY_CACHE) > RVBAM_ARRAY_CACHE_MAX_ITEMS:
+        oldest = min(_RVBAM_ARRAY_CACHE, key=lambda item: _RVBAM_ARRAY_CACHE[item][0])
+        _RVBAM_ARRAY_CACHE.pop(oldest, None)
+
+
+def _decode_rvbam_payload_array(row: dict[str, Any]) -> np.ndarray:
+    cache_key = _rvbam_array_cache_key(row)
+    now = time.time()
+    cached = _RVBAM_ARRAY_CACHE.get(cache_key)
+    if cached and now - cached[0] < RVBAM_ARRAY_CACHE_SECONDS:
+        return cached[1]
+
+    raw = row.get("payload")
+    if raw is None:
+        raise ValueError("RVBAM payload row did not include the payload blob.")
+    if isinstance(raw, memoryview):
+        raw_bytes = raw.tobytes()
+    else:
+        raw_bytes = bytes(raw)
+
+    compression = str(row.get("compression") or "none").lower()
+    if compression == "gzip":
+        raw_bytes = gzip.decompress(raw_bytes)
+    elif compression == "zstd":
+        try:
+            import zstandard as zstd  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("zstd-compressed RVBAM payloads require the zstandard package.") from exc
+        raw_bytes = zstd.ZstdDecompressor().decompress(raw_bytes)
+    elif compression != "none":
+        raise ValueError(f"Unsupported RVBAM payload compression: {compression}")
+
+    dtype = _rvbam_payload_dtype(row.get("dtype"))
+    array = np.frombuffer(raw_bytes, dtype=dtype).copy()
+    shape = _rvbam_payload_shape(row)
+    if shape:
+        expected = int(np.prod(shape))
+        if expected == array.size:
+            array = array.reshape(shape)
+    _RVBAM_ARRAY_CACHE[cache_key] = (now, array)
+    _rvbam_prune_array_cache()
+    return array
+
+
+def _rvbam_fetch_chain_payload(conn, sample_run_id: int) -> dict[str, Any] | None:
+    row = conn.execute(text("""
+        SELECT
+            moca_payload_id,
+            moca_sample_run_id,
+            moca_sampling_parameter_id,
+            payload_kind,
+            payload_subkind,
+            dtype,
+            compression,
+            order_comment,
+            n_dim,
+            dim1,
+            dim2,
+            dim3,
+            dim4,
+            burnin_iterations,
+            thinning_interval,
+            n_stored_samples,
+            series_count,
+            modified_timestamp,
+            payload
+        FROM pcat_sampling_payloads
+        WHERE moca_sample_run_id = :sample_run_id
+            AND payload_kind = 'chains'
+            AND COALESCE(ignored, 0) = 0
+        ORDER BY
+            CASE WHEN payload_subkind = 'posterior' THEN 0 ELSE 1 END,
+            moca_payload_id
+        LIMIT 1
+    """), {"sample_run_id": int(sample_run_id)}).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _rvbam_fetch_vector_payload(conn, sample_run_id: int, payload_terms: tuple[str, ...]) -> dict[str, Any] | None:
+    terms = tuple(str(term).lower() for term in payload_terms)
+    row = conn.execute(text("""
+        SELECT
+            moca_payload_id,
+            moca_sample_run_id,
+            moca_sampling_parameter_id,
+            payload_kind,
+            payload_subkind,
+            dtype,
+            compression,
+            order_comment,
+            n_dim,
+            dim1,
+            dim2,
+            dim3,
+            dim4,
+            burnin_iterations,
+            thinning_interval,
+            n_stored_samples,
+            series_count,
+            modified_timestamp,
+            payload
+        FROM pcat_sampling_payloads
+        WHERE moca_sample_run_id = :sample_run_id
+            AND COALESCE(ignored, 0) = 0
+            AND (
+                LOWER(COALESCE(payload_kind, '')) IN :terms
+                OR LOWER(COALESCE(payload_subkind, '')) IN :terms
+                OR LOWER(COALESCE(order_comment, '')) IN :terms
+            )
+        ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(payload_subkind, '')) IN :terms THEN 0
+                WHEN LOWER(COALESCE(payload_kind, '')) IN :terms THEN 1
+                ELSE 2
+            END,
+            moca_payload_id
+        LIMIT 1
+    """).bindparams(bindparam("terms", expanding=True)), {
+        "sample_run_id": int(sample_run_id),
+        "terms": terms,
+    }).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _rvbam_corner_weights(
+    conn,
+    sample_run_id: int,
+    sample_count: int,
+    live_points: Any = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    meta: dict[str, Any] = {"weights_source": "uniform fallback"}
+    if sample_count <= 0:
+        return np.array([], dtype=float), meta
+
+    weights_payload = _rvbam_fetch_vector_payload(conn, sample_run_id, (
+        "weights",
+        "weight",
+        "posterior_weights",
+        "sample_weights",
+    ))
+    if weights_payload is not None:
+        try:
+            weights = np.asarray(_decode_rvbam_payload_array(weights_payload), dtype=float).reshape(-1)
+            if weights.size == sample_count and np.isfinite(weights).any() and np.nansum(weights) > 0:
+                meta = {
+                    "weights_source": "stored weights payload",
+                    "weights_payload_id": weights_payload.get("moca_payload_id"),
+                    "weights_payload_kind": weights_payload.get("payload_kind"),
+                    "weights_payload_subkind": weights_payload.get("payload_subkind"),
+                }
+                return weights, meta
+        except Exception as exc:
+            meta["weights_payload_error"] = f"{type(exc).__name__}: {exc}"
+
+    logl_payload = _rvbam_fetch_vector_payload(conn, sample_run_id, (
+        "logl",
+        "lnp",
+        "log_likelihood",
+    ))
+    if logl_payload is not None:
+        try:
+            logl = np.asarray(_decode_rvbam_payload_array(logl_payload), dtype=float).reshape(-1)
+            if logl.size == sample_count and np.isfinite(logl).any():
+                live = _safe_float(live_points)
+                order = np.argsort(logl)
+                if live is not None and live > 0 and logl.size > 1:
+                    indices = np.arange(logl.size, dtype=float)
+                    logx_prev = -indices / float(live)
+                    logx_next = -(indices + 1.0) / float(live)
+                    log_width = logx_prev + np.log1p(-np.exp(logx_next - logx_prev))
+                    log_weight_sorted = log_width + logl[order]
+                    weights = np.zeros(sample_count, dtype=float)
+                    finite_sorted = np.isfinite(log_weight_sorted)
+                    shifted = np.clip(log_weight_sorted[finite_sorted] - float(np.nanmax(log_weight_sorted[finite_sorted])), -745.0, 50.0)
+                    weights[order[finite_sorted]] = np.exp(shifted)
+                    source = f"nested logl fallback (live_points={int(live)})"
+                else:
+                    weights = np.zeros(sample_count, dtype=float)
+                    finite = np.isfinite(logl)
+                    shifted = np.clip(logl[finite] - float(np.nanmax(logl[finite])), -745.0, 50.0)
+                    weights[finite] = np.exp(shifted)
+                    source = "exp(logl - max(logl)) fallback"
+                if np.sum(weights) > 0:
+                    meta = {
+                        "weights_source": source,
+                        "weights_payload_id": logl_payload.get("moca_payload_id"),
+                        "weights_payload_kind": logl_payload.get("payload_kind"),
+                        "weights_payload_subkind": logl_payload.get("payload_subkind"),
+                    }
+                    return weights, meta
+        except Exception as exc:
+            meta["logl_payload_error"] = f"{type(exc).__name__}: {exc}"
+
+    return np.ones(sample_count, dtype=float), meta
+
+
+def _rvbam_apply_corner_keep_weight(
+    samples: np.ndarray,
+    weights: np.ndarray,
+    keep_weight: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not (0.0 < keep_weight < 1.0):
+        return samples, weights
+    finite = np.isfinite(weights) & (weights > 0)
+    if not np.any(finite):
+        return samples, weights
+    samples = samples[finite]
+    weights = weights[finite]
+    order = np.argsort(weights)[::-1]
+    sorted_weights = weights[order]
+    cumulative = np.cumsum(sorted_weights)
+    if cumulative[-1] <= 0:
+        return samples, weights
+    cutoff = keep_weight * cumulative[-1]
+    keep_n = int(np.searchsorted(cumulative, cutoff, side="left") + 1)
+    keep_idx = order[:keep_n]
+    return samples[keep_idx], weights[keep_idx]
+
+
+def _rvbam_chain_matrix(array: np.ndarray, parameters: list[dict[str, Any]]) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    if array.size == 0:
+        return np.empty((0, 0), dtype=float), []
+    param_count = max(1, len(parameters))
+    arr = np.asarray(array, dtype=float)
+    if arr.ndim == 1:
+        if param_count > 1 and arr.size % param_count == 0:
+            matrix = arr.reshape((-1, param_count))
+        else:
+            matrix = arr.reshape((-1, 1))
+    elif arr.ndim == 2:
+        if arr.shape[1] == param_count:
+            matrix = arr
+        elif arr.shape[0] == param_count:
+            matrix = arr.T
+        else:
+            matrix = arr.reshape((arr.shape[0], -1))
+    else:
+        if arr.shape[-1] == param_count:
+            matrix = arr.reshape((-1, param_count))
+        elif arr.shape[0] == param_count:
+            matrix = np.moveaxis(arr, 0, -1).reshape((-1, param_count))
+        else:
+            matrix = arr.reshape((-1, arr.shape[-1]))
+
+    ncols = matrix.shape[1]
+    if len(parameters) >= ncols:
+        used_params = parameters[:ncols]
+    else:
+        used_params = list(parameters)
+        for index in range(len(used_params), ncols):
+            used_params.append({
+                "param_name": f"param_{index}",
+                "param_index": index,
+                "units": None,
+                "is_fixed": 0,
+            })
+    finite_rows = np.all(np.isfinite(matrix), axis=1)
+    return matrix[finite_rows], used_params
+
+
+def _rvbam_parameter_order(parameters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(parameters, key=lambda row: (
+        int(row.get("param_index") or 0),
+        str(row.get("param_name") or ""),
+    ))
+
+
+def _rvbam_requested_param_names(args: dict[str, Any], parameters: list[dict[str, Any]]) -> list[str]:
+    available = [str(row.get("param_name") or "") for row in parameters if row.get("param_name")]
+    max_params = _rvbam_limit_arg(args, "max_params", 8, 12)
+    requested: list[str] = []
+    raw = str(args.get("params") or "").strip()
+    if raw:
+        if raw.lower() in {"all", "*"}:
+            requested = available
+        else:
+            requested = [item.strip() for item in raw.split(",") if item.strip()]
+    else:
+        for key in ("x", "x_param", "param_x"):
+            if args.get(key):
+                requested.append(str(args[key]))
+                break
+        for key in ("y", "y_param", "param_y"):
+            if args.get(key):
+                requested.append(str(args[key]))
+                break
+    if _as_bool(args.get("corner") or args.get("corner_plot")) and not requested:
+        requested = available
+    requested = [name for name in requested if name in available]
+    if requested:
+        return requested[:max_params]
+    preferred = [name for name in ("rv_kms", "lsf_sigma_kms", "vsini_kms") if name in available]
+    for name in available:
+        if name not in preferred:
+            preferred.append(name)
+    return preferred[: min(3, len(preferred))]
+
+
+def _rvbam_sample_rows(matrix: np.ndarray, parameters: list[dict[str, Any]], names: list[str], max_points: int) -> list[dict[str, Any]]:
+    if matrix.size == 0 or not names:
+        return []
+    name_to_index = {str(param.get("param_name")): index for index, param in enumerate(parameters)}
+    columns = [(name, name_to_index[name]) for name in names if name in name_to_index and name_to_index[name] < matrix.shape[1]]
+    if not columns:
+        return []
+    nrows = matrix.shape[0]
+    if nrows <= max_points:
+        indices = np.arange(nrows, dtype=int)
+    else:
+        indices = np.unique(np.linspace(0, nrows - 1, max_points).astype(int))
+    out: list[dict[str, Any]] = []
+    for sample_index in indices:
+        row: dict[str, Any] = {"sample_index": int(sample_index)}
+        for name, col_index in columns:
+            value = float(matrix[sample_index, col_index])
+            row[name] = value if math.isfinite(value) else None
+        out.append(row)
+    return out
+
+
+def _rvbam_histogram(values: np.ndarray, bins: int = 40) -> dict[str, Any]:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return {"edges": [], "counts": []}
+    counts, edges = np.histogram(finite, bins=max(5, min(int(bins), 120)))
+    return {
+        "edges": [float(value) for value in edges],
+        "counts": [int(value) for value in counts],
+    }
+
+
+def _rvbam_posterior_summaries(matrix: np.ndarray, parameters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for index, param in enumerate(parameters[: matrix.shape[1]]):
+        values = matrix[:, index]
+        finite = values[np.isfinite(values)]
+        row = dict(param)
+        if finite.size:
+            p16, median, p84 = np.percentile(finite, [16, 50, 84])
+            row.update({
+                "sample_mean": float(np.mean(finite)),
+                "sample_std": float(np.std(finite)),
+                "sample_p16": float(p16),
+                "sample_median": float(median),
+                "sample_p84": float(p84),
+                "sample_count": int(finite.size),
+            })
+        summaries.append({key: _pythonize(value) for key, value in row.items()})
+    return summaries
+
+
+def _rvbam_correlation_payload(matrix: np.ndarray, parameters: list[dict[str, Any]], max_params: int = 12) -> dict[str, Any]:
+    if matrix.shape[0] < 2 or matrix.shape[1] < 2:
+        return {"labels": [], "matrix": []}
+    ncols = min(matrix.shape[1], max_params, len(parameters))
+    labels = [str(param.get("param_name") or f"param_{index}") for index, param in enumerate(parameters[:ncols])]
+    corr = np.corrcoef(matrix[:, :ncols], rowvar=False)
+    corr = np.where(np.isfinite(corr), corr, np.nan)
+    return {
+        "labels": labels,
+        "matrix": [[_pythonize(value) for value in row] for row in corr.tolist()],
+    }
+
+
+def _mock_rvbam_segment_payload(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    run_id = int(segment_id) // 100
+    run_payload = _mock_rvbam_run_payload(args, run_id if run_id in {910001, 910002} else 910001)
+    segment = next(
+        (row for row in run_payload["segments"] if int(row["moca_rv_sampling_segment_id"]) == int(segment_id)),
+        run_payload["segments"][0],
+    )
+    sample_run_id = int(segment["moca_sample_run_id"])
+    params = _mock_rvbam_parameters(sample_run_id)
+    payloads = [
+        {
+            "moca_payload_id": sample_run_id * 10 + 1,
+            "moca_sample_run_id": sample_run_id,
+            "payload_kind": "chains",
+            "payload_subkind": "posterior",
+            "dtype": "f8",
+            "compression": "gzip",
+            "order_comment": "chains: [samples, params] (param_index asc)",
+            "n_dim": 2,
+            "dim1": 12000,
+            "dim2": len(params),
+            "n_stored_samples": 12000,
+            "series_count": 1,
+        },
+        {
+            "moca_payload_id": sample_run_id * 10 + 2,
+            "moca_sample_run_id": sample_run_id,
+            "payload_kind": "lnp",
+            "payload_subkind": "logl",
+            "dtype": "f8",
+            "compression": "gzip",
+            "order_comment": "log likelihood, one value per stored sample",
+            "n_dim": 1,
+            "dim1": 12000,
+            "n_stored_samples": 12000,
+            "series_count": 1,
+        },
+    ]
+    return {
+        "segment": segment,
+        "run": run_payload["run"],
+        "samplingRun": {key: segment.get(key) for key in (
+            "moca_sample_run_id", "sampler_type", "sampler_name", "sampler_variant",
+            "n_parameters", "n_walkers", "n_iterations", "mean_acceptance_rate",
+            "best_chi2", "lnp_median", "lnp_max", "mean_finite_fraction",
+            "mean_outofbounds_fraction",
+        ) if segment.get(key) is not None},
+        "parameters": params,
+        "payloads": payloads,
+        "images": {"model_fit_url": "", "corner_url": ""},
+        "localModelFit": _rvbam_local_model_status(
+            segment_payload["run"].get("moca_mgridid"),
+            segment_payload["run"].get("template_name"),
+        ),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "parameter_count": len(params),
+            "payload_count": len(payloads),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_rvbam_posterior_payload(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    segment_payload = _mock_rvbam_segment_payload(args, segment_id)
+    segment = segment_payload["segment"]
+    params = _rvbam_parameter_order(segment_payload["parameters"])
+    sample_count = 12000
+    max_points = _rvbam_limit_arg(args, "max_points", RVBAM_DEFAULT_MAX_SAMPLES, RVBAM_HARD_MAX_SAMPLES)
+    rng = np.random.default_rng(int(segment["moca_sample_run_id"]) % (2**32 - 1))
+    means = np.array([
+        float(segment.get("rv_kms") or 0.0),
+        float(segment.get("lsf") or 15.0),
+        float(segment.get("vsini_kms") or 22.0),
+        -0.03,
+        0.04,
+    ])
+    scales = np.array([
+        max(float(segment.get("rv_kms_unc") or 0.8), 0.15),
+        max(float(segment.get("lsf_unc") or 2.0), 0.2),
+        max(float(segment.get("vsini_kms_unc") or 4.0), 0.2),
+        0.035,
+        0.04,
+    ])
+    cov = np.diag(scales**2)
+    cov[0, 1] = cov[1, 0] = 0.25 * scales[0] * scales[1]
+    cov[1, 2] = cov[2, 1] = -0.18 * scales[1] * scales[2]
+    matrix = rng.multivariate_normal(means, cov, size=sample_count)
+    names = _rvbam_requested_param_names(args, params)
+    histograms = {}
+    name_to_index = {str(param.get("param_name")): index for index, param in enumerate(params)}
+    for name in names:
+        if name in name_to_index:
+            histograms[name] = _rvbam_histogram(matrix[:, name_to_index[name]])
+    samples = _rvbam_sample_rows(matrix, params, names, max_points)
+    return {
+        "segment": segment,
+        "selectedParams": names,
+        "parameterOptions": [
+            {
+                "name": param.get("param_name"),
+                "label": param.get("param_name"),
+                "units": param.get("units"),
+                "index": param.get("param_index"),
+            }
+            for param in params
+        ],
+        "summaries": _rvbam_posterior_summaries(matrix, params),
+        "histograms": histograms,
+        "correlation": _rvbam_correlation_payload(matrix, params),
+        "samples": samples,
+        "payload": {
+            "payload_kind": "chains",
+            "payload_subkind": "posterior",
+            "dtype": "f8",
+            "compression": "gzip",
+            "shape": [sample_count, len(params)],
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "sample_count": int(matrix.shape[0]),
+            "returned_sample_count": len(samples),
+            "max_points": max_points,
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _load_rvbam_posterior_from_db(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    max_points = _rvbam_limit_arg(args, "max_points", RVBAM_DEFAULT_MAX_SAMPLES, RVBAM_HARD_MAX_SAMPLES)
+    bins = _rvbam_limit_arg(args, "bins", 42, 120)
+    cache_key = _rvbam_cache_key(
+        args,
+        "posterior",
+        segment_id,
+        args.get("params") or "",
+        args.get("x") or args.get("x_param") or args.get("param_x") or "",
+        args.get("y") or args.get("y_param") or args.get("param_y") or "",
+        max_points,
+        bins,
+    )
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "segment": {},
+                "selectedParams": [],
+                "parameterOptions": [],
+                "summaries": [],
+                "histograms": {},
+                "correlation": {"labels": [], "matrix": []},
+                "samples": [],
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "private_db": _is_private_db(args),
+                    "missing_tables": missing,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        segment_rows = _records(_read_sql(conn, """
+            SELECT
+                moca_rv_sampling_segment_id,
+                moca_rv_sample_run_id,
+                moca_sample_run_id,
+                order_number,
+                window_number,
+                segment_number,
+                wv_min,
+                wv_max,
+                wv_center,
+                rv_kms,
+                rv_kms_unc,
+                lsf,
+                lsf_unc,
+                vsini_kms,
+                vsini_kms_unc,
+                ignored
+            FROM pcat_rv_sampling_segments
+            WHERE moca_rv_sampling_segment_id = :segment_id
+        """, {"segment_id": int(segment_id)}))
+        if not segment_rows or segment_rows[0].get("moca_sample_run_id") is None:
+            return {
+                "segment": segment_rows[0] if segment_rows else {},
+                "selectedParams": [],
+                "parameterOptions": [],
+                "summaries": [],
+                "histograms": {},
+                "correlation": {"labels": [], "matrix": []},
+                "samples": [],
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        segment = segment_rows[0]
+        sample_run_id = int(segment["moca_sample_run_id"])
+        parameters = _rvbam_parameter_order(_records(_read_sql(conn, """
+            SELECT
+                moca_sampling_parameter_id,
+                moca_sample_run_id,
+                param_name,
+                param_index,
+                units,
+                mean_value,
+                median_value,
+                std_value,
+                p16_value,
+                p84_value,
+                is_fixed,
+                fixed_value,
+                lower_bound,
+                upper_bound,
+                prior_type,
+                prior_details,
+                init_guess,
+                proposal_scale,
+                ignored
+            FROM pcat_sampling_parameters
+            WHERE moca_sample_run_id = :sample_run_id
+                AND COALESCE(ignored, 0) = 0
+            ORDER BY param_index, param_name
+        """, {"sample_run_id": sample_run_id})))
+        chain_payload = _rvbam_fetch_chain_payload(conn, sample_run_id)
+        if chain_payload is None:
+            return {
+                "segment": segment,
+                "selectedParams": [],
+                "parameterOptions": [
+                    {
+                        "name": param.get("param_name"),
+                        "label": param.get("param_name"),
+                        "units": param.get("units"),
+                        "index": param.get("param_index"),
+                    }
+                    for param in parameters
+                ],
+                "summaries": parameters,
+                "histograms": {},
+                "correlation": {"labels": [], "matrix": []},
+                "samples": [],
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "max_points": max_points,
+                    "private_db": _is_private_db(args),
+                    "message": "No posterior chains payload found for this segment.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+
+    chain_array = _decode_rvbam_payload_array(chain_payload)
+    matrix, used_parameters = _rvbam_chain_matrix(chain_array, parameters)
+    selected_names = _rvbam_requested_param_names(args, used_parameters)
+    name_to_index = {str(param.get("param_name")): index for index, param in enumerate(used_parameters)}
+    histograms = {}
+    for name in selected_names:
+        index = name_to_index.get(name)
+        if index is not None and index < matrix.shape[1]:
+            histograms[name] = _rvbam_histogram(matrix[:, index], bins=bins)
+    samples = _rvbam_sample_rows(matrix, used_parameters, selected_names, max_points)
+    payload_meta = {key: _pythonize(value) for key, value in chain_payload.items() if key != "payload"}
+    payload_meta["shape"] = list(chain_array.shape)
+    payload = {
+        "segment": segment,
+        "selectedParams": selected_names,
+        "parameterOptions": [
+            {
+                "name": param.get("param_name"),
+                "label": param.get("param_name"),
+                "units": param.get("units"),
+                "index": param.get("param_index"),
+            }
+            for param in used_parameters
+        ],
+        "summaries": _rvbam_posterior_summaries(matrix, used_parameters),
+        "histograms": histograms,
+        "correlation": _rvbam_correlation_payload(matrix, used_parameters),
+        "samples": samples,
+        "payload": payload_meta,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "sample_count": int(matrix.shape[0]),
+            "returned_sample_count": len(samples),
+            "max_points": max_points,
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_rvbam_rebuilt_corner_from_db(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    keep_weight = _safe_float(args.get("corner_keep_weight") or args.get("keep_weight"))
+    if keep_weight is None:
+        keep_weight = 0.99
+    keep_weight = min(max(float(keep_weight), 0.0), 1.0)
+    q_low = _safe_float(args.get("q_low"))
+    q_high = _safe_float(args.get("q_high"))
+    q_low = 0.005 if q_low is None else min(max(float(q_low), 0.0), 0.49)
+    q_high = 0.995 if q_high is None else min(max(float(q_high), 0.51), 1.0)
+    cache_key = _rvbam_cache_key(
+        args,
+        "rebuilt-corner-image",
+        segment_id,
+        args.get("params") or "",
+        args.get("max_params") or "",
+        keep_weight,
+        q_low,
+        q_high,
+    )
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        ok, missing = _rvbam_required_tables_available(conn)
+        if not ok:
+            return {
+                "available": False,
+                "selectedParams": [],
+                "image": {},
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "private_db": _is_private_db(args),
+                    "missing_tables": missing,
+                    "message": "RVBAM payload tables are not available.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        segment_rows = _records(_read_sql(conn, """
+            SELECT
+                moca_rv_sampling_segment_id,
+                moca_rv_sample_run_id,
+                moca_sample_run_id,
+                order_number,
+                window_number,
+                segment_number,
+                rv_kms,
+                rv_kms_unc,
+                lsf,
+                lsf_unc,
+                vsini_kms,
+                vsini_kms_unc,
+                ignored
+            FROM pcat_rv_sampling_segments
+            WHERE moca_rv_sampling_segment_id = :segment_id
+        """, {"segment_id": int(segment_id)}))
+        if not segment_rows or segment_rows[0].get("moca_sample_run_id") is None:
+            return {
+                "available": False,
+                "segment": segment_rows[0] if segment_rows else {},
+                "selectedParams": [],
+                "image": {},
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "private_db": _is_private_db(args),
+                    "message": "No sampling run is attached to this segment.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        segment = segment_rows[0]
+        sample_run_id = int(segment["moca_sample_run_id"])
+        parameters = _rvbam_parameter_order(_records(_read_sql(conn, """
+            SELECT
+                moca_sampling_parameter_id,
+                moca_sample_run_id,
+                param_name,
+                param_index,
+                units,
+                mean_value,
+                median_value,
+                std_value,
+                p16_value,
+                p84_value,
+                is_fixed,
+                fixed_value,
+                lower_bound,
+                upper_bound,
+                prior_type,
+                prior_details,
+                init_guess,
+                proposal_scale,
+                ignored
+            FROM pcat_sampling_parameters
+            WHERE moca_sample_run_id = :sample_run_id
+                AND COALESCE(ignored, 0) = 0
+            ORDER BY param_index, param_name
+        """, {"sample_run_id": sample_run_id})))
+        chain_payload = _rvbam_fetch_chain_payload(conn, sample_run_id)
+        sampling_rows = _records(_read_sql(conn, """
+            SELECT n_walkers
+            FROM pcat_sampling_runs
+            WHERE moca_sample_run_id = :sample_run_id
+        """, {"sample_run_id": sample_run_id}))
+        if chain_payload is None:
+            return {
+                "available": False,
+                "segment": segment,
+                "selectedParams": [],
+                "image": {},
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "sample_count": 0,
+                    "returned_sample_count": 0,
+                    "private_db": _is_private_db(args),
+                    "message": "No posterior chains payload found for this segment.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        live_points = sampling_rows[0].get("n_walkers") if sampling_rows else None
+        weights, weights_meta = _rvbam_corner_weights(
+            conn,
+            sample_run_id,
+            int(chain_payload.get("n_stored_samples") or 0),
+            live_points=live_points,
+        )
+
+    chain_array = _decode_rvbam_payload_array(chain_payload)
+    matrix, used_parameters = _rvbam_chain_matrix(chain_array, parameters)
+    if weights.size != matrix.shape[0]:
+        weights, weights_meta = np.ones(matrix.shape[0], dtype=float), {
+            "weights_source": "uniform fallback",
+            "weights_note": f"Stored weight vector length did not match chain matrix rows ({weights.size} != {matrix.shape[0]}).",
+        }
+
+    selected_names = _rvbam_requested_param_names(args, used_parameters)
+    name_to_index = {str(param.get("param_name")): index for index, param in enumerate(used_parameters)}
+    columns = [(name, name_to_index[name]) for name in selected_names if name in name_to_index and name_to_index[name] < matrix.shape[1]]
+    if not columns:
+        return {
+            "available": False,
+            "segment": segment,
+            "selectedParams": [],
+            "image": {},
+            "payload": {},
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "sample_count": int(matrix.shape[0]),
+                "returned_sample_count": 0,
+                "private_db": _is_private_db(args),
+                "message": "No finite posterior columns are available for the requested parameters.",
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    selected_names = [name for name, _index in columns]
+    selected_matrix = np.asarray(matrix[:, [index for _name, index in columns]], dtype=float)
+    finite_rows = np.all(np.isfinite(selected_matrix), axis=1) & np.isfinite(weights) & (weights > 0)
+    selected_matrix = selected_matrix[finite_rows]
+    selected_weights = weights[finite_rows]
+    pre_keep_count = int(selected_matrix.shape[0])
+    selected_matrix, selected_weights = _rvbam_apply_corner_keep_weight(selected_matrix, selected_weights, keep_weight)
+    if selected_matrix.shape[0] <= selected_matrix.shape[1]:
+        return {
+            "available": False,
+            "segment": segment,
+            "selectedParams": selected_names,
+            "image": {},
+            "payload": {},
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "sample_count": int(matrix.shape[0]),
+                "finite_sample_count": pre_keep_count,
+                "returned_sample_count": int(selected_matrix.shape[0]),
+                "private_db": _is_private_db(args),
+                "message": "Too few weighted posterior samples to rebuild a corner plot.",
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        }
+
+    _prepare_rvbam_imports()
+    mpl_config_dir = Path(os.environ.get("MPLCONFIGDIR", "/tmp/matplotlib"))
+    mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    from rvbam.plots.diagnostics import save_corner_plot
+
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        save_corner_plot(
+            Path(tmp.name),
+            selected_matrix,
+            selected_weights,
+            selected_names,
+            q_low=q_low,
+            q_high=q_high,
+        )
+        tmp.seek(0)
+        png_bytes = tmp.read()
+    if not png_bytes:
+        raise ValueError("RVBAM corner plot generation returned an empty image.")
+    encoded = base64.b64encode(png_bytes).decode("ascii")
+    payload_meta = {key: _pythonize(value) for key, value in chain_payload.items() if key != "payload"}
+    payload_meta["shape"] = list(chain_array.shape)
+    payload = {
+        "available": True,
+        "segment": segment,
+        "selectedParams": selected_names,
+        "image": {
+            "mime_type": "image/png",
+            "data_url": f"data:image/png;base64,{encoded}",
+            "byte_count": len(png_bytes),
+        },
+        "payload": payload_meta,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "sample_count": int(matrix.shape[0]),
+            "finite_sample_count": pre_keep_count,
+            "returned_sample_count": int(selected_matrix.shape[0]),
+            "keep_weight": keep_weight,
+            "q_low": q_low,
+            "q_high": q_high,
+            "weights_source": weights_meta.get("weights_source"),
+            "weights": weights_meta,
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _rvbam_segment_bounds_angstrom(wv_min: Any, wv_max: Any) -> tuple[float, float]:
+    left = _safe_float(wv_min)
+    right = _safe_float(wv_max)
+    if left is None or right is None:
+        raise ValueError("Selected RVBAM segment has no wavelength bounds.")
+    if right < left:
+        left, right = right, left
+    # Some older payloads store microns, while current RVBAM rows use Angstrom.
+    if max(abs(left), abs(right)) < 1000:
+        left *= 10000.0
+        right *= 10000.0
+    return float(left), float(right)
+
+
+def _rvbam_theta_from_parameters(
+    parameters: list[dict[str, Any]],
+    segment: dict[str, Any],
+    run: dict[str, Any],
+) -> dict[str, float]:
+    theta: dict[str, float] = {}
+    for param in parameters:
+        name = str(param.get("param_name") or "").strip()
+        if not name:
+            continue
+        value = None
+        if _as_bool(param.get("is_fixed")):
+            value = param.get("fixed_value")
+        if value is None:
+            value = param.get("median_value")
+        if value is None:
+            value = param.get("mean_value")
+        parsed = _safe_float(value)
+        if parsed is not None:
+            theta[name] = float(parsed)
+
+    if "rv_kms" not in theta:
+        rv_value = _safe_float(segment.get("rv_kms"))
+        berv = _safe_float(run.get("berv_kms"))
+        if rv_value is not None:
+            theta["rv_kms"] = rv_value - berv if berv is not None else rv_value
+    if "lsf_sigma_kms" not in theta and _safe_float(segment.get("lsf")) is not None:
+        theta["lsf_sigma_kms"] = float(_safe_float(segment.get("lsf")) or 0.0)
+    if "vsini_kms" not in theta and _safe_float(segment.get("vsini_kms")) is not None:
+        theta["vsini_kms"] = float(_safe_float(segment.get("vsini_kms")) or 0.0)
+    theta.setdefault("blaze_left", 1.0)
+    theta.setdefault("blaze_right", 1.0)
+    theta.setdefault("E_floor", 0.0)
+    return theta
+
+
+def _rvbam_downsample_indices(length: int, max_points: int) -> np.ndarray:
+    if length <= 0:
+        return np.array([], dtype=int)
+    if length <= max_points:
+        return np.arange(length, dtype=int)
+    return np.unique(np.linspace(0, length - 1, max_points).astype(int))
+
+
+def _rvbam_fit_series_records(
+    wavelength: np.ndarray,
+    *arrays: np.ndarray,
+    max_points: int,
+    names: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    indices = _rvbam_downsample_indices(int(wavelength.size), int(max_points))
+    records: list[dict[str, Any]] = []
+    for index in indices:
+        row = {"wavelength_angstrom": _pythonize(float(wavelength[index]))}
+        for name, array in zip(names, arrays):
+            value = array[index] if index < array.size else np.nan
+            row[name] = _pythonize(float(value)) if np.isfinite(value) else None
+        records.append(row)
+    return records
+
+
+def _rvbam_auto_model_flux_scale(
+    data: Any,
+    fetcher: Any,
+    par_list: list[str],
+    axes: Any,
+    forward_config: Any,
+) -> float:
+    _prepare_rvbam_imports()
+    from rvbam.model.segment_loglike import SegmentLogLikelihood as RvbamSegmentLogLikelihood
+
+    test_theta = {}
+    for parameter in par_list:
+        values = np.asarray(axes.axes[parameter], dtype=float)
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            test_theta[parameter] = float(0.5 * (np.nanmin(finite) + np.nanmax(finite)))
+    test_theta.update({
+        "rv_kms": 0.0,
+        "lsf_sigma_kms": 20.0,
+        "blaze_left": 1.0,
+        "blaze_right": 1.0,
+        "E_floor": 0.0,
+    })
+    try:
+        tmp = RvbamSegmentLogLikelihood(
+            data,
+            fetcher,
+            forward_config=forward_config,
+            model_flux_scale=1.0,
+        )
+        model_on_data = tmp.model_on_data(test_theta)
+        finite = np.isfinite(data.flux) & np.isfinite(model_on_data)
+        med_data = float(np.nanmedian(data.flux[finite]))
+        med_model = float(np.nanmedian(model_on_data[finite]))
+        if np.isfinite(med_data) and np.isfinite(med_model) and med_model != 0:
+            return float(med_data / med_model)
+    except Exception:
+        pass
+    return 1.0
+
+
+def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> dict[str, Any]:
+    max_data_points = _rvbam_limit_arg(args, "max_data_points", 3000, 12000)
+    max_model_points = _rvbam_limit_arg(args, "max_model_points", 3000, 12000)
+    requested_model_flux_scale = _safe_float(args.get("model_flux_scale"))
+    cache_key = _rvbam_cache_key(
+        args,
+        "rebuilt-fit",
+        segment_id,
+        max_data_points,
+        max_model_points,
+        requested_model_flux_scale if requested_model_flux_scale is not None else "auto",
+    )
+    now = time.time()
+    cached = _RVBAM_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        _rvbam_refresh_local_model_status(payload)
+        if not (payload.get("available") is False and payload.get("localModelFit", {}).get("available")):
+            payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+            return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        rows = _records(_read_sql(conn, """
+            SELECT
+                s.moca_rv_sampling_segment_id,
+                s.moca_rv_sample_run_id,
+                s.moca_sample_run_id,
+                s.order_number,
+                s.window_number,
+                s.segment_number,
+                s.wv_min,
+                s.wv_max,
+                s.wv_center,
+                s.rv_kms,
+                s.rv_kms_unc,
+                s.lsf,
+                s.lsf_unc,
+                s.vsini_kms,
+                s.vsini_kms_unc,
+                r.moca_oid,
+                mo.designation,
+                r.moca_instid,
+                r.moca_specid,
+                ms.spectrum_name,
+                ms.berv_corrected,
+                r.moca_mgridid,
+                r.pipeline_version,
+                r.target_name,
+                r.template_name,
+                r.berv_kms,
+                r.berv_kms_unc
+            FROM pcat_rv_sampling_segments s
+            JOIN pcat_rv_sampling_runs r
+                ON r.moca_rv_sample_run_id = s.moca_rv_sample_run_id
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = r.moca_oid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = r.moca_specid
+            WHERE s.moca_rv_sampling_segment_id = :segment_id
+        """, {"segment_id": int(segment_id)}))
+        if not rows:
+            raise ValueError(f"RVBAM segment not found: {segment_id}")
+        row = rows[0]
+        status = _rvbam_local_model_status(row.get("moca_mgridid"), row.get("template_name"))
+        if not status.get("available"):
+            return {
+                "available": False,
+                "localModelFit": status,
+                "segment": row,
+                "run": {},
+                "data": [],
+                "model": [],
+                "theta": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "message": status.get("message") or "Local RVBAM HDF5 model file is not available on this server.",
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+
+        sample_run_id = row.get("moca_sample_run_id")
+        parameters = _records(_read_sql(conn, """
+            SELECT
+                param_name,
+                param_index,
+                units,
+                mean_value,
+                median_value,
+                std_value,
+                p16_value,
+                p84_value,
+                is_fixed,
+                fixed_value,
+                lower_bound,
+                upper_bound
+            FROM pcat_sampling_parameters
+            WHERE moca_sample_run_id = :sample_run_id
+                AND COALESCE(ignored, 0) = 0
+            ORDER BY param_index, param_name
+        """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
+
+        w0, w1 = _rvbam_segment_bounds_angstrom(row.get("wv_min"), row.get("wv_max"))
+        spectrum_rows = _records(_read_sql(conn, """
+            SELECT
+                wavelength_angstrom,
+                flux_flambda,
+                flux_flambda_unc
+            FROM data_spectra
+            WHERE moca_specid = :specid
+                AND COALESCE(ignored, 0) = 0
+                AND wavelength_angstrom BETWEEN :w0 AND :w1
+            ORDER BY wavelength_angstrom
+        """, {
+            "specid": int(row["moca_specid"]),
+            "w0": float(w0),
+            "w1": float(w1),
+        }))
+
+    if not spectrum_rows:
+        raise ValueError("No data_spectra rows found for the selected segment wavelength range.")
+
+    _prepare_rvbam_imports()
+
+    from rvbam.grid.cache import SpectrumCache
+    from rvbam.grid.interpolated_model import GridIndex, InterpolatedModelFetcher
+    from rvbam.grid.local_models import LocalHdf5ModelStore, LocalModelConfig
+    from rvbam.model.forward import ForwardModelConfig, edges_from_centers
+    from rvbam.model.segment_loglike import SegmentData, SegmentLogLikelihood
+
+    wavelength = np.array([float(item["wavelength_angstrom"]) for item in spectrum_rows], dtype=float)
+    flux = np.array([float(item["flux_flambda"]) if item.get("flux_flambda") is not None else np.nan for item in spectrum_rows], dtype=float)
+    flux_err = np.array([float(item["flux_flambda_unc"]) if item.get("flux_flambda_unc") is not None else np.nan for item in spectrum_rows], dtype=float)
+    finite = np.isfinite(wavelength) & np.isfinite(flux) & np.isfinite(flux_err)
+    wavelength = wavelength[finite]
+    flux = flux[finite]
+    flux_err = flux_err[finite]
+    if wavelength.size < 2:
+        raise ValueError("Too few finite spectrum rows to rebuild the model fit.")
+
+    theta = _rvbam_theta_from_parameters(parameters, row, row)
+    with engine.connect() as conn:
+        store = LocalHdf5ModelStore(
+            conn,
+            str(row["moca_mgridid"]),
+            config=LocalModelConfig(base_dir=RVBAM_LOCAL_MODEL_DIR),
+            use_db_file_index=False,
+        )
+        par_list, axes, tuple_to_fileid = store.load_grid_index()
+        expected = int(np.prod([len(axes.axes[p]) for p in par_list])) if par_list else 0
+        require_full = not (expected and len(tuple_to_fileid) < expected)
+        cache = SpectrumCache(fetch_fn=store.fetch_model_spectrum)
+        fetcher = InterpolatedModelFetcher(
+            None,
+            str(row["moca_mgridid"]),
+            GridIndex(par_list=par_list, axes=axes, tuple_to_fileid=tuple_to_fileid),
+            cache=cache,
+            require_full_corners=require_full,
+        )
+        fetcher.set_segment_range(w0, w1)
+        data = SegmentData(
+            wavelength=wavelength,
+            flux=flux,
+            flux_err=flux_err,
+            berv_kms=_safe_float(row.get("berv_kms")),
+            berv_corrected=row.get("berv_corrected"),
+            edges=edges_from_centers(wavelength),
+            segment_bounds=(float(w0), float(w1)),
+            specid=int(row["moca_specid"]),
+            window_number=row.get("window_number"),
+            segment_number=row.get("segment_number"),
+        )
+        forward_config = ForwardModelConfig()
+        model_flux_scale = requested_model_flux_scale
+        if model_flux_scale is None:
+            model_flux_scale = _rvbam_auto_model_flux_scale(data, fetcher, par_list, axes, forward_config)
+        loglike = SegmentLogLikelihood(
+            data,
+            fetcher,
+            forward_config=forward_config,
+            model_flux_scale=float(model_flux_scale),
+        )
+        model_on_data = loglike.model_on_data(theta)
+        sigma_eff = loglike.sigma_eff(theta)
+        model_wv_hi = np.linspace(float(w0), float(w1), min(max_model_points, 10000), dtype=float)
+        model_flux_hi = loglike.model_on_grid(theta, model_wv_hi)
+
+    data_records = _rvbam_fit_series_records(
+        wavelength,
+        flux,
+        flux_err,
+        sigma_eff,
+        model_on_data,
+        max_points=max_data_points,
+        names=("flux", "flux_err", "sigma_eff", "model_flux"),
+    )
+    model_records = _rvbam_fit_series_records(
+        model_wv_hi,
+        model_flux_hi,
+        max_points=max_model_points,
+        names=("model_flux",),
+    )
+    theta_payload = {key: _pythonize(value) for key, value in theta.items()}
+    payload = {
+        "available": True,
+        "localModelFit": status,
+        "segment": {
+            key: row.get(key)
+            for key in (
+                "moca_rv_sampling_segment_id", "moca_rv_sample_run_id", "moca_sample_run_id",
+                "order_number", "window_number", "segment_number", "wv_min", "wv_max",
+                "rv_kms", "rv_kms_unc", "lsf", "lsf_unc", "vsini_kms", "vsini_kms_unc",
+            )
+            if row.get(key) is not None
+        },
+        "run": {
+            key: row.get(key)
+            for key in (
+                "moca_oid", "designation", "moca_instid", "moca_specid", "spectrum_name",
+                "moca_mgridid", "pipeline_version", "target_name", "template_name",
+                "berv_kms", "berv_kms_unc",
+            )
+            if row.get(key) is not None
+        },
+        "parameters": parameters,
+        "theta": theta_payload,
+        "gridParameters": par_list,
+        "data": data_records,
+        "model": model_records,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "data_point_count": int(wavelength.size),
+            "returned_data_point_count": len(data_records),
+            "model_point_count": int(model_wv_hi.size),
+            "returned_model_point_count": len(model_records),
+            "model_file": status.get("model_file"),
+            "model_grid_mode": getattr(store, "mode", None),
+            "model_flux_scale": _pythonize(float(model_flux_scale)),
+            "private_db": _is_private_db(args),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RVBAM_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
 @app.get("/")
 def index():
     if str(request.script_root or "").rstrip("/").endswith("/js"):
@@ -6828,6 +9569,18 @@ def index():
 @app.get("/js/")
 def js_index_page():
     return send_from_directory(STATIC_DIR, "js_index.html")
+
+
+@app.get("/group-hierarchy")
+@app.get("/group_hierarchy")
+@app.get("/js/group-hierarchy")
+@app.get("/js/group_hierarchy")
+def js_group_hierarchy_redirect():
+    mounted_under_js = str(request.script_root or "").rstrip("/").endswith("/js")
+    local_js_path = request.path.startswith("/js/")
+    if not mounted_under_js and not local_js_path:
+        return Response("The group hierarchy page is served by legacy MOCAviz at /group-hierarchy.", status=404)
+    return _redirect_with_query("/group-hierarchy")
 
 
 @app.get("/bd-colors")
@@ -6971,6 +9724,26 @@ def js_age_pdfs_legacy_redirect():
 @app.get("/js/age-pdfs-fast")
 def trueflow_age_pdfs_fast_page():
     return send_from_directory(STATIC_DIR, "trueflow_age_pdfs.html")
+
+
+@app.get("/legacy-radial-velocities")
+@app.get("/legacy_radial_velocities")
+@app.get("/legacy-rvs")
+@app.get("/legacy_rvs")
+@app.get("/js/legacy-radial-velocities")
+@app.get("/js/legacy_radial_velocities")
+@app.get("/js/legacy-rvs")
+@app.get("/js/legacy_rvs")
+def legacy_radial_velocities_page():
+    return send_from_directory(STATIC_DIR, "legacy_radial_velocities.html")
+
+
+@app.get("/rvbam-explorer")
+@app.get("/rvbam_explorer")
+@app.get("/js/rvbam-explorer")
+@app.get("/js/rvbam_explorer")
+def rvbam_explorer_page():
+    return send_from_directory(STATIC_DIR, "rvbam_explorer.html")
 
 
 @app.get("/plotly.min.js")
@@ -7851,6 +10624,304 @@ def trueflow_age_pdfs_clear_cache():
     })
 
 
+@app.get("/api/legacy-radial-velocities/options")
+@app.get("/api/legacy_radial_velocities/options")
+@app.get("/js/api/legacy-radial-velocities/options")
+@app.get("/js/api/legacy_radial_velocities/options")
+def legacy_radial_velocities_options():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_legacy_rv_options()})
+        payload = _load_legacy_rv_options_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": None,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "dataset_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/legacy-radial-velocities/data")
+@app.get("/api/legacy_radial_velocities/data")
+@app.get("/js/api/legacy-radial-velocities/data")
+@app.get("/js/api/legacy_radial_velocities/data")
+def legacy_radial_velocities_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_legacy_rv_payload(args)})
+        payload = _load_legacy_rv_dataset_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": {},
+            "datasetInfo": {},
+            "rows": [],
+            "images": {"chi2_url": "", "best_model_fit_url": ""},
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "row_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/legacy-radial-velocities/cache/clear")
+@app.post("/api/legacy_radial_velocities/cache/clear")
+@app.post("/js/api/legacy-radial-velocities/cache/clear")
+@app.post("/js/api/legacy_radial_velocities/cache/clear")
+def legacy_radial_velocities_clear_cache():
+    rv_count = len(_LEGACY_RV_CACHE)
+    _LEGACY_RV_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"legacyRadialVelocities": rv_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
+@app.get("/api/rvbam-explorer/search")
+@app.get("/api/rvbam-explorer/runs")
+@app.get("/api/rvbam_explorer/search")
+@app.get("/api/rvbam_explorer/runs")
+@app.get("/js/api/rvbam-explorer/search")
+@app.get("/js/api/rvbam-explorer/runs")
+@app.get("/js/api/rvbam_explorer/search")
+@app.get("/js/api/rvbam_explorer/runs")
+def rvbam_explorer_runs():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_rvbam_runs(args)})
+        payload = _load_rvbam_runs_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "runs": [],
+            "value": None,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "run_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/run/<int:run_id>")
+@app.get("/api/rvbam_explorer/run/<int:run_id>")
+@app.get("/js/api/rvbam-explorer/run/<int:run_id>")
+@app.get("/js/api/rvbam_explorer/run/<int:run_id>")
+def rvbam_explorer_run(run_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_rvbam_run_payload(args, run_id)})
+        payload = _load_rvbam_run_from_db(args, int(run_id))
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "run": {},
+            "segments": [],
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "segment_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>")
+def rvbam_explorer_segment(segment_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_rvbam_segment_payload(args, segment_id)})
+        payload = _load_rvbam_segment_from_db(args, int(segment_id))
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "segment": {},
+            "run": {},
+            "samplingRun": {},
+            "parameters": [],
+            "payloads": [],
+            "images": {"model_fit_url": "", "corner_url": ""},
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/posterior-summary")
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/samples")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/posterior-summary")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/samples")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/posterior-summary")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/samples")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/posterior-summary")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/samples")
+def rvbam_explorer_segment_posterior(segment_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_rvbam_posterior_payload(args, segment_id)})
+        payload = _load_rvbam_posterior_from_db(args, int(segment_id))
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "segment": {},
+            "selectedParams": [],
+            "parameterOptions": [],
+            "summaries": [],
+            "histograms": {},
+            "correlation": {"labels": [], "matrix": []},
+            "samples": [],
+            "payload": {},
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "sample_count": 0,
+                "returned_sample_count": 0,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/rebuilt-corner")
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/corner-plot")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/rebuilt-corner")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/corner-plot")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/rebuilt-corner")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/corner-plot")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/rebuilt-corner")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/corner-plot")
+def rvbam_explorer_segment_rebuilt_corner(segment_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({
+                "ok": True,
+                "source": "mock",
+                "available": False,
+                "selectedParams": [],
+                "image": {},
+                "payload": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "message": "Mock RVBAM runs do not have persisted weighted corner payloads.",
+                },
+                "cache": {"hit": False, "ttl_seconds": 0},
+            })
+        payload = _load_rvbam_rebuilt_corner_from_db(args, int(segment_id))
+        return jsonify({"ok": True, "source": "MOCAdb+RVBAM-corner", **payload})
+    except Exception as exc:
+        app.logger.exception("RVBAM rebuilt corner failed for segment_id=%s", segment_id)
+        meta = {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "sample_count": 0,
+            "returned_sample_count": 0,
+        }
+        if _is_local_app_request():
+            meta["traceback"] = traceback.format_exc()
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "available": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "selectedParams": [],
+            "image": {},
+            "payload": {},
+            "meta": meta,
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/rebuilt-fit")
+@app.get("/api/rvbam-explorer/segment/<int:segment_id>/reconstructed-fit")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/rebuilt-fit")
+@app.get("/api/rvbam_explorer/segment/<int:segment_id>/reconstructed-fit")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/rebuilt-fit")
+@app.get("/js/api/rvbam-explorer/segment/<int:segment_id>/reconstructed-fit")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/rebuilt-fit")
+@app.get("/js/api/rvbam_explorer/segment/<int:segment_id>/reconstructed-fit")
+def rvbam_explorer_segment_rebuilt_fit(segment_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({
+                "ok": True,
+                "source": "mock",
+                "available": False,
+                "localModelFit": _rvbam_local_model_status("mock_grid"),
+                "segment": {},
+                "run": {},
+                "data": [],
+                "model": [],
+                "theta": {},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "message": "Mock RVBAM runs do not have local HDF5 model grids.",
+                },
+                "cache": {"hit": False, "ttl_seconds": 0},
+            })
+        payload = _load_rvbam_rebuilt_fit_from_db(args, int(segment_id))
+        return jsonify({"ok": True, "source": "MOCAdb+local-HDF5", **payload})
+    except Exception as exc:
+        app.logger.exception("RVBAM rebuilt fit failed for segment_id=%s", segment_id)
+        meta = {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+        if _is_local_app_request():
+            import sys
+            meta.update({
+                "traceback": traceback.format_exc(),
+                "python_version": sys.version,
+                "rvbam_package_dir": str(RVBAM_PACKAGE_DIR),
+                "rvbam_model_grid_hdf5_dir": str(RVBAM_LOCAL_MODEL_DIR),
+            })
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "available": False,
+            "localModelFit": {},
+            "segment": {},
+            "run": {},
+            "data": [],
+            "model": [],
+            "theta": {},
+            "meta": meta,
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/rvbam-explorer/cache/clear")
+@app.post("/api/rvbam_explorer/cache/clear")
+@app.post("/js/api/rvbam-explorer/cache/clear")
+@app.post("/js/api/rvbam_explorer/cache/clear")
+def rvbam_explorer_clear_cache():
+    rvbam_count = len(_RVBAM_CACHE)
+    array_count = len(_RVBAM_ARRAY_CACHE)
+    _RVBAM_CACHE.clear()
+    _RVBAM_ARRAY_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"rvbamExplorer": rvbam_count, "rvbamPayloadArrays": array_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
 @app.get("/api/astrometry/search")
 def astrometry_search():
     args = dict(request.args)
@@ -7927,6 +10998,9 @@ def clear_cache():
     xyzuvw_count = len(_XYZUVW_CACHE)
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
+    legacy_rv_count = len(_LEGACY_RV_CACHE)
+    rvbam_count = len(_RVBAM_CACHE)
+    rvbam_array_count = len(_RVBAM_ARRAY_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
     _SPT_GRID_CACHE.clear()
@@ -7938,6 +11012,9 @@ def clear_cache():
     _XYZUVW_CACHE.clear()
     _TRUEFLOW_AGE_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
+    _LEGACY_RV_CACHE.clear()
+    _RVBAM_CACHE.clear()
+    _RVBAM_ARRAY_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
@@ -7952,6 +11029,9 @@ def clear_cache():
             "xyzuvw": xyzuvw_count,
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
+            "legacyRadialVelocities": legacy_rv_count,
+            "rvbamExplorer": rvbam_count,
+            "rvbamPayloadArrays": rvbam_array_count,
         },
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

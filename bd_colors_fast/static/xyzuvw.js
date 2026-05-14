@@ -23,6 +23,7 @@ const xuvCleanCircleColor = "#00a8ff";
 const xuvCleanReferenceColor = "rgba(0,168,255,0.29)";
 const xuvCleanMinorReferenceColor = "rgba(0,168,255,0.145)";
 const xuvCleanPlaneColor = "#73c9ff";
+const xuvVerticalAspectScale = 0.25;
 const xuvDualMode = document.body?.classList.contains("xyz2-page");
 const xuvDualPanels = [
   { key: "xyz", axes: ["x", "y", "z"], plotId: "xuv-plot-xyz", label: "XYZ" },
@@ -42,6 +43,18 @@ const xuvPalette = [
   "#5e3966", "#65e6f9", "#9e4302", "#389eaa", "#f19189",
   "#214a65", "#ded1d4", "#1b48bc", "#fd8f2f", "#4c93e9",
 ];
+const xuvAgeColorscale = [
+  [0, "rgb(150,0,90)"],
+  [0.125, "rgb(0,0,200)"],
+  [0.25, "rgb(0,25,255)"],
+  [0.375, "rgb(0,152,255)"],
+  [0.5, "rgb(44,255,150)"],
+  [0.625, "rgb(151,255,0)"],
+  [0.75, "rgb(255,234,0)"],
+  [0.875, "rgb(255,111,0)"],
+  [1, "rgb(255,0,0)"],
+];
+const xuvNoAgeColor = "#858a8d";
 
 const xuvState = {
   options: { associations: [], mtids: [], versions: [] },
@@ -113,6 +126,8 @@ function collectXyzuvwElements() {
     "xuv-hover",
     "xuv-show-axes",
     "xuv-likely",
+    "xuv-subgroups",
+    "xuv-color-age",
     "xuv-asscen",
     "xuv-load",
     "xuv-plot",
@@ -126,6 +141,7 @@ function collectXyzuvwElements() {
     "xuv-export-tsv",
     "xuv-export-fits",
     "xuv-export-votable",
+    "xuv-download-frozen",
     "xuv-clear-cache",
     "xuv-clear-cache-bottom",
     "xuv-clear-cache-status",
@@ -156,18 +172,23 @@ function readXyzuvwUrlState() {
   xuvEl["xuv-oid-input"].value = xuvState.selectedOids.join(",");
   const hasCheckboxParam = params.has("checkbox");
   const checkbox = new Set(parseCsv(params.get("checkbox"), []));
-  for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen"]) {
+  for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen", "subgroups", "agecolor"]) {
     if (asBool(params.get(key))) checkbox.add(key);
   }
+  if (["color_age", "color_by_age", "age_color"].some((key) => asBool(params.get(key)))) checkbox.add("agecolor");
+  if (["age", "color_age", "color-by-age", "color_by_age", "colorbyage"].some((key) => checkbox.has(key))) checkbox.add("agecolor");
   if (!hasCheckboxParam && !params.has("models")) checkbox.add("models");
   if (!hasCheckboxParam && !params.has("likely")) checkbox.add("likely");
   if (!hasCheckboxParam && !params.has("assmem")) checkbox.add("assmem");
+  if (!hasCheckboxParam && !params.has("subgroups")) checkbox.add("subgroups");
   xuvEl["xuv-models"].checked = checkbox.has("models");
   xuvEl["xuv-errors"].checked = checkbox.has("errors");
   xuvEl["xuv-assmem"].checked = checkbox.has("assmem");
   xuvEl["xuv-hover"].checked = checkbox.has("hover");
   xuvEl["xuv-show-axes"].checked = params.has("showaxes") ? asBool(params.get("showaxes")) : false;
   xuvEl["xuv-likely"].checked = checkbox.has("likely");
+  xuvEl["xuv-subgroups"].checked = checkbox.has("subgroups");
+  xuvEl["xuv-color-age"].checked = checkbox.has("agecolor");
   xuvEl["xuv-asscen"].checked = checkbox.has("asscen");
 }
 
@@ -240,7 +261,7 @@ function bindXyzuvwControls() {
     });
   }
   xuvEl["xuv-errors"].addEventListener("change", loadXyzuvwData);
-  for (const id of ["xuv-likely", "xuv-asscen"]) {
+  for (const id of ["xuv-likely", "xuv-subgroups", "xuv-color-age", "xuv-asscen"]) {
     xuvEl[id].addEventListener("change", loadXyzuvwData);
   }
   xuvEl["xuv-load"].addEventListener("click", loadXyzuvwData);
@@ -248,6 +269,7 @@ function bindXyzuvwControls() {
   xuvEl["xuv-export-tsv"].addEventListener("click", () => exportXyzuvw("tsv"));
   xuvEl["xuv-export-fits"].addEventListener("click", () => exportXyzuvw("fits"));
   xuvEl["xuv-export-votable"].addEventListener("click", () => exportXyzuvw("votable"));
+  xuvEl["xuv-download-frozen"].addEventListener("click", downloadFrozenXyzuvwPlotlyScene);
   xuvEl["xuv-open-report"].addEventListener("click", openSelectedXyzuvwReport);
   if (xuvEl["xuv-clear-cache"]) xuvEl["xuv-clear-cache"].addEventListener("click", clearXyzuvwCache);
   xuvEl["xuv-clear-cache-bottom"].addEventListener("click", clearXyzuvwCache);
@@ -565,7 +587,7 @@ function renderXyzuvw() {
   const rows = preparedMemberRows(axes);
   const overlayRows = preparedOverlayRows(axes);
   xuvState.displayedRows = [...rows, ...overlayRows];
-  const colormap = associationColors(xuvState.selectedAids);
+  const colormap = xyzuvwAssociationColors([xuvState.payload], rows);
   const memberAids = new Set(rows.map((row) => String(row.moca_aid || "Unassigned")));
   const contextTraces = [];
   if (xuvEl["xuv-models"].checked) contextTraces.push(...modelTraces(axes, colormap));
@@ -599,7 +621,7 @@ function renderXyz2() {
   }
   const showAxes = xuvEl["xuv-show-axes"].checked;
   setXyzuvwLoading(true);
-  const colormap = associationColors(xuvState.selectedAids);
+  const colormap = xyzuvwAssociationColors(Object.values(xuvState.payloads || {}));
   const panelOutputs = xuvDualPanels.map((panel) => {
     const payload = xuvState.payloads[panel.key];
     const output = buildXyzuvwPanel(panel.axes, payload, showAxes, colormap, panel.key);
@@ -700,13 +722,33 @@ function memberTraces(rows, colormap) {
     ...xuvState.selectedAids.filter((aid) => rowsByAid.has(String(aid))),
     ...[...rowsByAid.keys()].filter((aid) => !xuvState.selectedAids.includes(aid)),
   ];
+  let ageScaleShown = false;
   orderedAids.forEach((aid) => {
     const aidRows = rowsByAid.get(String(aid)) || [];
     if (!aidRows.length) return;
+    const age = ageForRows(aidRows);
+    const colorByAge = colorByAgeEnabled() && finite(age) && Number(age) > 0;
+    const marker = colorByAge ? {
+      color: aidRows.map(() => Math.log10(Number(age))),
+      cmin: 0,
+      cmax: 3.2,
+      colorscale: xuvAgeColorscale,
+      showscale: !ageScaleShown,
+      colorbar: !ageScaleShown ? xuvAgeColorbar() : undefined,
+      size: 3.4,
+      opacity: 1,
+      line: { width: 0 },
+    } : {
+      color: colorByAgeEnabled() ? xuvNoAgeColor : (colormap[aid] || "#555"),
+      size: 3.4,
+      opacity: 1,
+      line: { width: 0 },
+    };
+    if (colorByAge) ageScaleShown = true;
     traces.push({
       type: "scatter3d",
       mode: "markers",
-      name: aid,
+      name: colorByAgeEnabled() ? ageLegendName(aid, age) : aid,
       legendgroup: aid,
       showlegend: true,
       x: aidRows.map((row) => row.plot0),
@@ -715,12 +757,7 @@ function memberTraces(rows, colormap) {
       customdata: aidRows,
       text: aidRows.map(hoverTextForRow),
       hoverinfo,
-      marker: {
-        color: colormap[aid] || "#555",
-        size: 3.4,
-        opacity: 1,
-        line: { width: 0 },
-      },
+      marker,
     });
   });
   return traces;
@@ -1358,10 +1395,26 @@ function xyzuvwLayout(axes, rows, ranges = null, showAxes = true, panelKey = "ma
       xaxis: showAxes ? sceneAxis(axisTitles[0], axisRanges[0]) : cleanSceneAxis(axisRanges[0]),
       yaxis: showAxes ? sceneAxis(axisTitles[1], axisRanges[1]) : cleanSceneAxis(axisRanges[1]),
       zaxis: showAxes ? sceneAxis(axisTitles[2], axisRanges[2]) : cleanSceneAxis(axisRanges[2]),
-      aspectmode: "data",
+      aspectmode: "manual",
+      aspectratio: xyzuvwAspectRatio(axisRanges),
       camera,
     },
     annotations,
+  };
+}
+
+function xyzuvwAspectRatio(axisRanges) {
+  const spans = [0, 1, 2].map((index) => {
+    const range = axisRanges?.[index];
+    const span = Array.isArray(range) ? Math.abs(Number(range[1]) - Number(range[0])) : NaN;
+    return finite(span) && span > 0 ? span : 1;
+  });
+  spans[2] *= xuvVerticalAspectScale;
+  const normalizer = Math.max(...spans, 1);
+  return {
+    x: spans[0] / normalizer,
+    y: spans[1] / normalizer,
+    z: spans[2] / normalizer,
   };
 }
 
@@ -1573,7 +1626,7 @@ function renderXyzuvwTable() {
     return;
   }
   const axes = xuvDualMode ? ["x", "y", "z", "u", "v", "w"] : selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "report"];
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "report"];
   const tableRows = rows.map((row) => {
     const reportUrl = mocaReportUrl(row.moca_oid);
     const out = {
@@ -1583,6 +1636,7 @@ function renderXyzuvwTable() {
       moca_mtid: row.moca_mtid || "",
       spt: row.spt || "",
       ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+      age_myr: finite(row.age_myr) ? formatNumber(row.age_myr, 1) : "",
       report: reportUrl ? `<a class="report-link" href="${reportUrl}" target="_blank" rel="noopener">Report</a>` : "",
     };
     axes.forEach((axis, index) => {
@@ -1788,6 +1842,7 @@ function hoverTextForRow(row) {
     `SPT: ${escapeHtml(row.spt || "")}`,
     `RUWE: ${finite(row.dr3_ruwe) ? formatNumber(row.dr3_ruwe, 2) : "N/A"}`,
     `YA prob: ${finite(row.ya_prob) ? `${formatNumber(row.ya_prob, 1)}%` : "N/A"}`,
+    `Age: ${finite(row.age_myr) ? `${formatNumber(row.age_myr, 1)} Myr` : "N/A"}`,
   ].join("<br>");
 }
 
@@ -1806,6 +1861,102 @@ function associationColors(aids) {
     out[aid] = xuvPalette[index % xuvPalette.length];
   });
   return out;
+}
+
+function xyzuvwAssociationColors(payloads = [], rows = []) {
+  const aids = [
+    ...xuvState.selectedAids,
+    ...(rows || []).map((row) => String(row.moca_aid || "Unassigned")),
+  ];
+  for (const payload of payloads || []) {
+    aids.push(...(payload?.members || []).map((row) => String(row.moca_aid || "Unassigned")));
+    aids.push(...(payload?.models || []).map((row) => String(row.moca_aid || "model")));
+    aids.push(...(payload?.modelSurfaces || payload?.model_surfaces || []).map((row) => String(row.moca_aid || "model")));
+  }
+  const uniqueAids = [...new Set(aids.filter(Boolean))];
+  if (!colorByAgeEnabled()) return associationColors(uniqueAids);
+
+  const ages = associationAgeMap(payloads, rows);
+  const out = {};
+  uniqueAids.forEach((aid) => {
+    out[aid] = ageColorForAge(ages.get(String(aid)));
+  });
+  return out;
+}
+
+function associationAgeMap(payloads = [], rows = []) {
+  const ages = new Map();
+  const add = (row) => {
+    const aid = String(row?.moca_aid || "");
+    const age = Number(row?.age_myr);
+    if (aid && finite(age) && age > 0 && !ages.has(aid)) ages.set(aid, age);
+  };
+  (rows || []).forEach(add);
+  for (const payload of payloads || []) {
+    (payload?.members || []).forEach(add);
+    (payload?.models || []).forEach(add);
+    (payload?.modelSurfaces || payload?.model_surfaces || []).forEach(add);
+  }
+  return ages;
+}
+
+function ageForRows(rows) {
+  const row = (rows || []).find((candidate) => finite(candidate?.age_myr) && Number(candidate.age_myr) > 0);
+  return row ? Number(row.age_myr) : null;
+}
+
+function colorByAgeEnabled() {
+  return Boolean(xuvEl["xuv-color-age"]?.checked);
+}
+
+function ageColorForAge(age) {
+  const numeric = Number(age);
+  if (!finite(numeric) || numeric <= 0) return xuvNoAgeColor;
+  const t = Math.max(0, Math.min(1, Math.log10(numeric) / 3.2));
+  for (let index = 1; index < xuvAgeColorscale.length; index += 1) {
+    const [rightStop, rightColor] = xuvAgeColorscale[index];
+    const [leftStop, leftColor] = xuvAgeColorscale[index - 1];
+    if (t <= rightStop) {
+      const span = Math.max(rightStop - leftStop, 1e-9);
+      return interpolateRgb(leftColor, rightColor, (t - leftStop) / span);
+    }
+  }
+  return xuvAgeColorscale[xuvAgeColorscale.length - 1][1];
+}
+
+function ageLegendName(aid, age) {
+  return finite(age) && Number(age) > 0 ? `${aid} (${formatNumber(age, 1)} Myr)` : `${aid} (no age)`;
+}
+
+function xuvAgeColorbar() {
+  return {
+    title: { text: "Age", font: { size: 13 } },
+    x: 1.04,
+    xanchor: "left",
+    y: 0.5,
+    yanchor: "middle",
+    len: 0.72,
+    thickness: 18,
+    outlinecolor: "#111111",
+    outlinewidth: 2,
+    ticks: "outside",
+    tickvals: [0, 1, 2, 3],
+    ticktext: ["1 Myr", "10 Myr", "100 Myr", "1 Gyr"],
+  };
+}
+
+function interpolateRgb(left, right, fraction) {
+  const a = parseRgb(left);
+  const b = parseRgb(right);
+  if (!a || !b) return right;
+  const f = Math.max(0, Math.min(1, fraction));
+  const values = a.map((value, index) => Math.round(value + (b[index] - value) * f));
+  return `rgb(${values[0]},${values[1]},${values[2]})`;
+}
+
+function parseRgb(value) {
+  const match = String(value || "").match(/rgb\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
 function buildXyzuvwParams(axesOverride = null) {
@@ -1829,6 +1980,8 @@ function checkboxValues() {
   if (xuvEl["xuv-assmem"].checked) out.push("assmem");
   if (xuvEl["xuv-hover"].checked) out.push("hover");
   if (xuvEl["xuv-likely"].checked) out.push("likely");
+  if (xuvEl["xuv-subgroups"].checked) out.push("subgroups");
+  if (xuvEl["xuv-color-age"].checked) out.push("agecolor");
   if (xuvEl["xuv-asscen"].checked) out.push("asscen");
   return out;
 }
@@ -1853,19 +2006,19 @@ function updateXyzuvwUrl() {
   const checkbox = checkboxValues();
   if (checkbox.length) params.set("checkbox", checkbox.join(","));
   else params.delete("checkbox");
-  for (const key of ["models", "errors", "assmem", "hover", "asscen"]) params.delete(key);
+  for (const key of ["models", "errors", "assmem", "hover", "asscen", "subgroups", "agecolor", "color_age", "color_by_age", "age_color"]) params.delete(key);
   if (xuvEl["xuv-likely"].checked) params.delete("likely");
   else params.set("likely", "0");
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
 
-const xyzuvwNumericExportColumns = new Set(["moca_oid", "x", "y", "z", "u", "v", "w", "ya_prob", "dr3_ruwe"]);
+const xyzuvwNumericExportColumns = new Set(["moca_oid", "x", "y", "z", "u", "v", "w", "ya_prob", "age_myr", "dr3_ruwe"]);
 
 function exportXyzuvw(format) {
   const rows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows;
   if (!rows.length) return;
   const axes = xuvDualMode ? ["x", "y", "z", "u", "v", "w"] : selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "dr3_ruwe"];
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "dr3_ruwe"];
   const exportRows = rows.map((row) => {
     const out = {
       moca_oid: normalizedMocaOid(row.moca_oid),
@@ -1874,6 +2027,7 @@ function exportXyzuvw(format) {
       moca_mtid: row.moca_mtid || "",
       spt: row.spt || "",
       ya_prob: row.ya_prob ?? "",
+      age_myr: row.age_myr ?? "",
       dr3_ruwe: row.dr3_ruwe ?? "",
     };
     axes.forEach((axis, index) => {
@@ -1892,8 +2046,350 @@ function exportXyzuvw(format) {
   });
 }
 
+async function downloadFrozenXyzuvwPlotlyScene() {
+  if (!xuvState.displayedRows.length) return;
+  const button = xuvEl["xuv-download-frozen"];
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Preparing standalone HTML...";
+  try {
+    const snapshot = buildFrozenPlotlySceneSnapshot();
+    const html = await buildFrozenPlotlyStandaloneHtml(snapshot);
+    MocaExport.downloadBlob(html, `${snapshot.slug}.html`, "text/html;charset=utf-8");
+  } catch (error) {
+    console.error(error);
+    setXyzuvwStatus(`Frozen scene export failed: ${error.message}`, "error");
+  } finally {
+    button.textContent = originalText;
+    setXyzuvwExportDisabled(xuvState.displayedRows.length === 0);
+  }
+}
+
+function buildFrozenPlotlySceneSnapshot() {
+  const slug = `mocadb_${xuvDualMode ? "xyz_dual_plotly" : "xyz_plotly"}_frozen_scene_${frozenDateStamp()}`;
+  return jsonClean({
+    version: 1,
+    renderer: "plotly",
+    title: xuvDualMode ? "MOCAdb Plotly Dual XYZ/UVW Frozen Scene" : "MOCAdb Plotly Spatial-Kinematic Frozen Scene",
+    slug,
+    exportedAt: new Date().toISOString(),
+    dual: xuvDualMode,
+    assumeMembership: Boolean(xuvEl["xuv-assmem"].checked),
+    selectedOid: xuvState.selectedRows.length === 1 ? normalizedMocaOid(xuvState.selectedRows[0]?.moca_oid) : "",
+    summaryText: xuvEl["xuv-summary"]?.textContent || "",
+    hintHtml: xuvEl["xuv-hint"]?.innerHTML || "",
+    table: buildFrozenPlotlyTableSnapshot(),
+    panels: frozenPlotlyPanelSnapshots(),
+  });
+}
+
+function frozenPlotlyPanelSnapshots() {
+  if (xuvDualMode) {
+    return xuvDualPanels.map((panel) => buildFrozenPlotlyPanelSnapshot(
+      panel.key,
+      panel.label,
+      panel.axes,
+      xuvEl[panel.plotId],
+      `mocadb_${panel.key}_plotly_frozen`,
+    )).filter(Boolean);
+  }
+  return [buildFrozenPlotlyPanelSnapshot("main", selectedAxes().map((axis) => axis.toUpperCase()).join(""), selectedAxes(), xuvEl["xuv-plot"], "mocadb_xyz_plotly_frozen")].filter(Boolean);
+}
+
+function buildFrozenPlotlyPanelSnapshot(key, label, axes, plotEl, filename) {
+  if (!plotEl?.data?.length) return null;
+  const layout = clonePlainObject(plotEl.layout || {});
+  const camera = currentXyzuvwCamera(plotEl, key);
+  if (camera) layout.scene = { ...(layout.scene || {}), camera };
+  layout.autosize = true;
+  return {
+    key,
+    label,
+    axes,
+    data: clonePlainObject(plotEl.data || []),
+    layout,
+    config: plotConfig(filename),
+  };
+}
+
+function buildFrozenPlotlyTableSnapshot() {
+  const axes = xuvDualMode ? ["x", "y", "z", "u", "v", "w"] : selectedAxes();
+  const sourceRows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows.slice(0, 500);
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "report"];
+  return {
+    title: xuvState.selectedRows.length ? `${xuvState.selectedRows.length} selected objects` : "Displayed objects",
+    subtitle: xuvState.selectedRows.length ? "Frozen selected object table." : "Showing the first 500 displayed rows from the exported scene.",
+    axes,
+    columns,
+    rows: sourceRows.map((row) => frozenPlotlyTableRow(row, axes)),
+  };
+}
+
+function frozenPlotlyTableRow(row, axes) {
+  const reportUrl = mocaReportUrl(row.moca_oid);
+  const out = {
+    moca_oid: normalizedMocaOid(row.moca_oid),
+    designation: row.designation || "",
+    moca_aid: row.moca_aid || "",
+    moca_mtid: row.moca_mtid || "",
+    spt: row.spt || "",
+    ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+    age_myr: finite(row.age_myr) ? formatNumber(row.age_myr, 1) : "",
+    report: reportUrl,
+  };
+  axes.forEach((axis, index) => {
+    out[axis] = formatNumber(tableAxisValue(row, axis, index), 2);
+  });
+  return out;
+}
+
+async function buildFrozenPlotlyStandaloneHtml(snapshot) {
+  const [styleSource, plotlySource] = await Promise.all([
+    fetchFrozenAssetText("static/styles.css"),
+    fetchFrozenAssetText("plotly.min.js"),
+  ]);
+  return frozenPlotlySceneHtml(snapshot, styleSource, plotlySource);
+}
+
+function frozenPlotlySceneHtml(snapshot, styleSource, plotlySource) {
+  const dualClass = snapshot.dual ? " xyz2-page" : "";
+  const stage = snapshot.dual ? `
+        <div class="xyz2-plot-grid">
+          ${snapshot.panels.map((panel) => `
+          <section class="xyz2-panel" aria-label="${escapeHtml(panel.label)} figure">
+            <h2 class="xyz2-panel-title">${escapeHtml(panel.label)}</h2>
+            <div class="plot-frame xyzuvw-plot-frame xyz2-plot-frame">
+              <div class="xuv-frozen-plot" data-frozen-plot="${escapeHtml(panel.key)}"></div>
+            </div>
+          </section>`).join("")}
+        </div>` : `
+        <div class="plot-frame xyzuvw-plot-frame">
+          <div class="xuv-frozen-plot" data-frozen-plot="${escapeHtml(snapshot.panels[0]?.key || "main")}"></div>
+        </div>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(snapshot.title)}</title>
+  <style>${styleSafeText(styleSource)}</style>
+  <style>.xuv-frozen-plot{min-width:0;min-height:0;width:100%;height:100%;background:var(--plot-bg);}</style>
+</head>
+<body class="xyzuvw-page xyzuvw-frozen-page${dualClass}">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">${escapeHtml(snapshot.title)}</div>
+      <div id="xuv-status" class="status">Frozen scene</div>
+    </header>
+    <main class="workspace xyzuvw-workspace xyzuvw-frozen-workspace">
+      <section id="xuv-visual-area" class="visual-area xyzuvw-visual-area${snapshot.dual ? " xyz2-visual-area" : ""}">
+${stage}
+        <div class="xyzuvw-toolbar">
+          <div class="xyzuvw-summary">
+            <div id="xuv-summary">Loading frozen scene</div>
+            <div id="xuv-hint" class="plot-hint"></div>
+          </div>
+        </div>
+        <div class="selection-area xyzuvw-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="xuv-table-title">Displayed objects</strong>
+              <div id="xuv-table-subtitle" class="plot-hint">Selections appear here.</div>
+            </div>
+          </div>
+          <div id="xuv-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>${scriptSafeText(plotlySource)}</script>
+  <script>${scriptSafeText(`window.MOCAVIZ_FROZEN_PLOTLY_XYZ_SCENE = ${JSON.stringify(snapshot)};`)}</script>
+  <script>${scriptSafeText(frozenPlotlyViewerScript())}</script>
+</body>
+</html>
+`;
+}
+
+function frozenPlotlyViewerScript() {
+  return `(${function initFrozenPlotlyScene() {
+    const scene = window.MOCAVIZ_FROZEN_PLOTLY_XYZ_SCENE || {};
+    const state = { selectedRows: [] };
+
+    function init() {
+      renderSummary();
+      renderTable();
+      (scene.panels || []).forEach((panel) => {
+        const plotEl = document.querySelector('[data-frozen-plot="' + cssEscape(panel.key) + '"]');
+        if (!plotEl || !window.Plotly) return;
+        window.Plotly.newPlot(plotEl, panel.data || [], panel.layout || {}, panel.config || { responsive: true, displaylogo: false }).then(() => {
+          bindPlotEvents(plotEl);
+        });
+      });
+      window.addEventListener("resize", debounce(() => {
+        (scene.panels || []).forEach((panel) => {
+          const plotEl = document.querySelector('[data-frozen-plot="' + cssEscape(panel.key) + '"]');
+          if (plotEl && window.Plotly) window.Plotly.Plots.resize(plotEl);
+        });
+      }, 120));
+    }
+
+    function bindPlotEvents(plotEl) {
+      if (!plotEl || typeof plotEl.on !== "function") return;
+      plotEl.on("plotly_click", (event) => selectRows((event && event.points || []).map((point) => point.customdata)));
+      plotEl.on("plotly_selected", (event) => selectRows((event && event.points || []).map((point) => point.customdata)));
+      plotEl.on("plotly_deselect", () => {
+        state.selectedRows = [];
+        renderTable();
+      });
+    }
+
+    function selectRows(rows) {
+      const seen = new Set();
+      state.selectedRows = (rows || []).filter((row) => {
+        const oid = normalizedMocaOid(row && row.moca_oid);
+        if (!oid || seen.has(oid)) return false;
+        seen.add(oid);
+        return true;
+      });
+      renderTable();
+    }
+
+    function renderSummary() {
+      const summary = document.getElementById("xuv-summary");
+      const hint = document.getElementById("xuv-hint");
+      const status = document.getElementById("xuv-status");
+      if (status) status.textContent = "Frozen scene";
+      if (summary) summary.textContent = scene.summaryText || "Frozen Plotly scene";
+      if (hint) {
+        hint.innerHTML = scene.hintHtml || ("Frozen export created " + escapeHtml(scene.exportedAt || "") + ".");
+      }
+    }
+
+    function renderTable() {
+      const tableData = scene.table || { columns: [], rows: [] };
+      const title = document.getElementById("xuv-table-title");
+      const subtitle = document.getElementById("xuv-table-subtitle");
+      const table = document.getElementById("xuv-table");
+      const rows = state.selectedRows.length ? state.selectedRows.map((row) => tableRowForData(row, tableData.axes || [])) : (tableData.rows || []);
+      if (title) title.textContent = state.selectedRows.length ? (state.selectedRows.length + " selected objects") : (tableData.title || "Displayed objects");
+      if (subtitle) subtitle.textContent = state.selectedRows.length ? "Click another point or box-select to update the frozen table." : (tableData.subtitle || "");
+      if (!table) return;
+      table.innerHTML = rows.length ? tableHtml(tableData.columns || [], rows, new Set(["report"])) : '<div class="selection-table">No objects to display.</div>';
+    }
+
+    function tableRowForData(row, axes) {
+      const out = {
+        moca_oid: normalizedMocaOid(row && row.moca_oid),
+        designation: row && row.designation || "",
+        moca_aid: row && row.moca_aid || "",
+        moca_mtid: row && row.moca_mtid || "",
+        spt: row && row.spt || "",
+        ya_prob: finite(row && row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+        report: mocaReportUrl(row && row.moca_oid),
+      };
+      axes.forEach((axis, index) => {
+        out[axis] = formatNumber(tableAxisValue(row || {}, axes, axis, index), 2);
+      });
+      return out;
+    }
+
+    function tableAxisValue(row, axes, axis, index) {
+      if (!scene.dual && finite(row["plot" + index])) return row["plot" + index];
+      const optKey = axis + "_opt";
+      if (scene.assumeMembership && finite(row[optKey])) return Number(row[optKey]);
+      return finite(row[axis]) ? Number(row[axis]) : null;
+    }
+
+    function tableHtml(columns, rows, htmlColumns) {
+      return '<div class="selection-table"><table><thead><tr>' +
+        columns.map((column) => '<th>' + escapeHtml(column) + '</th>').join("") +
+        '</tr></thead><tbody>' +
+        rows.map((row) => '<tr>' + columns.map((column) => '<td>' + (htmlColumns.has(column) ? reportCell(row[column]) : escapeHtml(row[column] == null ? "" : row[column])) + '</td>').join("") + '</tr>').join("") +
+        '</tbody></table></div>';
+    }
+
+    function reportCell(url) {
+      return url ? '<a class="report-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">Report</a>' : "";
+    }
+
+    function mocaReportUrl(oid) {
+      const normalized = normalizedMocaOid(oid);
+      return normalized ? "https://mocadb.ca/search/results?search-query=oid%28" + encodeURIComponent(normalized) + "%29&search-type=star" : "";
+    }
+
+    function normalizedMocaOid(oid) {
+      if (oid === null || oid === undefined) return "";
+      const text = String(oid).trim();
+      if (!text) return "";
+      const number = Number(text);
+      if (!Number.isFinite(number) || number <= 0) return "";
+      return number.toFixed(0);
+    }
+
+    function finite(value) {
+      if (value === null || value === undefined) return false;
+      if (typeof value === "string" && value.trim() === "") return false;
+      return Number.isFinite(Number(value));
+    }
+
+    function formatNumber(value, digits) {
+      return finite(value) ? Number(value).toFixed(digits) : "";
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;",
+      }[char]));
+    }
+
+    function cssEscape(value) {
+      if (window.CSS && window.CSS.escape) return window.CSS.escape(String(value));
+      return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
+    }
+
+    function debounce(fn, delay) {
+      let timer = null;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+      };
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+    else init();
+  }.toString()})();`;
+}
+
+async function fetchFrozenAssetText(path) {
+  const response = await fetch(xuvAppUrl(path));
+  if (!response.ok) throw new Error(`Could not read ${path}`);
+  return response.text();
+}
+
+function frozenDateStamp() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function jsonClean(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function scriptSafeText(value) {
+  return String(value ?? "").replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
+}
+
+function styleSafeText(value) {
+  return String(value ?? "").replace(/<\/style/gi, "<\\/style");
+}
+
 function setXyzuvwExportDisabled(disabled) {
-  for (const id of ["xuv-export-csv", "xuv-export-tsv", "xuv-export-fits", "xuv-export-votable"]) {
+  for (const id of ["xuv-export-csv", "xuv-export-tsv", "xuv-export-fits", "xuv-export-votable", "xuv-download-frozen"]) {
     if (xuvEl[id]) xuvEl[id].disabled = disabled;
   }
 }

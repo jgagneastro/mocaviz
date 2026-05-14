@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Legacy MCMC Radial Velocities</title>
+  <link rel="stylesheet" href="static/styles.css?v=legacy-rv-20260513">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="legacy-rv-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">Legacy MCMC Radial Velocities</div>
+      <div id="lrv-status" class="status loading">Loading datasets</div>
+    </header>
+
+    <main class="workspace lrv-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Dataset</h2>
+          <label>
+            Filter datasets
+            <input id="lrv-dataset-filter" type="text" autocomplete="off" placeholder="target, template, version">
+          </label>
+          <label>
+            Dataset
+            <select id="lrv-dataset"></select>
+          </label>
+          <button id="lrv-load" type="button">Load Dataset</button>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Average</h2>
+          <label class="checkline">
+            <input id="lrv-use-selection" type="checkbox" checked>
+            <span>Use selected segments</span>
+          </label>
+          <label class="checkline">
+            <input id="lrv-show-bad" type="checkbox" checked>
+            <span>Show bad segments</span>
+          </label>
+          <label class="checkline">
+            <input id="lrv-show-errors" type="checkbox" checked>
+            <span>Show RV uncertainties</span>
+          </label>
+          <button id="lrv-clear-selection" type="button">Clear Selection</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Quality Cuts</h2>
+          <label>
+            Minimum data contrast
+            <input id="lrv-data-contrast" type="number" value="0.01" min="0" step="0.001">
+          </label>
+          <label>
+            Minimum model contrast
+            <input id="lrv-model-contrast" type="number" value="0.1" min="0" step="0.01">
+          </label>
+          <label>
+            Default log LSF maximum
+            <input id="lrv-lsf-default" type="number" value="1.5" min="0" step="0.01">
+          </label>
+        </section>
+      </aside>
+
+      <section class="visual-area lrv-visual-area">
+        <div class="lrv-top-grid">
+          <div class="plot-frame lrv-plot-frame">
+            <div id="lrv-plot"></div>
+            <div id="lrv-plot-loader" class="plot-loader is-visible" aria-label="Loading radial velocities">
+              <div class="plot-loader-ring"></div>
+            </div>
+          </div>
+          <section class="lrv-image-frame lrv-selected-image-frame" aria-label="Selected segment model fit">
+            <div class="lrv-frame-title">Selected Segment Model Fit</div>
+            <a id="lrv-model-link" href="#" target="_blank" rel="noopener" hidden>
+              <img id="lrv-model-image" class="lrv-image" alt="Selected segment model fit">
+            </a>
+            <div id="lrv-model-empty" class="lrv-image-empty">No segment selected</div>
+          </section>
+        </div>
+
+        <div class="lrv-toolbar">
+          <div class="lrv-summary">
+            <div id="lrv-summary">No dataset loaded</div>
+            <div id="lrv-hint" class="plot-hint">Box-select points to recompute the weighted average.</div>
+          </div>
+          <div class="export-actions lrv-actions">
+            <button id="lrv-export-csv" type="button" disabled>Export CSV</button>
+            <button id="lrv-export-tsv" type="button" disabled>Export TSV</button>
+            <button id="lrv-export-fits" type="button" disabled>Export FITS table</button>
+            <button id="lrv-export-votable" type="button" disabled>Export VOTable</button>
+          </div>
+        </div>
+
+        <div class="selection-area lrv-info-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="lrv-table-title">Dataset Summary</strong>
+              <div id="lrv-table-subtitle" class="plot-hint">Click a segment for row details.</div>
+            </div>
+          </div>
+          <div id="lrv-info" class="lrv-info-grid"></div>
+          <div id="lrv-detail" class="table-scroll"></div>
+        </div>
+
+        <div class="lrv-diagnostic-grid">
+          <section class="lrv-image-frame" aria-label="All model fit chi squared">
+            <div class="lrv-frame-title">All Model Fit Chi2</div>
+            <a id="lrv-chi2-link" href="#" target="_blank" rel="noopener" hidden>
+              <img id="lrv-chi2-image" class="lrv-image" alt="All model fit chi2">
+            </a>
+            <div id="lrv-chi2-empty" class="lrv-image-empty">No chi2 image URL</div>
+          </section>
+          <section class="lrv-image-frame" aria-label="Best model fit">
+            <div class="lrv-frame-title">Best Model Fit</div>
+            <a id="lrv-best-link" href="#" target="_blank" rel="noopener" hidden>
+              <img id="lrv-best-image" class="lrv-image" alt="Best model fit">
+            </a>
+            <div id="lrv-best-empty" class="lrv-image-empty">No best-fit image URL</div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help lrv-url-help">
+      <h2>Using URL Parameters</h2>
+      <p>
+        The legacy radial-velocity page accepts a selected dataset and the usual
+        MOCAdb connection query parameters.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>dataset</code></td><td><code>target|template|pipeline_version</code></td><td>Loads one legacy MCMC RV dataset.</td></tr>
+          <tr><td><code>target_name</code>, <code>template_name</code>, <code>pipeline_version</code></td><td>Exact dataset fields</td><td>Alternative to <code>dataset</code>.</td></tr>
+          <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <p>
+        Dataset lists and loaded RV segment payloads are cached in server memory
+        briefly. Clearing the cache forces the next load to query MOCAdb again.
+      </p>
+      <div class="cache-actions">
+        <button id="lrv-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="lrv-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/legacy_radial_velocities.js?v=legacy-rv-20260513"></script>
+</body>
+</html>

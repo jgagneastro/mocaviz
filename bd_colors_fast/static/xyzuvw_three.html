@@ -99,7 +99,7 @@
           </label>
           <label class="checkline">
             <input id="xuv-show-axes" type="checkbox">
-            <span>Show axes</span>
+            <span>Classic 3D plot without background</span>
           </label>
           <label class="checkline">
             <input id="xuv-galaxy-bg" type="checkbox" checked>
@@ -107,7 +107,15 @@
           </label>
           <label class="checkline">
             <input id="xuv-likely" type="checkbox" checked>
-            <span>Only Display Likely Members</span>
+            <span>Require BANYAN Membership</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-subgroups" type="checkbox" checked>
+            <span>Include members of subgroups</span>
+          </label>
+          <label class="checkline">
+            <input id="xuv-color-age" type="checkbox">
+            <span>Color by age</span>
           </label>
           <label class="checkline">
             <input id="xuv-asscen" type="checkbox">
@@ -136,6 +144,12 @@
             </div>
           </div>
           <div class="xyzuvw-action-stack">
+            <div class="xyzuvw-action-row">
+              <button id="xuv-recenter-sun" class="xyzuvw-recenter-button" type="button">Recenter on Sun</button>
+            </div>
+            <div class="xyzuvw-action-row">
+              <button id="xuv-download-frozen" class="xyzuvw-standalone-button" type="button" disabled>Download frozen scene as HTML standalone</button>
+            </div>
             <div class="export-actions xyzuvw-actions">
               <button id="xuv-open-report" type="button" disabled>Open selected report</button>
               <button id="xuv-export-csv" type="button" disabled>Export CSV</button>
@@ -143,7 +157,6 @@
               <button id="xuv-export-fits" type="button" disabled>Export FITS table</button>
               <button id="xuv-export-votable" type="button" disabled>Export VOTable</button>
             </div>
-            <button id="xuv-recenter-sun" class="xyzuvw-recenter-button" type="button">Recenter on Sun</button>
           </div>
         </div>
         <div class="selection-area xyzuvw-table-area">
@@ -155,7 +168,9 @@
           </div>
           <div id="xuv-table" class="table-scroll"></div>
           <div class="xyzuvw-explanation">
-            <div><strong>Only Display Likely Members</strong> shows only objects that match their respective membership's BANYAN Σ model.</div>
+            <div><strong>Require BANYAN Membership</strong> keeps only propagated memberships that also match the displayed parent BANYAN Σ model.</div>
+            <div><strong>Include members of subgroups</strong> folds related subgroup members into the selected parent associations.</div>
+            <div><strong>Color by age</strong> maps association ages onto the plotted member and model colors.</div>
             <div><strong>Assume Membership</strong> corrects the displayed XYZUVW positions based on the Bayesian posterior built from both the observables and the BANYAN Σ models.</div>
           </div>
         </div>
@@ -178,8 +193,8 @@
           <tr><td><code>mtid</code></td><td>Comma-separated membership type IDs</td><td>Filters memberships.</td></tr>
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated MOCA OIDs</td><td>Overplots highlighted objects.</td></tr>
           <tr><td><code>bsmdid</code></td><td><code>latest</code> or a numeric model version</td><td>Selects the BANYAN Sigma model version.</td></tr>
-          <tr><td><code>showaxes</code></td><td><code>0</code> or <code>1</code></td><td>Hides or shows the 3D axis frame. Defaults to <code>0</code>.</td></tr>
-          <tr><td><code>checkbox</code></td><td><code>models,errors,hover,assmem,likely,asscen</code></td><td>Enables display options in one URL parameter.</td></tr>
+          <tr><td><code>showaxes</code></td><td><code>0</code> or <code>1</code></td><td>Enables the classic 3D plot without background. Defaults to <code>0</code>.</td></tr>
+          <tr><td><code>checkbox</code></td><td><code>models,errors,hover,assmem,likely,subgroups,agecolor,asscen</code></td><td>Enables display options in one URL parameter.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
       </table>
@@ -196,6 +211,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script type="module" src="static/xyzuvw_three.js?v=three-20260512"></script>
+  <script type="module" src="static/xyzuvw_three.js?v=assoc-label-offset-20260513"></script>
 </body>
 </html>

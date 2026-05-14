@@ -28,3 +28,16 @@ ALTER TABLE `data_spectra`
 ALTER TABLE `summary_all_members_both`
   ADD INDEX `idx_fastxyzuvw_aid_mtid_public_oid`
   (`moca_aid`, `moca_mtid`, `is_public`, `moca_oid`);
+
+-- Optional for the legacy radial-velocity diagnostics page. The page filters
+-- pcat_mcmc_rv_pipeline by target_name, template_name, and pipeline_version,
+-- while the current unique index has order/window/segment columns between
+-- template_name and pipeline_version.
+ALTER TABLE `pcat_mcmc_rv_pipeline`
+  ADD INDEX `idx_fastrv_dataset`
+  (`target_name`, `template_name`, `pipeline_version`, `order_number`, `window_number`, `segment_number`, `id`);
+
+-- Optional for file URL lookups by file set and diagnostic description.
+ALTER TABLE `mechanics_file_sets`
+  ADD INDEX `idx_fastrv_fsid_description_fid`
+  (`moca_fsid`, `description`, `moca_fid`);

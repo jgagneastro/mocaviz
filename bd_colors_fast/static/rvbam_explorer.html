@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RVBAM Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=rvbam-20260513f">
+  <script src="plotly.min.js"></script>
+</head>
+<body class="rvbam-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">RVBAM Explorer</div>
+      <div id="rvb-status" class="status loading">Loading runs</div>
+    </header>
+
+    <main class="workspace rvb-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Run</h2>
+          <label>
+            Search
+            <input id="rvb-search" type="text" autocomplete="off" placeholder="designation, specid, template">
+          </label>
+          <label>
+            MOCAdb OID
+            <input id="rvb-oid" type="number" min="1" step="1">
+          </label>
+          <label>
+            Spectrum ID
+            <input id="rvb-specid" type="number" min="1" step="1">
+          </label>
+          <label>
+            Pipeline
+            <input id="rvb-pipeline" type="text" autocomplete="off" placeholder="rvbam-dev">
+          </label>
+          <label>
+            RVBAM run
+            <select id="rvb-run"></select>
+          </label>
+          <button id="rvb-load-runs" type="button">Find Runs</button>
+          <button id="rvb-load-run" type="button">Load Run</button>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label>
+            Scatter y-axis
+            <select id="rvb-scatter-y">
+              <option value="rv_kms">RV (km/s)</option>
+              <option value="rv_kms_unc">RV uncertainty (km/s)</option>
+              <option value="lsf">LSF sigma (km/s)</option>
+              <option value="vsini_kms">v sin i (km/s)</option>
+              <option value="best_chi2">Best chi2</option>
+              <option value="lnp_median">Median log likelihood</option>
+              <option value="lnp_max">Max log likelihood</option>
+              <option value="mean_finite_fraction">Finite fraction</option>
+              <option value="mean_outofbounds_fraction">Out-of-bounds fraction</option>
+              <option value="n_iterations">Sampler iterations</option>
+            </select>
+          </label>
+          <label class="checkline">
+            <input id="rvb-use-selection" type="checkbox" checked>
+            <span>Use selected segments to compute weighted average</span>
+          </label>
+          <label class="checkline">
+            <input id="rvb-show-errors" type="checkbox" checked>
+            <span>Show uncertainties when available</span>
+          </label>
+          <label class="checkline is-disabled" id="rvb-use-online-figures-row">
+            <input id="rvb-use-online-figures" type="checkbox" disabled>
+            <span>Use online pre-built figures</span>
+          </label>
+          <label class="checkline">
+            <input id="rvb-include-ignored" type="checkbox">
+            <span>Include ignored runs</span>
+          </label>
+          <button id="rvb-clear-selection" type="button">Clear Selection</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Average Filters</h2>
+          <label>
+            Max LSF width (km/s)
+            <input id="rvb-max-lsf" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
+          <label>
+            Max best chi2
+            <input id="rvb-max-best-chi2" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
+          <label>
+            Max RV uncertainty (km/s)
+            <input id="rvb-max-rv-unc" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Posterior</h2>
+          <label>
+            X parameter
+            <select id="rvb-param-x"></select>
+          </label>
+          <label>
+            Y parameter
+            <select id="rvb-param-y"></select>
+          </label>
+          <label>
+            Max samples
+            <input id="rvb-max-points" type="number" value="1800" min="100" max="8000" step="100">
+          </label>
+          <button id="rvb-load-posterior" type="button" disabled>Load Posterior</button>
+        </section>
+      </aside>
+
+      <section class="visual-area rvb-visual-area">
+        <div class="rvb-top-grid">
+          <div class="plot-frame rvb-plot-frame">
+            <div id="rvb-segment-plot"></div>
+            <div id="rvb-plot-loader" class="plot-loader is-visible" aria-label="Loading RVBAM segments">
+              <div class="plot-loader-ring"></div>
+            </div>
+          </div>
+
+          <section class="rvb-detail-panel" aria-label="Selected RVBAM segment">
+            <div class="rvb-tabbar">
+              <button type="button" class="is-active" data-rvb-tab="fit">Model Fit</button>
+              <button type="button" data-rvb-tab="rebuilt" hidden>Rebuild Model Fit</button>
+              <button type="button" data-rvb-tab="corner">Corner Plot</button>
+              <button type="button" data-rvb-tab="rebuilt-corner" hidden>Rebuild Corner Plot</button>
+              <button type="button" data-rvb-tab="posterior">Posteriors</button>
+              <button type="button" data-rvb-tab="params">Parameters</button>
+              <button type="button" data-rvb-tab="payload">Payload</button>
+            </div>
+
+            <div id="rvb-tab-fit" class="rvb-tab-panel is-active">
+              <a id="rvb-model-link" href="#" target="_blank" rel="noopener" hidden>
+                <img id="rvb-model-image" class="rvb-image" alt="RVBAM model fit">
+              </a>
+              <div id="rvb-model-empty" class="rvb-image-empty">No segment selected</div>
+            </div>
+
+            <div id="rvb-tab-corner" class="rvb-tab-panel">
+              <a id="rvb-corner-link" href="#" target="_blank" rel="noopener" hidden>
+                <img id="rvb-corner-image" class="rvb-image" alt="RVBAM corner plot">
+              </a>
+              <div id="rvb-corner-empty" class="rvb-image-empty">No segment selected</div>
+            </div>
+
+            <div id="rvb-tab-rebuilt-corner" class="rvb-tab-panel rvb-rebuilt-corner-panel">
+              <div class="rvb-tab-actions">
+                <button id="rvb-load-rebuilt-corner" type="button" disabled hidden>Load Rebuilt Corner</button>
+              </div>
+              <div id="rvb-rebuilt-corner-plot"></div>
+              <div id="rvb-rebuilt-corner-meta" class="rvb-rebuilt-meta"></div>
+            </div>
+
+            <div id="rvb-tab-rebuilt" class="rvb-tab-panel rvb-rebuilt-panel">
+              <div class="rvb-tab-actions">
+                <button id="rvb-load-rebuilt-fit" type="button" disabled hidden>Load Rebuilt Fit</button>
+              </div>
+              <div id="rvb-rebuilt-fit-plot"></div>
+              <div id="rvb-rebuilt-fit-meta" class="rvb-rebuilt-meta"></div>
+            </div>
+
+            <div id="rvb-tab-posterior" class="rvb-tab-panel rvb-posterior-panel">
+              <div id="rvb-posterior-plot"></div>
+              <div id="rvb-correlation-plot"></div>
+            </div>
+
+            <div id="rvb-tab-params" class="rvb-tab-panel">
+              <div id="rvb-params-table" class="table-scroll"></div>
+            </div>
+
+            <div id="rvb-tab-payload" class="rvb-tab-panel">
+              <div id="rvb-payload-table" class="table-scroll"></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="rvb-toolbar">
+          <div class="rvb-summary">
+            <div id="rvb-summary">No run loaded</div>
+            <div class="rvb-summary-row">
+              <div id="rvb-hint" class="plot-hint">Click a segment to load its RVBAM diagnostics.</div>
+            </div>
+          </div>
+          <div class="export-actions rvb-actions">
+            <button id="rvb-open-report" type="button" disabled>Report</button>
+            <button id="rvb-export-csv" type="button" disabled>CSV</button>
+            <button id="rvb-export-tsv" type="button" disabled>TSV</button>
+            <button id="rvb-export-fits" type="button" disabled>FITS</button>
+            <button id="rvb-export-votable" type="button" disabled>VOTable</button>
+          </div>
+        </div>
+
+        <div class="selection-area rvb-info-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="rvb-table-title">Run Summary</strong>
+              <div id="rvb-table-subtitle" class="plot-hint">Segments are sorted by order, window, and wavelength.</div>
+            </div>
+          </div>
+          <div id="rvb-info" class="rvb-info-grid"></div>
+          <div id="rvb-segments-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help rvb-url-help">
+      <h2>URL Parameters</h2>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>run_id</code></td><td>RVBAM run primary key</td><td>Loads one <code>pcat_rv_sampling_runs</code> row.</td></tr>
+          <tr><td><code>segment_id</code></td><td>RVBAM segment primary key</td><td>Loads one selected segment.</td></tr>
+          <tr><td><code>scatter_y</code></td><td>Segment field name</td><td>Sets the left scatter plot y-axis.</td></tr>
+          <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>pipeline</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
+          <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses local synthetic RVBAM payloads.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <div class="cache-actions">
+        <button id="rvb-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="rvb-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260513al"></script>
+</body>
+</html>

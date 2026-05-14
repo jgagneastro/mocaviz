@@ -26,6 +26,8 @@ const sptFeatureBands = [
   { name: "Na", range: [2.195, 2.205], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)" },
   { name: "CH4", range: [2.2, 2.27], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
   { name: "CO", range: [2.293, 2.4], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
+  { name: "CO2", range: [4.15, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
+  { name: "CO", range: [4.4, 4.95], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
 ];
 
 const sptState = {

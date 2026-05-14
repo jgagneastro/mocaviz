@@ -121,6 +121,7 @@
           <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
           <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>
+          <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for display binning</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows common chemical and atomic feature bands by default.</td></tr>
           <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
@@ -140,6 +141,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectra.js?v=no-top-right-ticks-20260512"></script>
+  <script src="static/spectra.js?v=raw-spectra-fits-20260513"></script>
 </body>
 </html>

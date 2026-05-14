@@ -26,6 +26,10 @@
           <p class="js-tool-description">Inspect Gaia color-magnitude diagrams for selected associations and individual MOCAdb objects.</p>
         </li>
         <li>
+          <a data-js-page href="/js/group-hierarchy">Group Hierarchy</a>
+          <p class="js-tool-description">Open the legacy MOCAviz group hierarchy view for browsing the parent-child structure of MOCAdb associations and groups.</p>
+        </li>
+        <li>
           <a data-js-page href="/js/spectral-typing">Spectral Typing tool</a>
           <p class="js-tool-description">Fit and compare near-infrared spectra against standards, with optional dereddening or slope corrections.</p>
         </li>
@@ -40,14 +44,24 @@
         <li>
           <a data-js-page href="/js/xyz">Spatial-kinematic Explorer</a>
           <p class="js-tool-description">Explore XYZ positions and UVW velocities for association members, candidate objects, and model ellipsoids.</p>
+          <p class="js-tool-description js-tool-alt">Access a lighter Plotly version here: <a data-js-page href="/js/xyz-plotly">/js/xyz-plotly</a>.</p>
         </li>
         <li>
           <a data-js-page href="/js/xyz-dual">Dual XYZ/UVW Explorer</a>
           <p class="js-tool-description">Inspect fixed XYZ and UVW 3D views side by side with shared controls, native camera navigation, and the ESO Galaxy background in XYZ.</p>
+          <p class="js-tool-description js-tool-alt">Access a lighter Plotly version here: <a data-js-page href="/js/xyz-dual-plotly">/js/xyz-dual-plotly</a>.</p>
         </li>
         <li>
           <a data-js-page href="/js/age-pdfs">The MOCAdb age PDF Explorer</a>
           <p class="js-tool-description">Review available age probability density functions including those from MOCAFlows for objects or associations, including summary table metadata.</p>
+        </li>
+        <li data-private-schema-only hidden>
+          <a data-js-page href="/js/legacy-radial-velocities">Legacy MCMC Radial Velocities</a>
+          <p class="js-tool-description">Inspect legacy MCMC radial-velocity segment diagnostics, weighted averages, selected segment model fits, and model-grid diagnostic images.</p>
+        </li>
+        <li data-private-schema-only hidden>
+          <a data-js-page href="/js/rvbam-explorer">RVBAM Explorer</a>
+          <p class="js-tool-description">Browse RVBAM sampling runs, segment radial velocities, diagnostic figures, parameter summaries, and bounded posterior-sample views.</p>
         </li>
       </ul>
       <p>
@@ -58,10 +72,46 @@
   </div>
   <script>
     (() => {
-      const query = window.location.search;
-      if (!query) return;
-      document.querySelectorAll("[data-js-page]").forEach((link) => {
-        link.href = `${link.getAttribute("href")}${query}`;
+      const params = new URLSearchParams(window.location.search);
+      const firstParam = (...keys) => {
+        for (const key of keys) {
+          if (params.has(key)) return params.get(key) || "";
+        }
+        return "";
+      };
+
+      const dbName = firstParam("dbase", "db", "database")
+        .replace(/`/g, "")
+        .trim()
+        .toLowerCase();
+      const isPrivateSchema = dbName === "mocadb_private_tables";
+      document.querySelectorAll("[data-private-schema-only]").forEach((item) => {
+        item.hidden = !isPrivateSchema;
+      });
+
+      const connectionParams = new URLSearchParams();
+      const carryParam = (targetKey, ...sourceKeys) => {
+        const value = firstParam(...sourceKeys);
+        if (value) connectionParams.set(targetKey, value);
+      };
+      carryParam("host", "host");
+      carryParam("port", "port");
+      carryParam("user", "user", "username");
+      carryParam("pwd", "pwd", "password");
+      carryParam("dbase", "dbase", "db", "database");
+      carryParam("mock", "mock");
+      if (!connectionParams.toString()) return;
+
+      document.querySelectorAll("a[data-js-page], a[href^='/js/']").forEach((link) => {
+        const href = link.getAttribute("href");
+        if (!href) return;
+        const url = new URL(href, window.location.origin);
+        connectionParams.forEach((value, key) => {
+          url.searchParams.set(key, value);
+        });
+        link.href = url.origin === window.location.origin
+          ? `${url.pathname}${url.search}${url.hash}`
+          : url.toString();
       });
     })();
   </script>

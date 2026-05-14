@@ -30,6 +30,7 @@ const xuvMemberPointSize = 4.4;
 const xuvOverlayPointRadius = 4.8;
 const xuvDataPointOpacity = 0.7;
 const xuvSelectionColor = "#ffd21a";
+const xuvHighlightMarkerColor = "#ffea00";
 const xuvSunCrossRadius = 0.9;
 const xuvVerticalReferenceAxisScale = 0.25;
 const xuvRvRange = Array.from({ length: 50 }, (_value, index) => -50 + index * (100 / 49));
@@ -46,6 +47,18 @@ const xuvPalette = [
   "#5e3966", "#65e6f9", "#9e4302", "#389eaa", "#f19189",
   "#214a65", "#ded1d4", "#1b48bc", "#fd8f2f", "#4c93e9",
 ];
+const xuvAgeColorscale = [
+  [0, "rgb(150,0,90)"],
+  [0.125, "rgb(0,0,200)"],
+  [0.25, "rgb(0,25,255)"],
+  [0.375, "rgb(0,152,255)"],
+  [0.5, "rgb(44,255,150)"],
+  [0.625, "rgb(151,255,0)"],
+  [0.75, "rgb(255,234,0)"],
+  [0.875, "rgb(255,111,0)"],
+  [1, "rgb(255,0,0)"],
+];
+const xuvNoAgeColor = "#858a8d";
 
 const xuvState = {
   options: { associations: [], mtids: [], versions: [] },
@@ -129,6 +142,8 @@ function collectXyzuvwElements() {
     "xuv-show-axes",
     "xuv-galaxy-bg",
     "xuv-likely",
+    "xuv-subgroups",
+    "xuv-color-age",
     "xuv-asscen",
     "xuv-load",
     "xuv-plot",
@@ -158,6 +173,7 @@ function collectXyzuvwElements() {
     "xuv-table",
     "xuv-hint-text",
     "xuv-recenter-sun",
+    "xuv-download-frozen",
   ].forEach((id) => {
     xuvEl[id] = document.getElementById(id);
   });
@@ -381,8 +397,8 @@ function syncGalaxyBackgroundControl() {
   const label = checkbox.closest(".checkline");
   if (label) {
     label.classList.toggle("is-disabled", disabled);
-    label.title = showAxes
-      ? "Galaxy background is unavailable while Show axes is enabled."
+	    label.title = showAxes
+	      ? "Galaxy background is unavailable in classic 3D plot mode."
       : (xyzMode ? "" : "Galaxy background is only available in XYZ mode.");
   }
 }
@@ -422,12 +438,15 @@ function readXyzuvwUrlState() {
   xuvEl["xuv-oid-input"].value = xuvState.selectedOids.join(",");
   const hasCheckboxParam = params.has("checkbox");
   const checkbox = new Set(parseCsv(params.get("checkbox"), []));
-  for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen"]) {
+  for (const key of ["models", "errors", "assmem", "hover", "likely", "asscen", "subgroups", "agecolor"]) {
     if (asBool(params.get(key))) checkbox.add(key);
   }
+  if (["color_age", "color_by_age", "age_color"].some((key) => asBool(params.get(key)))) checkbox.add("agecolor");
+  if (["age", "color_age", "color-by-age", "color_by_age", "colorbyage"].some((key) => checkbox.has(key))) checkbox.add("agecolor");
   if (!hasCheckboxParam && !params.has("models")) checkbox.add("models");
   if (!hasCheckboxParam && !params.has("likely")) checkbox.add("likely");
   if (!hasCheckboxParam && !params.has("assmem")) checkbox.add("assmem");
+  if (!hasCheckboxParam && !params.has("subgroups")) checkbox.add("subgroups");
   xuvEl["xuv-models"].checked = checkbox.has("models");
   xuvEl["xuv-errors"].checked = checkbox.has("errors");
   xuvEl["xuv-assmem"].checked = checkbox.has("assmem");
@@ -435,6 +454,8 @@ function readXyzuvwUrlState() {
   xuvEl["xuv-show-axes"].checked = params.has("showaxes") ? asBool(params.get("showaxes")) : false;
   xuvEl["xuv-galaxy-bg"].checked = params.has("galaxy") ? asBool(params.get("galaxy")) : true;
   xuvEl["xuv-likely"].checked = checkbox.has("likely");
+  xuvEl["xuv-subgroups"].checked = checkbox.has("subgroups");
+  xuvEl["xuv-color-age"].checked = checkbox.has("agecolor");
   xuvEl["xuv-asscen"].checked = checkbox.has("asscen");
   syncGalaxyBackgroundControl();
 }
@@ -491,7 +512,7 @@ function bindXyzuvwControls() {
     }
   });
   xuvEl["xuv-bsmdid"].addEventListener("change", loadXyzuvwData);
-  for (const id of ["xuv-models", "xuv-errors", "xuv-likely", "xuv-asscen"]) {
+  for (const id of ["xuv-models", "xuv-errors", "xuv-likely", "xuv-subgroups", "xuv-color-age", "xuv-asscen"]) {
     xuvEl[id].addEventListener("change", loadXyzuvwData);
   }
   for (const id of ["xuv-assmem", "xuv-hover", "xuv-show-axes", "xuv-galaxy-bg"]) {
@@ -508,6 +529,7 @@ function bindXyzuvwControls() {
   xuvEl["xuv-export-votable"].addEventListener("click", () => exportXyzuvw("votable"));
   xuvEl["xuv-open-report"].addEventListener("click", openSelectedXyzuvwReport);
   xuvEl["xuv-recenter-sun"].addEventListener("click", recenterXyzuvwCameraOnSun);
+  xuvEl["xuv-download-frozen"].addEventListener("click", downloadFrozenXyzuvwScene);
   xuvEl["xuv-clear-cache-bottom"].addEventListener("click", clearXyzuvwCache);
 }
 
@@ -653,8 +675,8 @@ function renderXyzuvwThreePanel(payload, forceCamera = false) {
   const displayedRows = [...rows, ...overlayRows];
   xuvState.displayedRows = displayedRows;
   xuvState.three.displayedRows = displayedRows;
-  const colormap = associationColors(xuvState.selectedAids);
   const modelSurfaces = xuvEl["xuv-models"].checked ? (xuvState.payload.modelSurfaces || xuvState.payload.model_surfaces || []) : [];
+  const colormap = xyzuvwAssociationColors([payload], rows);
   const bounds = sceneBounds(axes, displayedRows, modelSurfaces);
   const referenceContext = cleanReferenceContext(axes, displayedRows, modelSurfaces);
   xuvState.selectionMarkerRadius = Math.max(4, Math.min(14, bounds.radius * 0.012));
@@ -665,7 +687,7 @@ function renderXyzuvwThreePanel(payload, forceCamera = false) {
   if (xuvEl["xuv-models"].checked) addModelObjects(modelSurfaces, colormap);
   if (xuvEl["xuv-errors"].checked) addErrorObjects(axes, rows, colormap);
   addMemberObjects(rows, colormap);
-  addOverlayObjects(overlayRows);
+  addOverlayObjects(overlayRows, showAxes);
   addAssociationCenterLabels(rows, colormap, bounds, showAxes);
   if (xuvEl["xuv-asscen"].checked) addAllAssociationLabels(axes, colormap, rows, showAxes);
   renderSelectedMarker();
@@ -740,7 +762,7 @@ function addMemberObjects(rows, colormap) {
   });
 }
 
-function addOverlayObjects(rows) {
+function addOverlayObjects(rows, showAxes = false) {
   rows.forEach((row) => {
     if (row.rvLine) {
       const points = row.rvLine.x.map((value, index) => new THREE.Vector3(value, row.rvLine.y[index], row.rvLine.z[index]));
@@ -749,18 +771,74 @@ function addOverlayObjects(rows) {
       xuvState.three.dataGroup.add(line);
       return;
     }
-    const geometry = new THREE.SphereGeometry(xuvOverlayPointRadius, 18, 12);
-    const material = new THREE.MeshBasicMaterial({
-      color: "#050505",
-      transparent: true,
-      opacity: xuvDataPointOpacity,
-      depthWrite: false,
-    });
-    const sphere = new THREE.Mesh(geometry, material);
-    sphere.position.set(row.plot0, row.plot1, row.plot2);
-    sphere.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight", row };
-    xuvState.three.dataGroup.add(sphere);
+    xuvState.three.dataGroup.add(highlightObjectMarker(row, showAxes));
   });
+}
+
+function highlightObjectMarker(row, showAxes = false) {
+  const marker = new THREE.Group();
+  marker.position.set(row.plot0, row.plot1, row.plot2);
+  marker.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight", row };
+  marker.renderOrder = 900;
+
+  const color = showAxes ? "#000000" : xuvHighlightMarkerColor;
+  const radius = Math.max(xuvOverlayPointRadius * 1.35, xuvState.selectionMarkerRadius * 0.75);
+  const axisLength = Math.max(radius * 5.2, xuvState.selectionMarkerRadius * 4.2);
+  const axisRadius = Math.max(0.56, radius * 0.12);
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 24, 16),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.96,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  sphere.renderOrder = 900;
+  marker.add(sphere);
+
+  const rotations = [
+    [0, 0, Math.PI / 2],
+    [0, 0, 0],
+    [Math.PI / 2, 0, 0],
+  ];
+  rotations.forEach((rotation) => {
+    const axis = new THREE.Mesh(
+      new THREE.CylinderGeometry(axisRadius, axisRadius, axisLength, 16),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.98,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    axis.rotation.set(rotation[0], rotation[1], rotation[2]);
+    axis.renderOrder = 901;
+    marker.add(axis);
+  });
+
+  const designation = row.designation || row.label || (row.moca_oid ? `oid${row.moca_oid}` : "");
+  if (designation) marker.add(highlightObjectLabel(designation, marker.userData.aid, color, showAxes));
+  return marker;
+}
+
+function highlightObjectLabel(text, aid, color, showAxes = false) {
+  const div = document.createElement("div");
+  div.className = "xuv-three-label is-highlight";
+  div.textContent = text;
+  div.style.color = color;
+  div.style.fontSize = "11px";
+  div.style.fontWeight = "800";
+  div.style.transform = "translate(14px, -50%)";
+  div.style.textShadow = showAxes
+    ? "0 1px 2px rgba(255, 255, 255, .95), 0 0 6px rgba(255, 255, 255, .85)"
+    : "0 1px 3px rgba(0, 0, 0, .95), 0 0 8px rgba(0, 0, 0, .85)";
+  const label = new CSS2DObject(div);
+  label.userData = { aid, kind: "highlight-label" };
+  label.renderOrder = 902;
+  return label;
 }
 
 function addModelObjects(surfaces, colormap) {
@@ -1027,7 +1105,7 @@ function addAssociationCenterLabels(rows, colormap, bounds, showAxes) {
     if (!rowsByAid.has(aid)) rowsByAid.set(aid, []);
     rowsByAid.get(aid).push(row);
   });
-  const verticalOffset = Math.max(0, bounds.ranges[2][1] - bounds.ranges[2][0]) * 0.035;
+  const verticalOffset = Math.max(0, bounds.ranges[2][1] - bounds.ranges[2][0]) * 0.0175;
   rowsByAid.forEach((aidRows, aid) => {
     const center = [0, 1, 2].map((index) => robustMedian(aidRows.map((row) => row[`plot${index}`]).filter(finite).map(Number)));
     if (center.some((value) => !finite(value))) return;
@@ -1221,11 +1299,19 @@ function renderThreeLegend(colormap, rows, surfaces) {
     ...xuvState.selectedAids.filter((aid) => counts.has(aid)),
     ...[...counts.keys()].filter((aid) => !xuvState.selectedAids.includes(aid)),
   ];
-  legendEl.innerHTML = aids.map((aid) => {
+  const ages = associationAgeMap([xuvState.payload], [...(rows || []), ...(surfaces || [])]);
+  const ageScale = colorByAgeEnabled() ? `
+    <div class="xuv-three-age-scale" aria-label="Age color scale">
+      <span>1</span><i></i><span>10</span><span>100</span><span>1000 Myr</span>
+    </div>
+  ` : "";
+  legendEl.innerHTML = ageScale + aids.map((aid) => {
     const hidden = xuvState.hiddenAids.has(aid);
     const count = counts.get(aid) || 0;
+    const age = ages.get(String(aid));
+    const title = colorByAgeEnabled() ? `${ageLegendName(aid, age)}; toggle ${aid}` : `Toggle ${aid}`;
     return `
-      <button type="button" class="${hidden ? "is-muted" : ""}" data-aid="${escapeHtml(aid)}" title="Toggle ${escapeHtml(aid)}">
+      <button type="button" class="${hidden ? "is-muted" : ""}" data-aid="${escapeHtml(aid)}" title="${escapeHtml(title)}">
         <span class="xuv-three-swatch" style="--swatch:${escapeHtml(colormap[aid] || "#777777")}"></span>
         <span>${escapeHtml(aid)}</span>
         <span class="xuv-three-count">${count.toLocaleString()}</span>
@@ -1448,7 +1534,11 @@ function rowValue(row, axis, assumeMembership) {
 }
 
 function tableAxisValue(row, axis, plotIndex) {
-  if (row.plotAxesKey === selectedAxes().join("") && finite(row[`plot${plotIndex}`])) {
+  return tableAxisValueForAxes(row, selectedAxes(), axis, plotIndex);
+}
+
+function tableAxisValueForAxes(row, axes, axis, plotIndex) {
+  if (row.plotAxesKey === axes.join("") && finite(row[`plot${plotIndex}`])) {
     return Number(row[`plot${plotIndex}`]);
   }
   return rowValue(row, axis, xuvEl["xuv-assmem"].checked);
@@ -1943,7 +2033,7 @@ function renderXyzuvwTable() {
     return;
   }
   const axes = selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "report"];
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "report"];
   const tableRows = rows.map((row) => {
     const reportUrl = mocaReportUrl(row.moca_oid);
     const out = {
@@ -1953,6 +2043,7 @@ function renderXyzuvwTable() {
       moca_mtid: row.moca_mtid || "",
       spt: row.spt || "",
       ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+      age_myr: finite(row.age_myr) ? formatNumber(row.age_myr, 1) : "",
       report: reportUrl ? `<a class="report-link" href="${reportUrl}" target="_blank" rel="noopener">Report</a>` : "",
     };
     axes.forEach((axis, index) => {
@@ -1985,6 +2076,7 @@ function hoverTextForRow(row) {
     `SPT: ${escapeHtml(row.spt || "")}`,
     `RUWE: ${finite(row.dr3_ruwe) ? formatNumber(row.dr3_ruwe, 2) : "N/A"}`,
     `YA prob: ${finite(row.ya_prob) ? `${formatNumber(row.ya_prob, 1)}%` : "N/A"}`,
+    `Age: ${finite(row.age_myr) ? `${formatNumber(row.age_myr, 1)} Myr` : "N/A"}`,
   ].join("<br>");
 }
 
@@ -2010,6 +2102,85 @@ function associationColors(aids) {
   return out;
 }
 
+function xyzuvwAssociationColors(payloads = [], rows = []) {
+  const aids = [
+    ...xuvState.selectedAids,
+    ...(rows || []).map((row) => String(row.moca_aid || "Unassigned")),
+  ];
+  for (const payload of payloads || []) {
+    aids.push(...(payload?.members || []).map((row) => String(row.moca_aid || "Unassigned")));
+    aids.push(...(payload?.models || []).map((row) => String(row.moca_aid || "model")));
+    aids.push(...(payload?.modelSurfaces || payload?.model_surfaces || []).map((row) => String(row.moca_aid || "model")));
+  }
+  const uniqueAids = [...new Set(aids.filter(Boolean))];
+  if (!colorByAgeEnabled()) return associationColors(uniqueAids);
+
+  const ages = associationAgeMap(payloads, rows);
+  const out = {};
+  uniqueAids.forEach((aid) => {
+    out[aid] = ageColorForAge(ages.get(String(aid)));
+  });
+  return out;
+}
+
+function associationAgeMap(payloads = [], rows = []) {
+  const ages = new Map();
+  const add = (row) => {
+    const aid = String(row?.moca_aid || "");
+    const age = Number(row?.age_myr);
+    if (aid && finite(age) && age > 0 && !ages.has(aid)) ages.set(aid, age);
+  };
+  (rows || []).forEach(add);
+  for (const payload of payloads || []) {
+    (payload?.members || []).forEach(add);
+    (payload?.models || []).forEach(add);
+    (payload?.modelSurfaces || payload?.model_surfaces || []).forEach(add);
+  }
+  return ages;
+}
+
+function ageForRows(rows) {
+  const row = (rows || []).find((candidate) => finite(candidate?.age_myr) && Number(candidate.age_myr) > 0);
+  return row ? Number(row.age_myr) : null;
+}
+
+function colorByAgeEnabled() {
+  return Boolean(xuvEl["xuv-color-age"]?.checked);
+}
+
+function ageColorForAge(age) {
+  const numeric = Number(age);
+  if (!finite(numeric) || numeric <= 0) return xuvNoAgeColor;
+  const t = Math.max(0, Math.min(1, Math.log10(numeric) / 3.2));
+  for (let index = 1; index < xuvAgeColorscale.length; index += 1) {
+    const [rightStop, rightColor] = xuvAgeColorscale[index];
+    const [leftStop, leftColor] = xuvAgeColorscale[index - 1];
+    if (t <= rightStop) {
+      const span = Math.max(rightStop - leftStop, 1e-9);
+      return interpolateRgb(leftColor, rightColor, (t - leftStop) / span);
+    }
+  }
+  return xuvAgeColorscale[xuvAgeColorscale.length - 1][1];
+}
+
+function ageLegendName(aid, age) {
+  return finite(age) && Number(age) > 0 ? `${aid} (${formatNumber(age, 1)} Myr)` : `${aid} (no age)`;
+}
+
+function interpolateRgb(left, right, fraction) {
+  const a = parseRgb(left);
+  const b = parseRgb(right);
+  if (!a || !b) return right;
+  const f = Math.max(0, Math.min(1, fraction));
+  const values = a.map((value, index) => Math.round(value + (b[index] - value) * f));
+  return `rgb(${values[0]},${values[1]},${values[2]})`;
+}
+
+function parseRgb(value) {
+  const match = String(value || "").match(/rgb\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
 function buildXyzuvwParams(axes = selectedAxes()) {
   const params = apiParams();
   params.set("axes", axes.join(""));
@@ -2030,6 +2201,8 @@ function checkboxValues() {
   if (xuvEl["xuv-assmem"].checked) out.push("assmem");
   if (xuvEl["xuv-hover"].checked) out.push("hover");
   if (xuvEl["xuv-likely"].checked) out.push("likely");
+  if (xuvEl["xuv-subgroups"].checked) out.push("subgroups");
+  if (xuvEl["xuv-color-age"].checked) out.push("agecolor");
   if (xuvEl["xuv-asscen"].checked) out.push("asscen");
   return out;
 }
@@ -2056,19 +2229,19 @@ function updateXyzuvwUrl() {
   const checkbox = checkboxValues();
   if (checkbox.length) params.set("checkbox", checkbox.join(","));
   else params.delete("checkbox");
-  for (const key of ["models", "errors", "assmem", "hover", "asscen"]) params.delete(key);
+  for (const key of ["models", "errors", "assmem", "hover", "asscen", "subgroups", "agecolor", "color_age", "color_by_age", "age_color"]) params.delete(key);
   if (xuvEl["xuv-likely"].checked) params.delete("likely");
   else params.set("likely", "0");
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
 
-const xyzuvwNumericExportColumns = new Set(["moca_oid", "x", "y", "z", "u", "v", "w", "ya_prob", "dr3_ruwe"]);
+const xyzuvwNumericExportColumns = new Set(["moca_oid", "x", "y", "z", "u", "v", "w", "ya_prob", "age_myr", "dr3_ruwe"]);
 
 function exportXyzuvw(format) {
   const rows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows;
   if (!rows.length) return;
   const axes = selectedAxes();
-  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "dr3_ruwe"];
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "dr3_ruwe"];
   const exportRows = rows.map((row) => {
     const out = {
       moca_oid: normalizedMocaOid(row.moca_oid),
@@ -2077,6 +2250,7 @@ function exportXyzuvw(format) {
       moca_mtid: row.moca_mtid || "",
       spt: row.spt || "",
       ya_prob: row.ya_prob ?? "",
+      age_myr: row.age_myr ?? "",
       dr3_ruwe: row.dr3_ruwe ?? "",
     };
     axes.forEach((axis, index) => {
@@ -2095,8 +2269,313 @@ function exportXyzuvw(format) {
   });
 }
 
+async function downloadFrozenXyzuvwScene() {
+  if (!xuvState.displayedRows.length) return;
+  const button = xuvEl["xuv-download-frozen"];
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Preparing standalone HTML...";
+  try {
+    const snapshot = buildFrozenSceneSnapshot();
+    const html = await buildFrozenStandaloneHtml(snapshot);
+    MocaExport.downloadBlob(html, `${snapshot.slug}.html`, "text/html;charset=utf-8");
+  } catch (error) {
+    console.error(error);
+    setXyzuvwStatus(`Frozen scene export failed: ${error.message}`, "error");
+  } finally {
+    button.textContent = originalText;
+    setXyzuvwExportDisabled(xuvState.displayedRows.length === 0);
+  }
+}
+
+function buildFrozenSceneSnapshot() {
+  const panels = activeThreePanels().map((panel) => withThreePanel(panel, () => buildFrozenPanelSnapshot(panel))).filter(Boolean);
+  const table = buildFrozenTableSnapshot();
+  const slug = `mocadb_${xuvThreeDualMode ? "xyz_dual" : "xyz"}_frozen_scene_${frozenDateStamp()}`;
+  return jsonClean({
+    version: 1,
+    title: xuvThreeDualMode ? "MOCAdb Dual XYZ/UVW Frozen Scene" : "MOCAdb Spatial-Kinematic Frozen Scene",
+    slug,
+    exportedAt: new Date().toISOString(),
+    dual: xuvThreeDualMode,
+    assumeMembership: Boolean(xuvEl["xuv-assmem"].checked),
+    colorByAge: Boolean(xuvEl["xuv-color-age"].checked),
+    showAxes: Boolean(xuvEl["xuv-show-axes"].checked),
+    galaxyAsset: "",
+    galaxyCredit: "ESO/S. Brunier",
+    hiddenAids: [...xuvState.hiddenAids],
+    selectedOid: xuvState.selectedRows.length === 1 ? normalizedMocaOid(xuvState.selectedRows[0]?.moca_oid) : "",
+    table,
+    panels,
+  });
+}
+
+function buildFrozenPanelSnapshot(panel) {
+  const payload = xuvThreeDualMode ? xuvState.panelPayloads?.[panel.key] : xuvState.payload;
+  if (!payload?.ok) return null;
+  const axes = selectedAxes();
+  const rows = preparedMemberRows(axes, payload);
+  const overlayRows = preparedOverlayRows(axes, payload);
+  const displayedRows = [...rows, ...overlayRows];
+  const rawModelSurfaces = xuvEl["xuv-models"].checked ? (payload.modelSurfaces || payload.model_surfaces || []) : [];
+  const bounds = sceneBounds(axes, displayedRows, rawModelSurfaces);
+  const referenceContext = cleanReferenceContext(axes, displayedRows, rawModelSurfaces);
+  const colormap = frozenAssociationColorMap(displayedRows, rawModelSurfaces, payload);
+  return {
+    key: panel.key,
+    label: panel.label || axes.map((axis) => axis.toUpperCase()).join(""),
+    axes,
+    rows,
+    overlayRows,
+    modelSurfaces: rawModelSurfaces,
+    errorSegments: xuvEl["xuv-errors"].checked ? buildFrozenErrorSegments(axes, rows, colormap) : [],
+    colormap,
+    showAxes: Boolean(xuvEl["xuv-show-axes"].checked),
+    galaxyActive: isGalaxyBackgroundActive(),
+    referenceContext,
+    bounds: serializeBounds(bounds),
+    camera: serializeFrozenCamera(panel),
+    selectedOid: xuvState.selectedRows.length === 1 ? normalizedMocaOid(xuvState.selectedRows[0]?.moca_oid) : "",
+    summary: {
+      members: rows.length,
+      highlighted: overlayRows.length,
+      models: rawModelSurfaces.length,
+    },
+  };
+}
+
+function frozenAssociationColorMap(rows, modelSurfaces, payload = xuvState.payload) {
+  return xyzuvwAssociationColors([payload], [
+    ...(rows || []),
+    ...(modelSurfaces || []),
+  ]);
+}
+
+function buildFrozenErrorSegments(axes, rows, colormap) {
+  const byAid = new Map();
+  const sourceRows = xuvState.selectedRows.length
+    ? rows.filter((row) => xuvState.selectedRows.some((selected) => Number(selected.moca_oid) === Number(row.moca_oid)))
+    : rows.slice(0, 1200);
+  sourceRows.forEach((row) => {
+    const segments = covarianceSegments(row, axes);
+    if (!segments) return;
+    const aid = String(row.moca_aid || "Unassigned");
+    if (!byAid.has(aid)) byAid.set(aid, []);
+    segments.forEach((segment) => byAid.get(aid).push(segment));
+  });
+  return [...byAid.entries()].map(([aid, segments]) => ({
+    aid,
+    color: colormap[aid] || "#777777",
+    segments,
+  }));
+}
+
+function serializeBounds(bounds) {
+  return {
+    ranges: bounds.ranges,
+    center: vectorToArray(bounds.center),
+    radius: bounds.radius,
+  };
+}
+
+function serializeFrozenCamera(panel) {
+  const { camera, controls } = panel;
+  return {
+    position: vectorToArray(camera.position),
+    target: vectorToArray(controls.target),
+    up: vectorToArray(camera.up),
+    fov: camera.fov,
+    near: camera.near,
+    far: camera.far,
+  };
+}
+
+function vectorToArray(vector) {
+  return [Number(vector.x), Number(vector.y), Number(vector.z)];
+}
+
+function buildFrozenTableSnapshot() {
+  const axes = xuvThreeDualMode ? xuvThreeDualPanelDefs[0].axes : selectedAxes();
+  const sourceRows = xuvState.selectedRows.length ? xuvState.selectedRows : xuvState.displayedRows.slice(0, 500);
+  const columns = ["moca_oid", "designation", "moca_aid", "moca_mtid", "spt", ...axes, "ya_prob", "age_myr", "report"];
+  const rows = sourceRows.map((row) => frozenTableRow(row, axes));
+  return {
+    title: xuvState.selectedRows.length ? `${xuvState.selectedRows.length} selected objects` : "Displayed objects",
+    subtitle: xuvState.selectedRows.length ? "Frozen selected object table." : "Showing the first 500 displayed rows from the exported scene.",
+    axes,
+    columns,
+    rows,
+  };
+}
+
+function frozenTableRow(row, axes) {
+  const reportUrl = mocaReportUrl(row.moca_oid);
+  const out = {
+    moca_oid: normalizedMocaOid(row.moca_oid),
+    designation: row.designation || "",
+    moca_aid: row.moca_aid || "",
+    moca_mtid: row.moca_mtid || "",
+    spt: row.spt || "",
+    ya_prob: finite(row.ya_prob) ? formatNumber(row.ya_prob, 1) : "",
+    age_myr: finite(row.age_myr) ? formatNumber(row.age_myr, 1) : "",
+    report: reportUrl,
+  };
+  axes.forEach((axis, index) => {
+    out[axis] = formatNumber(tableAxisValueForAxes(row, axes, axis, index), 2);
+  });
+  return out;
+}
+
+async function buildFrozenStandaloneHtml(snapshot) {
+  const [
+    styleSource,
+    viewerSource,
+    threeSource,
+    controlsSource,
+    css2dSource,
+    galaxyDataUrl,
+  ] = await Promise.all([
+    fetchFrozenAssetText("static/styles.css"),
+    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=highlight-marker-axis-color-20260513"),
+    fetchFrozenAssetText("static/vendor/three/three.module.min.js"),
+    fetchFrozenAssetText("static/vendor/three/controls/OrbitControls.js"),
+    fetchFrozenAssetText("static/vendor/three/renderers/CSS2DRenderer.js"),
+    fetchFrozenAssetDataUrl("static/images/eso0932a.jpg", "image/jpeg"),
+  ]);
+  const embeddedSnapshot = { ...snapshot, galaxyAsset: galaxyDataUrl };
+  const importMap = {
+    imports: {
+      three: javascriptDataUrl(threeSource),
+      "three/addons/controls/OrbitControls.js": javascriptDataUrl(controlsSource),
+      "three/addons/renderers/CSS2DRenderer.js": javascriptDataUrl(css2dSource),
+    },
+  };
+  return frozenSceneHtml(embeddedSnapshot, { styleSource, viewerSource, importMap });
+}
+
+function frozenSceneHtml(snapshot, assets = {}) {
+  const dualClass = snapshot.dual ? " xyzuvw-three-dual-page xyz2-page" : "";
+  const stage = snapshot.dual ? `
+        <div class="xyz2-plot-grid">
+          ${snapshot.panels.map((panel) => `
+          <section class="xyz2-panel" aria-label="${escapeHtml(panel.label)} figure">
+            <h2 class="xyz2-panel-title">${escapeHtml(panel.label)}</h2>
+            <div class="plot-frame xyzuvw-plot-frame xyzuvw-three-plot-frame xyz2-plot-frame">
+              <div class="xuv-three-stage" data-frozen-panel="${escapeHtml(panel.key)}">
+                <div class="xuv-three-canvas" data-frozen-canvas="${escapeHtml(panel.key)}"></div>
+                <div class="xuv-three-legend" data-frozen-legend="${escapeHtml(panel.key)}" aria-label="Visible ${escapeHtml(panel.label)} associations"></div>
+                <div class="xuv-three-tooltip" data-frozen-tooltip="${escapeHtml(panel.key)}" hidden></div>
+              </div>
+            </div>
+          </section>`).join("")}
+        </div>` : `
+        <div class="plot-frame xyzuvw-plot-frame xyzuvw-three-plot-frame">
+          <div class="xuv-three-stage" data-frozen-panel="${escapeHtml(snapshot.panels[0]?.key || "main")}">
+            <div class="xuv-three-canvas" data-frozen-canvas="${escapeHtml(snapshot.panels[0]?.key || "main")}"></div>
+            <div class="xuv-three-legend" data-frozen-legend="${escapeHtml(snapshot.panels[0]?.key || "main")}" aria-label="Visible associations"></div>
+            <div class="xuv-three-tooltip" data-frozen-tooltip="${escapeHtml(snapshot.panels[0]?.key || "main")}" hidden></div>
+          </div>
+        </div>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(snapshot.title)}</title>
+  <style>${styleSafeText(assets.styleSource || "")}</style>
+  <script type="importmap">${scriptSafeText(JSON.stringify(assets.importMap || { imports: {} }))}</script>
+</head>
+<body class="xyzuvw-page xyzuvw-three-page xyzuvw-frozen-page${dualClass}">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">${escapeHtml(snapshot.title)}</div>
+      <div id="xuv-status" class="status">Frozen scene</div>
+    </header>
+    <main class="workspace xyzuvw-workspace xyzuvw-frozen-workspace">
+      <section id="xuv-visual-area" class="visual-area xyzuvw-visual-area${snapshot.dual ? " xyz2-visual-area" : ""}">
+${stage}
+        <div class="xyzuvw-toolbar">
+          <div class="xyzuvw-summary">
+            <div id="xuv-summary">Loading frozen scene</div>
+            <div id="xuv-hint" class="plot-hint xyzuvw-three-hint">
+              <span id="xuv-hint-text">Frozen export created ${escapeHtml(snapshot.exportedAt)}.</span>
+            </div>
+          </div>
+          <div class="xyzuvw-action-stack">
+            <div class="xyzuvw-action-row">
+              <button id="xuv-recenter-sun" class="xyzuvw-recenter-button" type="button">Recenter on Sun</button>
+            </div>
+          </div>
+        </div>
+        <div class="selection-area xyzuvw-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="xuv-table-title">Displayed objects</strong>
+              <div id="xuv-table-subtitle" class="plot-hint">Selections appear here.</div>
+            </div>
+          </div>
+          <div id="xuv-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>${scriptSafeText(`window.MOCAVIZ_FROZEN_XYZ_SCENE = ${JSON.stringify(snapshot)};`)}</script>
+  <script type="module">${scriptSafeText(assets.viewerSource || "")}</script>
+</body>
+</html>
+`;
+}
+
+async function fetchFrozenAssetText(path) {
+  const response = await fetch(xuvAppUrl(path));
+  if (!response.ok) throw new Error(`Could not read ${path}`);
+  return response.text();
+}
+
+async function fetchFrozenAssetDataUrl(path, mimeType) {
+  const response = await fetch(xuvAppUrl(path));
+  if (!response.ok) throw new Error(`Could not read ${path}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return `data:${mimeType};base64,${base64FromBytes(bytes)}`;
+}
+
+function javascriptDataUrl(source) {
+  return `data:text/javascript;base64,${base64FromText(source)}`;
+}
+
+function base64FromText(text) {
+  return base64FromBytes(new TextEncoder().encode(String(text ?? "")));
+}
+
+function base64FromBytes(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function scriptSafeText(value) {
+  return String(value ?? "").replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
+}
+
+function styleSafeText(value) {
+  return String(value ?? "").replace(/<\/style/gi, "<\\/style");
+}
+
+function frozenDateStamp() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function jsonClean(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function setXyzuvwExportDisabled(disabled) {
-  for (const id of ["xuv-export-csv", "xuv-export-tsv", "xuv-export-fits", "xuv-export-votable"]) {
+  for (const id of ["xuv-export-csv", "xuv-export-tsv", "xuv-export-fits", "xuv-export-votable", "xuv-download-frozen"]) {
     if (xuvEl[id]) xuvEl[id].disabled = disabled;
   }
 }

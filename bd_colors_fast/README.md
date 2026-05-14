@@ -48,6 +48,18 @@ The fast TrueFlow age-PDF prototype is served at:
 http://127.0.0.1:8061/trueflow-age-pdfs
 ```
 
+The legacy MCMC radial-velocity diagnostics prototype is served at:
+
+```text
+http://127.0.0.1:8061/legacy-radial-velocities
+```
+
+The RVBAM radial-velocity explorer is served at:
+
+```text
+http://127.0.0.1:8061/rvbam-explorer
+```
+
 If another local copy is already using port 8061:
 
 ```bash
@@ -70,6 +82,8 @@ http://127.0.0.1:8061/astrometry?mock=1&moca_oid=602
 http://127.0.0.1:8061/spectra?mock=1&moca_specid=13510
 http://127.0.0.1:8061/xyzuvw?mock=1&axes=xyz&asso=HYA,TWA
 http://127.0.0.1:8061/trueflow-age-pdfs?mock=1&moca_oid=11266
+http://127.0.0.1:8061/legacy-radial-velocities?mock=1
+http://127.0.0.1:8061/rvbam-explorer?mock=1
 ```
 
 ## Design
@@ -115,6 +129,16 @@ http://127.0.0.1:8061/trueflow-age-pdfs?mock=1&moca_oid=11266
   JSON endpoints; the browser handles source filters, HBM filtering, CDF/log
   display modes, visible-curve products, Plotly rendering, URL state, CSV
   export, and cache clearing.
+- The legacy MCMC radial-velocity page loads the dataset list once, then loads
+  one selected `pcat_mcmc_rv_pipeline` dataset with all segment diagnostics and
+  file URLs in one cached JSON payload. The browser handles the quality cuts,
+  weighted averages, Plotly selection, segment details, diagnostic images, URL
+  state, exports, and cache clearing.
+- The RVBAM explorer loads `pcat_rv_sampling_runs` by primary key, then loads
+  segment metadata, RVBAM figure URLs, sampling parameters, and payload metadata
+  through compact JSON endpoints. Full posterior blobs in
+  `pcat_sampling_payloads` are decoded only when requested, then downsampled or
+  summarized server-side before Plotly receives them.
 
 ## Database Indexes
 

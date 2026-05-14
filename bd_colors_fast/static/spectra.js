@@ -1,6 +1,7 @@
 const speDefaultSpecids = [13510];
 const speDefaultNorm = "0.95-1.35";
-const speDefaultBinsPerMicron = 200;
+const speDefaultBinsPerMicron = 0;
+const speDefaultShowFeatures = true;
 const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
@@ -27,7 +28,8 @@ const speFeatureBands = [
   { name: "CH4", range: [3.15, 3.45], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
   { name: "NH3", range: [3.9, 4.5], fill: "rgba(20,120,120,0.10)", text: "rgba(20,110,110,0.65)" },
   { name: "PH3", range: [4.2, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)", labelY: 0.955 },
-  { name: "CO", range: [4.55, 4.95], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
+  { name: "CO2", range: [4.15, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)", labelY: 0.98 },
+  { name: "CO", range: [4.4, 4.95], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
   { name: "H2O", range: [5.0, 7.0], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
   { name: "CH4", range: [7.0, 9.2], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
   { name: "Silicates", range: [9.0, 13.0], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
@@ -116,7 +118,9 @@ function readSpectraUrlState() {
   speEl["spe-xlog"].checked = !asFalse(params.get("xlog"));
   speEl["spe-ylog"].checked = !asFalse(params.get("ylog"));
   speEl["spe-fnu"].checked = asBool(params.get("fnu_jy") || params.get("fnu"));
-  speEl["spe-showfeatures"].checked = !asFalse(params.get("showfeatures"));
+  speEl["spe-showfeatures"].checked = params.has("showfeatures")
+    ? !asFalse(params.get("showfeatures"))
+    : speDefaultShowFeatures;
   speEl["spe-disable-lowres"].checked = asBool(params.get("disable_lowres"));
   speEl["spe-normalize"].checked = !asFalse(params.get("normalize"));
   speEl["spe-normrange"].value = params.get("norm") || speDefaultNorm;
@@ -287,7 +291,13 @@ async function loadSpectra() {
   setSpectraStatus("Loading spectra", "loading");
   const params = apiParams();
   params.set("specids", speState.selected.map((item) => item.specid).join(","));
-  params.set("bins", new URLSearchParams(window.location.search).get("bins") || String(speDefaultBinsPerMicron));
+  const urlParams = new URLSearchParams(window.location.search);
+  const requestedBins = urlParams.get("bins") ?? urlParams.get("bins_per_micron") ?? urlParams.get("spe_bins");
+  if (requestedBins !== null && requestedBins !== "") {
+    params.set("bins", requestedBins);
+  } else {
+    params.set("bins", String(speDefaultBinsPerMicron));
+  }
   const payload = await fetchJsonUrl(speAppUrl(`api/spectra/load?${params.toString()}`));
   if (token !== speState.loadToken) return;
   if (!payload.ok) {
@@ -634,10 +644,11 @@ function renderDownloadLinks() {
     return;
   }
   speEl["spe-download-links"].innerHTML = spectra.map((spectrum) => (
-    `<button type="button" data-specid="${spectrum.moca_specid}">CSV specid${spectrum.moca_specid}</button>`
+    `<button type="button" data-format="csv" data-specid="${spectrum.moca_specid}">CSV specid${spectrum.moca_specid}</button>`
+    + `<button type="button" data-format="fits" data-specid="${spectrum.moca_specid}">FITS specid${spectrum.moca_specid}</button>`
   )).join("");
   speEl["spe-download-links"].querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", () => downloadRawSpectrumCsv(Number(button.dataset.specid)));
+    button.addEventListener("click", () => downloadRawSpectrum(Number(button.dataset.specid), button.dataset.format || "csv"));
   });
 }
 
@@ -716,21 +727,40 @@ function renderEmptySpectra(message) {
   setSpectraStatus(message, message.includes("Could not") ? "error" : "");
 }
 
-function downloadRawSpectrumCsv(specid) {
+const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom"];
+const rawSpectrumNumericExportColumns = new Set(rawSpectrumExportColumns);
+
+function rawSpectrumExportRows(spectrum) {
+  const metadata = spectrum.metadata || {};
+  return (spectrum.rows || []).map((row) => ({
+    moca_specid: spectrum.moca_specid,
+    moca_oid: metadata.moca_oid || "",
+    wavelength_um: row.lam,
+    flux_flambda_w_m2_angstrom: row.sp,
+    flux_flambda_unc_w_m2_angstrom: row.esp ?? "",
+  }));
+}
+
+function downloadRawSpectrum(specid, format = "csv") {
   const spectrum = (speState.payload?.spectra || []).find((item) => Number(item.moca_specid) === Number(specid));
   if (!spectrum) return;
   const metadata = spectrum.metadata || {};
-  const columns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom"];
+  const rows = rawSpectrumExportRows(spectrum);
+  if (format === "fits") {
+    MocaExport.saveTable("fits", {
+      rows,
+      columns: rawSpectrumExportColumns,
+      numericColumns: rawSpectrumNumericExportColumns,
+      filenameBase: `mocadb_spectrum_specid${specid}`,
+      tableName: `mocadb_spectrum_specid${specid}`,
+      extName: "MOCA_SPECTRUM",
+    });
+    return;
+  }
   const lines = [
     `# ${metadata.label || `specid${specid}`}`,
-    columns.join(","),
-    ...(spectrum.rows || []).map((row) => [
-      spectrum.moca_specid,
-      metadata.moca_oid || "",
-      row.lam,
-      row.sp,
-      row.esp ?? "",
-    ].map(csvCell).join(",")),
+    rawSpectrumExportColumns.join(","),
+    ...rows.map((row) => rawSpectrumExportColumns.map((column) => row[column]).map(csvCell).join(",")),
   ];
   downloadBlob(lines.join("\n"), `mocadb_spectrum_specid${specid}.csv`, "text/csv;charset=utf-8");
 }

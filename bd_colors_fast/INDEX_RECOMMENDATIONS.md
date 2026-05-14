@@ -72,6 +72,30 @@ ALTER TABLE `data_association_ages`
   (`moca_aid`, `adopted`, `age_myr`);
 ```
 
+For the legacy radial-velocity diagnostics page, the main dataset query filters
+`pcat_mcmc_rv_pipeline` by `target_name`, `template_name`, and
+`pipeline_version`, then orders by order/window/segment/id. The existing
+`unique_idx` starts with `target_name, template_name`, but has
+`order_number, window_number, segment_number` before `pipeline_version`, so it
+does not fully cover the three-field dataset lookup.
+
+```sql
+ALTER TABLE `pcat_mcmc_rv_pipeline`
+  ADD INDEX `idx_fastrv_dataset`
+  (`target_name`, `template_name`, `pipeline_version`, `order_number`, `window_number`, `segment_number`, `id`);
+```
+
+The same page resolves diagnostic image URLs through `mechanics_file_sets` by
+file-set id and description before joining to `mechanics_files`. This optional
+composite index makes those lookups more selective than the existing
+single-column file-set index.
+
+```sql
+ALTER TABLE `mechanics_file_sets`
+  ADD INDEX `idx_fastrv_fsid_description_fid`
+  (`moca_fsid`, `description`, `moca_fid`);
+```
+
 ## Compared And Not Recommended
 
 I would not add new indexes for these without an `EXPLAIN` showing a specific
