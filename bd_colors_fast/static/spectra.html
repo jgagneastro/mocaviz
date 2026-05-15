@@ -37,6 +37,14 @@
             <span>Enable hover properties</span>
           </label>
           <label class="checkline">
+            <input id="spe-error-shade" type="checkbox">
+            <span>Display error shaded region</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-snr" type="checkbox">
+            <span>Display S/N per pixel</span>
+          </label>
+          <label class="checkline">
             <input id="spe-xlog" type="checkbox" checked>
             <span>Log X axis</span>
           </label>
@@ -117,6 +125,8 @@
         <tbody>
           <tr><td><code>moca_specid</code>, <code>specid</code>, <code>specids</code></td><td>Comma-separated spectrum IDs</td><td>Loads those spectra. Defaults to <code>13510</code>.</td></tr>
           <tr><td><code>hover</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows detailed hover text for plotted spectral rows.</td></tr>
+          <tr><td><code>error_shade</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows a smoothed one-sigma shaded envelope around each displayed spectrum.</td></tr>
+          <tr><td><code>snr</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Displays flux divided by flux uncertainty per pixel instead of spectral flux.</td></tr>
           <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>0</code> disables either log axis</td><td>Both axes use logarithmic scaling by default.</td></tr>
           <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
@@ -141,6 +151,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectra.js?v=url-sync-20260514b"></script>
+  <script src="static/spectra.js?v=error-band-center-20260515a"></script>
 </body>
 </html>

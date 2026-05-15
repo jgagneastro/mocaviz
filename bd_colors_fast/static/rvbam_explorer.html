@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RVBAM Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=rvbam-20260513g">
+  <link rel="stylesheet" href="static/styles.css?v=rvbam-20260515d">
   <script src="plotly.min.js"></script>
 </head>
 <body class="rvbam-page">
@@ -131,6 +131,7 @@
               <button type="button" data-rvb-tab="posterior">Posteriors</button>
               <button type="button" data-rvb-tab="params">Parameters</button>
               <button type="button" data-rvb-tab="payload">Payload</button>
+              <button type="button" data-rvb-tab="spectrum">Spectrum</button>
             </div>
 
             <div id="rvb-tab-fit" class="rvb-tab-panel is-active">
@@ -183,6 +184,10 @@
             <div id="rvb-tab-payload" class="rvb-tab-panel">
               <div id="rvb-payload-table" class="table-scroll"></div>
             </div>
+
+            <div id="rvb-tab-spectrum" class="rvb-tab-panel">
+              <div id="rvb-spectrum-table" class="table-scroll"></div>
+            </div>
           </section>
         </div>
 
@@ -195,6 +200,7 @@
           </div>
           <div class="export-actions rvb-actions">
             <button id="rvb-open-report" type="button" disabled>Report</button>
+            <button id="rvb-open-spectrum" type="button" disabled>View spectrum</button>
             <button id="rvb-export-csv" type="button" disabled>CSV</button>
             <button id="rvb-export-tsv" type="button" disabled>TSV</button>
             <button id="rvb-export-fits" type="button" disabled>FITS</button>
@@ -238,6 +244,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/rvbam_explorer.js?v=rvbam-20260514o"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260515d"></script>
 </body>
 </html>

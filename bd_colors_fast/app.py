@@ -3988,6 +3988,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     AND field.{x1_raw_col} IS NOT NULL
                     AND field.{x2_raw_col} IS NOT NULL
                     AND field.{y_raw_col} IS NOT NULL
+                ORDER BY field.random_index
                 LIMIT {selection["max_objects"]}
             """, params)
             frames.append(field_df)
@@ -7731,6 +7732,67 @@ def _mock_rvbam_segments(run_id: int) -> list[dict[str, Any]]:
     return segments
 
 
+def _mock_rvbam_literature_rv(run: dict[str, Any]) -> dict[str, Any] | None:
+    run_id = int(run.get("moca_rv_sample_run_id") or 0)
+    if run_id == 910002:
+        return {
+            "source": "host",
+            "label": "Literature host RV",
+            "moca_oid": 10994,
+            "target_moca_oid": run.get("moca_oid"),
+            "host_moca_oid": 10994,
+            "designation": "WISE J104915.57-531906.1 A",
+            "radial_velocity_kms": 20.8,
+            "radial_velocity_kms_unc": 0.9,
+            "n_measurements": 4,
+            "n_epochs": 3,
+            "is_public": 1,
+        }
+    if run_id == 910001:
+        return {
+            "source": "object",
+            "label": "Literature RV",
+            "moca_oid": run.get("moca_oid"),
+            "target_moca_oid": run.get("moca_oid"),
+            "host_moca_oid": None,
+            "designation": run.get("designation") or run.get("target_name"),
+            "radial_velocity_kms": -18.0,
+            "radial_velocity_kms_unc": 1.2,
+            "n_measurements": 5,
+            "n_epochs": 4,
+            "is_public": 1,
+        }
+    return None
+
+
+def _mock_rvbam_spectrum(run: dict[str, Any]) -> dict[str, Any]:
+    specid = run.get("moca_specid")
+    run_id = int(run.get("moca_rv_sample_run_id") or 0)
+    berv_corrected = 0 if run_id == 910001 else 1
+    spacecraft_rv_corrected = 1 if run_id == 910002 else 0
+    return {
+        "moca_specid": specid,
+        "moca_pid": "mock",
+        "moca_specpackid": None,
+        "moca_oid": run.get("moca_oid"),
+        "moca_instid": run.get("moca_instid"),
+        "spectrum_name": run.get("spectrum_name"),
+        "flux_units": "mock flux",
+        "min_wavelength_angstrom": (run.get("wv_min") or 0) * 10000,
+        "max_wavelength_angstrom": (run.get("wv_max") or 0) * 10000,
+        "median_spectral_resolving_power": 1200,
+        "data_collection_date": "2026-01-01",
+        "epoch_mjd": 61041.0,
+        "instrument_mode_name": "mock",
+        "berv_corrected": berv_corrected,
+        "spacecraft_rv_corrected": spacecraft_rv_corrected,
+        "origin": "mock_rvbam",
+        "is_public": 1,
+        "ignored": 0,
+        "comments": "Synthetic moca_spectra metadata for local RVBAM smoke testing",
+    }
+
+
 def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> dict[str, Any]:
     run_payload = _mock_rvbam_runs(args)
     selected_id = int(run_id or _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id") or run_payload["value"])
@@ -7740,6 +7802,8 @@ def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> 
     return {
         "run": run,
         "segments": segments,
+        "literatureRv": _mock_rvbam_literature_rv(run),
+        "spectrum": _mock_rvbam_spectrum(run),
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "segment_count": len(segments),
@@ -7930,6 +7994,116 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _rvbam_literature_rv_payload(row: dict[str, Any], source: str, target_moca_oid: int) -> dict[str, Any]:
+    value = row.get("radial_velocity_kms")
+    uncertainty = row.get("radial_velocity_kms_unc")
+    literature_moca_oid = row.get("literature_moca_oid")
+    host_moca_oid = row.get("host_moca_oid") if source == "host" else None
+    return {
+        "source": source,
+        "label": "Literature host RV" if source == "host" else "Literature RV",
+        "moca_oid": literature_moca_oid,
+        "target_moca_oid": target_moca_oid,
+        "host_moca_oid": host_moca_oid,
+        "designation": row.get("literature_designation"),
+        "radial_velocity_kms": value,
+        "radial_velocity_kms_unc": uncertainty,
+        "n_measurements": row.get("n_measurements"),
+        "n_epochs": row.get("n_epochs"),
+        "is_public": row.get("is_public"),
+    }
+
+
+def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> dict[str, Any] | None:
+    try:
+        target_moca_oid = int(moca_oid)
+    except (TypeError, ValueError):
+        return None
+    if not _db_table_exists(conn, "calc_radial_velocities_combined"):
+        return None
+
+    private_db = _is_private_db(args)
+    preferred_is_public = 0 if private_db else 1
+    crv_public_clause = "" if private_db else "AND crv.is_public = 1"
+    params = {
+        "moca_oid": target_moca_oid,
+        "preferred_is_public": preferred_is_public,
+    }
+    object_rows = _records(_read_sql(conn, f"""
+        SELECT
+            crv.moca_oid AS literature_moca_oid,
+            mo.designation AS literature_designation,
+            crv.radial_velocity_kms,
+            crv.radial_velocity_kms_unc,
+            crv.n_measurements,
+            crv.n_epochs,
+            crv.is_public
+        FROM calc_radial_velocities_combined crv
+        LEFT JOIN moca_objects mo
+            ON mo.moca_oid = crv.moca_oid
+        WHERE crv.moca_oid = :moca_oid
+            AND crv.radial_velocity_kms IS NOT NULL
+            AND COALESCE(crv.ignored, 0) = 0
+            {crv_public_clause}
+        ORDER BY
+            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            crv.id DESC
+        LIMIT 1
+    """, params))
+    if object_rows:
+        return _rvbam_literature_rv_payload(object_rows[0], "object", target_moca_oid)
+
+    if not _db_table_exists(conn, "moca_companions"):
+        return None
+    companion_public_clause = "" if private_db else "AND mc.is_public = 1"
+    host_rows = _records(_read_sql(conn, f"""
+        SELECT
+            crv.moca_oid AS literature_moca_oid,
+            mo.designation AS literature_designation,
+            mc.moca_oid_parent AS host_moca_oid,
+            crv.radial_velocity_kms,
+            crv.radial_velocity_kms_unc,
+            crv.n_measurements,
+            crv.n_epochs,
+            crv.is_public
+        FROM moca_companions mc
+        JOIN calc_radial_velocities_combined crv
+            ON crv.moca_oid = mc.moca_oid_parent
+        LEFT JOIN moca_objects mo
+            ON mo.moca_oid = mc.moca_oid_parent
+        WHERE mc.moca_oid_child = :moca_oid
+            AND COALESCE(mc.ignored, 0) = 0
+            AND crv.radial_velocity_kms IS NOT NULL
+            AND COALESCE(crv.ignored, 0) = 0
+            {companion_public_clause}
+            {crv_public_clause}
+        ORDER BY
+            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            mc.moca_cid,
+            crv.id DESC
+        LIMIT 1
+    """, params))
+    if host_rows:
+        return _rvbam_literature_rv_payload(host_rows[0], "host", target_moca_oid)
+    return None
+
+
+def _rvbam_spectrum_from_db(conn, moca_specid: Any) -> dict[str, Any]:
+    try:
+        specid = int(moca_specid)
+    except (TypeError, ValueError):
+        return {}
+    if not _db_table_exists(conn, "moca_spectra"):
+        return {}
+    rows = _records(_read_sql(conn, """
+        SELECT *
+        FROM moca_spectra
+        WHERE moca_specid = :specid
+        LIMIT 1
+    """, {"specid": specid}))
+    return rows[0] if rows else {}
+
+
 def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]:
     cache_key = _rvbam_cache_key(args, "run", run_id, args.get("include_ignored") or args.get("show_ignored") or "")
     now = time.time()
@@ -7963,7 +8137,9 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 ms.epoch_mjd,
                 ms.min_wavelength_angstrom,
                 ms.max_wavelength_angstrom,
-                ms.median_spectral_resolving_power
+                ms.median_spectral_resolving_power,
+                ms.berv_corrected,
+                ms.spacecraft_rv_corrected
             FROM pcat_rv_sampling_runs r
             LEFT JOIN moca_objects mo
                 ON mo.moca_oid = r.moca_oid
@@ -8078,10 +8254,14 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 {ignored_clause}
             ORDER BY s.order_number, s.window_number, s.segment_number, s.wv_min, s.moca_rv_sampling_segment_id
         """, {"run_id": int(run_id)}))
+        literature_rv = _rvbam_literature_rv_from_db(conn, args, run.get("moca_oid"))
+        spectrum = _rvbam_spectrum_from_db(conn, run.get("moca_specid"))
 
     payload = {
         "run": run,
         "segments": segments,
+        "literatureRv": literature_rv,
+        "spectrum": spectrum,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "segment_count": len(segments),

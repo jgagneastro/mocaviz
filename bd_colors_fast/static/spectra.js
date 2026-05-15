@@ -80,6 +80,8 @@ function collectSpectraElements() {
     "spe-load",
     "spe-clear-selected",
     "spe-hover",
+    "spe-error-shade",
+    "spe-snr",
     "spe-xlog",
     "spe-ylog",
     "spe-fnu",
@@ -115,6 +117,8 @@ function readSpectraUrlState() {
   const specids = rawSpecids.split(",").map((item) => parseInteger(item.trim())).filter((value) => value !== null);
   speState.selected = uniqueIntegers(specids.length ? specids : speDefaultSpecids).map((specid) => ({ specid, label: `specid${specid}` }));
   speEl["spe-hover"].checked = asBool(params.get("hover"));
+  speEl["spe-error-shade"].checked = asBool(params.get("error_shade") || params.get("errorshade"));
+  speEl["spe-snr"].checked = asBool(params.get("snr") || params.get("sn_per_pixel"));
   speEl["spe-xlog"].checked = !asFalse(params.get("xlog"));
   speEl["spe-ylog"].checked = !asFalse(params.get("ylog"));
   speEl["spe-fnu"].checked = asBool(params.get("fnu_jy") || params.get("fnu"));
@@ -151,7 +155,7 @@ function bindSpectraControls() {
     updateSpectraUrl();
     speEl["spe-search"].focus();
   });
-  for (const id of ["spe-hover", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-normalize"]) {
+  for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-normalize"]) {
     speEl[id].addEventListener("change", () => {
       renderSpectra();
       updateSpectraUrl();
@@ -326,9 +330,13 @@ function renderSpectra() {
   const processed = processSpectraPayload();
   speState.processed = processed;
   const traces = [];
+  const showSnr = speEl["spe-snr"].checked;
+  const showErrorShade = speEl["spe-error-shade"].checked && !showSnr;
+  const ylog = speEl["spe-ylog"].checked;
   processed.forEach((spectrum, index) => {
     const color = spectrum.color || speColors[index % speColors.length];
     if (!spectrum.points.length) return;
+    if (showErrorShade) traces.push(...errorShadeTraces(spectrum, color, ylog));
     if (spectrum.lowRes && !speEl["spe-disable-lowres"].checked) {
       traces.push({
         type: "scattergl",
@@ -394,7 +402,9 @@ function renderSpectra() {
   const rowCountText = pluralize(rowCount, "spectral row", "spectral rows");
   setSpectraStatus(`${spectraCountText} loaded${cacheText}`, "");
   speEl["spe-summary"].textContent = `${spectraCountText} loaded, ${rowCountText}`;
-  speEl["spe-hint"].textContent = speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.";
+  speEl["spe-hint"].textContent = showSnr
+    ? "Displayed values are flux divided by flux uncertainty per pixel."
+    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.");
   renderSpectraTable();
   setSpectraLoading(false);
 }
@@ -418,6 +428,7 @@ function processSpectraPayload() {
   const range = parseNormRange(speEl["spe-normrange"].value);
   const useFnu = speEl["spe-fnu"].checked;
   const normalize = speEl["spe-normalize"].checked;
+  const showSnr = speEl["spe-snr"].checked;
   const ylog = speEl["spe-ylog"].checked;
   return (speState.payload.spectra || []).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
@@ -446,8 +457,10 @@ function processSpectraPayload() {
     const scale = normalize ? robustMedian(normCandidates.map((row) => row.yOriginal)) : 1;
     const safeScale = finite(scale) && scale !== 0 ? scale : 1;
     const points = rawRows.map((row) => {
-      const y = row.yOriginal / safeScale;
-      const yerr = finite(row.yerrOriginal) ? Math.abs(row.yerrOriginal / safeScale) : null;
+      const y = showSnr
+        ? (finite(row.yerrOriginal) && row.yerrOriginal !== 0 ? row.yOriginal / Math.abs(row.yerrOriginal) : NaN)
+        : row.yOriginal / safeScale;
+      const yerr = showSnr ? null : (finite(row.yerrOriginal) ? Math.abs(row.yerrOriginal / safeScale) : null);
       return {
         ...row,
         y,
@@ -512,13 +525,132 @@ function lineWithGaps(points) {
   return { x, y, custom };
 }
 
+function errorShadeTraces(spectrum, color, ylog) {
+  return errorShadeSegments(spectrum.points, ylog).map((segment, index) => ({
+    type: "scatter",
+    mode: "lines",
+    x: segment.x,
+    y: segment.y,
+    fill: "toself",
+    fillcolor: colorWithAlpha(color, 0.16),
+    line: { color: "rgba(0,0,0,0)", width: 0 },
+    name: `${spectrum.name} 1-sigma`,
+    legendgroup: String(spectrum.specid),
+    showlegend: false,
+    hoverinfo: "skip",
+    connectgaps: false,
+  }));
+}
+
+function errorShadeSegments(points, ylog) {
+  const groups = contiguousPointGroups(points.filter((point) => finite(point.yerr) && point.yerr >= 0));
+  return groups.map((group) => {
+    const smoothed = smoothedErrorBand(group, ylog);
+    if (smoothed.length < 2) return null;
+    return {
+      x: smoothed.map((point) => point.lam).concat(smoothed.map((point) => point.lam).reverse()),
+      y: smoothed.map((point) => point.upper).concat(smoothed.map((point) => point.lower).reverse()),
+    };
+  }).filter(Boolean);
+}
+
+function contiguousPointGroups(points) {
+  if (points.length < 2) return points.length ? [points] : [];
+  const diffs = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const diff = points[index].lam - points[index - 1].lam;
+    if (diff > 0 && finite(diff)) diffs.push(diff);
+  }
+  const medianDiff = robustMedian(diffs);
+  const gapLimit = finite(medianDiff) && medianDiff > 0 ? 10 * medianDiff : Infinity;
+  const groups = [];
+  let current = [];
+  points.forEach((point, index) => {
+    if (index > 0 && point.lam - points[index - 1].lam > gapLimit) {
+      if (current.length) groups.push(current);
+      current = [];
+    }
+    current.push(point);
+  });
+  if (current.length) groups.push(current);
+  return groups;
+}
+
+function smoothedErrorBand(points, ylog) {
+  const windowSize = smoothingWindowSize(points.length);
+  const yValues = points.map((point) => point.y);
+  const errValues = points.map((point) => Math.abs(point.yerr));
+  const errSmooth = movingAverage(errValues, windowSize);
+  return points.map((point, index) => {
+    const center = point.y;
+    const sigma = finite(errSmooth[index]) ? Math.abs(errSmooth[index]) : Math.abs(point.yerr || 0);
+    const upper = center + sigma;
+    let lower = center - sigma;
+    if (ylog && lower <= 0) lower = positiveLowerEnvelope(center, sigma, yValues);
+    return { lam: point.lam, lower, upper };
+  }).filter((point) => finite(point.lam) && finite(point.lower) && finite(point.upper) && (!ylog || (point.lower > 0 && point.upper > 0)));
+}
+
+function smoothingWindowSize(length) {
+  if (length < 7) return 1;
+  const target = Math.floor(length / 90);
+  const odd = target % 2 ? target : target + 1;
+  return Math.max(5, Math.min(61, odd));
+}
+
+function movingAverage(values, windowSize) {
+  if (windowSize <= 1 || values.length <= 2) return values.slice();
+  const half = Math.floor(windowSize / 2);
+  const output = [];
+  for (let index = 0; index < values.length; index += 1) {
+    let sum = 0;
+    let count = 0;
+    const left = Math.max(0, index - half);
+    const right = Math.min(values.length - 1, index + half);
+    for (let cursor = left; cursor <= right; cursor += 1) {
+      const value = values[cursor];
+      if (!finite(value)) continue;
+      sum += value;
+      count += 1;
+    }
+    output.push(count ? sum / count : values[index]);
+  }
+  return output;
+}
+
+function positiveLowerEnvelope(center, sigma, yValues) {
+  const positives = yValues.filter((value) => finite(value) && value > 0);
+  const floor = positives.length ? Math.min(...positives) * 0.1 : 1e-12;
+  if (center > 0) return Math.max(floor, center / (1 + Math.max(1, sigma / center)));
+  return floor;
+}
+
+function colorWithAlpha(color, alpha) {
+  const text = String(color || "").trim();
+  const clampedAlpha = Math.max(0, Math.min(1, Number(alpha)));
+  const hex = text.match(/^#?([0-9a-f]{6})$/i);
+  if (hex) {
+    const value = hex[1];
+    const red = parseInt(value.slice(0, 2), 16);
+    const green = parseInt(value.slice(2, 4), 16);
+    const blue = parseInt(value.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${clampedAlpha})`;
+  }
+  const rgba = text.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgba) {
+    const parts = rgba[1].split(",").slice(0, 3).map((item) => item.trim());
+    if (parts.length === 3) return `rgba(${parts.join(", ")}, ${clampedAlpha})`;
+  }
+  return `rgba(55, 126, 184, ${clampedAlpha})`;
+}
+
 function spectraLayout(processed) {
   const xlog = speEl["spe-xlog"].checked;
   const ylog = speEl["spe-ylog"].checked;
   const shapes = [];
   const annotations = [];
   const allX = processed.flatMap((spectrum) => spectrum.points.map((point) => point.lam));
-  const allY = processed.flatMap((spectrum) => spectrum.points.map((point) => point.y));
+  const allY = spectraYAxisValues(processed, ylog);
   const xRange = numericAxisRange(allX, { log: xlog, fallback: xlog ? [0.7, 30] : [0.7, 2.6] });
   const yRange = numericAxisRange(allY, { log: ylog, fallback: null, padFraction: 0.08 });
   const xmin = xRange ? xRange[0] : NaN;
@@ -611,6 +743,17 @@ function spectraLayout(processed) {
   };
 }
 
+function spectraYAxisValues(processed, ylog) {
+  const values = processed.flatMap((spectrum) => spectrum.points.map((point) => point.y));
+  if (!speEl["spe-error-shade"].checked || speEl["spe-snr"].checked) return values;
+  for (const spectrum of processed) {
+    for (const segment of errorShadeSegments(spectrum.points, ylog)) {
+      values.push(...segment.y);
+    }
+  }
+  return values;
+}
+
 function featureAnnotationX(band, xlog) {
   const x0 = Number(band.range?.[0]);
   const x1 = Number(band.range?.[1]);
@@ -620,6 +763,17 @@ function featureAnnotationX(band, xlog) {
 
 function hoverTemplate() {
   if (!speEl["spe-hover"].checked) return undefined;
+  if (speEl["spe-snr"].checked) {
+    return [
+      "<b>%{customdata.label}</b>",
+      "specid %{customdata.specid}",
+      "λ = %{x:.6g} μm",
+      "S/N per pixel = %{y:.6g}",
+      "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
+      "stored error = %{customdata.rawErrFlambdaUm:.4e} W/m²/μm",
+      "<extra></extra>",
+    ].join("<br>");
+  }
   return [
     "<b>%{customdata.label}</b>",
     "specid %{customdata.specid}",
@@ -656,7 +810,9 @@ function renderDownloadLinks() {
 function renderSpectraTable() {
   if (speState.selectedPoints.length) {
     speEl["spe-table-title"].textContent = `${speState.selectedPoints.length} selected spectral rows`;
-    speEl["spe-table-subtitle"].textContent = "Rows reflect the displayed flux unit and normalization state.";
+    speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
+      ? "Rows reflect displayed S/N per pixel."
+      : "Rows reflect the displayed flux unit and normalization state.";
     const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um"];
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
@@ -783,7 +939,7 @@ function exportPlottedSpectra(format) {
         raw_flambda_w_m2_um: point.rawFlambdaUm,
         raw_flambda_unc_w_m2_um: point.rawErrFlambdaUm ?? "",
         display_unit: yAxisUnit(),
-        normalized: speEl["spe-normalize"].checked ? 1 : 0,
+        normalized: speEl["spe-snr"].checked ? 0 : (speEl["spe-normalize"].checked ? 1 : 0),
       });
     });
   });
@@ -832,6 +988,8 @@ function updateSpectraUrl() {
   params.delete("specid");
   params.delete("specids");
   setBoolParam(params, "hover", speEl["spe-hover"].checked);
+  setBoolParam(params, "error_shade", speEl["spe-error-shade"].checked);
+  setBoolParam(params, "snr", speEl["spe-snr"].checked);
   if (!speEl["spe-xlog"].checked) params.set("xlog", "0");
   else params.delete("xlog");
   if (!speEl["spe-ylog"].checked) params.set("ylog", "0");
@@ -857,6 +1015,7 @@ function setSpectraLoading(loading) {
 }
 
 function yAxisTitle() {
+  if (speEl["spe-snr"].checked) return "S/N per pixel";
   if (speEl["spe-normalize"].checked) {
     return speEl["spe-fnu"].checked
       ? "Relative spectral flux density <i>F</i><sub>ν</sub>"
@@ -868,6 +1027,7 @@ function yAxisTitle() {
 }
 
 function yAxisUnit() {
+  if (speEl["spe-snr"].checked) return "S/N";
   if (speEl["spe-normalize"].checked) return "relative";
   return speEl["spe-fnu"].checked ? "Jy" : "W/m²/μm";
 }

@@ -95,12 +95,14 @@ function collectRvbamElements() {
     "rvb-summary",
     "rvb-hint",
     "rvb-open-report",
+    "rvb-open-spectrum",
     "rvb-export-csv",
     "rvb-export-tsv",
     "rvb-export-fits",
     "rvb-export-votable",
     "rvb-info",
     "rvb-segments-table",
+    "rvb-spectrum-table",
     "rvb-model-link",
     "rvb-model-image",
     "rvb-model-empty",
@@ -216,6 +218,7 @@ function bindRvbamControls() {
   });
   rvbEl["rvb-clear-cache-bottom"].addEventListener("click", clearRvbamCache);
   rvbEl["rvb-open-report"].addEventListener("click", openRvbamReport);
+  rvbEl["rvb-open-spectrum"].addEventListener("click", openRvbamSpectrum);
   rvbEl["rvb-export-csv"].addEventListener("click", () => exportRvbamSegments("csv"));
   rvbEl["rvb-export-tsv"].addEventListener("click", () => exportRvbamSegments("tsv"));
   rvbEl["rvb-export-fits"].addEventListener("click", () => exportRvbamSegments("fits"));
@@ -372,6 +375,7 @@ function renderRvbamRun() {
   }
   renderScatterYAxisOptions(payload.segments || []);
   renderRvbamInfo();
+  renderRvbamSpectrumTable();
   renderRvbamSegmentsTable();
   renderRvbamSegmentPlot();
   renderRvbamSummary();
@@ -383,6 +387,7 @@ function renderRvbamRun() {
 function renderRvbamInfo() {
   const run = rvbState.payload?.run || {};
   const segments = rvbState.payload?.segments || [];
+  const spectrum = rvbState.payload?.spectrum || {};
   const entries = [
     ["Target", run.designation || run.target_name],
     ["OID", run.moca_oid],
@@ -393,6 +398,8 @@ function renderRvbamInfo() {
     ["Model Grid", run.moca_mgridid],
     ["Segments", segments.length],
     ["BERV", formatWithUnit(run.berv_kms, "km/s", 3)],
+    ["BERV corrected", formatFlag(spectrum.berv_corrected ?? run.berv_corrected)],
+    ["Spacecraft RV corrected", formatFlag(spectrum.spacecraft_rv_corrected ?? run.spacecraft_rv_corrected)],
     ["Wavelength", wavelengthRangeLabel(segments)],
   ];
   rvbEl["rvb-info"].innerHTML = entries.map(([key, value]) => `
@@ -401,6 +408,28 @@ function renderRvbamInfo() {
       <strong>${escapeHtml(displayValue(value))}</strong>
     </div>
   `).join("");
+}
+
+function renderRvbamSpectrumTable() {
+  const spectrum = rvbState.payload?.spectrum || {};
+  const rows = orderedRvbamSpectrumRows(spectrum);
+  rvbEl["rvb-spectrum-table"].innerHTML = rows.length
+    ? simpleTable(rows, [["column", "moca_spectra column"], ["value", "Value"]], "rvb-detail-table rvb-spectrum-metadata-table")
+    : '<div class="rvb-empty-detail">No moca_spectra metadata for this moca_specid</div>';
+}
+
+function orderedRvbamSpectrumRows(spectrum) {
+  const entries = Object.entries(spectrum || {});
+  const deferredColumns = new Set(["comments", "fits_header"]);
+  const rows = entries
+    .filter(([column]) => !deferredColumns.has(column))
+    .map(([column, value]) => ({ column, value }));
+  for (const column of ["comments", "fits_header"]) {
+    if (Object.prototype.hasOwnProperty.call(spectrum, column)) {
+      rows.push({ column, value: spectrum[column] });
+    }
+  }
+  return rows;
 }
 
 function renderRvbamSegmentsTable() {
@@ -470,7 +499,14 @@ function renderRvbamSegmentPlot() {
   if (filteredOutRows.length) traces.push(filteredAverageLegendTrace());
   const selected = rows.filter((row) => Number(row.moca_rv_sampling_segment_id) === Number(rvbState.selectedSegmentId));
   if (selected.length) traces.push(segmentTrace(selected, "Selected", "star", false, showErrors, 18, true, ySpec));
+  const literatureRv = rvbamLiteratureRvForYAxis(ySpec);
+  if (literatureRv) traces.push(rvbamLiteratureRvLegendTrace(literatureRv));
   const shapes = [];
+  if (literatureRv) {
+    const band = rvbamLiteratureRvErrorBand(literatureRv);
+    if (band) shapes.push(band);
+    shapes.push(rvbamAverageLine(literatureRv.value, "rgba(24, 128, 61, 0.95)", 3, "solid"));
+  }
   if (stats.n) {
     shapes.push(rvbamAverageLine(stats.mean, "rgba(168, 18, 18, 0.82)", 4, "solid"));
     if (stats.unc !== null && stats.unc > 0) {
@@ -489,7 +525,11 @@ function renderRvbamSegmentPlot() {
     ? `${titlePrefix}<br>${averageStatsLabel(stats, ySpec, { compactRvUncertainty: true })}${filterNote}`
     : `${titlePrefix}<br>${ySpec.label} average unavailable${filterNote}`;
   const xRange = scatterAxisRange(rangeRows, (row) => segmentWavelengthMicron(row));
-  const yRange = scatterAxisRange(rangeRows, (row) => asNumber(row[ySpec.key]));
+  const yRange = scatterAxisRange(
+    rangeRows,
+    (row) => asNumber(row[ySpec.key]),
+    rvbamLiteratureRvRangeValues(literatureRv),
+  );
 
   const layout = {
     title: { text: title, x: 0.5, y: 0.965, xanchor: "center", yanchor: "top", font: { size: 12.8 } },
@@ -598,8 +638,61 @@ function filteredAverageLegendTrace() {
   };
 }
 
-function scatterAxisRange(rows, accessor) {
-  const values = rows.map(accessor).filter((value) => value !== null && Number.isFinite(value));
+function rvbamLiteratureRvForYAxis(ySpec) {
+  if (ySpec.key !== "rv_kms") return null;
+  return normalizedRvbamLiteratureRv();
+}
+
+function normalizedRvbamLiteratureRv() {
+  const literatureRv = rvbState.payload?.literatureRv;
+  if (!literatureRv || typeof literatureRv !== "object") return null;
+  const value = asNumber(literatureRv.radial_velocity_kms);
+  if (value === null) return null;
+  const uncertainty = asNumber(literatureRv.radial_velocity_kms_unc);
+  return {
+    ...literatureRv,
+    value,
+    uncertainty,
+    label: literatureRv.label || (literatureRv.source === "host" ? "Literature host RV" : "Literature RV"),
+  };
+}
+
+function rvbamLiteratureRvLegendTrace(literatureRv) {
+  return {
+    type: "scatter",
+    mode: "lines",
+    name: literatureRv.label,
+    x: [null, null],
+    y: [null, null],
+    line: { color: "rgba(24, 128, 61, 0.95)", width: 3 },
+    hoverinfo: "skip",
+    showlegend: true,
+  };
+}
+
+function rvbamLiteratureRvRangeValues(literatureRv) {
+  if (!literatureRv) return [];
+  const values = [literatureRv.value];
+  if (literatureRv.uncertainty !== null && literatureRv.uncertainty > 0) {
+    values.push(literatureRv.value - literatureRv.uncertainty, literatureRv.value + literatureRv.uncertainty);
+  }
+  return values;
+}
+
+function rvbamLiteratureRvErrorBand(literatureRv) {
+  if (literatureRv.uncertainty === null || literatureRv.uncertainty <= 0) return null;
+  return rvbamHorizontalBand(
+    literatureRv.value - literatureRv.uncertainty,
+    literatureRv.value + literatureRv.uncertainty,
+    "rgba(112, 190, 118, 0.18)",
+  );
+}
+
+function scatterAxisRange(rows, accessor, extraValues = []) {
+  const values = rows
+    .map(accessor)
+    .concat(extraValues)
+    .filter((value) => value !== null && Number.isFinite(value));
   if (!values.length) return null;
   let min = Math.min(...values);
   let max = Math.max(...values);
@@ -635,6 +728,21 @@ function rvbamAverageLine(y, color, width, dash) {
     y0: y,
     y1: y,
     line: { color, width, dash },
+    layer: "below",
+  };
+}
+
+function rvbamHorizontalBand(y0, y1, fillcolor) {
+  return {
+    type: "rect",
+    xref: "paper",
+    x0: 0,
+    x1: 1,
+    yref: "y",
+    y0: Math.min(y0, y1),
+    y1: Math.max(y0, y1),
+    fillcolor,
+    line: { width: 0 },
     layer: "below",
   };
 }
@@ -816,7 +924,7 @@ function currentRvbamRunId() {
 }
 
 function isRvbamTabName(name) {
-  return ["fit", "rebuilt", "corner", "rebuilt-corner", "global-corner", "posterior", "params", "payload"].includes(String(name || ""));
+  return ["fit", "rebuilt", "corner", "rebuilt-corner", "global-corner", "posterior", "params", "payload", "spectrum"].includes(String(name || ""));
 }
 
 function activateRequestedRvbamTabIfReady() {
@@ -897,6 +1005,7 @@ function firstVisibleRvbamTab() {
     "posterior",
     "params",
     "payload",
+    "spectrum",
   ];
   for (const name of order) {
     const button = document.querySelector(`[data-rvb-tab="${name}"]`);
@@ -1640,15 +1749,46 @@ function renderRvbamSummary() {
   if (average.n) {
     parts.push(averageStatsLabel(average, ySpec, { compactRvUncertainty: true }));
   }
+  parts.push(...rvbamCorrectionSummaryParts());
+  const literatureText = rvbamLiteratureRvSummaryText();
+  if (literatureText) parts.push(literatureText);
   rvbEl["rvb-summary"].textContent = parts.join(" | ");
   updateRvbamReportButton();
 }
 
+function rvbamCorrectionSummaryParts() {
+  const run = rvbState.payload?.run || {};
+  const spectrum = rvbState.payload?.spectrum || {};
+  return [
+    `RVBAM BERV correction: ${rvbamPipelineBervSummary(run)}`,
+    `moca_spectra.berv_corrected=${formatFlag(spectrum.berv_corrected ?? run.berv_corrected)}`,
+    `moca_spectra.spacecraft_rv_corrected=${formatFlag(spectrum.spacecraft_rv_corrected ?? run.spacecraft_rv_corrected)}`,
+  ];
+}
+
+function rvbamPipelineBervSummary(run) {
+  const berv = asNumber(run?.berv_kms);
+  if (berv === null) return "not recorded";
+  if (Math.abs(berv) < 1e-9) return "recorded, no net shift (0.000 km/s)";
+  return `active ${berv >= 0 ? "+" : ""}${formatFixed(berv, 3)} km/s`;
+}
+
+function rvbamLiteratureRvSummaryText() {
+  const literatureRv = normalizedRvbamLiteratureRv();
+  if (!literatureRv) return "";
+  const unit = "km/s";
+  const rounded = oneSignificantUncertaintyLabel(literatureRv.value, literatureRv.uncertainty);
+  if (rounded) return `${literatureRv.label} = ${rounded.value} ${unit} +/- ${rounded.unc} ${unit}`;
+  return `${literatureRv.label} = ${formatFixed(literatureRv.value, 1)} ${unit}`;
+}
+
 function updateRvbamReportButton() {
   const button = rvbEl["rvb-open-report"];
-  if (!button) return;
+  const spectrumButton = rvbEl["rvb-open-spectrum"];
   const oid = numberOrNull(rvbState.payload?.run?.moca_oid);
-  button.disabled = !oid;
+  const specid = numberOrNull(rvbState.payload?.run?.moca_specid);
+  if (button) button.disabled = !oid;
+  if (spectrumButton) spectrumButton.disabled = !specid;
 }
 
 function openRvbamReport() {
@@ -1656,6 +1796,17 @@ function openRvbamReport() {
   if (!oid) return;
   const url = `https://mocadb.ca/search/results?search-query=oid%28${encodeURIComponent(String(oid))}%29&search-type=star`;
   window.open(url, "_blank", "noopener");
+}
+
+function openRvbamSpectrum() {
+  const specid = numberOrNull(rvbState.payload?.run?.moca_specid);
+  if (!specid) return;
+  const currentParams = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams({ moca_specid: String(specid) });
+  for (const key of ["mock", "host", "user", "pwd", "dbase"]) {
+    if (currentParams.has(key)) params.set(key, currentParams.get(key) || "");
+  }
+  window.open(rvbAppUrl(`spectra?${params.toString()}`), "_blank", "noopener");
 }
 
 function selectedRvbamRows() {
@@ -1764,21 +1915,21 @@ function oneSignificantUncertaintyLabel(value, uncertainty) {
   const valueNumber = asNumber(value);
   const uncertaintyNumber = asNumber(uncertainty);
   if (valueNumber === null || uncertaintyNumber === null || uncertaintyNumber <= 0) return null;
-  let decimals = Math.max(0, -Math.floor(Math.log10(Math.abs(uncertaintyNumber))));
-  let roundedUncertainty = roundToDecimals(Math.abs(uncertaintyNumber), decimals);
-  if (roundedUncertainty > 0) {
-    decimals = Math.max(0, -Math.floor(Math.log10(roundedUncertainty)));
-    roundedUncertainty = roundToDecimals(Math.abs(uncertaintyNumber), decimals);
+  let place = 10 ** Math.floor(Math.log10(Math.abs(uncertaintyNumber)));
+  let roundedUncertainty = roundToPlace(Math.abs(uncertaintyNumber), place);
+  if (roundedUncertainty >= 10 * place) {
+    place *= 10;
+    roundedUncertainty = roundToPlace(Math.abs(uncertaintyNumber), place);
   }
+  const decimals = place < 1 ? Math.max(0, -Math.floor(Math.log10(place))) : 0;
   return {
-    value: roundToDecimals(valueNumber, decimals).toFixed(decimals),
+    value: roundToPlace(valueNumber, place).toFixed(decimals),
     unc: roundedUncertainty.toFixed(decimals),
   };
 }
 
-function roundToDecimals(value, decimals) {
-  const factor = 10 ** Math.max(0, decimals);
-  return Math.round(value * factor) / factor;
+function roundToPlace(value, place) {
+  return Math.round(value / place) * place;
 }
 
 function renderRvbamSegmentError(message) {
@@ -1813,6 +1964,7 @@ function renderEmptyRvbam(message) {
   rvbEl["rvb-summary"].textContent = message;
   updateRvbamReportButton();
   rvbEl["rvb-info"].innerHTML = "";
+  rvbEl["rvb-spectrum-table"].innerHTML = "";
   rvbEl["rvb-segments-table"].innerHTML = `<div class="rvb-empty-detail">${escapeHtml(message)}</div>`;
   renderRvbamSegmentError(message);
   renderEmptyGlobalCorner(message);
@@ -2033,6 +2185,14 @@ function formatGenericCell(value) {
     return Number.isInteger(number) ? String(number) : formatFixed(number, 5);
   }
   return displayValue(value);
+}
+
+function formatFlag(value) {
+  const number = asNumber(value);
+  if (number === 1) return "1 (yes)";
+  if (number === 0) return "0 (no)";
+  if (number !== null) return String(number);
+  return "unknown";
 }
 
 function segmentHover(row, ySpec) {

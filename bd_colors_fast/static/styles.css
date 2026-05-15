@@ -2182,6 +2182,15 @@ tbody tr:nth-child(odd) {
   overflow-wrap: anywhere;
 }
 
+.rvb-spectrum-metadata-table th,
+.rvb-spectrum-metadata-table td {
+  vertical-align: top;
+}
+
+.rvb-spectrum-metadata-table td:nth-child(2) {
+  white-space: pre-wrap;
+}
+
 .rvb-segment-row {
   cursor: pointer;
 }
