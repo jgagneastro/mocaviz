@@ -8,9 +8,6 @@ import plotly.graph_objs as go
 
 import numpy as np
 import pandas as pd
-from utils.mocapy_compat import patch_pandas_sql_private_api
-
-patch_pandas_sql_private_api()
 from mocapy import *
 
 #Register web page in the Dash app

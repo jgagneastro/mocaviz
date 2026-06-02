@@ -21,9 +21,6 @@ from functools import lru_cache
 import plotly.graph_objs as go
 from dash.dependencies import Input, Output, State
 
-from utils.mocapy_compat import patch_pandas_sql_private_api
-
-patch_pandas_sql_private_api()
 from mocapy import *
 
 #bcg_color = 'rgb(0,0,0)'
