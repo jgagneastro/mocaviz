@@ -12,6 +12,21 @@
   --danger: #9c2f2f;
 }
 
+html.is-mocadb-team,
+body.is-mocadb-team {
+  background: #f2e9e9;
+  --bg: #f2e9e9;
+  --panel: #eadede;
+  --panel-dark: #d8c7c8;
+  --panel-light: #f6eeee;
+  --plot-bg: #ffffff;
+  --ink: #252329;
+  --muted: #6f5151;
+  --line: #baa0a0;
+  --accent: #8b5f5f;
+  --accent-2: #6f5151;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -57,12 +72,24 @@ body {
   color: #f3f2f4;
 }
 
+html.is-mocadb-team .topbar,
+body.is-mocadb-team .topbar {
+  background: #d8c7c8;
+  border-bottom-color: #9b7373;
+  color: #4f2626;
+}
+
 .brand {
   font-weight: 700;
   font-size: 24px;
   letter-spacing: 0;
   line-height: 1.15;
   color: #000000;
+}
+
+html.is-mocadb-team .brand,
+body.is-mocadb-team .brand {
+  color: #4f2626;
 }
 
 .status {
@@ -77,6 +104,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 0 1 auto;
+}
+
+html.is-mocadb-team .status,
+body.is-mocadb-team .status {
+  color: #4f2626;
 }
 
 .status.error {
@@ -96,6 +128,12 @@ body {
   border-top-color: #000000;
   border-radius: 50%;
   animation: status-spin .75s linear infinite;
+}
+
+html.is-mocadb-team .status.loading::before,
+body.is-mocadb-team .status.loading::before {
+  border-color: rgba(79, 38, 38, .22);
+  border-top-color: #4f2626;
 }
 
 @keyframes status-spin {
@@ -138,6 +176,21 @@ body {
 
 .options-section {
   background: #d8d6db;
+}
+
+html.is-mocadb-team .axes-section,
+body.is-mocadb-team .axes-section {
+  background: #e0cccc;
+}
+
+html.is-mocadb-team .filters-section,
+body.is-mocadb-team .filters-section {
+  background: #d3bbbb;
+}
+
+html.is-mocadb-team .options-section,
+body.is-mocadb-team .options-section {
+  background: #eadede;
 }
 
 .axis-group h3 {
@@ -201,6 +254,13 @@ select:focus,
 input:focus {
   outline: 2px solid rgba(116, 108, 121, .28);
   border-color: var(--accent);
+}
+
+html.is-mocadb-team select:focus,
+html.is-mocadb-team input:focus,
+body.is-mocadb-team select:focus,
+body.is-mocadb-team input:focus {
+  outline-color: rgba(139, 95, 95, .3);
 }
 
 .axis-type-select {
@@ -590,6 +650,16 @@ tbody tr:nth-child(odd) {
   background: #f8f9f8;
 }
 
+html.is-mocadb-team tbody tr:nth-child(even),
+body.is-mocadb-team tbody tr:nth-child(even) {
+  background: #f2e8e8;
+}
+
+html.is-mocadb-team tbody tr:nth-child(odd),
+body.is-mocadb-team tbody tr:nth-child(odd) {
+  background: #fbf7f7;
+}
+
 .report-link {
   display: inline-flex;
   align-items: center;
@@ -762,6 +832,20 @@ tbody tr:nth-child(odd) {
 .js-landing-content a {
   color: var(--accent-2);
   font-weight: 750;
+}
+
+.is-mocadb-team .js-landing-page,
+.is-mocadb-team .js-landing-shell,
+.js-landing-page.is-mocadb-team,
+.js-landing-page.is-mocadb-team .js-landing-shell {
+  background: #f2e9e9;
+}
+
+.is-mocadb-team .js-landing-header,
+.js-landing-page.is-mocadb-team .js-landing-header {
+  background: #d8c7c8;
+  color: #4f2626;
+  border-bottom: 1px solid #9b7373;
 }
 
 .gaia-cmd-workspace {

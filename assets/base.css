@@ -418,3 +418,95 @@ there.
     cursor: not-allowed;
     opacity: 0.7;
 }
+
+/* Authenticated MOCAdb collaborator/management theme. */
+html.is-mocadb-team,
+body.is-mocadb-team {
+  background: #f2e9e9;
+}
+
+html.is-mocadb-team body,
+body.is-mocadb-team,
+html.is-mocadb-team #_dash-app-content,
+body.is-mocadb-team #_dash-app-content,
+html.is-mocadb-team .banner,
+body.is-mocadb-team .banner {
+  background-color: #f2e9e9 !important;
+}
+
+html.is-mocadb-team h1,
+html.is-mocadb-team h2,
+html.is-mocadb-team h3,
+html.is-mocadb-team h4,
+html.is-mocadb-team h5,
+html.is-mocadb-team h6,
+body.is-mocadb-team h1,
+body.is-mocadb-team h2,
+body.is-mocadb-team h3,
+body.is-mocadb-team h4,
+body.is-mocadb-team h5,
+body.is-mocadb-team h6 {
+  color: #4f2626;
+}
+
+html.is-mocadb-team h6,
+body.is-mocadb-team h6 {
+  background-color: #d8c7c8 !important;
+}
+
+html.is-mocadb-team a,
+body.is-mocadb-team a {
+  color: #6f5151;
+}
+
+html.is-mocadb-team a:hover,
+body.is-mocadb-team a:hover {
+  color: #4f2626;
+}
+
+html.is-mocadb-team button,
+html.is-mocadb-team .button,
+html.is-mocadb-team input[type="submit"],
+html.is-mocadb-team input[type="reset"],
+html.is-mocadb-team input[type="button"],
+body.is-mocadb-team button,
+body.is-mocadb-team .button,
+body.is-mocadb-team input[type="submit"],
+body.is-mocadb-team input[type="reset"],
+body.is-mocadb-team input[type="button"] {
+  border-color: #8b5f5f;
+  color: #4f2626;
+}
+
+html.is-mocadb-team button:hover,
+html.is-mocadb-team .button:hover,
+html.is-mocadb-team input[type="submit"]:hover,
+html.is-mocadb-team input[type="reset"]:hover,
+html.is-mocadb-team input[type="button"]:hover,
+html.is-mocadb-team button:focus,
+html.is-mocadb-team .button:focus,
+html.is-mocadb-team input[type="submit"]:focus,
+html.is-mocadb-team input[type="reset"]:focus,
+html.is-mocadb-team input[type="button"]:focus,
+body.is-mocadb-team button:hover,
+body.is-mocadb-team .button:hover,
+body.is-mocadb-team input[type="submit"]:hover,
+body.is-mocadb-team input[type="reset"]:hover,
+body.is-mocadb-team input[type="button"]:hover,
+body.is-mocadb-team button:focus,
+body.is-mocadb-team .button:focus,
+body.is-mocadb-team input[type="submit"]:focus,
+body.is-mocadb-team input[type="reset"]:focus,
+body.is-mocadb-team input[type="button"]:focus {
+  border-color: #6f5151;
+  color: #2f1717;
+}
+
+html.is-mocadb-team table,
+html.is-mocadb-team th,
+html.is-mocadb-team td,
+body.is-mocadb-team table,
+body.is-mocadb-team th,
+body.is-mocadb-team td {
+  border-color: #baa0a0;
+}
