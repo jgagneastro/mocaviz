@@ -79,6 +79,7 @@ function collectTrueflowAgeElements() {
     "tfa-mocaflows-options",
     "tfa-source-mocaflows",
     "tfa-source-legacy",
+    "tfa-source-legacy-label",
     "tfa-source-scalar",
     "tfa-posteriors",
     "tfa-hbm",
@@ -150,6 +151,9 @@ function applyTrueflowMocaflowsAccess() {
   const mocaflowsLine = tfaEl["tfa-source-mocaflows-line"] || tfaEl["tfa-source-mocaflows"]?.closest("label");
   if (mocaflowsLine) mocaflowsLine.hidden = !canUseMocaflows;
   if (tfaEl["tfa-mocaflows-options"]) tfaEl["tfa-mocaflows-options"].hidden = !canUseMocaflows;
+  if (tfaEl["tfa-source-legacy-label"]) {
+    tfaEl["tfa-source-legacy-label"].textContent = canUseMocaflows ? "Other age tools" : "MOCAdb age tools";
+  }
 
   for (const id of ["tfa-source-mocaflows", "tfa-posteriors", "tfa-hbm"]) {
     if (!tfaEl[id]) continue;
