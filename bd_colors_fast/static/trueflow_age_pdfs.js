@@ -2,6 +2,7 @@ const tfaDefaultOid = 11266;
 const tfaDefaultAid = "ABDMG";
 const tfaDefaultSources = ["Legacy", "Scalar Gaussian"];
 const tfaUniverseAgeMyr = 13800;
+const tfaTeamUsers = new Set(["collaborators", "management"]);
 const tfaSourceIds = {
   "MOCAFlows": "tfa-source-mocaflows",
   "Legacy": "tfa-source-legacy",
@@ -53,6 +54,7 @@ function tfaRootUrl(path) {
 async function initTrueflowAgePdfs() {
   collectTrueflowAgeElements();
   readTrueflowAgeUrlState();
+  applyTrueflowMocaflowsAccess();
   bindTrueflowAgeControls();
   updateTrueflowScopeControls();
   const optionsPromise = loadTrueflowAgeOptions();
@@ -73,6 +75,8 @@ function collectTrueflowAgeElements() {
     "tfa-aid-filter",
     "tfa-aid-select",
     "tfa-load",
+    "tfa-source-mocaflows-line",
+    "tfa-mocaflows-options",
     "tfa-source-mocaflows",
     "tfa-source-legacy",
     "tfa-source-scalar",
@@ -129,6 +133,29 @@ function readTrueflowAgeUrlState() {
   tfaEl["tfa-log-y"].checked = checkbox.has("log_y");
   tfaEl["tfa-cdf"].checked = checkbox.has("cdf");
   tfaEl["tfa-combine"].checked = checkbox.has("combine");
+}
+
+function trueflowAgeUserRole() {
+  const params = new URLSearchParams(window.location.search);
+  const user = String(params.get("user") || params.get("username") || "").trim().toLowerCase();
+  return tfaTeamUsers.has(user) ? user : "";
+}
+
+function canUseTrueflowMocaflows() {
+  return Boolean(trueflowAgeUserRole());
+}
+
+function applyTrueflowMocaflowsAccess() {
+  const canUseMocaflows = canUseTrueflowMocaflows();
+  const mocaflowsLine = tfaEl["tfa-source-mocaflows-line"] || tfaEl["tfa-source-mocaflows"]?.closest("label");
+  if (mocaflowsLine) mocaflowsLine.hidden = !canUseMocaflows;
+  if (tfaEl["tfa-mocaflows-options"]) tfaEl["tfa-mocaflows-options"].hidden = !canUseMocaflows;
+
+  for (const id of ["tfa-source-mocaflows", "tfa-posteriors", "tfa-hbm"]) {
+    if (!tfaEl[id]) continue;
+    tfaEl[id].disabled = !canUseMocaflows;
+    if (!canUseMocaflows) tfaEl[id].checked = false;
+  }
 }
 
 function bindTrueflowAgeControls() {
@@ -699,6 +726,7 @@ function formatPlainAgeTick(value) {
 function selectedTrueflowSources() {
   const out = new Set();
   for (const [source, id] of Object.entries(tfaSourceIds)) {
+    if (source === "MOCAFlows" && !canUseTrueflowMocaflows()) continue;
     if (tfaEl[id].checked) out.add(source);
   }
   return out;
@@ -718,7 +746,7 @@ function buildTrueflowAgeParams() {
     const oid = parseInteger(tfaEl["tfa-oid-input"].value) ?? tfaDefaultOid;
     params.set("moca_oid", oid);
   }
-  if (tfaEl["tfa-posteriors"].checked) params.set("posteriors", "1");
+  if (canUseTrueflowMocaflows() && tfaEl["tfa-posteriors"].checked) params.set("posteriors", "1");
   return params;
 }
 
@@ -746,8 +774,8 @@ function updateTrueflowAgeUrl() {
   }
   params.set("sources", Array.from(selectedTrueflowSources()).join(","));
   const checkbox = [];
-  if (tfaEl["tfa-posteriors"].checked) checkbox.push("posteriors");
-  if (tfaEl["tfa-hbm"].checked) checkbox.push("hbm");
+  if (canUseTrueflowMocaflows() && tfaEl["tfa-posteriors"].checked) checkbox.push("posteriors");
+  if (canUseTrueflowMocaflows() && tfaEl["tfa-hbm"].checked) checkbox.push("hbm");
   if (tfaEl["tfa-log-x"].checked) checkbox.push("log_x");
   if (tfaEl["tfa-log-y"].checked) checkbox.push("log_y");
   if (tfaEl["tfa-cdf"].checked) checkbox.push("cdf");
