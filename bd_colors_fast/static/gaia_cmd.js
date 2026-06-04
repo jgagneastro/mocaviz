@@ -1122,11 +1122,12 @@ function parseHexColor(value) {
   return [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16));
 }
 
-function gaiaCmdLayout(selection, sptAxis) {
+function gaiaCmdLayout(selection, sptAxis, rows = []) {
   const xLabel = `Gaia DR3 ${axisBandHtmlLabel(selection.x1, selection.x1_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} color`;
   const yLabel = `Absolute Gaia DR3 ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)} magnitude`;
   const colorByAge = Boolean(selection?.color_by_age);
   const sptAxisConfig = gaiaCmdSptAxisConfig(sptAxis);
+  const axisRanges = gaiaCmdInitialRanges(selection, rows);
   const axisBoxStyle = {
     showline: true,
     linecolor: "#000000",
@@ -1161,19 +1162,64 @@ function gaiaCmdLayout(selection, sptAxis) {
       gridcolor: "#e2e2e2",
       automargin: true,
       tickfont: { size: 15 },
+      ...(axisRanges.x ? { range: axisRanges.x } : {}),
     },
     ...(sptAxisConfig ? { xaxis2: sptAxisConfig } : {}),
     yaxis: {
       ...axisBoxStyle,
       title: { text: yLabel, font: { size: 22 } },
-      autorange: "reversed",
       zeroline: false,
       showgrid: true,
       gridcolor: "#e2e2e2",
       automargin: true,
       tickfont: { size: 15 },
+      range: axisRanges.y,
     },
   };
+}
+
+function gaiaCmdInitialRanges(selection, rows) {
+  const xRange = gaiaCmdDefaultXRange(selection);
+  const relevantRows = (rows || []).filter((row) => row?.moca_aid || row?._highlighted);
+  return {
+    x: xRange ? expandLinearRange(xRange, relevantRows.map((row) => row.x), { minPad: 0.02, padFraction: 0.025 }) : null,
+    y: expandReversedMagnitudeRange(gcmdDefaultYRange, relevantRows.map((row) => row.y)),
+  };
+}
+
+function gaiaCmdDefaultXRange(selection) {
+  const x1 = bandKeyForPsid(selection?.x1);
+  const x2 = bandKeyForPsid(selection?.x2);
+  if (x1 === "GBP" && x2 === "GRP") return [...gcmdDefaultXRangeByColor.bprp];
+  if (x1 === "G" && x2 === "GRP") return [...gcmdDefaultXRangeByColor.grp];
+  return null;
+}
+
+function expandLinearRange(baseRange, values, options = {}) {
+  const finiteValues = values.map(Number).filter(Number.isFinite);
+  if (!finiteValues.length) return [...baseRange];
+  let [left, right] = baseRange;
+  const span = Math.max(Math.abs(right - left), 1e-9);
+  const pad = Math.max(options.minPad ?? 0, span * (options.padFraction ?? 0));
+  const minValue = Math.min(...finiteValues);
+  const maxValue = Math.max(...finiteValues);
+  if (minValue < left) left = minValue - pad;
+  if (maxValue > right) right = maxValue + pad;
+  return [Number(left.toFixed(4)), Number(right.toFixed(4))];
+}
+
+function expandReversedMagnitudeRange(baseRange, values) {
+  const finiteValues = values.map(Number).filter(Number.isFinite);
+  if (!finiteValues.length) return [...baseRange];
+  let faintLimit = baseRange[0];
+  let brightLimit = baseRange[1];
+  const span = Math.max(Math.abs(faintLimit - brightLimit), 1e-9);
+  const pad = Math.max(0.05, span * 0.025);
+  const minValue = Math.min(...finiteValues);
+  const maxValue = Math.max(...finiteValues);
+  if (maxValue > faintLimit) faintLimit = maxValue + pad;
+  if (minValue < brightLimit) brightLimit = minValue - pad;
+  return [Number(faintLimit.toFixed(4)), Number(brightLimit.toFixed(4))];
 }
 
 function gaiaCmdSptAxisConfig(sptAxis) {
