@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moranta et al. 2026 Rotation Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=moranta26-rotation-20260604b">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+</head>
+<body class="moranta26-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">Moranta et al. 2026 Rotation Explorer</div>
+      <div id="m26-status" class="status loading">Loading Mora26 rotation rows</div>
+    </header>
+
+    <main class="workspace moranta26-workspace">
+      <aside class="controls">
+        <section class="control-section filters-section">
+          <h2>Catalog</h2>
+          <label>
+            Cluster
+            <select id="m26-cluster"></select>
+          </label>
+          <label>
+            Lambda m values
+            <select id="m26-lambda" class="moranta26-multiselect moranta26-multiselect-medium" multiple size="6"></select>
+          </label>
+          <label>
+            Pipeline
+            <select id="m26-pipeline" class="moranta26-multiselect moranta26-multiselect-compact" multiple size="5"></select>
+          </label>
+          <label>
+            Sector
+            <select id="m26-sector" class="moranta26-multiselect moranta26-multiselect-tall" multiple size="10"></select>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Classifiers</h2>
+          <label>
+            Category
+            <select id="m26-category" class="moranta26-multiselect moranta26-multiselect-medium" multiple size="7"></select>
+          </label>
+          <label>
+            Quality
+            <select id="m26-quality" class="moranta26-multiselect moranta26-multiselect-compact" multiple size="5"></select>
+          </label>
+          <label>
+            Selected source rows
+            <select id="m26-selected-filter">
+              <option value="all">All selected states</option>
+              <option value="selected">Selected only</option>
+              <option value="unselected">Unselected only</option>
+            </select>
+          </label>
+          <label>
+            Minimum prob_all
+            <input id="m26-prob-threshold" type="number" min="0" max="1" step="0.01" value="0.70">
+          </label>
+          <label class="checkline">
+            <input id="m26-include-ignored" type="checkbox" checked>
+            <span>Include DB ignored rows</span>
+          </label>
+          <label class="checkline">
+            <input id="m26-require-lit" type="checkbox">
+            <span>Require literature period</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Search</h2>
+          <label>
+            Gaia DR3 source ID
+            <input id="m26-search" type="text" autocomplete="off" placeholder="Gaia DR3 source_id">
+          </label>
+          <div class="button-grid">
+            <button id="m26-search-button" type="button">Search</button>
+            <button id="m26-clear-search" type="button">Clear</button>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Actions</h2>
+          <button id="m26-load" type="button">Reload Mora26 Rows</button>
+          <button id="m26-clear-cache" type="button">Clear Cache</button>
+          <div id="m26-clear-cache-status" class="cache-status"></div>
+        </section>
+      </aside>
+
+      <section id="m26-visual-area" class="visual-area moranta26-visual-area">
+        <div class="plot-frame moranta26-period-frame">
+          <div id="m26-plot"></div>
+          <div id="m26-plot-loader" class="plot-loader is-visible" aria-label="Loading Moranta rotation data">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="moranta26-toolbar">
+          <div class="moranta26-summary">
+            <div id="m26-summary">No data loaded</div>
+            <div class="plot-hint">Click a point to inspect all Mora26 m values and linked TESS light curves for that object.</div>
+          </div>
+        </div>
+
+        <div class="selection-area moranta26-star-area">
+          <div id="m26-star-summary" class="moranta26-star-summary">Select a point or search for a Gaia DR3 source ID.</div>
+          <div class="moranta26-lightcurve-controls">
+            <label>
+              Sector and pipeline
+              <select id="m26-dataset-select"></select>
+            </label>
+            <label>
+              Phase period
+              <select id="m26-phase-source"></select>
+            </label>
+          </div>
+          <div id="m26-lightcurve-source" class="plot-hint"></div>
+          <div id="m26-table" class="table-scroll moranta26-table"></div>
+        </div>
+
+        <div class="plot-frame moranta26-lightcurve-frame">
+          <div id="m26-lightcurve-plot"></div>
+          <div id="m26-lightcurve-loader" class="plot-loader" aria-label="Loading Moranta light curve">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="moranta26-small-plots">
+          <div class="plot-frame moranta26-small-frame">
+            <div id="m26-phase-plot"></div>
+          </div>
+          <div class="plot-frame moranta26-small-frame">
+            <div id="m26-periodogram-plot"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help moranta26-url-help">
+      <h2>Using URL Parameters</h2>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>cluster</code></td><td><code>THA</code>, <code>IC2602</code>, <code>PERI</code>, <code>GRX</code></td><td>Selects the initial parsed Moranta project.</td></tr>
+          <tr><td><code>m</code>, <code>lambda</code></td><td>Comma-separated integers</td><td>Selects lambda m values.</td></tr>
+          <tr><td><code>gaia_dr3</code>, <code>source_id</code></td><td>Gaia DR3 source ID</td><td>Selects the matching object after the catalog is loaded.</td></tr>
+          <tr><td><code>include_ignored</code></td><td><code>0</code> or <code>1</code></td><td>Controls whether rows with <code>data_rotation_periods.ignored=1</code> are displayed. They are included by default for this Mora26 m-value explorer.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+    </footer>
+  </div>
+  <script src="static/moranta26_rotation.js?v=moranta26-rotation-20260604b"></script>
+</body>
+</html>

@@ -99,6 +99,11 @@ const gcmdAxisBandHtmlLabels = {
 
 const gcmdSptClasses = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"];
 const gcmdSptAxisRequiredTicks = [3, 7, 8, 9, 10];
+const gcmdDefaultYRange = [16.2, -0.2];
+const gcmdDefaultXRangeByColor = {
+  bprp: [0, 4.5],
+  grp: [-0.05, 1.8],
+};
 
 const gcmdState = {
   options: { simple: [], advanced: [] },
@@ -708,7 +713,7 @@ function renderGaiaCmdPlot() {
   addSequenceTraces(traces, payload.sequences || []);
   addSptAxisReferenceTrace(traces, payload.spt_axis || null, gcmdState.rows);
 
-  const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null);
+  const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, gcmdState.rows);
   if (payload.selection?.show_extinction_vectors) {
     layout.annotations = extinctionVectorAnnotations(gcmdState.rows);
   }
