@@ -1044,6 +1044,66 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   font-size: 12px;
 }
 
+.spectral-nav-pad {
+  display: grid;
+  grid-template-columns: 30px 30px 30px;
+  grid-template-rows: 30px 30px 30px;
+  justify-content: center;
+  gap: 5px;
+  margin: 4px 0 10px;
+}
+
+.spectral-nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 5px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.spectral-nav-button span {
+  transform: translateY(-1px);
+}
+
+.spectral-nav-button:disabled {
+  opacity: 0.45;
+}
+
+.spectral-nav-up {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.spectral-nav-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.spectral-nav-right {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.spectral-nav-down {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.spectral-nav-center {
+  align-self: center;
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8a8490;
+  grid-column: 2;
+  grid-row: 2;
+}
+
 .standard-marks {
   position: relative;
   height: 46px;
@@ -1247,7 +1307,7 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 .spectra-selected-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   margin-top: 8px;
 }
 
@@ -1264,6 +1324,63 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 
 .spectra-chip span {
   min-width: 0;
+}
+
+.spectra-token {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #aaa6af;
+  border-radius: 6px;
+  background: #eceaee;
+  color: var(--ink);
+  padding: 8px;
+  font-size: 12px;
+}
+
+.spectra-token-swatch {
+  flex: 0 0 4px;
+  align-self: stretch;
+  min-height: 46px;
+  border-radius: 3px;
+  background: var(--swatch-color, #555555);
+}
+
+.spectra-token-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.25;
+}
+
+.spectra-token-title {
+  overflow-wrap: anywhere;
+  font-weight: 750;
+}
+
+.spectra-token-meta {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.spectra-token-spectrum-name {
+  color: #5e5a64;
+}
+
+.spectra-token button {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 5px;
+  padding: 0;
+  line-height: 1;
+  font-size: 14px;
 }
 
 .spectra-toolbar {
@@ -2293,6 +2410,122 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   padding-bottom: 34px;
 }
 
+.moranta26-workspace {
+  grid-template-columns: 350px minmax(0, 1fr);
+}
+
+.moranta26-visual-area {
+  grid-template-rows: auto auto auto minmax(340px, 34vh) minmax(330px, 34vh);
+  row-gap: 8px;
+  overflow: auto;
+}
+
+.moranta26-page .control-section {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.moranta26-page .control-section h2 {
+  margin-bottom: 8px;
+}
+
+.moranta26-page label {
+  margin: 8px 0;
+}
+
+.moranta26-multiselect {
+  height: auto;
+  min-height: 0;
+  padding: 4px 0;
+  line-height: 1.25;
+}
+
+.moranta26-multiselect option {
+  padding: 4px 9px;
+}
+
+.moranta26-multiselect-compact {
+  min-height: 124px;
+}
+
+.moranta26-multiselect-medium {
+  min-height: 154px;
+}
+
+.moranta26-multiselect-tall {
+  min-height: 244px;
+}
+
+.moranta26-period-frame,
+.moranta26-lightcurve-frame,
+.moranta26-small-frame {
+  height: 100%;
+  min-height: 330px;
+}
+
+.moranta26-period-frame {
+  min-height: 520px;
+}
+
+.moranta26-toolbar,
+.moranta26-star-area {
+  border-top: 1px solid #c8c3ce;
+  background: #f2f1f4;
+}
+
+.moranta26-toolbar {
+  padding: 10px 14px;
+}
+
+.moranta26-summary {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.moranta26-star-area {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.moranta26-star-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.moranta26-star-summary span,
+.moranta26-star-summary a {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.moranta26-lightcurve-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.moranta26-table {
+  max-height: 210px;
+}
+
+.moranta26-table .is-muted-row {
+  color: #77727c;
+  background: #eeeeef;
+}
+
+.moranta26-small-plots {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-height: 330px;
+}
+
 @media (max-width: 820px) {
   .topbar {
     align-items: flex-start;
@@ -2477,5 +2710,22 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 
   .rvb-actions {
     justify-content: flex-start;
+  }
+
+  .moranta26-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .moranta26-visual-area {
+    grid-template-rows: auto auto auto minmax(320px, auto) auto;
+  }
+
+  .moranta26-lightcurve-controls,
+  .moranta26-small-plots {
+    grid-template-columns: 1fr;
+  }
+
+  .moranta26-period-frame {
+    min-height: 460px;
   }
 }

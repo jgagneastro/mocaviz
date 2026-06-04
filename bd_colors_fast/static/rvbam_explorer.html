@@ -35,6 +35,14 @@
             Pipeline
             <input id="rvb-pipeline" type="text" autocomplete="off" placeholder="rvbam-dev">
           </label>
+          <label class="checkline">
+            <input id="rvb-has-literature-rv" type="checkbox">
+            <span>Only runs with literature RV</span>
+          </label>
+          <label>
+            Wavelength coverage (microns)
+            <input id="rvb-wavelength-coverage" type="text" autocomplete="off" placeholder="1.10-1.35 or 1.10, 1.35">
+          </label>
           <label>
             RVBAM run
             <select id="rvb-run"></select>
@@ -92,6 +100,22 @@
           <label>
             Max RV uncertainty (km/s)
             <input id="rvb-max-rv-unc" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
+          <label>
+            Min data contrast
+            <input id="rvb-min-data-contrast" type="number" min="0" step="0.001" placeholder="No limit">
+          </label>
+          <label>
+            Min model contrast
+            <input id="rvb-min-model-contrast" type="number" min="0" step="0.001" placeholder="No limit">
+          </label>
+          <label>
+            Min model points above 10% contrast
+            <input id="rvb-min-model-10p" type="number" min="0" step="1" placeholder="No limit">
+          </label>
+          <label>
+            Min median S/N
+            <input id="rvb-min-snr" type="number" min="0" step="1" placeholder="No limit">
           </label>
         </section>
 
@@ -233,6 +257,7 @@
           <tr><td><code>segment_id</code></td><td>RVBAM segment primary key</td><td>Loads one selected segment.</td></tr>
           <tr><td><code>scatter_y</code></td><td>Segment field name</td><td>Sets the left scatter plot y-axis.</td></tr>
           <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>pipeline</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
+          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets or runs with any segment overlapping any requested wavelength range.</td></tr>
           <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses local synthetic RVBAM payloads.</td></tr>
         </tbody>
@@ -245,6 +270,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/rvbam_explorer.js?v=rvbam-20260515d"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260602-rvdiagnostics"></script>
 </body>
 </html>

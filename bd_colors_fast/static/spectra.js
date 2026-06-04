@@ -188,8 +188,13 @@ async function loadSelectedSpectrumLabels() {
   params.set("specids", speState.selected.map((item) => item.specid).join(","));
   const payload = await fetchJsonUrl(speAppUrl(`api/spectra/search?${params.toString()}`));
   if (!payload.ok) return;
-  const labels = new Map((payload.options || []).map((item) => [Number(item.value), item.label || `specid${item.value}`]));
-  speState.selected = speState.selected.map((item) => ({ ...item, label: labels.get(item.specid) || item.label }));
+  const metadata = new Map((payload.options || []).map((item) => [Number(item.value), spectraMetadataFromOption(item)]));
+  speState.selected = speState.selected.map((item) => {
+    const nextMetadata = metadata.get(item.specid);
+    return nextMetadata
+      ? { ...item, label: nextMetadata.label || item.label, metadata: { ...(item.metadata || {}), ...nextMetadata } }
+      : item;
+  });
   renderSelectedSpectra();
 }
 
@@ -226,7 +231,7 @@ function renderSpectraSearchResults(results) {
   speEl["spe-results"].querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", async () => {
       const result = results[Number(button.dataset.index)];
-      addSelectedSpectrum(Number(result.value), result.label || `specid${result.value}`);
+      addSelectedSpectrum(Number(result.value), result);
       speEl["spe-search"].value = "";
       speEl["spe-results"].hidden = true;
       await loadSpectra();
@@ -254,10 +259,13 @@ function positionSpectraSearchPopup() {
   popup.style.width = `${Math.max(rect.width, width)}px`;
 }
 
-function addSelectedSpectrum(specid, label) {
+function addSelectedSpectrum(specid, labelOrMetadata) {
   if (!Number.isFinite(specid)) return;
   if (speState.selected.some((item) => item.specid === specid)) return;
-  speState.selected.push({ specid, label });
+  const metadata = typeof labelOrMetadata === "object"
+    ? spectraMetadataFromOption(labelOrMetadata)
+    : { moca_specid: specid, label: labelOrMetadata || `specid${specid}` };
+  speState.selected.push({ specid, label: metadata.label || `specid${specid}`, metadata });
   renderSelectedSpectra();
   updateSpectraUrl();
 }
@@ -268,10 +276,7 @@ function renderSelectedSpectra() {
     return;
   }
   speEl["spe-selected-list"].innerHTML = speState.selected.map((item) => `
-    <div class="designation-chip spectra-chip" title="${escapeHtml(item.label)}">
-      <span>${escapeHtml(item.label)}</span>
-      <button type="button" aria-label="Remove specid ${item.specid}" data-specid="${item.specid}">x</button>
-    </div>
+    ${selectedSpectrumTokenHtml(item)}
   `).join("");
   speEl["spe-selected-list"].querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -283,6 +288,65 @@ function renderSelectedSpectra() {
       else renderEmptySpectra("Select one or more spectra");
     });
   });
+}
+
+function selectedSpectrumTokenHtml(item) {
+  const metadata = selectedSpectrumMetadata(item);
+  const specid = Number(item.specid);
+  const oid = normalizedMocaOid(metadata.moca_oid);
+  const color = spectraColorForSpecid(specid);
+  const titleParts = [
+    spectrumName(metadata, specid),
+    oid ? `OID ${oid}` : "",
+    `SpecID ${specid}`,
+    metadata.spectral_type ? `SpT ${metadata.spectral_type}` : "",
+    instrumentLabel(metadata),
+    metadata.data_collection_date || "",
+    metadata.spectrum_name || "",
+  ].filter(Boolean);
+  const idParts = [`specid ${specid}`, oid ? `oid ${oid}` : ""].filter(Boolean).join(" · ");
+  const detailParts = [
+    metadata.spectral_type ? `SpT ${metadata.spectral_type}` : "",
+    instrumentLabel(metadata),
+    metadata.data_collection_date || "",
+  ].filter(Boolean).join(" · ");
+  const spectrumNameText = metadata.spectrum_name && metadata.spectrum_name !== metadata.designation
+    ? metadata.spectrum_name
+    : "";
+  return `
+    <div class="spectra-token" title="${escapeHtml(titleParts.join("\n"))}">
+      <span class="spectra-token-swatch" style="--swatch-color: ${escapeHtml(color)}"></span>
+      <span class="spectra-token-body">
+        <span class="spectra-token-title">${escapeHtml(spectrumName(metadata, specid))}</span>
+        <span class="spectra-token-meta">${escapeHtml(idParts)}</span>
+        ${detailParts ? `<span class="spectra-token-meta">${escapeHtml(detailParts)}</span>` : ""}
+        ${spectrumNameText ? `<span class="spectra-token-meta spectra-token-spectrum-name">${escapeHtml(spectrumNameText)}</span>` : ""}
+      </span>
+      <button type="button" aria-label="Remove specid ${item.specid}" data-specid="${item.specid}">x</button>
+    </div>
+  `;
+}
+
+function spectraMetadataFromOption(option) {
+  const specid = Number(option?.moca_specid ?? option?.value);
+  return {
+    ...(option || {}),
+    moca_specid: Number.isFinite(specid) ? specid : option?.moca_specid,
+    value: Number.isFinite(specid) ? specid : option?.value,
+    label: option?.label || (Number.isFinite(specid) ? `specid${specid}` : ""),
+  };
+}
+
+function selectedSpectrumMetadata(item) {
+  const specid = Number(item?.specid);
+  const loaded = (speState.payload?.spectra || []).find((spectrum) => Number(spectrum.moca_specid) === specid);
+  return {
+    ...(item?.metadata || {}),
+    ...(loaded?.metadata || {}),
+    moca_specid: specid,
+    value: specid,
+    label: loaded?.metadata?.label || item?.metadata?.label || item?.label || `specid${specid}`,
+  };
 }
 
 async function loadSpectra() {
@@ -312,8 +376,16 @@ async function loadSpectra() {
   }
   speState.payload = payload;
   speState.selectedPoints = [];
-  const labels = new Map((payload.spectra || []).map((item) => [Number(item.moca_specid), item.metadata?.label || `specid${item.moca_specid}`]));
-  speState.selected = speState.selected.map((item) => ({ ...item, label: labels.get(item.specid) || item.label }));
+  const metadata = new Map((payload.spectra || []).map((item) => {
+    const specid = Number(item.moca_specid);
+    return [specid, spectraMetadataFromOption({ ...(item.metadata || {}), value: specid })];
+  }));
+  speState.selected = speState.selected.map((item) => {
+    const nextMetadata = metadata.get(item.specid);
+    return nextMetadata
+      ? { ...item, label: nextMetadata.label || item.label, metadata: { ...(item.metadata || {}), ...nextMetadata } }
+      : item;
+  });
   renderSelectedSpectra();
   renderDownloadLinks();
   updateLowresToggleState();
@@ -329,6 +401,7 @@ function renderSpectra() {
   setSpectraLoading(true);
   const processed = processSpectraPayload();
   speState.processed = processed;
+  renderSelectedSpectra();
   const traces = [];
   const showSnr = speEl["spe-snr"].checked;
   const showErrorShade = speEl["spe-error-shade"].checked && !showSnr;
@@ -432,7 +505,7 @@ function processSpectraPayload() {
   const ylog = speEl["spe-ylog"].checked;
   return (speState.payload.spectra || []).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
-    const color = speColors[index % speColors.length];
+    const color = spectrumTraceColor(spectrum, index);
     const rawRows = (spectrum.rows || []).map((row, rowIndex) => {
       const lam = wavelengthMicron(row.lam);
       const rawFlambdaUm = Number(row.sp) * 10000.0;
@@ -484,7 +557,7 @@ function processSpectraPayload() {
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
-      name: spectrumName(metadata, Number(spectrum.moca_specid)),
+      name: spectrumLegendName(metadata, Number(spectrum.moca_specid)),
       rawRows,
       points,
       lowRes: finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < 100,
@@ -846,8 +919,22 @@ function renderSpectraTable() {
 }
 
 function spectraColorForSpecid(specid) {
-  const spectrum = (speState.processed || []).find((item) => Number(item.specid) === Number(specid));
-  return spectrum?.color || "#555555";
+  const id = Number(specid);
+  const payloadSpectra = speState.payload?.spectra || [];
+  const payloadIndex = payloadSpectra.findIndex((spectrum) => Number(spectrum.moca_specid) === id);
+  if (payloadIndex >= 0) return spectrumTraceColor(payloadSpectra[payloadIndex], payloadIndex);
+
+  const processedIndex = (speState.processed || []).findIndex((spectrum) => Number(spectrum.specid) === id);
+  if (processedIndex >= 0) return spectrumTraceColor(speState.processed[processedIndex], processedIndex);
+
+  const selectedIndex = (speState.selected || []).findIndex((item) => Number(item.specid) === id);
+  if (selectedIndex >= 0) return spectrumTraceColor(null, selectedIndex);
+
+  return "#555555";
+}
+
+function spectrumTraceColor(spectrum, index) {
+  return spectrum?.color || speColors[index % speColors.length] || "#555555";
 }
 
 function swatchHtml(color) {
@@ -1036,6 +1123,12 @@ function spectrumName(metadata, specid) {
   const designation = metadata?.designation || metadata?.spectrum_name || `specid${specid}`;
   const spt = metadata?.spectral_type ? ` (${metadata.spectral_type})` : "";
   return `${designation}${spt}`;
+}
+
+function spectrumLegendName(metadata, specid) {
+  const oid = normalizedMocaOid(metadata?.moca_oid);
+  const idText = [oid ? `oid${oid}` : "", `specid${specid}`].filter(Boolean).join(" / ");
+  return `${idText}: ${spectrumName(metadata, specid)}`;
 }
 
 function instrumentLabel(metadata) {

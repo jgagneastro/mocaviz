@@ -97,6 +97,9 @@ const gcmdAxisBandHtmlLabels = {
   GRVS: "<i>G</i><sub>RVS</sub>",
 };
 
+const gcmdSptClasses = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"];
+const gcmdSptAxisRequiredTicks = [3, 7, 8, 9, 10];
+
 const gcmdState = {
   options: { simple: [], advanced: [] },
   associationOptions: [],
@@ -154,6 +157,7 @@ function collectGaiaCmdElements() {
     "gcmd-raw-gaia",
     "gcmd-extcorr-only",
     "gcmd-extcorr-vectors",
+    "gcmd-display-errors",
     "gcmd-highlight-binaries",
     "gcmd-show-sequences",
     "gcmd-field-hover",
@@ -192,6 +196,13 @@ function bindGaiaCmdControls() {
   gcmdEl["gcmd-field-hover"].addEventListener("change", () => {
     renderGaiaCmdPlot();
     updateGaiaCmdUrl();
+  });
+  gcmdEl["gcmd-display-errors"].addEventListener("change", () => {
+    renderGaiaCmdPlot();
+    updateGaiaCmdUrl();
+    if (gcmdState.payload?.selection) {
+      gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(gcmdState.payload.selection);
+    }
   });
   for (const id of ["gcmd-ruwe", "gcmd-highlight-oids"]) {
     gcmdEl[id].addEventListener("keydown", (event) => {
@@ -286,6 +297,7 @@ function readGaiaCmdUrlState() {
   gcmdEl["gcmd-raw-gaia"].checked = truthyParam(params.get("raw_gaia") || params.get("raw_photometry") || params.get("use_raw_gaia"));
   gcmdEl["gcmd-extcorr-only"].checked = truthyParam(params.get("extinction_corrected") || params.get("extcorr") || params.get("extinction_corrected_only"));
   gcmdEl["gcmd-extcorr-vectors"].checked = truthyParam(params.get("extinction_vectors") || params.get("extcorr_vectors") || params.get("show_extinction_vectors"));
+  gcmdEl["gcmd-display-errors"].checked = truthyParam(params.get("display_errors") || params.get("errors") || params.get("phot_errors") || params.get("show_errors"));
   gcmdEl["gcmd-highlight-binaries"].checked = truthyParam(params.get("binaries") || params.get("highlight_binaries") || params.get("known_binaries"));
   gcmdEl["gcmd-field-hover"].checked = truthyParam(params.get("field_hover") || params.get("field_hovertext") || params.get("hover_field"));
   const sequenceValue = params.get("sequences") ?? params.get("display_sequences") ?? params.get("age_sequences") ?? params.get("show_sequences");
@@ -346,6 +358,8 @@ async function loadGaiaCmdData() {
       row._highlighted = Number(row.highlighted || 0) === 1 || (row.moca_oid !== null && row.moca_oid !== undefined && highlightOids.has(String(Math.trunc(Number(row.moca_oid)))));
       row._deemphasized = ruweMax !== null && finite(row.ruwe) && Number(row.ruwe) > ruweMax;
       row._isBinary = Number(row.is_binary || 0) === 1;
+      row._xError = gaiaCmdXError(row);
+      row._yError = gaiaCmdYError(row);
     });
     gcmdState.selectedRows = [];
     renderGaiaCmdPlot();
@@ -414,6 +428,14 @@ function updateGaiaCmdUrl() {
     params.delete("extinction_vectors");
     params.delete("extcorr_vectors");
     params.delete("show_extinction_vectors");
+  }
+  if (gcmdEl["gcmd-display-errors"].checked) {
+    params.set("display_errors", "1");
+  } else {
+    params.delete("display_errors");
+    params.delete("errors");
+    params.delete("phot_errors");
+    params.delete("show_errors");
   }
   const query = params.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
@@ -684,8 +706,9 @@ function renderGaiaCmdPlot() {
   addBinaryOverlayTrace(traces, gcmdState.rows);
   addHighlightTrace(traces, highlightRows);
   addSequenceTraces(traces, payload.sequences || []);
+  addSptAxisReferenceTrace(traces, payload.spt_axis || null, gcmdState.rows);
 
-  const layout = gaiaCmdLayout(payload.selection || {});
+  const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null);
   if (payload.selection?.show_extinction_vectors) {
     layout.annotations = extinctionVectorAnnotations(gcmdState.rows);
   }
@@ -722,8 +745,9 @@ function addPlainTrace(traces, rows, name, color, size, legendgroup, options = {
 }
 
 function markerTrace(rows, options) {
+  const errors = traceErrorBars(rows, options.errorColor || options.color, options.opacity, options.errors !== false);
   return {
-    type: "scattergl",
+    type: errors ? "scatter" : "scattergl",
     mode: "markers",
     name: options.name,
     legendgroup: options.legendgroup,
@@ -733,6 +757,7 @@ function markerTrace(rows, options) {
     text: rows.map((row) => hoverText(row)),
     customdata: rows.map((row) => row._plotIndex),
     ...(options.hover === false ? { hoverinfo: "none" } : { hovertemplate: "%{text}<extra></extra>" }),
+    ...(errors || {}),
     marker: {
       size: options.size,
       color: options.color,
@@ -740,6 +765,68 @@ function markerTrace(rows, options) {
       line: { width: 0, color: options.color },
     },
   };
+}
+
+function traceErrorBars(rows, color, opacity = 0.45, enabled = true) {
+  if (!enabled || !gaiaCmdDisplayErrors()) return null;
+  const xErrors = rows.map((row) => errorBarValue(row._xError !== undefined ? row._xError : gaiaCmdXError(row)));
+  const yErrors = rows.map((row) => errorBarValue(row._yError !== undefined ? row._yError : gaiaCmdYError(row)));
+  const props = {};
+  if (xErrors.some((value) => value > 0)) {
+    props.error_x = errorBarConfig(xErrors, color, opacity);
+  }
+  if (yErrors.some((value) => value > 0)) {
+    props.error_y = errorBarConfig(yErrors, color, opacity);
+  }
+  return Object.keys(props).length ? props : null;
+}
+
+function errorBarConfig(values, color, opacity) {
+  const alpha = Math.max(0.18, Math.min(0.66, Number(opacity) * 0.72 || 0.42));
+  return {
+    type: "data",
+    array: values,
+    visible: true,
+    color: colorWithAlpha(color || "#333333", alpha),
+    thickness: 0.8,
+    width: 1.5,
+  };
+}
+
+function errorBarValue(value) {
+  return finite(value) && Number(value) > 0 ? Number(value) : 0;
+}
+
+function gaiaCmdDisplayErrors() {
+  return Boolean(gcmdEl["gcmd-display-errors"]?.checked);
+}
+
+function gaiaCmdXError(row) {
+  const x1 = nonnegativeFiniteNumber(row?.x1_mag_unc);
+  const x2 = nonnegativeFiniteNumber(row?.x2_mag_unc);
+  return x1 === null || x2 === null ? null : Math.hypot(x1, x2);
+}
+
+function gaiaCmdYError(row) {
+  const yMag = nonnegativeFiniteNumber(row?.y_mag_unc);
+  if (yMag === null) return null;
+  const terms = [yMag];
+  const distanceTerm = distanceModulusError(row?.distance_pc, row?.distance_pc_unc);
+  if (distanceTerm !== null) terms.push(distanceTerm);
+  return Math.hypot(...terms);
+}
+
+function distanceModulusError(distancePc, distanceUnc) {
+  const distance = Number(distancePc);
+  const unc = nonnegativeFiniteNumber(distanceUnc);
+  if (!Number.isFinite(distance) || distance <= 0 || unc === null) return null;
+  return Math.abs(5 * unc / (Math.log(10) * distance));
+}
+
+function nonnegativeFiniteNumber(value) {
+  if (!finite(value)) return null;
+  const number = Number(value);
+  return number >= 0 ? number : null;
 }
 
 function addAgeTraces(traces, rows, name) {
@@ -772,8 +859,9 @@ function fieldHoverEnabled() {
 }
 
 function ageTrace(rows, name, opacity, showScale) {
+  const errors = traceErrorBars(rows, "#4a4a4a", opacity, true);
   return {
-    type: "scattergl",
+    type: errors ? "scatter" : "scattergl",
     mode: "markers",
     name,
     legendgroup: "age",
@@ -783,6 +871,7 @@ function ageTrace(rows, name, opacity, showScale) {
     text: rows.map((row) => hoverText(row)),
     customdata: rows.map((row) => row._plotIndex),
     hovertemplate: "%{text}<extra></extra>",
+    ...(errors || {}),
     marker: {
       size: 6.0,
       color: rows.map((row) => Math.log10(Number(row.age_myr))),
@@ -816,10 +905,13 @@ function ageTrace(rows, name, opacity, showScale) {
 
 function addHighlightTrace(traces, rows) {
   if (!rows.length) return;
+  const highlightGold = "#ffd23f";
+  const highlightEdge = "#4a3300";
+  const errors = traceErrorBars(rows, highlightEdge, 0.9, true);
   traces.push({
     type: "scatter",
     mode: "markers",
-    name: "Highlighted",
+    name: "Highlighted OIDs",
     legendgroup: "highlighted",
     showlegend: true,
     x: rows.map((row) => row.x),
@@ -827,12 +919,13 @@ function addHighlightTrace(traces, rows) {
     text: rows.map((row) => hoverText(row)),
     customdata: rows.map((row) => row._plotIndex),
     hovertemplate: "%{text}<extra></extra>",
+    ...(errors || {}),
     marker: {
-      size: 13,
-      color: "#111111",
+      size: 21,
+      color: highlightGold,
       opacity: 1,
-      symbol: "circle-open",
-      line: { width: 2.4, color: "#111111" },
+      symbol: "star",
+      line: { width: 1.8, color: highlightEdge },
     },
   });
 }
@@ -883,6 +976,26 @@ function addSequenceTraces(traces, sequences) {
       },
     });
   }
+}
+
+function addSptAxisReferenceTrace(traces, sptAxis, rows) {
+  const ticks = gaiaCmdSptAxisTicks(sptAxis);
+  if (!ticks.tickvals.length) return;
+  const yValues = rows.map((row) => Number(row.y)).filter((value) => Number.isFinite(value));
+  const yAnchor = yValues.length ? yValues[Math.floor(yValues.length / 2)] : 0;
+  traces.push({
+    type: "scatter",
+    mode: "markers",
+    xaxis: "x2",
+    yaxis: "y",
+    x: ticks.tickvals,
+    y: ticks.tickvals.map(() => yAnchor),
+    marker: { size: 1, color: "rgba(0,0,0,0)" },
+    opacity: 0,
+    hoverinfo: "skip",
+    showlegend: false,
+    name: "Spectral type axis reference",
+  });
 }
 
 function orderedGaiaCmdSequences(sequences) {
@@ -1004,10 +1117,11 @@ function parseHexColor(value) {
   return [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16));
 }
 
-function gaiaCmdLayout(selection) {
+function gaiaCmdLayout(selection, sptAxis) {
   const xLabel = `Gaia DR3 ${axisBandHtmlLabel(selection.x1, selection.x1_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} color`;
   const yLabel = `Absolute Gaia DR3 ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)} magnitude`;
   const colorByAge = Boolean(selection?.color_by_age);
+  const sptAxisConfig = gaiaCmdSptAxisConfig(sptAxis);
   const axisBoxStyle = {
     showline: true,
     linecolor: "#000000",
@@ -1022,7 +1136,7 @@ function gaiaCmdLayout(selection) {
     autosize: true,
     paper_bgcolor: "#dedde1",
     plot_bgcolor: "#ffffff",
-    margin: { l: 82, r: colorByAge ? 330 : 150, t: 20, b: 76 },
+    margin: { l: 82, r: colorByAge ? 330 : 150, t: sptAxisConfig ? 82 : 20, b: 76 },
     hovermode: "closest",
     dragmode: "select",
     legend: {
@@ -1043,6 +1157,7 @@ function gaiaCmdLayout(selection) {
       automargin: true,
       tickfont: { size: 15 },
     },
+    ...(sptAxisConfig ? { xaxis2: sptAxisConfig } : {}),
     yaxis: {
       ...axisBoxStyle,
       title: { text: yLabel, font: { size: 22 } },
@@ -1054,6 +1169,109 @@ function gaiaCmdLayout(selection) {
       tickfont: { size: 15 },
     },
   };
+}
+
+function gaiaCmdSptAxisConfig(sptAxis) {
+  const ticks = gaiaCmdSptAxisTicks(sptAxis);
+  if (!ticks.tickvals.length) return null;
+  return {
+    title: { text: "Spectral type", font: { size: 22 }, standoff: 8 },
+    anchor: "y",
+    overlaying: "x",
+    side: "top",
+    matches: "x",
+    tickmode: "array",
+    tickvals: ticks.tickvals,
+    ticktext: ticks.ticktext,
+    showline: true,
+    linecolor: "#000000",
+    linewidth: 3,
+    showgrid: false,
+    zeroline: false,
+    ticks: "outside",
+    ticklen: 8,
+    tickwidth: 2,
+    tickcolor: "#000000",
+    tickfont: { size: 15 },
+    automargin: true,
+  };
+}
+
+function gaiaCmdSptAxisTicks(sptAxis) {
+  const pairs = (sptAxis?.sptn || [])
+    .map((sptn, index) => ({ sptn: Number(sptn), color: Number(sptAxis.color?.[index]) }))
+    .filter((row) => finite(row.sptn) && finite(row.color))
+    .sort((a, b) => a.sptn - b.sptn);
+  if (pairs.length < 2) return { tickvals: [], ticktext: [] };
+
+  const clean = [];
+  for (const pair of pairs) {
+    if (clean.length && Math.abs(clean[clean.length - 1].sptn - pair.sptn) < 1e-8) {
+      clean[clean.length - 1] = pair;
+    } else {
+      clean.push(pair);
+    }
+  }
+  if (clean.length < 2) return { tickvals: [], ticktext: [] };
+
+  const sptMin = clean[0].sptn;
+  const sptMax = clean[clean.length - 1].sptn;
+  let sptTicks = [];
+  for (let value = Math.ceil(sptMin / 5) * 5; value <= Math.floor(sptMax / 5) * 5 + 1e-6; value += 5) {
+    sptTicks.push(value);
+  }
+  if (sptTicks.length < 2) {
+    const count = Math.min(6, clean.length);
+    sptTicks = Array.from({ length: count }, (_, index) => sptMin + (sptMax - sptMin) * index / Math.max(1, count - 1));
+  }
+  if (sptTicks.length > 9) {
+    const last = sptTicks.length - 1;
+    const indices = Array.from(new Set(Array.from({ length: 9 }, (_, index) => Math.round(index * last / 8))));
+    sptTicks = indices.map((index) => sptTicks[index]);
+  }
+  sptTicks = Array.from(new Set([...sptTicks, ...gcmdSptAxisRequiredTicks])).sort((a, b) => a - b);
+
+  const tickvals = [];
+  const ticktext = [];
+  for (const sptn of sptTicks) {
+    const label = gaiaCmdSptLabel(sptn);
+    const color = interpolateGaiaCmdSptColor(clean, sptn);
+    if (!label || !finite(color)) continue;
+    tickvals.push(Number(color.toFixed(4)));
+    ticktext.push(label);
+  }
+  return tickvals.length >= 2 ? { tickvals, ticktext } : { tickvals: [], ticktext: [] };
+}
+
+function interpolateGaiaCmdSptColor(pairs, sptn) {
+  if (sptn <= pairs[0].sptn) {
+    const left = pairs[0];
+    const right = pairs[1] || pairs[0];
+    const fraction = (sptn - left.sptn) / Math.max(1e-12, right.sptn - left.sptn);
+    return left.color + (right.color - left.color) * fraction;
+  }
+  for (let index = 1; index < pairs.length; index += 1) {
+    const left = pairs[index - 1];
+    const right = pairs[index];
+    if (sptn <= right.sptn) {
+      const fraction = (sptn - left.sptn) / Math.max(1e-12, right.sptn - left.sptn);
+      return left.color + (right.color - left.color) * fraction;
+    }
+  }
+  const left = pairs[pairs.length - 2] || pairs[pairs.length - 1];
+  const right = pairs[pairs.length - 1];
+  const fraction = (sptn - left.sptn) / Math.max(1e-12, right.sptn - left.sptn);
+  return left.color + (right.color - left.color) * fraction;
+}
+
+function gaiaCmdSptLabel(value) {
+  if (!finite(value)) return "";
+  const adjusted = Number(value) + 60;
+  const classIndex = Math.floor(adjusted / 10);
+  if (classIndex < 0 || classIndex >= gcmdSptClasses.length) return "";
+  const subtype = adjusted - classIndex * 10;
+  const subtypeText = subtype.toFixed(1).replace(/\.0$/, "");
+  return `${gcmdSptClasses[classIndex]}${subtypeText}`;
 }
 
 function bindPlotEventsOnce() {
@@ -1158,12 +1376,13 @@ function gaiaCmdTableMarkerHtml(row) {
   const isHighlighted = Boolean(row._highlighted);
   const isBinaryOverlay = Boolean(gcmdEl["gcmd-highlight-binaries"]?.checked && row._isBinary);
   const open = isHighlighted || isBinaryOverlay;
-  const fill = open ? "none" : color;
-  const stroke = isHighlighted ? "#111111" : (open ? color : "rgba(255,255,255,0.82)");
-  const strokeWidth = isHighlighted ? 2.4 : (open ? 2.1 : 1.4);
-  const size = isHighlighted ? 16 : (row.moca_aid ? 12.8 : 10.4);
-  const opacity = row._deemphasized ? 0.35 : (row.moca_aid ? 0.95 : 0.45);
-  return `<span class="plot-table-marker-wrap"><span class="plot-table-marker is-circle${open ? " is-open" : ""}" style="--marker-size: ${size}px; --marker-color: ${escapeHtml(color)}; --marker-fill: ${escapeHtml(fill)}; --marker-edge: ${escapeHtml(stroke)}; --marker-border-width: ${escapeHtml(strokeWidth)}px; --marker-opacity: ${opacity};"></span></span>`;
+  const markerClass = isHighlighted ? "is-star" : "is-circle";
+  const fill = isHighlighted ? "#ffd23f" : (open ? "none" : color);
+  const stroke = isHighlighted ? "#4a3300" : (open ? color : "rgba(255,255,255,0.82)");
+  const strokeWidth = isHighlighted ? 1.8 : (open ? 2.1 : 1.4);
+  const size = isHighlighted ? 20 : (row.moca_aid ? 12.8 : 10.4);
+  const opacity = isHighlighted ? 1 : (row._deemphasized ? 0.35 : (row.moca_aid ? 0.95 : 0.45));
+  return `<span class="plot-table-marker-wrap"><span class="plot-table-marker ${markerClass}${!isHighlighted && open ? " is-open" : ""}" style="--marker-size: ${size}px; --marker-color: ${escapeHtml(color)}; --marker-fill: ${escapeHtml(fill)}; --marker-edge: ${escapeHtml(stroke)}; --marker-border-width: ${escapeHtml(strokeWidth)}px; --marker-opacity: ${opacity};"></span></span>`;
 }
 
 function renderEmptyGaiaCmd(message) {
@@ -1198,6 +1417,8 @@ function hoverText(row) {
     finite(row.x2_extinction_a) ? `A(${bandLabel(row.x2_psid)}): ${formatNumber(row.x2_extinction_a, 3)} mag` : null,
     finite(row.y_extinction_a) ? `A(${bandLabel(row.y_psid)}): ${formatNumber(row.y_extinction_a, 3)} mag` : null,
     finite(row.x_original) && finite(row.y_original) ? `Uncorrected CMD position: ${formatNumber(row.x_original, 3)}, ${formatNumber(row.y_original, 3)}` : null,
+    finite(row._xError) ? `x error: +/- ${formatNumber(row._xError, 3)} mag` : null,
+    finite(row._yError) ? `y error: +/- ${formatNumber(row._yError, 3)} mag` : null,
     `Distance: ${distanceText(row.distance_pc, row.distance_pc_unc)}`,
     finite(row.ruwe) ? `RUWE: ${formatNumber(row.ruwe, 3)}${row._deemphasized ? " (de-emphasized)" : ""}` : null,
     finite(row.age_myr) ? `Age: ${formatNumber(row.age_myr, 1)} Myr` : null,
@@ -1257,10 +1478,11 @@ function axisSummaryHtml(selection) {
   const phot = selection.raw_gaia ? "raw Gaia photometry for associations" : "adopted MOCAdb photometry for associations";
   const extcorr = !selection.raw_gaia && selection.extinction_corrected_only ? "; extinction-corrected MOCAdb photometry only" : "";
   const vectors = selection.show_extinction_vectors ? "; extinction vectors shown when available" : "";
+  const errors = gaiaCmdDisplayErrors() ? "; CMD errors shown where available" : "";
   const binaries = gcmdEl["gcmd-highlight-binaries"]?.checked ? "; binaries highlighted" : "";
   const sequences = selection.show_sequences === false ? "; empirical age sequences hidden" : "";
   const aids = selection.associations?.length ? `${selection.associations.length} association${selection.associations.length === 1 ? "" : "s"} added` : "field stars only";
-  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${binaries}${sequences}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
+  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${errors}${binaries}${sequences}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function bandLabel(psid) {

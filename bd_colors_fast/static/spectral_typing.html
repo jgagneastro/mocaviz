@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Spectral Typing</title>
-  <link rel="stylesheet" href="static/styles.css?v=mocaviz-auth-theme-20260602">
+  <link rel="stylesheet" href="static/styles.css?v=spectral-arrow-nav-20260604a">
   <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
   <script src="plotly.min.js"></script>
 </head>
@@ -36,18 +36,25 @@
             Spectral grid
             <select id="spt-grid-select"></select>
           </label>
-          <div class="button-grid">
-            <button id="spt-prev-grid" type="button" disabled>Previous Grid</button>
-            <button id="spt-next-grid" type="button" disabled>Next Grid</button>
-          </div>
           <label>
             Standard
             <input id="spt-standard-slider" type="range" min="0" max="0" value="0" step="1" disabled>
           </label>
           <div id="spt-standard-marks" class="standard-marks"></div>
-          <div class="button-grid">
-            <button id="spt-prev-standard" type="button" disabled>Previous Standard</button>
-            <button id="spt-next-standard" type="button" disabled>Next Standard</button>
+          <div class="spectral-nav-pad" aria-label="Spectral grid and template navigation">
+            <button id="spt-prev-grid" class="spectral-nav-button spectral-nav-up" type="button" disabled title="Previous spectral grid" aria-label="Previous spectral grid">
+              <span aria-hidden="true">&uarr;</span>
+            </button>
+            <button id="spt-prev-standard" class="spectral-nav-button spectral-nav-left" type="button" disabled title="Previous template subtype" aria-label="Previous template subtype">
+              <span aria-hidden="true">&larr;</span>
+            </button>
+            <div class="spectral-nav-center" aria-hidden="true"></div>
+            <button id="spt-next-standard" class="spectral-nav-button spectral-nav-right" type="button" disabled title="Next template subtype" aria-label="Next template subtype">
+              <span aria-hidden="true">&rarr;</span>
+            </button>
+            <button id="spt-next-grid" class="spectral-nav-button spectral-nav-down" type="button" disabled title="Next spectral grid" aria-label="Next spectral grid">
+              <span aria-hidden="true">&darr;</span>
+            </button>
           </div>
         </section>
 
@@ -207,6 +214,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=url-sync-20260514b"></script>
+  <script src="static/spectral_typing.js?v=arrow-nav-20260604a"></script>
 </body>
 </html>

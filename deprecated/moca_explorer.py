@@ -2,6 +2,7 @@ import dash
 from dash import html, dcc, dash_table, get_asset_url
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine
+import re
 
 dash.register_page(__name__)
 
@@ -76,6 +77,11 @@ field_opacity = 0.2
 field_color_fraction = 0.5
 field_markersize = 3
 bcg_color = np.array([230,236,245])
+
+CMD_SPT_AXIS_SEQUENCE_IDS = {
+    "br": "sptn_bprp_gaiaedr3_field",
+    "gr": "sptn_grp_gaiaedr3_field",
+}
 
 #Here we are assuming that MTIDs are the same regardless of credentials
 #TMP FIX BELOW
@@ -225,6 +231,150 @@ def build_hover_dfo(dff):
             dff["dr3_ruwe"],
         )
     )
+
+def parse_cmd_spt_number(label):
+    if label is None or pd.isna(label):
+        return None
+    match = re.search(r"([OBAFGKMLTY])\s*([0-9]+(?:\.[0-9]+)?)", str(label), re.IGNORECASE)
+    if not match:
+        return None
+    classes = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"]
+    spt_class = match.group(1).upper()
+    if spt_class not in classes:
+        return None
+    try:
+        subclass = float(match.group(2))
+    except ValueError:
+        return None
+    return classes.index(spt_class) * 10 + subclass - 60
+
+def format_cmd_spt_number(value):
+    if value is None or not np.isfinite(value):
+        return ""
+    classes = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"]
+    adjusted_value = float(value) + 60
+    class_index = int(np.floor(adjusted_value / 10))
+    subclass = adjusted_value - class_index * 10
+    if class_index < 0 or class_index >= len(classes):
+        return ""
+    subclass_text = f"{subclass:.1f}".rstrip("0").rstrip(".")
+    return f"{classes[class_index]}{subclass_text}"
+
+def cmd_spt_axis_ticks(dff, dfo, color_column, xrange=None):
+    rows = []
+    for frame in (dff, dfo):
+        if frame is None or len(frame) == 0:
+            continue
+        if color_column not in frame.columns or "spt" not in frame.columns:
+            continue
+        subset = frame[[color_column, "spt"]].copy()
+        subset["cmd_color"] = pd.to_numeric(subset[color_column], errors="coerce")
+        subset["sptn"] = subset["spt"].apply(parse_cmd_spt_number)
+        rows.append(subset[["cmd_color", "sptn"]])
+    if not rows:
+        return [], []
+
+    spt_data = pd.concat(rows, ignore_index=True)
+    spt_data = spt_data.dropna(subset=["cmd_color", "sptn"])
+    spt_data = spt_data[np.isfinite(spt_data["cmd_color"]) & np.isfinite(spt_data["sptn"])]
+    if len(spt_data) < 2:
+        return [], []
+
+    spt_data["spt_bin"] = spt_data["sptn"].round().astype(int)
+    grouped = (
+        spt_data
+        .groupby("spt_bin", as_index=False)
+        .agg(cmd_color=("cmd_color", "median"), n_obj=("cmd_color", "size"))
+        .sort_values("cmd_color")
+    )
+    if xrange is not None and len(xrange) == 2:
+        xmin, xmax = sorted([float(xrange[0]), float(xrange[1])])
+        grouped = grouped[(grouped["cmd_color"] >= xmin) & (grouped["cmd_color"] <= xmax)]
+    if len(grouped) < 2:
+        return [], []
+
+    preferred = grouped[grouped["spt_bin"].apply(lambda value: int(value) % 5 == 0)]
+    ticks = preferred if len(preferred) >= 2 else grouped
+    max_ticks = 8
+    if len(ticks) > max_ticks:
+        indices = np.linspace(0, len(ticks) - 1, max_ticks).round().astype(int)
+        ticks = ticks.iloc[sorted(set(indices))]
+
+    tickvals = ticks["cmd_color"].astype(float).tolist()
+    ticktext = [format_cmd_spt_number(value) for value in ticks["spt_bin"].tolist()]
+    pairs = [(value, text) for value, text in zip(tickvals, ticktext) if text]
+    if len(pairs) < 2:
+        return [], []
+    return [value for value, _ in pairs], [text for _, text in pairs]
+
+def cmd_spt_axis_ticks_from_sequence(df_cmd_spt_axis, color_column, xrange=None):
+    seqid = CMD_SPT_AXIS_SEQUENCE_IDS.get(color_column)
+    if not seqid or df_cmd_spt_axis is None or len(df_cmd_spt_axis) == 0:
+        return [], []
+    required_columns = {"moca_seqid", "xdata", "ydata"}
+    if not required_columns.issubset(set(df_cmd_spt_axis.columns)):
+        return [], []
+
+    sequence = df_cmd_spt_axis[df_cmd_spt_axis["moca_seqid"] == seqid].copy()
+    if len(sequence) < 2:
+        return [], []
+    sequence["sptn"] = pd.to_numeric(sequence["xdata"], errors="coerce")
+    sequence["cmd_color"] = pd.to_numeric(sequence["ydata"], errors="coerce")
+    sequence = sequence.dropna(subset=["sptn", "cmd_color"])
+    sequence = sequence[np.isfinite(sequence["sptn"]) & np.isfinite(sequence["cmd_color"])]
+    if len(sequence) < 2:
+        return [], []
+
+    sequence = sequence.sort_values("sptn").drop_duplicates(subset=["sptn"], keep="last")
+    sptn_min = float(sequence["sptn"].min())
+    sptn_max = float(sequence["sptn"].max())
+    tick_sptn = np.arange(np.ceil(sptn_min / 5.0) * 5.0, np.floor(sptn_max / 5.0) * 5.0 + 0.1, 5.0)
+    if len(tick_sptn) < 2:
+        tick_sptn = np.linspace(sptn_min, sptn_max, min(6, len(sequence)))
+
+    tickvals = np.interp(
+        tick_sptn,
+        sequence["sptn"].astype(float).values,
+        sequence["cmd_color"].astype(float).values,
+    )
+    ticks = pd.DataFrame({"cmd_color": tickvals, "sptn": tick_sptn})
+    if xrange is not None and len(xrange) == 2:
+        xmin, xmax = sorted([float(xrange[0]), float(xrange[1])])
+        ticks = ticks[(ticks["cmd_color"] >= xmin) & (ticks["cmd_color"] <= xmax)]
+    if len(ticks) > 9:
+        indices = np.linspace(0, len(ticks) - 1, 9).round().astype(int)
+        ticks = ticks.iloc[sorted(set(indices))]
+
+    pairs = [
+        (float(row["cmd_color"]), format_cmd_spt_number(float(row["sptn"])))
+        for _, row in ticks.iterrows()
+    ]
+    pairs = [(value, text) for value, text in pairs if text]
+    if len(pairs) < 2:
+        return [], []
+    return [value for value, _ in pairs], [text for _, text in pairs]
+
+def add_cmd_spt_top_axis(fig, dff, dfo, df_cmd_spt_axis, color_column, xrange):
+    tickvals, ticktext = cmd_spt_axis_ticks_from_sequence(df_cmd_spt_axis, color_column, xrange=xrange)
+    if len(tickvals) < 2:
+        tickvals, ticktext = cmd_spt_axis_ticks(dff, dfo, color_column, xrange=xrange)
+    if len(tickvals) < 2:
+        return
+    axis = dict(
+        title="Field spectral type",
+        overlaying="x",
+        side="top",
+        matches="x",
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        showgrid=False,
+        zeroline=False,
+        ticks="outside",
+    )
+    if xrange is not None:
+        axis["range"] = xrange
+    fig.update_layout(xaxis2=axis)
 
 def build_graph_title(title):
     return html.P(className="graph-title", children=title)
@@ -1450,7 +1600,7 @@ def generate_ewha_color(dff, dfo, dfs, associations, selected_data, layer_select
 
     return fig
 
-def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_data, cmd_layer_select, hover_select):
+def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, df_cmd_spt_axis, associations, selected_data, cmd_layer_select, hover_select):
 
     #Read layer properties
     sequences_visible = field_visible = br = True
@@ -1487,7 +1637,7 @@ def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_dat
         yaxis={'title':'Gaia DR3 absolute G-band magnitude (mag)'},
         showlegend=True,
         hovermode=hover,
-        margin=dict(l=110, r=50, t=50, b=50),
+        margin=dict(l=110, r=50, t=78, b=50),
         legend=dict(
             orientation="h",
             x=0,
@@ -1591,16 +1741,16 @@ def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_dat
             xdata = dfo["gr"]
         
         text_list = build_hover_dfo(dfo)
-        obj_color = "red"
+        obj_color = "gold"
         new_trace = go.Scattergl(
             x=xdata,#This is the x in the MOCA column
             y=dfo["m_g"],#This is the y in the MOCA column
             #opacity=1,
             mode="markers",
             hovertemplate=hovertemplate,
-            marker={"color": obj_color, "size": 12, "symbol":"star","line":{"width":2,"color":"DarkSlateGrey"}},
+            marker={"color": obj_color, "size": 20, "symbol":"star","line":{"width":2,"color":"#4a3300"}},
             text=text_list,
-            name="Individual Objects",
+            name="Highlighted OIDs",
         )
         
         new_trace.update(unselected=dict(marker=dict(opacity=1,color=obj_color)))
@@ -1611,9 +1761,13 @@ def generate_gaiadr3_cmd(dff, dfo, dfs, df_cmd_field, associations, selected_dat
     #Default axis range
     fig.update_layout(yaxis_range=[20,-2])
     if br:
-        fig.update_layout(xaxis_range=[-0.5,3.5])
+        xaxis_range = [-0.5,3.5]
+        color_column = "br"
     else:
-        fig.update_layout(xaxis_range=[-0.5,2.5])
+        xaxis_range = [-0.5,2.5]
+        color_column = "gr"
+    fig.update_layout(xaxis_range=xaxis_range)
+    add_cmd_spt_top_axis(fig, dff, dfo, df_cmd_spt_axis, color_column, xaxis_range)
 
     fig.add_annotation(
         x = 1,
@@ -2253,6 +2407,7 @@ def update_aid_select(
 
     df_cmd_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr'")
     df_cmd_field = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_mg_gr_fieldscatter'")
+    df_cmd_spt_axis = moca.query("SELECT das.xdata, das.ydata, ms.moca_seqid, ms.xname, ms.yname, ms.valid_xrange_min, ms.valid_xrange_max, ms.valid_yrange_min, ms.valid_yrange_max, ms.name_bdcolapp FROM moca_sequences ms LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE ms.moca_seqid IN ('sptn_bprp_gaiaedr3_field','sptn_grp_gaiaedr3_field') AND COALESCE(ms.ignored,0)=0 AND COALESCE(das.ignored,0)=0 ORDER BY ms.moca_seqid, das.xdata")
     df_prot_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_prot_br'")
     df_act_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_gaiadr3_act_br'")
     df_ewha_seq = moca.query("SELECT das.xdata, das.ydata, mds.moca_aid, mds.tag, mds.moca_seqid, mds.color, mds.width, mds.style FROM moca_dataviz_sequences mds LEFT JOIN data_astro_sequences das USING(moca_seqid) WHERE mds.display=1 AND mds.dataviz_tool='moca_explorer_ewha_br'")
@@ -2269,7 +2424,8 @@ def update_aid_select(
         df_act_seq.to_json(date_format='iso', orient='split'),
         df_ewha_seq.to_json(date_format='iso', orient='split'),
         df_ewli_seq.to_json(date_format='iso', orient='split'),
-        df_asso_centers.to_json(date_format='iso', orient='split')
+        df_asso_centers.to_json(date_format='iso', orient='split'),
+        df_cmd_spt_axis.to_json(date_format='iso', orient='split')
         ), aid_options, aid_select, mtid_select, oid_select
 
 # # Update RVTS figure
@@ -2651,4 +2807,5 @@ def update_gaiadr3_cmd(
     dfo = pd.read_json(jsonified_db_data[2], orient='split')
     dfs = pd.read_json(jsonified_db_data[3], orient='split')
     df_cmd_field = pd.read_json(jsonified_db_data[4], orient='split')
-    return generate_gaiadr3_cmd(df, dfo, dfs, df_cmd_field, aid_select, processed_data, cmd_layer_select, hover_select)
+    df_cmd_spt_axis = pd.read_json(jsonified_db_data[10], orient='split') if len(jsonified_db_data) > 10 else pd.DataFrame()
+    return generate_gaiadr3_cmd(df, dfo, dfs, df_cmd_field, df_cmd_spt_axis, aid_select, processed_data, cmd_layer_select, hover_select)

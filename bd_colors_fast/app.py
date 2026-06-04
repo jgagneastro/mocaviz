@@ -4,6 +4,7 @@ import base64
 import copy
 import gzip
 import hashlib
+import json
 import math
 import os
 import random
@@ -13,11 +14,11 @@ import time
 import traceback
 import types
 import zlib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote_plus
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -67,8 +68,11 @@ _XYZUVW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _TRUEFLOW_AGE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _GAIA_CMD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _LEGACY_RV_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MORANTA26_ROTATION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RVBAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RVBAM_ARRAY_CACHE: dict[str, tuple[float, np.ndarray]] = {}
+_DB_TABLE_EXISTS_CACHE: dict[tuple[str, str, str, str, str], bool] = {}
+_DB_COLUMNS_CACHE: dict[tuple[str, str, str, str, str], set[str]] = {}
 _PLOTLY_JS: str | None = None
 
 SPT_WV_MIN = 0.85
@@ -124,6 +128,10 @@ GAIA_CMD_PSID_BANDS = {
     "gaiadr3_rpmag": "GRP",
 }
 GAIA_CMD_SEQUENCE_SUFFIXES = ("field", "mel5", "abdmg", "tha", "bpmg", "twa", "etac")
+GAIA_CMD_SPT_AXIS_SEQUENCE_IDS = {
+    ("GBP", "GRP"): "sptn_bprp_gaiaedr3_field",
+    ("G", "GRP"): "sptn_grp_gaiaedr3_field",
+}
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
@@ -557,14 +565,34 @@ def _read_sql(conn, sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
     return pd.read_sql_query(text(sql), conn, params=params or {})
 
 
+def _db_metadata_cache_key(conn, name: str) -> tuple[str, str, str, str, str]:
+    try:
+        url = conn.engine.url
+        return (
+            str(getattr(url, "drivername", "") or ""),
+            str(getattr(url, "username", "") or ""),
+            str(getattr(url, "host", "") or ""),
+            str(getattr(url, "database", "") or ""),
+            str(name),
+        )
+    except Exception:
+        return ("", "", "", "", str(name))
+
+
 def _db_table_exists(conn, table_name: str) -> bool:
+    cache_key = _db_metadata_cache_key(conn, table_name)
+    cached = _DB_TABLE_EXISTS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     query = text("""
         SELECT COUNT(*) AS n
         FROM information_schema.tables
         WHERE table_schema = DATABASE()
             AND table_name = :table_name
     """)
-    return int(conn.execute(query, {"table_name": table_name}).scalar() or 0) > 0
+    exists = int(conn.execute(query, {"table_name": table_name}).scalar() or 0) > 0
+    _DB_TABLE_EXISTS_CACHE[cache_key] = exists
+    return exists
 
 
 def _selection_sql_parts(args: dict[str, Any]) -> tuple[str, dict[str, Any], str, bool, int | None]:
@@ -3861,6 +3889,12 @@ def _gaia_cmd_sequence_ids(selection: dict[str, Any]) -> list[str]:
     return [f"{prefix}_mg_gaiadr3_ext_{suffix}" for suffix in GAIA_CMD_SEQUENCE_SUFFIXES]
 
 
+def _gaia_cmd_spt_axis_sequence_id(selection: dict[str, Any]) -> str | None:
+    x1_band = _gaia_cmd_band_key(selection["x1"])
+    x2_band = _gaia_cmd_band_key(selection["x2"])
+    return GAIA_CMD_SPT_AXIS_SEQUENCE_IDS.get((x1_band, x2_band))
+
+
 def _load_gaia_cmd_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     cache_key = f"{_spt_db_cache_key(args)}|gaia-cmd-options"
     now = time.time()
@@ -4345,6 +4379,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
         seqids = _gaia_cmd_sequence_ids(selection)
         sequences: list[dict[str, Any]] = []
+        spt_axis: dict[str, Any] | None = None
         if seqids:
             seq_clause, seq_params = _sql_in_clause("seqid", seqids)
             sequence_rows = _records(_read_sql(conn, f"""
@@ -4382,17 +4417,66 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 item["yerror"].append(round(float(row["yerror"]), 5) if row.get("yerror") is not None else None)
             sequences = list(by_seqid.values())
 
+        spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection)
+        if spt_axis_seqid:
+            spt_axis_rows = _records(_read_sql(conn, """
+                SELECT
+                    ms.moca_seqid,
+                    COALESCE(ms.name_bdcolapp, ms.moca_seqid) AS name,
+                    ms.xname,
+                    ms.yname,
+                    ms.valid_xrange_min,
+                    ms.valid_xrange_max,
+                    ms.valid_yrange_min,
+                    ms.valid_yrange_max,
+                    das.xdata AS sptn,
+                    das.ydata AS color
+                FROM moca_sequences ms
+                JOIN data_astro_sequences das
+                    ON das.moca_seqid = ms.moca_seqid
+                WHERE ms.moca_seqid = :spt_axis_seqid
+                    AND COALESCE(ms.ignored, 0) = 0
+                    AND COALESCE(das.ignored, 0) = 0
+                    AND das.xdata IS NOT NULL
+                    AND das.ydata IS NOT NULL
+                ORDER BY das.xdata
+            """, {"spt_axis_seqid": spt_axis_seqid}))
+            if spt_axis_rows:
+                first = spt_axis_rows[0]
+                spt_axis = {
+                    "moca_seqid": spt_axis_seqid,
+                    "name": first.get("name") or spt_axis_seqid,
+                    "xname": first.get("xname"),
+                    "yname": first.get("yname"),
+                    "valid_xrange_min": _pythonize(first.get("valid_xrange_min")),
+                    "valid_xrange_max": _pythonize(first.get("valid_xrange_max")),
+                    "valid_yrange_min": _pythonize(first.get("valid_yrange_min")),
+                    "valid_yrange_max": _pythonize(first.get("valid_yrange_max")),
+                    "sptn": [
+                        round(float(row["sptn"]), 5)
+                        for row in spt_axis_rows
+                        if row.get("sptn") is not None and row.get("color") is not None
+                    ],
+                    "color": [
+                        round(float(row["color"]), 5)
+                        for row in spt_axis_rows
+                        if row.get("sptn") is not None and row.get("color") is not None
+                    ],
+                }
+
     rows = _records(rows_df)
     payload = {
         "selection": selection,
         "rows": rows,
         "sequences": sequences,
+        "spt_axis": spt_axis,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": _is_private_db(args),
             "row_count": len(rows),
             "sequence_count": len(sequences),
             "sequence_ids": _gaia_cmd_sequence_ids(selection),
+            "spt_axis_sequence_id": spt_axis["moca_seqid"] if spt_axis else None,
             "truncated": len(rows) >= selection["max_objects"],
             "max_objects": selection["max_objects"],
             "query_seconds": query_seconds,
@@ -4466,16 +4550,34 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
         offset = {"field": 0.0, "mel5": -0.7, "abdmg": -0.45, "tha": -0.55, "bpmg": -0.6, "twa": -0.75, "etac": -0.8}.get(seqid.rsplit("_", 1)[-1], 0.0)
         y = 2.2 + 3.1 * x + 0.65 * x * x + offset
         sequences.append({"moca_seqid": seqid, "name": seqid, "x": x.round(4).tolist(), "y": y.round(4).tolist(), "yerror": [None] * len(x)})
+    spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection)
+    spt_axis = None
+    if spt_axis_seqid:
+        sptn = np.linspace(-35, 5, 161)
+        if spt_axis_seqid == "sptn_grp_gaiaedr3_field":
+            color = 0.25 + (sptn + 35) * 0.031
+        else:
+            color = 0.25 + (sptn + 35) * 0.078
+        spt_axis = {
+            "moca_seqid": spt_axis_seqid,
+            "name": spt_axis_seqid,
+            "xname": "spectral_type_number",
+            "yname": "gaia_color",
+            "sptn": sptn.round(4).tolist(),
+            "color": color.round(4).tolist(),
+        }
     return {
         "selection": selection,
         "rows": rows,
         "sequences": sequences,
+        "spt_axis": spt_axis,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": False,
             "row_count": len(rows),
             "sequence_count": len(sequences),
             "sequence_ids": _gaia_cmd_sequence_ids(selection),
+            "spt_axis_sequence_id": spt_axis["moca_seqid"] if spt_axis else None,
             "truncated": False,
             "max_objects": selection["max_objects"],
             "query_seconds": 0,
@@ -7384,6 +7486,27 @@ RVBAM_REQUIRED_TABLES = (
     "pcat_sampling_parameters",
     "pcat_sampling_payloads",
 )
+RVBAM_OPTIONAL_SEGMENT_DIAGNOSTIC_COLUMNS = (
+    "data_contrast",
+    "model_contrast",
+    "nmodel_10p_contrast",
+    "noutliers_masked",
+)
+RVBAM_BERV_METADATA_KEYS = {
+    "berv_source",
+    "berv_kms",
+    "berv_epoch_mjd",
+    "moca_berv_corrected",
+    "spacecraft_rv_corrected",
+    "berv_coord_source",
+    "berv_location",
+    "berv_sign",
+}
+RVBAM_BERV_METADATA_ALIASES = {
+    "moca_berv_corected": "moca_berv_corrected",
+    "berv_corected": "moca_berv_corrected",
+    "berv_corrected": "moca_berv_corrected",
+}
 
 
 def _rvbam_model_grid_dirs_from_env() -> list[Path]:
@@ -7503,19 +7626,364 @@ def _rvbam_limit_arg(args: dict[str, Any], key: str, default: int, hard_max: int
     return max(1, min(int(value), hard_max))
 
 
+def _rvbam_parse_wavelength_coverage(raw_value: Any) -> list[tuple[float, float]]:
+    """Parse wavelength coverage filters in microns.
+
+    Accepted examples: ``1.0-1.35``, ``1.0:1.35``, ``1.0 1.35``,
+    ``1.0, 1.35``, or a list of those ranges. A single value is treated as a
+    zero-width coverage point.
+    """
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return []
+    ranges: list[tuple[float, float]] = []
+    number_pattern = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+    pair_pattern = re.compile(
+        rf"({number_pattern})\s*(?:-|:|,|\s+)\s*({number_pattern})"
+    )
+    for match in pair_pattern.finditer(raw):
+        try:
+            left = float(match.group(1))
+            right = float(match.group(2))
+        except ValueError:
+            continue
+        if not (math.isfinite(left) and math.isfinite(right)):
+            continue
+        lo, hi = sorted((left, right))
+        ranges.append((lo, hi))
+    if ranges:
+        return ranges
+
+    for value in re.findall(number_pattern, raw):
+        try:
+            number = float(value)
+        except ValueError:
+            continue
+        if math.isfinite(number):
+            ranges.append((number, number))
+    return ranges
+
+
+def _rvbam_wavelength_coverage_ranges(args: Any) -> list[tuple[float, float]]:
+    raw_value = (
+        args.get("wavelength_coverage")
+        or args.get("wv_coverage")
+        or args.get("coverage")
+        or args.get("wavelength")
+        or ""
+    )
+    return _rvbam_parse_wavelength_coverage(raw_value)
+
+
+def _rvbam_has_literature_rv_filter(args: Any) -> bool:
+    return _as_bool(
+        args.get("has_literature_rv")
+        or args.get("literature_rv")
+        or args.get("lit_rv")
+    )
+
+
+def _rvbam_wavelength_micron(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number / 10000.0 if abs(number) > 1000 else number
+
+
+def _rvbam_comment_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, bool)):
+        return _pythonize(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    lowered = text.lower()
+    if lowered in {"none", "null", "nan"}:
+        return None
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    try:
+        if re.fullmatch(r"[-+]?\d+", text):
+            return int(text)
+        if re.fullmatch(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?", text):
+            return _pythonize(float(text))
+    except ValueError:
+        pass
+    return text
+
+
+def _rvbam_parse_comment_metadata(comments: Any) -> dict[str, Any]:
+    if not comments:
+        return {}
+    if isinstance(comments, Mapping):
+        return {
+            str(key).strip(): _rvbam_comment_value(value)
+            for key, value in comments.items()
+            if str(key).strip()
+        }
+    raw = str(comments).strip()
+    if not raw:
+        return {}
+
+    metadata: dict[str, Any] = {}
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            decoded = None
+        if isinstance(decoded, Mapping):
+            metadata.update(_rvbam_parse_comment_metadata(decoded))
+
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_]*)\s*=\s*"
+        r"(?:\"([^\"]*)\"|'([^']*)'|([^;,\n\r]+))"
+    )
+    for match in pattern.finditer(raw):
+        key = match.group(1).strip()
+        value = next(
+            group
+            for group in (match.group(2), match.group(3), match.group(4))
+            if group is not None
+        )
+        metadata[key] = _rvbam_comment_value(value)
+    return metadata
+
+
+def _rvbam_berv_metadata_from_comments(*comments: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for comment in comments:
+        parsed = _rvbam_parse_comment_metadata(comment)
+        for raw_key, value in parsed.items():
+            key = RVBAM_BERV_METADATA_ALIASES.get(str(raw_key).strip(), str(raw_key).strip())
+            if key not in RVBAM_BERV_METADATA_KEYS:
+                continue
+            if value is None or value == "":
+                continue
+            metadata.setdefault(key, value)
+    return metadata
+
+
+def _rvbam_segments_cover_wavelength_ranges(
+    segments: Sequence[Mapping[str, Any]], ranges: Sequence[tuple[float, float]]
+) -> bool:
+    for segment in segments:
+        seg_min = _rvbam_wavelength_micron(segment.get("wv_min"))
+        seg_max = _rvbam_wavelength_micron(segment.get("wv_max"))
+        if seg_min is None or seg_max is None:
+            continue
+        seg_min, seg_max = sorted((seg_min, seg_max))
+        for lo, hi in ranges:
+            if seg_min <= hi and seg_max >= lo:
+                return True
+    return False
+
+
+def _rvbam_segment_timestamp_summary(
+    segments: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    created_values = [
+        segment.get("created_timestamp")
+        for segment in segments
+        if segment.get("created_timestamp")
+    ]
+    modified_values = [
+        segment.get("modified_timestamp")
+        for segment in segments
+        if segment.get("modified_timestamp")
+    ]
+    summary: dict[str, Any] = {
+        "oldest_segment_created_timestamp": min(created_values)
+        if created_values
+        else None,
+        "latest_segment_created_timestamp": max(created_values)
+        if created_values
+        else None,
+        "latest_segment_modified_timestamp": max(modified_values)
+        if modified_values
+        else None,
+    }
+    return summary
+
+
+def _rvbam_literature_exists_sql(conn: Any, private: bool) -> str:
+    if not _db_table_exists(conn, "calc_radial_velocities_combined"):
+        return "0 = 1"
+
+    crv_public_clause = "" if private else "AND crv.is_public = 1"
+    object_exists = f"""
+        EXISTS (
+            SELECT 1
+            FROM calc_radial_velocities_combined AS crv
+            WHERE crv.moca_oid = r.moca_oid
+              AND crv.radial_velocity_kms IS NOT NULL
+              AND COALESCE(crv.ignored, 0) = 0
+              {crv_public_clause}
+        )
+    """
+    if not _db_table_exists(conn, "moca_companions"):
+        return object_exists
+
+    companion_public_clause = "" if private else "AND COALESCE(mc.is_public, 0) = 1"
+    host_exists = f"""
+        EXISTS (
+            SELECT 1
+            FROM moca_companions AS mc
+            JOIN calc_radial_velocities_combined AS crv
+              ON crv.moca_oid = mc.moca_oid_parent
+            WHERE mc.moca_oid_child = r.moca_oid
+              AND crv.radial_velocity_kms IS NOT NULL
+              AND COALESCE(mc.ignored, 0) = 0
+              AND COALESCE(crv.ignored, 0) = 0
+              {companion_public_clause}
+              {crv_public_clause}
+        )
+    """
+    return f"({object_exists} OR {host_exists})"
+
+
 def _rvbam_required_tables_available(conn) -> tuple[bool, list[str]]:
-    missing = [table for table in RVBAM_REQUIRED_TABLES if not _db_table_exists(conn, table)]
+    missing: list[str] = []
+    unknown: list[str] = []
+    for table in RVBAM_REQUIRED_TABLES:
+        cache_key = _db_metadata_cache_key(conn, table)
+        cached = _DB_TABLE_EXISTS_CACHE.get(cache_key)
+        if cached is None:
+            unknown.append(table)
+        elif not cached:
+            missing.append(table)
+
+    if unknown:
+        placeholders: list[str] = []
+        params: dict[str, Any] = {}
+        for index, table in enumerate(unknown):
+            key = f"rvbam_required_table_{index}"
+            placeholders.append(f":{key}")
+            params[key] = table
+        rows = conn.execute(text(f"""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+                AND table_name IN ({", ".join(placeholders)})
+        """), params).fetchall()
+        found = {str(row[0]) for row in rows}
+        for table in unknown:
+            exists = table in found
+            _DB_TABLE_EXISTS_CACHE[_db_metadata_cache_key(conn, table)] = exists
+            if not exists:
+                missing.append(table)
+
     return not missing, missing
 
 
 def _rvbam_available_columns(conn, table_name: str) -> set[str]:
+    cache_key = _db_metadata_cache_key(conn, table_name)
+    cached = _DB_COLUMNS_CACHE.get(cache_key)
+    if cached is not None:
+        return set(cached)
     rows = conn.execute(text("""
         SELECT column_name
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
             AND table_name = :table_name
     """), {"table_name": table_name}).fetchall()
-    return {str(row[0]) for row in rows}
+    columns = {str(row[0]) for row in rows}
+    _DB_COLUMNS_CACHE[cache_key] = set(columns)
+    return columns
+
+
+def _rvbam_optional_segment_diagnostic_select_sql(conn, alias: str = "s") -> str:
+    columns = _rvbam_available_columns(conn, "pcat_rv_sampling_segments")
+    expressions: list[str] = []
+    for column in RVBAM_OPTIONAL_SEGMENT_DIAGNOSTIC_COLUMNS:
+        if column in columns:
+            expressions.append(f"{alias}.{column}")
+        else:
+            expressions.append(f"NULL AS {column}")
+    return ",\n                ".join(expressions)
+
+
+def _rvbam_wavelength_angstrom(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number if abs(number) > 1000 else number * 10000.0
+
+
+def _rvbam_enrich_segments_snr(
+    conn: Any,
+    moca_specid: Any,
+    segments: Sequence[dict[str, Any]],
+) -> None:
+    if not segments or moca_specid is None or not _db_table_exists(conn, "data_spectra"):
+        return
+    ranges: list[tuple[float, float, dict[str, Any]]] = []
+    for segment in segments:
+        wv_min = _rvbam_wavelength_angstrom(segment.get("wv_min"))
+        wv_max = _rvbam_wavelength_angstrom(segment.get("wv_max"))
+        if wv_min is None or wv_max is None:
+            continue
+        lo, hi = sorted((wv_min, wv_max))
+        ranges.append((lo, hi, segment))
+    if not ranges:
+        return
+    query_min = min(item[0] for item in ranges)
+    query_max = max(item[1] for item in ranges)
+    try:
+        specid = int(moca_specid)
+    except (TypeError, ValueError):
+        return
+    try:
+        rows = _records(_read_sql(conn, """
+            SELECT
+                wavelength_angstrom,
+                flux_flambda,
+                flux_flambda_unc
+            FROM data_spectra
+            WHERE moca_specid = :moca_specid
+                AND wavelength_angstrom BETWEEN :wv_min AND :wv_max
+                AND flux_flambda IS NOT NULL
+                AND flux_flambda_unc IS NOT NULL
+                AND flux_flambda_unc > 0
+            ORDER BY wavelength_angstrom
+        """, {
+            "moca_specid": specid,
+            "wv_min": query_min,
+            "wv_max": query_max,
+        }))
+    except Exception:
+        return
+    if not rows:
+        return
+
+    wavelength = np.array([float(row["wavelength_angstrom"]) for row in rows], dtype=float)
+    flux = np.array([float(row["flux_flambda"]) for row in rows], dtype=float)
+    flux_unc = np.array([float(row["flux_flambda_unc"]) for row in rows], dtype=float)
+    snr = flux / flux_unc
+    finite = np.isfinite(wavelength) & np.isfinite(snr)
+    if not np.any(finite):
+        return
+    wavelength = wavelength[finite]
+    snr = snr[finite]
+    for lo, hi, segment in ranges:
+        mask = (wavelength >= lo) & (wavelength <= hi)
+        if not np.any(mask):
+            continue
+        values = snr[mask]
+        segment["segment_snr_median"] = _pythonize(float(np.nanmedian(values)))
+        segment["segment_snr_p10"] = _pythonize(float(np.nanpercentile(values, 10)))
+        segment["segment_snr_p90"] = _pythonize(float(np.nanpercentile(values, 90)))
+        segment["segment_snr_npoints"] = _pythonize(int(np.sum(np.isfinite(values))))
 
 
 def _rvbam_local_model_candidates(moca_mgridid: Any, template_name: Any = None) -> list[Path]:
@@ -7610,6 +8078,17 @@ def _rvbam_refresh_local_model_status(payload: dict[str, Any]) -> dict[str, Any]
     return payload
 
 
+def _mock_rvbam_berv_comment(run_id: int) -> str:
+    if int(run_id) == 910001:
+        return (
+            'berv_source="astropy"; berv_kms=18.23; berv_epoch_mjd=61041.0; '
+            'moca_berv_corrected=0; spacecraft_rv_corrected=0; '
+            'berv_coord_source="moca_objects"; berv_location="greenwich"; '
+            'berv_sign="add_to_sampler_rv"'
+        )
+    return "mode=\"standard\"; spectrum_berv_status=\"already_corrected\""
+
+
 def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
     runs = [
         {
@@ -7634,8 +8113,10 @@ def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
             "rv_median_kms": -18.4,
             "rv_unc_median_kms": 1.1,
             "berv_kms": 18.23,
+            "comments": _mock_rvbam_berv_comment(910001),
             "origin": "mock_rvbam",
             "ignored": 0,
+            "created_timestamp": "2026-01-10T12:00:00",
             "modified_timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         },
         {
@@ -7659,18 +8140,46 @@ def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
             "rv_mean_kms": 21.3,
             "rv_median_kms": 21.0,
             "rv_unc_median_kms": 0.8,
-            "berv_kms": -6.74,
+            "berv_kms": 0.0,
+            "comments": _mock_rvbam_berv_comment(910002),
             "origin": "mock_rvbam",
             "ignored": 0,
+            "created_timestamp": "2026-01-22T12:00:00",
             "modified_timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         },
     ]
+    for run in runs:
+        run_id = int(run["moca_rv_sample_run_id"])
+        segments = _mock_rvbam_segments(run_id)
+        run.update(_rvbam_segment_timestamp_summary(segments))
+        literature_rv = _mock_rvbam_literature_rv(run)
+        run["has_literature_rv"] = 1 if literature_rv else 0
+        run["berv_metadata"] = _rvbam_berv_metadata_from_comments(run.get("comments"))
+        run["literature_modified_timestamp"] = (
+            run.get("latest_segment_modified_timestamp") if literature_rv else None
+        )
+
+    if _rvbam_has_literature_rv_filter(args):
+        runs = [row for row in runs if _as_bool(row.get("has_literature_rv"))]
+
+    wavelength_ranges = _rvbam_wavelength_coverage_ranges(args)
+    if wavelength_ranges:
+        runs = [
+            row
+            for row in runs
+            if _rvbam_segments_cover_wavelength_ranges(
+                _mock_rvbam_segments(int(row["moca_rv_sample_run_id"])),
+                wavelength_ranges,
+            )
+        ]
+
     selected = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
     if selected and not any(int(row["moca_rv_sample_run_id"]) == selected for row in runs):
         selected = None
+    value = selected or (runs[0]["moca_rv_sample_run_id"] if runs else None)
     return {
         "runs": runs,
-        "value": selected or runs[0]["moca_rv_sample_run_id"],
+        "value": value,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "run_count": len(runs),
@@ -7685,11 +8194,21 @@ def _mock_rvbam_segments(run_id: int) -> list[dict[str, Any]]:
     rng = np.random.default_rng(seed)
     n_rows = 34 if run_id == 910001 else 28
     base_rv = -18.4 if run_id == 910001 else 21.0
+    base_timestamp = datetime(2026, 1, 10 if run_id == 910001 else 22, 12, 0, 0)
     segments: list[dict[str, Any]] = []
     for index in range(n_rows):
         wv_min = 0.88 + 0.045 * index
         wv_max = wv_min + float(rng.uniform(0.03, 0.07))
         rv_unc = float(rng.uniform(0.35, 2.1))
+        created_timestamp = base_timestamp + timedelta(minutes=23 * index)
+        modified_timestamp = created_timestamp + timedelta(hours=1, minutes=index % 17)
+        data_contrast = float(rng.uniform(0.018, 0.085))
+        model_contrast = float(rng.uniform(0.10, 0.42))
+        if index % 13 == 0:
+            data_contrast *= 0.35
+        if index % 11 == 0:
+            model_contrast *= 0.45
+        segment_snr_median = float(rng.uniform(8.0, 85.0))
         segments.append({
             "moca_rv_sampling_segment_id": run_id * 100 + index + 1,
             "moca_rv_sample_run_id": run_id,
@@ -7719,6 +8238,14 @@ def _mock_rvbam_segments(run_id: int) -> list[dict[str, Any]]:
             "lnp_max": round(float(rng.normal(-790.0, 35.0)), 5),
             "mean_finite_fraction": round(float(rng.uniform(0.96, 1.0)), 5),
             "mean_outofbounds_fraction": round(float(rng.uniform(0.0, 0.04)), 5),
+            "data_contrast": round(data_contrast, 5),
+            "model_contrast": round(model_contrast, 5),
+            "nmodel_10p_contrast": int(rng.integers(24, 180)),
+            "noutliers_masked": int(rng.integers(0, 4)) if index % 7 == 0 else 0,
+            "segment_snr_median": round(segment_snr_median, 3),
+            "segment_snr_p10": round(segment_snr_median * float(rng.uniform(0.55, 0.82)), 3),
+            "segment_snr_p90": round(segment_snr_median * float(rng.uniform(1.12, 1.65)), 3),
+            "segment_snr_npoints": int(rng.integers(18, 95)),
             "param_count": 5,
             "payload_count": 2,
             "chain_payloads": 1,
@@ -7727,8 +8254,11 @@ def _mock_rvbam_segments(run_id: int) -> list[dict[str, Any]]:
             "model_fit_url": "",
             "corner_url": "",
             "ignored": 0,
-            "comments": "Synthetic RVBAM segment for local smoke testing",
+            "created_timestamp": created_timestamp.isoformat(timespec="seconds"),
+            "modified_timestamp": modified_timestamp.isoformat(timespec="seconds"),
+            "comments": _mock_rvbam_berv_comment(run_id),
         })
+        segments[-1]["berv_metadata"] = _rvbam_berv_metadata_from_comments(segments[-1]["comments"])
     return segments
 
 
@@ -7794,11 +8324,16 @@ def _mock_rvbam_spectrum(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> dict[str, Any]:
-    run_payload = _mock_rvbam_runs(args)
+    run_args = dict(args)
+    for key in ("has_literature_rv", "literature_rv", "lit_rv", "wavelength_coverage", "wv_coverage", "coverage", "wavelength"):
+        run_args.pop(key, None)
+    run_payload = _mock_rvbam_runs(run_args)
     selected_id = int(run_id or _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id") or run_payload["value"])
     run = next((row for row in run_payload["runs"] if int(row["moca_rv_sample_run_id"]) == selected_id), run_payload["runs"][0])
     selected_id = int(run["moca_rv_sample_run_id"])
     segments = _mock_rvbam_segments(selected_id)
+    timestamp_summary = _rvbam_segment_timestamp_summary(segments)
+    run.update(timestamp_summary)
     return {
         "run": run,
         "segments": segments,
@@ -7808,6 +8343,7 @@ def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> 
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "segment_count": len(segments),
             "private_db": _is_private_db(args),
+            **timestamp_summary,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -7825,11 +8361,29 @@ def _mock_rvbam_parameters(sample_run_id: int) -> list[dict[str, Any]]:
     ]
 
 
-def _rvbam_run_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    clauses: list[str] = ["COALESCE(seg.segment_count, 0) > 0"]
+def _rvbam_run_filter_sql(
+    args: dict[str, Any],
+    *,
+    use_segment_summary: bool = True,
+    literature_exists_sql: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if use_segment_summary:
+        clauses: list[str] = ["COALESCE(seg.segment_count, 0) > 0"]
+    else:
+        clauses = ["""
+            EXISTS (
+                SELECT 1
+                FROM pcat_rv_sampling_segments AS s_exists
+                WHERE s_exists.moca_rv_sample_run_id = r.moca_rv_sample_run_id
+            )
+        """]
     params: dict[str, Any] = {}
-    if not _as_bool(args.get("include_ignored") or args.get("show_ignored")):
+    include_ignored = _as_bool(args.get("include_ignored") or args.get("show_ignored"))
+    if not include_ignored:
         clauses.append("COALESCE(r.ignored, 0) = 0")
+
+    if _rvbam_has_literature_rv_filter(args):
+        clauses.append(literature_exists_sql or "COALESCE(lit.has_literature_rv, 0) = 1")
 
     moca_oid = _rvbam_int_arg(args, "moca_oid", "oid")
     if moca_oid is not None:
@@ -7875,7 +8429,106 @@ def _rvbam_run_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         params["query_like"] = like
         params["query_exact"] = query
 
+    segment_ignored_clause = "" if include_ignored else "AND COALESCE(swv.ignored, 0) = 0"
+    wavelength_ranges = _rvbam_wavelength_coverage_ranges(args)
+    if wavelength_ranges:
+        overlap_clauses: list[str] = []
+        for index, (wv_lo, wv_hi) in enumerate(wavelength_ranges):
+            lo_key = f"wv_lo_{index}"
+            hi_key = f"wv_hi_{index}"
+            lo_angstrom_key = f"wv_lo_angstrom_{index}"
+            hi_angstrom_key = f"wv_hi_angstrom_{index}"
+            overlap_clauses.append(f"""
+                (
+                    (swv.wv_min <= :{hi_key} AND swv.wv_max >= :{lo_key})
+                    OR (swv.wv_min <= :{hi_angstrom_key} AND swv.wv_max >= :{lo_angstrom_key})
+                )
+            """)
+            params[lo_key] = wv_lo
+            params[hi_key] = wv_hi
+            params[lo_angstrom_key] = wv_lo * 10000.0
+            params[hi_angstrom_key] = wv_hi * 10000.0
+        overlap_sql = " OR ".join(overlap_clauses)
+        clauses.append(f"""
+            EXISTS (
+                SELECT 1
+                FROM pcat_rv_sampling_segments AS swv
+                WHERE swv.moca_rv_sample_run_id = r.moca_rv_sample_run_id
+                  {segment_ignored_clause}
+                  AND ({overlap_sql})
+            )
+        """)
+
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _rvbam_empty_segment_summary() -> dict[str, Any]:
+    return {
+        "segment_count": 0,
+        "sample_segment_count": 0,
+        "payload_segment_count": 0,
+        "wv_min": None,
+        "wv_max": None,
+        "rv_mean_kms": None,
+        "rv_unc_mean_kms": None,
+        "oldest_segment_created_timestamp": None,
+        "latest_segment_created_timestamp": None,
+        "latest_segment_modified_timestamp": None,
+    }
+
+
+def _rvbam_segment_summaries_from_db(
+    conn: Any, run_ids: Sequence[Any]
+) -> dict[int, dict[str, Any]]:
+    unique_run_ids: list[int] = []
+    seen: set[int] = set()
+    for run_id in run_ids:
+        try:
+            value = int(run_id)
+        except (TypeError, ValueError):
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_run_ids.append(value)
+    if not unique_run_ids:
+        return {}
+
+    placeholders: list[str] = []
+    params: dict[str, Any] = {}
+    for index, run_id in enumerate(unique_run_ids):
+        key = f"rv_run_id_{index}"
+        placeholders.append(f":{key}")
+        params[key] = run_id
+
+    rows = _records(_read_sql(conn, f"""
+        SELECT
+            s.moca_rv_sample_run_id,
+            COUNT(*) AS segment_count,
+            SUM(CASE WHEN s.moca_sample_run_id IS NOT NULL THEN 1 ELSE 0 END) AS sample_segment_count,
+            COUNT(DISTINCT CASE WHEN pl.moca_payload_id IS NOT NULL THEN s.moca_rv_sampling_segment_id ELSE NULL END) AS payload_segment_count,
+            MIN(s.wv_min) AS wv_min,
+            MAX(s.wv_max) AS wv_max,
+            AVG(s.rv_kms) AS rv_mean_kms,
+            AVG(s.rv_kms_unc) AS rv_unc_mean_kms,
+            MIN(s.created_timestamp) AS oldest_segment_created_timestamp,
+            MAX(s.created_timestamp) AS latest_segment_created_timestamp,
+            MAX(s.modified_timestamp) AS latest_segment_modified_timestamp
+        FROM pcat_rv_sampling_segments s
+        LEFT JOIN pcat_sampling_payloads pl
+            ON pl.moca_sample_run_id = s.moca_sample_run_id
+            AND pl.payload_kind = 'chains'
+        WHERE s.moca_rv_sample_run_id IN ({", ".join(placeholders)})
+        GROUP BY s.moca_rv_sample_run_id
+    """, params))
+    summaries: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            key = int(row.get("moca_rv_sample_run_id"))
+        except (TypeError, ValueError):
+            continue
+        summaries[key] = row
+    return summaries
 
 
 def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
@@ -7890,6 +8543,8 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
         args.get("moca_mgridid") or args.get("mgridid") or "",
         args.get("moca_instid") or args.get("instid") or "",
         args.get("include_ignored") or args.get("show_ignored") or "",
+        args.get("has_literature_rv") or args.get("literature_rv") or args.get("lit_rv") or "",
+        args.get("wavelength_coverage") or args.get("wv_coverage") or args.get("coverage") or args.get("wavelength") or "",
         limit,
     )
     now = time.time()
@@ -7914,7 +8569,27 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
-        where_sql, params = _rvbam_run_filter_sql(args)
+        private_db = _is_private_db(args)
+        has_literature_filter = _rvbam_has_literature_rv_filter(args)
+        if has_literature_filter:
+            literature_exists_sql = _rvbam_literature_exists_sql(conn, private_db)
+            literature_select_sql = """
+                1 AS has_literature_rv,
+                NULL AS literature_modified_timestamp,
+            """
+            literature_join_clause = ""
+        else:
+            literature_exists_sql = None
+            literature_select_sql = """
+                0 AS has_literature_rv,
+                NULL AS literature_modified_timestamp,
+            """
+            literature_join_clause = ""
+        where_sql, params = _rvbam_run_filter_sql(
+            args,
+            use_segment_summary=False,
+            literature_exists_sql=literature_exists_sql,
+        )
         rows = _records(_read_sql(conn, f"""
             SELECT
                 r.moca_rv_sample_run_id,
@@ -7943,39 +8618,28 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 r.ignored,
                 r.created_timestamp,
                 r.modified_timestamp,
-                COALESCE(seg.segment_count, 0) AS segment_count,
-                COALESCE(seg.sample_segment_count, 0) AS sample_segment_count,
-                COALESCE(seg.payload_segment_count, 0) AS payload_segment_count,
-                seg.wv_min,
-                seg.wv_max,
-                seg.rv_mean_kms,
-                seg.rv_unc_mean_kms
+                {literature_select_sql}
+                NULL AS rvbam_segment_summary_placeholder
             FROM pcat_rv_sampling_runs r
             LEFT JOIN moca_objects mo
                 ON mo.moca_oid = r.moca_oid
             LEFT JOIN moca_spectra ms
                 ON ms.moca_specid = r.moca_specid
-            LEFT JOIN (
-                SELECT
-                    s.moca_rv_sample_run_id,
-                    COUNT(*) AS segment_count,
-                    SUM(CASE WHEN s.moca_sample_run_id IS NOT NULL THEN 1 ELSE 0 END) AS sample_segment_count,
-                    COUNT(DISTINCT CASE WHEN pl.moca_payload_id IS NOT NULL THEN s.moca_rv_sampling_segment_id ELSE NULL END) AS payload_segment_count,
-                    MIN(s.wv_min) AS wv_min,
-                    MAX(s.wv_max) AS wv_max,
-                    AVG(s.rv_kms) AS rv_mean_kms,
-                    AVG(s.rv_kms_unc) AS rv_unc_mean_kms
-                FROM pcat_rv_sampling_segments s
-                LEFT JOIN pcat_sampling_payloads pl
-                    ON pl.moca_sample_run_id = s.moca_sample_run_id
-                    AND pl.payload_kind = 'chains'
-                GROUP BY s.moca_rv_sample_run_id
-            ) seg
-                ON seg.moca_rv_sample_run_id = r.moca_rv_sample_run_id
+            {literature_join_clause}
             {where_sql}
             ORDER BY r.modified_timestamp DESC, r.moca_rv_sample_run_id DESC
             LIMIT {limit}
         """, params))
+        segment_summaries = _rvbam_segment_summaries_from_db(
+            conn, [row.get("moca_rv_sample_run_id") for row in rows]
+        )
+        for row in rows:
+            row.pop("rvbam_segment_summary_placeholder", None)
+            try:
+                row_id = int(row.get("moca_rv_sample_run_id"))
+            except (TypeError, ValueError):
+                row_id = -1
+            row.update(segment_summaries.get(row_id) or _rvbam_empty_segment_summary())
 
     selected = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
     if selected is not None and not any(row.get("moca_rv_sample_run_id") == selected for row in rows):
@@ -8160,6 +8824,7 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
         ignored_clause = "" if _as_bool(args.get("include_ignored") or args.get("show_ignored")) else "AND COALESCE(s.ignored, 0) = 0"
+        diagnostic_select_sql = _rvbam_optional_segment_diagnostic_select_sql(conn, "s")
         segments = _records(_read_sql(conn, f"""
             SELECT
                 s.moca_rv_sampling_segment_id,
@@ -8183,6 +8848,9 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 s.rls,
                 s.is_public,
                 s.ignored,
+                s.created_timestamp,
+                s.modified_timestamp,
+                {diagnostic_select_sql},
                 s.comments,
                 sr.sampler_type,
                 sr.sampler_name,
@@ -8254,9 +8922,16 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 {ignored_clause}
             ORDER BY s.order_number, s.window_number, s.segment_number, s.wv_min, s.moca_rv_sampling_segment_id
         """, {"run_id": int(run_id)}))
+        _rvbam_enrich_segments_snr(conn, run.get("moca_specid"), segments)
         literature_rv = _rvbam_literature_rv_from_db(conn, args, run.get("moca_oid"))
         spectrum = _rvbam_spectrum_from_db(conn, run.get("moca_specid"))
 
+    timestamp_summary = _rvbam_segment_timestamp_summary(segments)
+    run.update(timestamp_summary)
+    run["has_literature_rv"] = 1 if literature_rv else 0
+    run["berv_metadata"] = _rvbam_berv_metadata_from_comments(run.get("comments"))
+    for segment in segments:
+        segment["berv_metadata"] = _rvbam_berv_metadata_from_comments(segment.get("comments"))
     payload = {
         "run": run,
         "segments": segments,
@@ -8266,6 +8941,7 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "segment_count": len(segments),
             "private_db": _is_private_db(args),
+            **timestamp_summary,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -8336,6 +9012,7 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
                 r.template_name,
                 r.berv_kms,
                 r.berv_kms_unc,
+                r.comments AS run_comments,
                 r.nwindows,
                 r.nsegments,
                 r.npoints AS run_npoints,
@@ -8343,6 +9020,8 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
                 r.datadir,
                 r.origin AS run_origin,
                 r.ignored AS run_ignored,
+                ms.berv_corrected,
+                ms.spacecraft_rv_corrected,
                 sr.sampler_type,
                 sr.sampler_name,
                 sr.sampler_variant,
@@ -8454,18 +9133,23 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
             ORDER BY payload_kind, payload_subkind, moca_payload_id
         """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
         images = _rvbam_segment_images(conn, row.get("moca_fsid"))
+        _rvbam_enrich_segments_snr(conn, row.get("moca_specid"), [row])
 
     segment_keys = [
         "moca_rv_sampling_segment_id", "moca_rv_sample_run_id", "moca_sample_run_id",
         "order_number", "window_number", "segment_number", "wv_min", "wv_max", "wv_center",
         "rv_kms", "rv_kms_unc", "lsf", "lsf_unc", "vsini_kms", "vsini_kms_unc",
-        "moca_fsid", "moca_rvsysid", "origin", "rls", "is_public", "ignored", "comments",
+        "moca_fsid", "moca_rvsysid", "origin", "rls", "is_public", "ignored",
+        "created_timestamp", "modified_timestamp",
+        "data_contrast", "model_contrast", "nmodel_10p_contrast", "noutliers_masked",
+        "segment_snr_median", "segment_snr_p10", "segment_snr_p90", "segment_snr_npoints",
+        "comments",
     ]
     run_keys = [
         "moca_rv_sample_run_id", "moca_oid", "designation", "moca_instid", "moca_specid",
         "spectrum_name", "moca_mgridid", "rv_pipeline_version", "target_name", "template_name",
-        "berv_kms", "berv_kms_unc", "nwindows", "nsegments", "run_npoints", "window_ranges",
-        "datadir", "run_origin", "run_ignored",
+        "berv_kms", "berv_kms_unc", "run_comments", "berv_corrected", "spacecraft_rv_corrected",
+        "nwindows", "nsegments", "run_npoints", "window_ranges", "datadir", "run_origin", "run_ignored",
     ]
     sampling_keys = [
         "moca_sample_run_id", "sampler_type", "sampler_name", "sampler_variant", "sampler_version",
@@ -8475,10 +9159,21 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
         "mean_finite_fraction", "mean_outofbounds_fraction", "random_seed", "sampling_origin",
         "sampling_ignored", "sampling_comments",
     ]
+    segment_payload = {key: row.get(key) for key in segment_keys if row.get(key) is not None}
+    run_payload = {key: row.get(key) for key in run_keys if row.get(key) is not None}
+    sampling_payload = {key: row.get(key) for key in sampling_keys if row.get(key) is not None}
+    segment_payload["berv_metadata"] = _rvbam_berv_metadata_from_comments(segment_payload.get("comments"))
+    run_payload["berv_metadata"] = _rvbam_berv_metadata_from_comments(run_payload.get("run_comments"))
+    sampling_payload["berv_metadata"] = _rvbam_berv_metadata_from_comments(sampling_payload.get("sampling_comments"))
+    for parameter in parameters:
+        parameter["berv_metadata"] = _rvbam_berv_metadata_from_comments(parameter.get("comments"))
+    for payload_row in payloads:
+        payload_row["berv_metadata"] = _rvbam_berv_metadata_from_comments(payload_row.get("comments"))
+
     payload = {
-        "segment": {key: row.get(key) for key in segment_keys if row.get(key) is not None},
-        "run": {key: row.get(key) for key in run_keys if row.get(key) is not None},
-        "samplingRun": {key: row.get(key) for key in sampling_keys if row.get(key) is not None},
+        "segment": segment_payload,
+        "run": run_payload,
+        "samplingRun": sampling_payload,
         "parameters": parameters,
         "payloads": payloads,
         "images": images,
@@ -10263,6 +10958,475 @@ def _load_rvbam_rebuilt_fit_from_db(args: dict[str, Any], segment_id: int) -> di
     return payload
 
 
+MORANTA26_DEFAULT_CLUSTERS = ("THA", "IC2602", "PERI", "GRX")
+MORANTA26_DEFAULT_LAMBDAS = (1, 2, 4, 8, 16)
+MORANTA26_PID = "Mora26"
+MORANTA26_PROBABILITY_THRESHOLD = 0.70
+MORANTA26_LITERATURE_TOLERANCE = 0.15
+MORANTA26_MIN_PERIOD_DAYS = 0.05
+MORANTA26_MAX_PERIOD_DAYS = 30.0
+MORANTA26_KV_RE = re.compile(r"(?:^|;\s*)([A-Za-z0-9_]+)=([^;]*)")
+
+
+def _moranta26_cache_key(args: dict[str, Any], *parts: Any) -> str:
+    return "|".join([_spt_db_cache_key(args), "moranta26-rotation", *[str(part) for part in parts]])
+
+
+def _moranta26_parse_kv(text_value: Any) -> dict[str, str | None]:
+    if text_value is None:
+        return {}
+    if isinstance(text_value, float) and not math.isfinite(text_value):
+        return {}
+    parsed: dict[str, str | None] = {}
+    for key, value in MORANTA26_KV_RE.findall(str(text_value)):
+        clean_value = value.strip()
+        parsed[key] = None if clean_value in {"", "None", "NULL", "null"} else clean_value
+    return parsed
+
+
+def _moranta26_float(value: Any) -> float | None:
+    return _safe_float(value)
+
+
+def _moranta26_int(value: Any) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _moranta26_source_id(value: Any) -> str:
+    if value is None:
+        return ""
+    text_value = str(value).replace("Gaia DR3", "").replace("GaiaDR3", "").strip()
+    digits = "".join(ch for ch in text_value if ch.isdigit())
+    return digits or ""
+
+
+def _moranta26_boolish_int(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return 0 if value.strip().lower() in {"", "0", "false", "n", "no", "none", "null"} else 1
+    return 1 if bool(value) else 0
+
+
+def _moranta26_revised_period(value: Any) -> float | None:
+    revised = _moranta26_float(value)
+    return revised if revised is not None and revised > 0 else None
+
+
+def _moranta26_prob_all(row: dict[str, Any]) -> float | None:
+    values = [
+        _moranta26_float(row.get(key))
+        for key in ("prob_rot", "prob_snr", "prob_asym", "prob_rms", "prob_ls")
+    ]
+    finite = [value for value in values if value is not None]
+    if finite:
+        return float(sum(finite) / len(finite))
+    return _moranta26_float(row.get("final_prob"))
+
+
+def _moranta26_normalize_catalog_df(df: pd.DataFrame) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in _records(df):
+        flags = _moranta26_parse_kv(raw.get("prot_flags"))
+        comments = _moranta26_parse_kv(raw.get("comments"))
+        get_identity = lambda key, fallback=None: flags.get(key, comments.get(key, fallback))
+        moca_oid = _moranta26_int(raw.get("moca_oid"))
+        source_id = _moranta26_source_id(raw.get("source_id"))
+        prot_id = _moranta26_int(raw.get("prot_id"))
+        source_moca_tplcid = _moranta26_int(get_identity("source_moca_tplcid"))
+        revised_days = _moranta26_revised_period(comments.get("revised_days"))
+        row = {
+            "prot_id": prot_id,
+            "moca_oid": moca_oid,
+            "star_key": f"oid:{moca_oid}" if moca_oid is not None else (f"gaia:{source_id}" if source_id else f"prot:{prot_id}"),
+            "source_id": source_id,
+            "cluster": get_identity("project_id", "") or "",
+            "m": _moranta26_int(get_identity("m", raw.get("m"))),
+            "pipeline": get_identity("pipeline", "") or "",
+            "sector": _moranta26_int(get_identity("sector")),
+            "source_rotation_id": _moranta26_int(get_identity("source_rotation_id")),
+            "source_moca_tplcid": source_moca_tplcid,
+            "prot": _moranta26_float(raw.get("prot")),
+            "prot_days_unc": _moranta26_float(raw.get("prot_days_unc")),
+            "erru_prot": _moranta26_float(comments.get("erru_prot_days")),
+            "errd_prot": _moranta26_float(comments.get("errd_prot_days")),
+            "gp_rot": _moranta26_float(comments.get("gp_rot_days")),
+            "lit_prot": _moranta26_float(comments.get("lit_prot_days")),
+            "lit_source": comments.get("lit_source"),
+            "ls_power": _moranta26_float(raw.get("ls_power") if raw.get("ls_power") is not None else comments.get("ls_power")),
+            "snr": _moranta26_float(comments.get("snr")),
+            "rms": _moranta26_float(comments.get("rms")),
+            "category": get_identity("category", "") or "",
+            "selected": _moranta26_boolish_int(get_identity("selected")),
+            "revised": revised_days,
+            "has_revised": revised_days is not None,
+            "period_value_source": comments.get("period_value_source"),
+            "quality": raw.get("quality"),
+            "multiple_periods": _moranta26_boolish_int(raw.get("multiple_periods")),
+            "ignored": _moranta26_boolish_int(raw.get("ignored")),
+            "is_public": _moranta26_boolish_int(raw.get("is_public")),
+            "rls": raw.get("rls"),
+            "publication_comments": raw.get("publication_comments"),
+            "comments": raw.get("comments"),
+            "prot_flags": raw.get("prot_flags"),
+            "prob_rot": _moranta26_float(comments.get("prob_rot")),
+            "prob_snr": _moranta26_float(comments.get("prob_snr")),
+            "prob_asym": _moranta26_float(comments.get("prob_asym")),
+            "prob_rms": _moranta26_float(comments.get("prob_rms")),
+            "prob_ls": _moranta26_float(comments.get("prob_ls")),
+            "final_prob": _moranta26_float(comments.get("final_prob")),
+            "phot_g_mean_mag": _moranta26_float(raw.get("phot_g_mean_mag")),
+            "bp_rp": _moranta26_float(raw.get("bp_rp")),
+            "grp": _moranta26_float(raw.get("grp")),
+            "report_url": f"https://mocadb.ca/search/results?search-query=oid%28{moca_oid}%29&search-type=star" if moca_oid is not None else "",
+        }
+        row["prob_all"] = _moranta26_prob_all(row)
+        row["has_literature_period"] = row["lit_prot"] is not None and row["lit_prot"] > 0
+        row["has_light_curve"] = source_moca_tplcid is not None
+        rows.append({key: _pythonize(value) for key, value in row.items()})
+    rows.sort(key=lambda row: (
+        str(row.get("cluster") or ""),
+        row.get("moca_oid") if row.get("moca_oid") is not None else 10**18,
+        row.get("source_id") or "",
+        row.get("m") if row.get("m") is not None else 10**9,
+        row.get("pipeline") or "",
+        row.get("sector") if row.get("sector") is not None else 10**9,
+        row.get("prot_id") if row.get("prot_id") is not None else 10**18,
+    ))
+    return rows
+
+
+def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = _moranta26_cache_key(args, "catalog", "include-ignored-v1")
+    now = time.time()
+    cached = _MORANTA26_ROTATION_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        started = time.time()
+        df = _read_sql(conn, """
+            SELECT
+                rp.id AS prot_id,
+                rp.moca_oid,
+                rp.prot_days AS prot,
+                rp.prot_days_unc,
+                rp.prot_flags,
+                rp.quality,
+                rp.multiple_periods,
+                rp.prot_index AS m,
+                rp.ls_power,
+                rp.ignored,
+                rp.is_public,
+                rp.rls,
+                rp.publication_comments,
+                rp.comments,
+                g.source_id,
+                g.phot_g_mean_mag,
+                (g.phot_bp_mean_mag - g.phot_rp_mean_mag) AS bp_rp,
+                (g.phot_g_mean_mag - g.phot_rp_mean_mag) AS grp
+            FROM mocadb_private_tables.data_rotation_periods AS rp
+            LEFT JOIN mocadb_private_tables.cat_gaiadr3 AS g
+                ON g.moca_oid = rp.moca_oid
+            WHERE rp.moca_pid = :moca_pid
+                AND rp.is_public = 1
+                AND rp.rls = 'public'
+            ORDER BY rp.moca_oid, rp.prot_index, rp.id
+        """, {"moca_pid": MORANTA26_PID})
+        rows = _moranta26_normalize_catalog_df(df)
+        query_seconds = round(time.time() - started, 3)
+
+    clusters = sorted({str(row.get("cluster") or "") for row in rows if row.get("cluster")}) or list(MORANTA26_DEFAULT_CLUSTERS)
+    lambdas = sorted({int(row["m"]) for row in rows if row.get("m") is not None})
+    pipelines = sorted({str(row.get("pipeline") or "") for row in rows if row.get("pipeline")})
+    sectors = sorted({int(row["sector"]) for row in rows if row.get("sector") is not None})
+    categories = sorted({str(row.get("category") or "") for row in rows if row.get("category")})
+    qualities = sorted({str(row.get("quality") or "") for row in rows if row.get("quality")})
+    payload = {
+        "rows": rows,
+        "options": {
+            "clusters": clusters,
+            "lambdas": lambdas,
+            "pipelines": pipelines,
+            "sectors": sectors,
+            "categories": categories,
+            "qualities": qualities,
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "moca_pid": MORANTA26_PID,
+            "row_count": len(rows),
+            "ignored_row_count": sum(1 for row in rows if row.get("ignored")),
+            "null_moca_oid_count": sum(1 for row in rows if row.get("moca_oid") is None),
+            "light_curve_link_count": sum(1 for row in rows if row.get("source_moca_tplcid") is not None),
+            "literature_period_count": sum(1 for row in rows if row.get("has_literature_period")),
+            "query_seconds": query_seconds,
+            "include_ignored": True,
+            "ignored_filter_note": "Mora26 dataviz intentionally includes data_rotation_periods rows with ignored=1 so all source m values can be explored.",
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _moranta26_periodogram_records(rows: list[dict[str, Any]], *, max_points: int = 1200) -> list[dict[str, Any]]:
+    if len(rows) < 5:
+        return []
+    time_values = np.array([row.get("btjd") for row in rows], dtype=float)
+    flux_values = np.array([row.get("flux") for row in rows], dtype=float)
+    valid = np.isfinite(time_values) & np.isfinite(flux_values)
+    time_values = time_values[valid]
+    flux_values = flux_values[valid]
+    if time_values.size < 5:
+        return []
+    flux_values = flux_values - np.nanmedian(flux_values)
+    try:
+        from astropy.timeseries import LombScargle
+
+        frequency, power = LombScargle(time_values, flux_values).autopower(
+            minimum_frequency=1.0 / MORANTA26_MAX_PERIOD_DAYS,
+            maximum_frequency=1.0 / MORANTA26_MIN_PERIOD_DAYS,
+            samples_per_peak=12,
+        )
+        periods = 1.0 / frequency
+    except Exception:
+        periods = np.linspace(MORANTA26_MIN_PERIOD_DAYS, MORANTA26_MAX_PERIOD_DAYS, max_points)
+        y_norm = np.sum(flux_values * flux_values)
+        if not np.isfinite(y_norm) or y_norm <= 0:
+            return []
+        powers = []
+        for period in periods:
+            phase = 2.0 * np.pi * time_values / period
+            cos_phase = np.cos(phase)
+            sin_phase = np.sin(phase)
+            cos_norm = np.sum(cos_phase * cos_phase)
+            sin_norm = np.sum(sin_phase * sin_phase)
+            power = 0.0
+            if cos_norm > 0:
+                power += (np.sum(flux_values * cos_phase) ** 2) / cos_norm
+            if sin_norm > 0:
+                power += (np.sum(flux_values * sin_phase) ** 2) / sin_norm
+            powers.append(power / y_norm)
+        power = np.array(powers, dtype=float)
+    valid_period = np.isfinite(periods) & np.isfinite(power)
+    periods = periods[valid_period]
+    power = power[valid_period]
+    order = np.argsort(periods)
+    periods = periods[order]
+    power = power[order]
+    if periods.size > max_points:
+        take = np.linspace(0, periods.size - 1, max_points).round().astype(int)
+        periods = periods[take]
+        power = power[take]
+    return [
+        {"period": _pythonize(float(period)), "power": _pythonize(float(power_value))}
+        for period, power_value in zip(periods, power)
+    ]
+
+
+def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> dict[str, Any]:
+    cache_key = _moranta26_cache_key(args, "lightcurve", photseqid)
+    now = time.time()
+    cached = _MORANTA26_ROTATION_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        started = time.time()
+        header_rows = _records(_read_sql(conn, """
+            SELECT
+                h.moca_photseqid,
+                h.moca_oid,
+                h.pipeline,
+                h.flux_units,
+                h.original_filename,
+                h.comments AS header_comments
+            FROM mocadb_private_tables.moca_photometric_time_series AS h
+            WHERE h.moca_pid = :moca_pid
+                AND h.is_public = 1
+                AND h.rls = 'public'
+                AND h.moca_photseqid = :photseqid
+        """, {"moca_pid": MORANTA26_PID, "photseqid": photseqid}))
+        point_df = _read_sql(conn, """
+            SELECT
+                p.epoch_year,
+                ((p.epoch_year - 2000.0) * 365.25 - 5455.0) AS btjd,
+                p.flux,
+                p.sector
+            FROM mocadb_private_tables.data_photometric_time_series AS p
+            WHERE p.moca_photseqid = :photseqid
+                AND p.epoch_year IS NOT NULL
+                AND p.flux IS NOT NULL
+            ORDER BY p.epoch_year
+        """, {"photseqid": photseqid}) if header_rows else pd.DataFrame()
+        query_seconds = round(time.time() - started, 3)
+
+    rows = _records(point_df)
+    payload = {
+        "photseqid": photseqid,
+        "header": header_rows[0] if header_rows else None,
+        "rows": rows,
+        "periodogram": _moranta26_periodogram_records(rows),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "moca_pid": MORANTA26_PID,
+            "row_count": len(rows),
+            "header_found": bool(header_rows),
+            "has_points": bool(rows),
+            "query_seconds": query_seconds,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_moranta26_catalog() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    rng = np.random.default_rng(2606)
+    clusters = list(MORANTA26_DEFAULT_CLUSTERS)
+    lambdas = list(MORANTA26_DEFAULT_LAMBDAS)
+    pipelines = ["SAP", "PDCSAP"]
+    prot_id = 1
+    for cluster_index, cluster in enumerate(clusters):
+        for star_index in range(8):
+            oid = 900000 + cluster_index * 100 + star_index
+            source_id = str(6300000000000000000 + cluster_index * 1000 + star_index)
+            lit_period = 0.4 + 0.22 * star_index + 0.08 * cluster_index
+            for lambda_value in lambdas:
+                for pipeline_index, pipeline in enumerate(pipelines):
+                    sector = 4 + cluster_index * 3 + pipeline_index
+                    prob_all = float(np.clip(0.58 + 0.055 * math.log2(lambda_value) + rng.normal(0, 0.08), 0.05, 0.99))
+                    prot = float(lit_period * (1.0 + rng.normal(0, 0.09 + 0.015 * pipeline_index)))
+                    ignored = 1 if lambda_value != 4 and star_index % 5 == 0 else 0
+                    rows.append({
+                        "prot_id": prot_id,
+                        "moca_oid": oid,
+                        "star_key": f"oid:{oid}",
+                        "source_id": source_id,
+                        "cluster": cluster,
+                        "m": lambda_value,
+                        "pipeline": pipeline,
+                        "sector": sector,
+                        "source_rotation_id": 100000 + prot_id,
+                        "source_moca_tplcid": 5000 + cluster_index * 100 + star_index * 2 + pipeline_index,
+                        "prot": prot,
+                        "prot_days_unc": 0.02 * prot,
+                        "erru_prot": 0.025 * prot,
+                        "errd_prot": 0.018 * prot,
+                        "gp_rot": prot,
+                        "lit_prot": lit_period if star_index % 7 != 0 else None,
+                        "lit_source": "mock literature",
+                        "ls_power": float(rng.uniform(0.1, 0.95)),
+                        "snr": float(rng.uniform(5, 30)),
+                        "rms": float(rng.uniform(0.001, 0.02)),
+                        "category": "rotation" if prob_all > 0.68 else "weak",
+                        "selected": 1 if prob_all > 0.72 else 0,
+                        "revised": prot * 1.03 if star_index == 2 and lambda_value == 4 else None,
+                        "has_revised": star_index == 2 and lambda_value == 4,
+                        "period_value_source": "gp_rot",
+                        "quality": "B" if prob_all > 0.72 else "D",
+                        "multiple_periods": 1,
+                        "ignored": ignored,
+                        "is_public": 1,
+                        "rls": "public",
+                        "publication_comments": "Mock Mora26 row",
+                        "comments": "Mock row",
+                        "prot_flags": "Mock row",
+                        "prob_rot": prob_all,
+                        "prob_snr": prob_all,
+                        "prob_asym": prob_all,
+                        "prob_rms": prob_all,
+                        "prob_ls": prob_all,
+                        "final_prob": prob_all,
+                        "prob_all": prob_all,
+                        "phot_g_mean_mag": 11.0 + star_index,
+                        "bp_rp": 1.1 + 0.2 * star_index,
+                        "grp": 0.4 + 0.1 * star_index,
+                        "report_url": f"https://mocadb.ca/search/results?search-query=oid%28{oid}%29&search-type=star",
+                        "has_literature_period": star_index % 7 != 0,
+                        "has_light_curve": True,
+                    })
+                    prot_id += 1
+    return {
+        "rows": rows,
+        "options": {
+            "clusters": clusters,
+            "lambdas": lambdas,
+            "pipelines": pipelines,
+            "sectors": sorted({row["sector"] for row in rows}),
+            "categories": sorted({row["category"] for row in rows}),
+            "qualities": sorted({row["quality"] for row in rows}),
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "moca_pid": MORANTA26_PID,
+            "row_count": len(rows),
+            "ignored_row_count": sum(1 for row in rows if row.get("ignored")),
+            "null_moca_oid_count": 0,
+            "light_curve_link_count": len(rows),
+            "literature_period_count": sum(1 for row in rows if row.get("has_literature_period")),
+            "include_ignored": True,
+            "mock": True,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_moranta26_lightcurve(photseqid: int) -> dict[str, Any]:
+    rng = np.random.default_rng(int(photseqid) % 100000)
+    time_values = np.linspace(1410.93, 1436.2, 900)
+    period = 0.72 + (int(photseqid) % 13) * 0.06
+    flux = 1.0 + 0.018 * np.sin(2.0 * np.pi * time_values / period) + rng.normal(0, 0.004, size=time_values.size)
+    rows = [
+        {
+            "epoch_year": float(2000.0 + (time_value + 5455.0) / 365.25),
+            "btjd": float(time_value),
+            "flux": float(flux_value),
+            "sector": int(photseqid) % 30,
+        }
+        for time_value, flux_value in zip(time_values, flux)
+    ]
+    return {
+        "photseqid": int(photseqid),
+        "header": {
+            "moca_photseqid": int(photseqid),
+            "moca_oid": 900000 + (int(photseqid) % 1000),
+            "pipeline": "SAP",
+            "flux_units": "relative flux",
+            "original_filename": f"mock.moca_tplcid={photseqid}",
+            "header_comments": "Mock Mora26 light curve",
+        },
+        "rows": rows,
+        "periodogram": _moranta26_periodogram_records(rows),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "moca_pid": MORANTA26_PID,
+            "row_count": len(rows),
+            "header_found": True,
+            "has_points": True,
+            "mock": True,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
 @app.get("/")
 def index():
     if str(request.script_root or "").rstrip("/").endswith("/js"):
@@ -10444,6 +11608,14 @@ def trueflow_age_pdfs_fast_page():
 @app.get("/js/legacy_rvs")
 def legacy_radial_velocities_page():
     return send_from_directory(STATIC_DIR, "legacy_radial_velocities.html")
+
+
+@app.get("/moranta26-rotation")
+@app.get("/moranta26_rotation")
+@app.get("/js/moranta26-rotation")
+@app.get("/js/moranta26_rotation")
+def moranta26_rotation_page():
+    return send_from_directory(STATIC_DIR, "moranta26_rotation.html")
 
 
 @app.get("/rvbam-explorer")
@@ -11086,6 +12258,7 @@ def gaia_cmd_data():
             "selection": _gaia_cmd_selection(args),
             "rows": [],
             "sequences": [],
+            "spt_axis": None,
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "row_count": 0,
@@ -11395,6 +12568,86 @@ def legacy_radial_velocities_clear_cache():
     })
 
 
+@app.get("/api/moranta26-rotation/catalog")
+@app.get("/api/moranta26_rotation/catalog")
+@app.get("/js/api/moranta26-rotation/catalog")
+@app.get("/js/api/moranta26_rotation/catalog")
+def moranta26_rotation_catalog():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_moranta26_catalog()})
+        payload = _load_moranta26_catalog_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "rows": [],
+            "options": {
+                "clusters": list(MORANTA26_DEFAULT_CLUSTERS),
+                "lambdas": list(MORANTA26_DEFAULT_LAMBDAS),
+                "pipelines": [],
+                "sectors": [],
+                "categories": [],
+                "qualities": [],
+            },
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "moca_pid": MORANTA26_PID,
+                "row_count": 0,
+                "include_ignored": True,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/moranta26-rotation/lightcurve/<int:photseqid>")
+@app.get("/api/moranta26_rotation/lightcurve/<int:photseqid>")
+@app.get("/js/api/moranta26-rotation/lightcurve/<int:photseqid>")
+@app.get("/js/api/moranta26_rotation/lightcurve/<int:photseqid>")
+def moranta26_rotation_lightcurve(photseqid: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return jsonify({"ok": True, "source": "mock", **_mock_moranta26_lightcurve(photseqid)})
+        payload = _load_moranta26_lightcurve_from_db(args, int(photseqid))
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "photseqid": int(photseqid),
+            "header": None,
+            "rows": [],
+            "periodogram": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "moca_pid": MORANTA26_PID,
+                "row_count": 0,
+                "header_found": False,
+                "has_points": False,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/moranta26-rotation/cache/clear")
+@app.post("/api/moranta26_rotation/cache/clear")
+@app.post("/js/api/moranta26-rotation/cache/clear")
+@app.post("/js/api/moranta26_rotation/cache/clear")
+def moranta26_rotation_clear_cache():
+    moranta_count = len(_MORANTA26_ROTATION_CACHE)
+    _MORANTA26_ROTATION_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"moranta26Rotation": moranta_count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
+
+
 @app.get("/api/rvbam-explorer/search")
 @app.get("/api/rvbam-explorer/runs")
 @app.get("/api/rvbam_explorer/search")
@@ -11674,11 +12927,20 @@ def rvbam_explorer_segment_rebuilt_fit(segment_id: int):
 def rvbam_explorer_clear_cache():
     rvbam_count = len(_RVBAM_CACHE)
     array_count = len(_RVBAM_ARRAY_CACHE)
+    table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
+    column_metadata_count = len(_DB_COLUMNS_CACHE)
     _RVBAM_CACHE.clear()
     _RVBAM_ARRAY_CACHE.clear()
+    _DB_TABLE_EXISTS_CACHE.clear()
+    _DB_COLUMNS_CACHE.clear()
     return jsonify({
         "ok": True,
-        "cleared": {"rvbamExplorer": rvbam_count, "rvbamPayloadArrays": array_count},
+        "cleared": {
+            "rvbamExplorer": rvbam_count,
+            "rvbamPayloadArrays": array_count,
+            "dbTableMetadata": table_metadata_count,
+            "dbColumnMetadata": column_metadata_count,
+        },
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -11760,8 +13022,11 @@ def clear_cache():
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
     legacy_rv_count = len(_LEGACY_RV_CACHE)
+    moranta26_rotation_count = len(_MORANTA26_ROTATION_CACHE)
     rvbam_count = len(_RVBAM_CACHE)
     rvbam_array_count = len(_RVBAM_ARRAY_CACHE)
+    table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
+    column_metadata_count = len(_DB_COLUMNS_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
     _SPT_GRID_CACHE.clear()
@@ -11774,8 +13039,11 @@ def clear_cache():
     _TRUEFLOW_AGE_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
     _LEGACY_RV_CACHE.clear()
+    _MORANTA26_ROTATION_CACHE.clear()
     _RVBAM_CACHE.clear()
     _RVBAM_ARRAY_CACHE.clear()
+    _DB_TABLE_EXISTS_CACHE.clear()
+    _DB_COLUMNS_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
@@ -11791,8 +13059,11 @@ def clear_cache():
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
             "legacyRadialVelocities": legacy_rv_count,
+            "moranta26Rotation": moranta26_rotation_count,
             "rvbamExplorer": rvbam_count,
             "rvbamPayloadArrays": rvbam_array_count,
+            "dbTableMetadata": table_metadata_count,
+            "dbColumnMetadata": column_metadata_count,
         },
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

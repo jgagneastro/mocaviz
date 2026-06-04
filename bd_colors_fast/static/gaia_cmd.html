@@ -90,6 +90,10 @@
             <span>Show extinction correction vectors</span>
           </label>
           <label class="checkline">
+            <input id="gcmd-display-errors" type="checkbox">
+            <span>Display CMD errors</span>
+          </label>
+          <label class="checkline">
             <input id="gcmd-highlight-binaries" type="checkbox">
             <span>Highlight known binaries</span>
           </label>
@@ -158,6 +162,7 @@
           <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
           <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>.</td></tr>
           <tr><td><code>extinction_vectors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws arrows from uncorrected photometry, <code>magnitude + extinction_a</code>, to the corrected plotted photometry when available.</td></tr>
+          <tr><td><code>display_errors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows available CMD error bars from photometric and distance uncertainties.</td></tr>
           <tr><td><code>binaries</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overplots known binaries with open symbols. Objects remain plotted normally either way.</td></tr>
           <tr><td><code>sequences</code></td><td><code>0</code>, <code>false</code>, or <code>no</code></td><td>Hides MOCAdb empirical age-sequence overlays. They are shown by default.</td></tr>
           <tr><td><code>field_hover</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Enables hover text for the dense field-star sample. Field hover is off by default.</td></tr>
@@ -177,6 +182,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=url-sync-20260514b"></script>
+  <script src="static/gaia_cmd.js?v=gaia-cmd-spt-axis-20260604c"></script>
 </body>
 </html>

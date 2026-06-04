@@ -177,6 +177,7 @@ function bindSpectralControls() {
   });
   sptEl["spt-prev-standard"].addEventListener("click", () => moveStandard(-1));
   sptEl["spt-next-standard"].addEventListener("click", () => moveStandard(1));
+  bindSpectralKeyboardNavigation();
   sptEl["spt-deredden"].addEventListener("change", () => {
     if (sptEl["spt-deredden"].checked) sptEl["spt-cloud"].checked = false;
     updateProcessingModeControls();
@@ -220,6 +221,26 @@ function bindSpectralControls() {
     if (sptState.comparePayload) renderSpectralTyping();
   }, 150));
   updateProcessingModeControls();
+}
+
+function bindSpectralKeyboardNavigation() {
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (isSpectralKeyboardEditableTarget(event.target)) return;
+    let moved = false;
+    if (event.key === "ArrowLeft") moved = moveStandard(-1);
+    else if (event.key === "ArrowRight") moved = moveStandard(1);
+    else if (event.key === "ArrowUp") moved = moveGrid(-1);
+    else if (event.key === "ArrowDown") moved = moveGrid(1);
+    if (moved) event.preventDefault();
+  });
+}
+
+function isSpectralKeyboardEditableTarget(target) {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tagName = String(target.tagName || "").toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function updateProcessingModeControls() {
@@ -1182,22 +1203,28 @@ function setSpectralTypingExportDisabled(disabled) {
 function moveGrid(delta) {
   const values = currentGridValues();
   const current = values.indexOf(String(sptState.selectedGrid));
+  if (current < 0) return false;
   const next = current + delta;
-  if (next < 0 || next >= values.length) return;
+  if (next < 0 || next >= values.length) return false;
   sptState.selectedGrid = values[next];
   sptState.currentIndex = bestIndexForGrid(sptState.selectedGrid);
   sptState.hasAppliedInitialIndex = true;
   sptEl["spt-grid-select"].value = sptState.selectedGrid;
   updateSpectralUrl();
   renderSpectralTyping();
+  return true;
 }
 
 function moveStandard(delta) {
   const entries = filteredEntries();
-  sptState.currentIndex = Math.min(Math.max(0, sptState.currentIndex + delta), Math.max(0, entries.length - 1));
+  if (!entries.length) return false;
+  const next = Math.min(Math.max(0, sptState.currentIndex + delta), entries.length - 1);
+  if (next === sptState.currentIndex) return false;
+  sptState.currentIndex = next;
   sptState.hasAppliedInitialIndex = true;
   updateSpectralUrl();
   renderSpectralTyping();
+  return true;
 }
 
 function currentGridValues() {
