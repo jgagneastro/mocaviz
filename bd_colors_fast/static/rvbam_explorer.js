@@ -6,6 +6,8 @@ const rvbState = {
   rebuiltCorner: null,
   globalCorner: null,
   rebuiltFit: null,
+  literatureComparison: null,
+  literatureComparisonDirty: true,
   selectedSegmentId: null,
   selectedIds: null,
   requestedRunId: null,
@@ -20,24 +22,51 @@ const rvbState = {
   segmentToken: 0,
   posteriorToken: 0,
   globalCornerToken: 0,
+  literatureComparisonToken: 0,
   ignorePlotlyDeselectUntil: 0,
-  activeTab: "fit",
+  averageFilterPreset: "",
+  activeTab: "posterior",
 };
 
 const rvbEl = {};
 
 const RVB_SHOW_GLOBAL_CORNER_TAB = false;
+const rvbAlwaysShowScatterYAxisKeys = new Set([
+  "data_contrast",
+  "model_contrast",
+  "nmodel_10p_contrast",
+  "noutliers_masked",
+]);
+const rvbAverageFilterInputIds = [
+  "rvb-max-lsf",
+  "rvb-max-best-chi2",
+  "rvb-max-rv-unc",
+  "rvb-min-data-contrast",
+  "rvb-min-model-contrast",
+  "rvb-min-model-10p",
+  "rvb-min-snr",
+  "rvb-segment-wavelength",
+  "rvb-max-masked-outliers",
+];
+const rvbFireAverageFilterDefaults = {
+  "rvb-max-lsf": "30",
+  "rvb-max-rv-unc": "45",
+  "rvb-min-data-contrast": "0.1",
+  "rvb-min-model-contrast": "0.1",
+  "rvb-min-model-10p": "200",
+  "rvb-min-snr": "2",
+};
 
 const rvbScatterYAxisOptions = {
   rv_kms: { key: "rv_kms", label: "RV", axisTitle: "RV (km/s)", errorKey: "rv_kms_unc", unit: "km/s", digits: 3 },
   rv_kms_unc: { key: "rv_kms_unc", label: "RV uncertainty", axisTitle: "RV uncertainty (km/s)", unit: "km/s", digits: 3 },
   lsf: { key: "lsf", label: "LSF sigma", axisTitle: "LSF sigma (km/s)", errorKey: "lsf_unc", unit: "km/s", digits: 3 },
   vsini_kms: { key: "vsini_kms", label: "v sin i", axisTitle: "v sin i (km/s)", errorKey: "vsini_kms_unc", unit: "km/s", digits: 3 },
-  segment_snr_median: { key: "segment_snr_median", label: "Median S/N", axisTitle: "Median S/N per pixel", digits: 2 },
-  data_contrast: { key: "data_contrast", label: "Data contrast", axisTitle: "Data contrast", digits: 4 },
-  model_contrast: { key: "model_contrast", label: "Model contrast", axisTitle: "Model contrast", digits: 4 },
-  nmodel_10p_contrast: { key: "nmodel_10p_contrast", label: "Model points > 10% contrast", axisTitle: "Model points > 10% contrast", digits: 1 },
-  noutliers_masked: { key: "noutliers_masked", label: "Masked outliers", axisTitle: "Masked outliers", digits: 1 },
+  segment_snr_median: { key: "segment_snr_median", label: "Segment median S/N", axisTitle: "Segment median S/N per pixel", digits: 2 },
+  data_contrast: { key: "data_contrast", label: "Data RV content", axisTitle: "Data RV content contrast", digits: 4 },
+  model_contrast: { key: "model_contrast", label: "Model RV content", axisTitle: "Model RV content contrast", digits: 4 },
+  nmodel_10p_contrast: { key: "nmodel_10p_contrast", label: "Model deep-line pixels", axisTitle: "Model pixels at least 10% below high flux", digits: 1 },
+  noutliers_masked: { key: "noutliers_masked", label: "Masked line outliers", axisTitle: "Masked high-residual pixels", digits: 1 },
   best_chi2: { key: "best_chi2", label: "Best chi2", axisTitle: "Best chi2", digits: 3 },
   lnp_median: { key: "lnp_median", label: "Median log likelihood", axisTitle: "Median log likelihood", digits: 3 },
   lnp_max: { key: "lnp_max", label: "Max log likelihood", axisTitle: "Max log likelihood", digits: 3 },
@@ -78,6 +107,9 @@ function collectRvbamElements() {
     "rvb-pipeline",
     "rvb-has-literature-rv",
     "rvb-wavelength-coverage",
+    "rvb-min-segments",
+    "rvb-max-segments",
+    "rvb-min-run-snr",
     "rvb-run",
     "rvb-load-runs",
     "rvb-load-run",
@@ -95,6 +127,8 @@ function collectRvbamElements() {
     "rvb-min-model-contrast",
     "rvb-min-model-10p",
     "rvb-min-snr",
+    "rvb-segment-wavelength",
+    "rvb-max-masked-outliers",
     "rvb-param-x",
     "rvb-param-y",
     "rvb-max-points",
@@ -102,6 +136,7 @@ function collectRvbamElements() {
     "rvb-load-rebuilt-corner",
     "rvb-load-global-corner",
     "rvb-load-rebuilt-fit",
+    "rvb-load-lit-comparison",
     "rvb-segment-plot",
     "rvb-plot-loader",
     "rvb-summary",
@@ -129,6 +164,9 @@ function collectRvbamElements() {
     "rvb-global-corner-meta",
     "rvb-rebuilt-fit-plot",
     "rvb-rebuilt-fit-meta",
+    "rvb-lit-rv-plot",
+    "rvb-lit-rv-bias-plot",
+    "rvb-lit-rv-meta",
     "rvb-params-table",
     "rvb-payload-table",
     "rvb-clear-cache-bottom",
@@ -159,6 +197,15 @@ function readRvbamUrlState() {
   if (params.has("wavelength_coverage") || params.has("wv_coverage") || params.has("coverage")) {
     rvbEl["rvb-wavelength-coverage"].value = params.get("wavelength_coverage") || params.get("wv_coverage") || params.get("coverage") || "";
   }
+  if (params.has("min_segments") || params.has("min_segment_count") || params.has("min_available_segments")) {
+    rvbEl["rvb-min-segments"].value = params.get("min_segments") || params.get("min_segment_count") || params.get("min_available_segments") || "";
+  }
+  if (params.has("max_segments") || params.has("max_segment_count") || params.has("max_available_segments")) {
+    rvbEl["rvb-max-segments"].value = params.get("max_segments") || params.get("max_segment_count") || params.get("max_available_segments") || "";
+  }
+  if (params.has("min_run_snr") || params.has("min_run_median_snr") || params.has("min_median_snr") || params.has("min_median_snr_per_pix")) {
+    rvbEl["rvb-min-run-snr"].value = params.get("min_run_snr") || params.get("min_run_median_snr") || params.get("min_median_snr") || params.get("min_median_snr_per_pix") || "";
+  }
   if (params.has("include_ignored")) rvbEl["rvb-include-ignored"].checked = asBool(params.get("include_ignored"));
   if (params.has("errors")) rvbEl["rvb-show-errors"].checked = asBool(params.get("errors"));
   if (params.has("use_selection")) rvbEl["rvb-use-selection"].checked = asBool(params.get("use_selection"));
@@ -177,6 +224,10 @@ function readRvbamUrlState() {
   if (params.has("min_model_contrast")) rvbEl["rvb-min-model-contrast"].value = params.get("min_model_contrast") || "";
   if (params.has("min_model_10p")) rvbEl["rvb-min-model-10p"].value = params.get("min_model_10p") || "";
   if (params.has("min_snr")) rvbEl["rvb-min-snr"].value = params.get("min_snr") || "";
+  if (params.has("segment_wavelength") || params.has("segment_wavelength_range") || params.has("segment_wv")) {
+    rvbEl["rvb-segment-wavelength"].value = params.get("segment_wavelength") || params.get("segment_wavelength_range") || params.get("segment_wv") || "";
+  }
+  if (params.has("max_masked_outliers") || params.has("max_noutliers_masked")) rvbEl["rvb-max-masked-outliers"].value = params.get("max_masked_outliers") || params.get("max_noutliers_masked") || "";
   if (params.has("max_points")) rvbEl["rvb-max-points"].value = params.get("max_points") || rvbEl["rvb-max-points"].value;
 }
 
@@ -195,19 +246,26 @@ function bindRvbamControls() {
   });
   rvbEl["rvb-include-ignored"].addEventListener("change", async () => {
     updateRvbamUrl();
+    invalidateRvbamLiteratureComparison();
     await loadRvbamRuns();
     await loadSelectedRvbamRun();
   });
   const runFilterChanged = async () => {
     updateRvbamUrl();
+    invalidateRvbamLiteratureComparison();
     await loadRvbamRuns();
     await loadSelectedRvbamRun();
   };
   rvbEl["rvb-has-literature-rv"].addEventListener("change", runFilterChanged);
   rvbEl["rvb-wavelength-coverage"].addEventListener("input", debounce(runFilterChanged, 350));
   rvbEl["rvb-wavelength-coverage"].addEventListener("change", runFilterChanged);
+  for (const id of ["rvb-min-segments", "rvb-max-segments", "rvb-min-run-snr"]) {
+    rvbEl[id].addEventListener("input", debounce(runFilterChanged, 250));
+    rvbEl[id].addEventListener("change", runFilterChanged);
+  }
   rvbEl["rvb-show-errors"].addEventListener("change", () => {
     renderRvbamRun();
+    renderRvbamLiteratureComparison();
     updateRvbamUrl();
   });
   rvbEl["rvb-use-online-figures"].addEventListener("change", () => {
@@ -230,11 +288,16 @@ function bindRvbamControls() {
     renderRvbamSummary();
   });
   const averageFilterChanged = () => {
+    rvbState.averageFilterPreset = "";
     renderRvbamSegmentPlot();
     renderRvbamSummary();
+    invalidateRvbamLiteratureComparison();
     updateRvbamUrl();
+    if (rvbamSegmentCountRunFilterActive()) {
+      loadRvbamRuns().then(loadSelectedRvbamRun);
+    }
   };
-  for (const id of ["rvb-max-lsf", "rvb-max-best-chi2", "rvb-max-rv-unc", "rvb-min-data-contrast", "rvb-min-model-contrast", "rvb-min-model-10p", "rvb-min-snr"]) {
+  for (const id of rvbAverageFilterInputIds) {
     rvbEl[id].addEventListener("input", debounce(averageFilterChanged, 120));
     rvbEl[id].addEventListener("change", averageFilterChanged);
   }
@@ -242,6 +305,7 @@ function bindRvbamControls() {
   rvbEl["rvb-load-rebuilt-corner"].addEventListener("click", loadRvbamRebuiltCorner);
   rvbEl["rvb-load-global-corner"].addEventListener("click", loadRvbamGlobalCorner);
   rvbEl["rvb-load-rebuilt-fit"].addEventListener("click", loadRvbamRebuiltFit);
+  rvbEl["rvb-load-lit-comparison"].addEventListener("click", loadRvbamLiteratureComparison);
   rvbEl["rvb-param-x"].addEventListener("change", () => {
     rvbState.requestedXParam = rvbEl["rvb-param-x"].value;
     updateRvbamUrl();
@@ -265,7 +329,7 @@ function bindRvbamControls() {
     });
   });
   window.addEventListener("resize", debounce(() => {
-    for (const id of ["rvb-segment-plot", "rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot"]) {
+    for (const id of ["rvb-segment-plot", "rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot", "rvb-lit-rv-plot", "rvb-lit-rv-bias-plot"]) {
       if (rvbEl[id]) Plotly.Plots.resize(rvbEl[id]);
     }
   }, 150));
@@ -279,6 +343,13 @@ async function loadRvbamRuns() {
     const payload = await fetchJsonUrl(rvbAppUrl(`api/rvbam-explorer/runs?${params.toString()}`));
     if (!payload.ok) throw new Error(payload.error || "Could not load RVBAM runs");
     rvbState.runs = payload.runs || [];
+    const runIds = new Set(rvbState.runs.map((row) => Number(row.moca_rv_sample_run_id)).filter(Number.isFinite));
+    if (rvbState.requestedRunId && !runIds.has(Number(rvbState.requestedRunId))) {
+      rvbState.requestedRunId = null;
+      rvbState.requestedSegmentId = null;
+      rvbState.selectedSegmentId = null;
+      rvbState.selectedIds = null;
+    }
     renderRvbamRunOptions(payload.value);
     setRvbamStatus(`${rvbState.runs.length} runs`, "");
   } catch (error) {
@@ -294,16 +365,49 @@ function rvbamRunQueryParams() {
   const oid = String(rvbEl["rvb-oid"].value || "").trim();
   const specid = String(rvbEl["rvb-specid"].value || "").trim();
   const pipeline = String(rvbEl["rvb-pipeline"].value || "").trim();
+  const minSegments = String(rvbEl["rvb-min-segments"].value || "").trim();
+  const maxSegments = String(rvbEl["rvb-max-segments"].value || "").trim();
+  const minRunSnr = String(rvbEl["rvb-min-run-snr"].value || "").trim();
   if (query) params.set("q", query);
   if (oid) params.set("moca_oid", oid);
   if (specid) params.set("moca_specid", specid);
   if (pipeline) params.set("pipeline", pipeline);
+  if (minSegments) params.set("min_segments", minSegments);
+  if (maxSegments) params.set("max_segments", maxSegments);
+  if (minRunSnr) params.set("min_run_snr", minRunSnr);
   if (rvbEl["rvb-has-literature-rv"].checked) params.set("has_literature_rv", "1");
   const wavelengthCoverage = String(rvbEl["rvb-wavelength-coverage"].value || "").trim();
   if (wavelengthCoverage) params.set("wavelength_coverage", wavelengthCoverage);
   if (rvbEl["rvb-include-ignored"].checked) params.set("include_ignored", "1");
+  appendRvbamAverageFilterParams(params);
   params.set("limit", "500");
   return params;
+}
+
+function appendRvbamAverageFilterParams(params) {
+  const mappings = [
+    ["max_lsf", "rvb-max-lsf"],
+    ["max_best_chi2", "rvb-max-best-chi2"],
+    ["max_rv_unc", "rvb-max-rv-unc"],
+    ["min_data_contrast", "rvb-min-data-contrast"],
+    ["min_model_contrast", "rvb-min-model-contrast"],
+    ["min_model_10p", "rvb-min-model-10p"],
+    ["min_snr", "rvb-min-snr"],
+    ["segment_wavelength", "rvb-segment-wavelength"],
+    ["max_masked_outliers", "rvb-max-masked-outliers"],
+  ];
+  for (const [paramName, elementId] of mappings) {
+    const value = String(rvbEl[elementId]?.value || "").trim();
+    if (value) params.set(paramName, value);
+    else params.delete(paramName);
+  }
+}
+
+function rvbamSegmentCountRunFilterActive() {
+  return Boolean(
+    String(rvbEl["rvb-min-segments"]?.value || "").trim()
+    || String(rvbEl["rvb-max-segments"]?.value || "").trim()
+  );
 }
 
 function renderRvbamRunOptions(value) {
@@ -328,14 +432,18 @@ function runOptionLabel(row) {
   const spec = row.moca_specid ? `spec ${row.moca_specid}` : "no specid";
   const template = row.template_name ? basename(row.template_name) : "no template";
   const version = row.pipeline_version || "no version";
-  const count = Number(row.segment_count || 0);
+  const count = Number(firstPresent(row.available_segment_count, row.segment_count, 0) || 0);
+  const linkedCount = Number(row.segment_count || 0);
   const headerCount = Number(row.nsegments || 0);
-  const countText = count
-    ? `${count} segments`
-    : (headerCount ? `0 linked segments, header says ${headerCount}` : "no segments");
+  const runSnr = asNumber(row.median_snr_per_pix);
+  let countText = count ? `${count} available segments` : "no available segments";
+  if (count && linkedCount && linkedCount !== count) countText = `${count} available / ${linkedCount} linked segments`;
+  if (!count && linkedCount) countText = `0 available / ${linkedCount} linked segments`;
+  if (!linkedCount && headerCount) countText = `${count} available, header says ${headerCount}`;
+  const snrText = runSnr !== null ? `S/N ${formatFixed(runSnr, 1)}` : "S/N unavailable";
   const lastAdded = formatTimestampShort(row.latest_segment_created_timestamp);
   const timestampText = lastAdded ? `last RV ${lastAdded}` : "no RV timestamp";
-  return `${name} | ${spec} | ${template} | ${version} | ${countText} | ${timestampText}`;
+  return `${name} | ${spec} | ${template} | ${version} | ${countText} | ${snrText} | ${timestampText}`;
 }
 
 function renderScatterYAxisOptions(rows) {
@@ -343,7 +451,10 @@ function renderScatterYAxisOptions(rows) {
   const previous = rvbState.requestedScatterY || rvbEl["rvb-scatter-y"].value || "rv_kms";
   const available = availableScatterYAxisSpecs(rows);
   rvbEl["rvb-scatter-y"].innerHTML = available.map((spec) => {
-    const label = spec.unit ? `${spec.label} (${spec.unit})` : spec.label;
+    const baseLabel = spec.unit ? `${spec.label} (${spec.unit})` : spec.label;
+    const label = scatterYAxisHasValues(rows, spec) || !rvbAlwaysShowScatterYAxisKeys.has(spec.key)
+      ? baseLabel
+      : `${baseLabel} (not computed)`;
     return `<option value="${escapeHtml(spec.key)}">${escapeHtml(label)}</option>`;
   }).join("");
   if (available.some((spec) => spec.key === previous)) {
@@ -359,14 +470,31 @@ function renderScatterYAxisOptions(rows) {
 function availableScatterYAxisSpecs(rows) {
   const specs = Object.values(rvbScatterYAxisOptions);
   if (!rows?.length) return specs;
-  const available = specs.filter((spec) => rows.some((row) => asNumber(row[spec.key]) !== null));
+  const available = specs.filter((spec) => (
+    rvbAlwaysShowScatterYAxisKeys.has(spec.key)
+    || scatterYAxisHasValues(rows, spec)
+  ));
   return available.length ? available : [rvbScatterYAxisOptions.rv_kms];
+}
+
+function scatterYAxisHasValues(rows, spec) {
+  if (!rows?.length) return true;
+  return rows.some((row) => asNumber(row[spec.key]) !== null);
 }
 
 async function loadSelectedRvbamRun() {
   const runId = numberOrNull(rvbEl["rvb-run"].value) || rvbState.requestedRunId;
   if (!runId) {
+    rvbState.payload = null;
+    rvbState.segmentDetail = null;
+    rvbState.posterior = null;
+    rvbState.rebuiltCorner = null;
+    rvbState.globalCorner = null;
+    rvbState.rebuiltFit = null;
+    rvbState.selectedIds = null;
+    rvbState.selectedSegmentId = null;
     renderEmptyRvbam("No RVBAM run selected");
+    updateRvbamUrl();
     return;
   }
   const token = ++rvbState.loadToken;
@@ -387,6 +515,7 @@ async function loadSelectedRvbamRun() {
     rvbState.autoRebuiltCornerSegmentId = null;
     rvbState.segmentDetail = null;
     rvbState.selectedIds = null;
+    applyRvbamRunDefaultAverageFilters(payload.run || {});
     const segments = payload.segments || [];
     renderScatterYAxisOptions(segments);
     const requested = rvbState.requestedSegmentId;
@@ -418,6 +547,7 @@ function renderRvbamRun() {
   renderRvbamSpectrumTable();
   renderRvbamSegmentsTable();
   renderRvbamSegmentPlot();
+  renderRvbamLiteratureComparison();
   renderRvbamSummary();
   updateRvbamGlobalCornerControls();
   if (!rvbState.globalCorner) renderEmptyGlobalCorner("Global corner not loaded");
@@ -506,8 +636,8 @@ function renderRvbamSegmentsTable() {
     ["lsf", "LSF"],
     ["vsini_kms", "vsini"],
     ["segment_snr_median", "S/N"],
-    ["data_contrast", "Data C"],
-    ["model_contrast", "Model C"],
+    ["data_contrast", "Data RV C"],
+    ["model_contrast", "Model RV C"],
     ["sampler_name", "Sampler"],
     ["payload_count", "Payloads"],
   ];
@@ -553,12 +683,20 @@ function renderRvbamSegmentPlot() {
   const stats = averageSegmentStats(averageRows, ySpec);
   const activeRows = rows.filter((row) => !Number(row.ignored || 0));
   const ignoredRows = rows.filter((row) => Number(row.ignored || 0));
-  const rangeRows = rows.length ? rows : averageRows;
+  const filteredActiveRows = activeRows.filter((row) => filteredOutIds.has(Number(row.moca_rv_sampling_segment_id)));
+  const validActiveRows = activeRows.filter((row) => !filteredOutIds.has(Number(row.moca_rv_sampling_segment_id)));
+  const xRangeRows = rows.length ? rows : averageRows;
+  const yRangeRows = averageRows;
   const traces = [];
-  traces.push(segmentTrace(activeRows, "Segments", "circle", false, showErrors, 8, false, ySpec, filteredOutIds));
+  if (filteredActiveRows.length) {
+    traces.push(segmentTrace(filteredActiveRows, "Filtered from average", "x-thin", false, showErrors, 14, false, ySpec, { filtered: true }));
+  }
+  traces.push(segmentTrace(validActiveRows, "Segments", "circle", false, showErrors, 8, false, ySpec));
   if (ignoredRows.length) traces.push(segmentTrace(ignoredRows, "Ignored", "x-thin", true, showErrors, 13, false, ySpec));
-  if (filteredOutRows.length) traces.push(filteredAverageLegendTrace());
-  const selected = rows.filter((row) => Number(row.moca_rv_sampling_segment_id) === Number(rvbState.selectedSegmentId));
+  const selected = rows.filter((row) => {
+    const id = Number(row.moca_rv_sampling_segment_id);
+    return id === Number(rvbState.selectedSegmentId) && !filteredOutIds.has(id);
+  });
   if (selected.length) traces.push(segmentTrace(selected, "Selected", "star", false, showErrors, 18, true, ySpec));
   const literatureRv = rvbamLiteratureRvForYAxis(ySpec);
   if (literatureRv) traces.push(rvbamLiteratureRvLegendTrace(literatureRv));
@@ -585,11 +723,10 @@ function renderRvbamSegmentPlot() {
   const title = stats.n
     ? `${titlePrefix}<br>${averageStatsLabel(stats, ySpec, { compactRvUncertainty: true })}${filterNote}`
     : `${titlePrefix}<br>${ySpec.label} average unavailable${filterNote}`;
-  const xRange = scatterAxisRange(rangeRows, (row) => segmentWavelengthMicron(row));
+  const xRange = scatterAxisRange(xRangeRows, (row) => segmentWavelengthMicron(row));
   const yRange = scatterAxisRange(
-    rangeRows,
+    yRangeRows,
     (row) => asNumber(row[ySpec.key]),
-    rvbamLiteratureRvRangeValues(literatureRv),
   );
 
   const layout = {
@@ -635,67 +772,509 @@ function renderRvbamSegmentPlot() {
     .then(bindRvbamPlotEvents);
 }
 
+function invalidateRvbamLiteratureComparison() {
+  rvbState.literatureComparison = null;
+  rvbState.literatureComparisonDirty = true;
+  if (rvbState.activeTab !== "literature") return;
+  renderEmptyLiteratureComparison("Press Refresh Comparison to load literature RV plots");
+}
+
+function rvbamLiteratureComparisonParams() {
+  const params = rvbamRunQueryParams();
+  appendRvbamAverageFilterParams(params);
+  return params;
+}
+
+async function loadRvbamLiteratureComparison() {
+  if (!rvbEl["rvb-lit-rv-plot"]) return;
+  const token = ++rvbState.literatureComparisonToken;
+  rvbState.literatureComparisonDirty = false;
+  if (rvbEl["rvb-load-lit-comparison"]) rvbEl["rvb-load-lit-comparison"].disabled = true;
+  renderEmptyLiteratureComparison("Loading literature comparison");
+  if (rvbEl["rvb-lit-rv-meta"]) rvbEl["rvb-lit-rv-meta"].textContent = "Loading comparison...";
+  setRvbamStatus("Loading literature comparison", "loading");
+  try {
+    const params = rvbamLiteratureComparisonParams();
+    const payload = await fetchJsonUrl(rvbAppUrl(`api/rvbam-explorer/literature-comparison?${params.toString()}`));
+    if (token !== rvbState.literatureComparisonToken) return;
+    if (!payload.ok) throw new Error(payload.error || "Could not load literature comparison");
+    rvbState.literatureComparison = payload;
+    renderRvbamLiteratureComparison();
+    const count = (payload.points || []).length;
+    setRvbamStatus(`${count} literature comparison points`, "");
+  } catch (error) {
+    if (token !== rvbState.literatureComparisonToken) return;
+    rvbState.literatureComparison = null;
+    rvbState.literatureComparisonDirty = true;
+    renderEmptyLiteratureComparison(error.message || "Could not load literature comparison");
+    setRvbamStatus(error.message || "Could not load literature comparison", "error");
+  } finally {
+    if (token === rvbState.literatureComparisonToken && rvbEl["rvb-load-lit-comparison"]) {
+      rvbEl["rvb-load-lit-comparison"].disabled = false;
+    }
+  }
+}
+
+function renderRvbamLiteratureComparison() {
+  if (!rvbEl["rvb-lit-rv-plot"]) return;
+  const payload = rvbState.literatureComparison;
+  if (!payload) {
+    renderEmptyLiteratureComparison("Press Refresh Comparison to load literature RV plots");
+    return;
+  }
+  renderRvbamLiteratureComparisonPlot(payload);
+  renderRvbamLiteratureBiasPlot(payload);
+  const plottedCount = (payload.points || []).filter((point) => (
+    asNumber(point.literature_rv_kms) !== null
+    && asNumber(point.rvbam_rv_kms) !== null
+  )).length;
+  const biasCount = (payload.biasPoints || []).filter((point) => (
+    asNumber(point.decimal_year) !== null
+    && asNumber(point.rv_bias_kms) !== null
+  )).length;
+  updateRvbamLiteratureComparisonMeta(payload, plottedCount, biasCount);
+}
+
+function renderRvbamLiteratureComparisonPlot(payload) {
+  const allPoints = payload.points || [];
+  const points = allPoints.filter((point) => (
+    asNumber(point.literature_rv_kms) !== null
+    && asNumber(point.rvbam_rv_kms) !== null
+  ));
+  if (!points.length) {
+    const meta = payload.meta || {};
+    const candidateCount = Number(meta.candidate_run_count || 0);
+    renderEmptyLiteratureRvPlot(candidateCount ? "No filtered runs have both RVBAM and literature RVs" : "No runs match the current filters");
+    return;
+  }
+
+  const selectedRunId = currentRvbamRunId();
+  const selectedPoints = points.filter((point) => Number(point.moca_rv_sample_run_id) === Number(selectedRunId));
+  const regularPoints = points.filter((point) => Number(point.moca_rv_sample_run_id) !== Number(selectedRunId));
+  const axisRange = rvbamLiteratureComparisonAxisRange(points);
+  const traces = [];
+  if (regularPoints.length) traces.push(rvbamLiteratureComparisonTrace(regularPoints, "Filtered runs", false));
+  if (selectedPoints.length) traces.push(rvbamLiteratureComparisonTrace(selectedPoints, "Current run", true));
+  const layout = {
+    title: { text: "RVBAM RV vs Literature RV", x: 0.5, y: 0.965, xanchor: "center", yanchor: "top", font: { size: 13 } },
+    margin: { l: 62, r: 24, t: 46, b: 58 },
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    hovermode: "closest",
+    clickmode: "event",
+    xaxis: {
+      title: "Literature RV (km/s)",
+      range: axisRange || undefined,
+      zeroline: true,
+      zerolinecolor: "lightgray",
+      gridcolor: "rgba(211,211,211,0.65)",
+      showline: true,
+      linewidth: 2,
+      linecolor: "black",
+      mirror: true,
+      ticks: "outside",
+      tickwidth: 2,
+    },
+    yaxis: {
+      title: "RVBAM filtered-segment RV (km/s)",
+      range: axisRange || undefined,
+      zeroline: true,
+      zerolinecolor: "lightgray",
+      gridcolor: "rgba(211,211,211,0.65)",
+      showline: true,
+      linewidth: 2,
+      linecolor: "black",
+      mirror: true,
+      ticks: "outside",
+      tickwidth: 2,
+    },
+    showlegend: true,
+    legend: { x: 0.02, y: 0.98, bgcolor: "rgba(255,255,255,0.74)" },
+    shapes: axisRange ? [{
+      type: "line",
+      xref: "x",
+      yref: "y",
+      x0: axisRange[0],
+      x1: axisRange[1],
+      y0: axisRange[0],
+      y1: axisRange[1],
+      line: { color: "rgba(0,0,0,0.58)", width: 2, dash: "dash" },
+      layer: "below",
+    }] : [],
+    uirevision: `rvbam-lit-comparison:${rvbamLiteratureComparisonSignature()}`,
+  };
+  Plotly.react(rvbEl["rvb-lit-rv-plot"], traces, layout, plotConfig("rvbam_literature_comparison"))
+    .then(bindRvbamLiteratureComparisonEvents);
+}
+
+function renderRvbamLiteratureBiasPlot(payload) {
+  const allPoints = payload.biasPoints || [];
+  const points = allPoints.filter((point) => (
+    asNumber(point.decimal_year) !== null
+    && asNumber(point.rv_bias_kms) !== null
+  ));
+  if (!points.length) {
+    renderEmptyLiteratureBiasPlot("No filtered segment residuals with observation dates");
+    return;
+  }
+
+  const selectedRunId = currentRvbamRunId();
+  const selectedSegmentId = Number(rvbState.selectedSegmentId);
+  const selectedPoints = points.filter((point) => (
+    Number(point.moca_rv_sample_run_id) === Number(selectedRunId)
+    || Number(point.moca_rv_sampling_segment_id) === selectedSegmentId
+  ));
+  const selectedIds = new Set(selectedPoints.map((point) => String(point.moca_rv_sampling_segment_id)));
+  const regularPoints = points.filter((point) => !selectedIds.has(String(point.moca_rv_sampling_segment_id)));
+  const xRange = rvbamLiteratureBiasTimeRange(points);
+  const yRange = rvbamLiteratureBiasRange(points);
+  const traces = [];
+  if (regularPoints.length) traces.push(rvbamLiteratureBiasTrace(regularPoints, "Filtered segments", false));
+  if (selectedPoints.length) traces.push(rvbamLiteratureBiasTrace(selectedPoints, "Current run/segment", true));
+  const layout = {
+    title: { text: "Measured - Literature RV vs Decimal Year", x: 0.5, y: 0.965, xanchor: "center", yanchor: "top", font: { size: 13 } },
+    margin: { l: 62, r: 24, t: 46, b: 58 },
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    hovermode: "closest",
+    clickmode: "event",
+    xaxis: {
+      title: "Decimal year",
+      range: xRange || undefined,
+      zeroline: false,
+      gridcolor: "rgba(211,211,211,0.65)",
+      showline: true,
+      linewidth: 2,
+      linecolor: "black",
+      mirror: true,
+      ticks: "outside",
+      tickwidth: 2,
+    },
+    yaxis: {
+      title: "Measured - literature RV (km/s)",
+      range: yRange || undefined,
+      zeroline: false,
+      gridcolor: "rgba(211,211,211,0.65)",
+      showline: true,
+      linewidth: 2,
+      linecolor: "black",
+      mirror: true,
+      ticks: "outside",
+      tickwidth: 2,
+    },
+    showlegend: true,
+    legend: { x: 0.02, y: 0.98, bgcolor: "rgba(255,255,255,0.74)" },
+    shapes: [{
+      type: "line",
+      xref: "paper",
+      x0: 0,
+      x1: 1,
+      yref: "y",
+      y0: 0,
+      y1: 0,
+      line: { color: "rgba(0,0,0,0.58)", width: 2, dash: "dash" },
+      layer: "below",
+    }],
+    uirevision: `rvbam-lit-bias:${rvbamLiteratureComparisonSignature()}`,
+  };
+  Plotly.react(rvbEl["rvb-lit-rv-bias-plot"], traces, layout, plotConfig("rvbam_literature_bias"))
+    .then(bindRvbamLiteratureBiasEvents);
+}
+
+function rvbamLiteratureComparisonTrace(points, name, selectedTrace) {
+  const showErrors = rvbEl["rvb-show-errors"]?.checked !== false;
+  return {
+    type: "scatter",
+    mode: "markers",
+    name,
+    x: points.map((point) => asNumber(point.literature_rv_kms)),
+    y: points.map((point) => asNumber(point.rvbam_rv_kms)),
+    error_x: showErrors ? {
+      type: "data",
+      array: points.map((point) => Math.max(0, asNumber(point.literature_rv_kms_unc) ?? 0)),
+      visible: true,
+      color: selectedTrace ? "rgba(214,161,0,0.42)" : "rgba(0,0,0,0.24)",
+      thickness: selectedTrace ? 2.5 : 1.9,
+      width: selectedTrace ? 4 : 3,
+    } : undefined,
+    error_y: showErrors ? {
+      type: "data",
+      array: points.map((point) => Math.max(0, asNumber(point.rvbam_rv_kms_unc) ?? 0)),
+      visible: true,
+      color: selectedTrace ? "rgba(214,161,0,0.42)" : "rgba(0,0,0,0.24)",
+      thickness: selectedTrace ? 2.5 : 1.9,
+      width: selectedTrace ? 4 : 3,
+    } : undefined,
+    marker: selectedTrace
+      ? { color: "#ffffff", size: 16, symbol: "star", line: { color: "#d6a100", width: 4 } }
+      : { color: "#ffffff", size: 9, symbol: "circle", line: { color: "#000000", width: 2.1 } },
+    customdata: points.map((point) => Number(point.moca_rv_sample_run_id)),
+    text: points.map(rvbamLiteratureComparisonHover),
+    hoverinfo: "text",
+  };
+}
+
+function rvbamLiteratureComparisonAxisRange(points) {
+  const values = [];
+  for (const point of points) {
+    for (const [valueKey, uncKey] of [
+      ["literature_rv_kms", "literature_rv_kms_unc"],
+      ["rvbam_rv_kms", "rvbam_rv_kms_unc"],
+    ]) {
+      const value = asNumber(point[valueKey]);
+      if (value === null) continue;
+      values.push(value);
+      const unc = asNumber(point[uncKey]);
+      if (unc !== null && unc > 0) {
+        values.push(value - unc, value + unc);
+      }
+    }
+  }
+  if (!values.length) return null;
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    const pad = Math.max(1, Math.abs(min || 1) * 0.08);
+    return [min - pad, max + pad];
+  }
+  const pad = Math.max(0.5, (max - min) * 0.08);
+  return [min - pad, max + pad];
+}
+
+function rvbamLiteratureBiasTimeRange(points) {
+  const values = points.map((point) => asNumber(point.decimal_year)).filter((value) => value !== null);
+  if (!values.length) return null;
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) return [min - 0.08, max + 0.08];
+  const pad = Math.max(0.04, (max - min) * 0.08);
+  return [min - pad, max + pad];
+}
+
+function rvbamLiteratureBiasRange(points) {
+  const values = [0];
+  for (const point of points) {
+    const value = asNumber(point.rv_bias_kms);
+    if (value === null) continue;
+    values.push(value);
+    const unc = asNumber(point.rv_bias_kms_unc);
+    if (unc !== null && unc > 0) values.push(value - unc, value + unc);
+  }
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    const pad = Math.max(1, Math.abs(min || 1) * 0.08);
+    return [min - pad, max + pad];
+  }
+  const pad = Math.max(0.5, (max - min) * 0.08);
+  return [min - pad, max + pad];
+}
+
+function rvbamLiteratureBiasTrace(points, name, selectedTrace) {
+  const showErrors = rvbEl["rvb-show-errors"]?.checked !== false;
+  return {
+    type: "scatter",
+    mode: "markers",
+    name,
+    x: points.map((point) => asNumber(point.decimal_year)),
+    y: points.map((point) => asNumber(point.rv_bias_kms)),
+    error_y: showErrors ? {
+      type: "data",
+      array: points.map((point) => Math.max(0, asNumber(point.rv_bias_kms_unc) ?? 0)),
+      visible: true,
+      color: selectedTrace ? "rgba(214,161,0,0.42)" : "rgba(0,0,0,0.24)",
+      thickness: selectedTrace ? 2.5 : 1.9,
+      width: selectedTrace ? 4 : 3,
+    } : undefined,
+    marker: selectedTrace
+      ? { color: "#ffffff", size: 14, symbol: "star", line: { color: "#d6a100", width: 3.8 } }
+      : { color: "#ffffff", size: 8, symbol: "circle", line: { color: "#000000", width: 1.9 } },
+    customdata: points.map((point) => [
+      Number(point.moca_rv_sample_run_id),
+      Number(point.moca_rv_sampling_segment_id),
+    ]),
+    text: points.map(rvbamLiteratureBiasHover),
+    hoverinfo: "text",
+  };
+}
+
+function rvbamLiteratureComparisonHover(point) {
+  const target = point.designation || point.target_name || `OID ${point.moca_oid ?? "unknown"}`;
+  const rvbam = uncertaintyText(point.rvbam_rv_kms, point.rvbam_rv_kms_unc, "km/s", 2);
+  const literature = uncertaintyText(point.literature_rv_kms, point.literature_rv_kms_unc, "km/s", 2);
+  const countText = `${displayValue(point.kept_segment_count)}/${displayValue(point.available_segment_count)} kept segments`;
+  const weightedText = point.rvbam_rv_weighted ? "weighted by RV uncertainty" : "unweighted mean";
+  return [
+    `<b>${escapeHtml(target)}</b>`,
+    `Run ${escapeHtml(point.moca_rv_sample_run_id)}`,
+    `RVBAM RV ${escapeHtml(rvbam)} (${escapeHtml(weightedText)})`,
+    `${escapeHtml(point.literature_label || "Literature RV")} ${escapeHtml(literature)}`,
+    point.literature_designation ? `Literature target ${escapeHtml(point.literature_designation)}` : "",
+    countText,
+    point.template_name ? `Template ${escapeHtml(basename(point.template_name))}` : "",
+    point.spectrum_name ? `Spectrum ${escapeHtml(point.spectrum_name)}` : "",
+  ].filter(Boolean).join("<br>");
+}
+
+function rvbamLiteratureBiasHover(point) {
+  const target = point.designation || point.target_name || `OID ${point.moca_oid ?? "unknown"}`;
+  const measured = uncertaintyText(point.measured_rv_kms, point.measured_rv_kms_unc, "km/s", 2);
+  const literature = uncertaintyText(point.literature_rv_kms, point.literature_rv_kms_unc, "km/s", 2);
+  const bias = uncertaintyText(point.rv_bias_kms, point.rv_bias_kms_unc, "km/s", 2);
+  const wave = asNumber(point.wv_center) !== null ? `${formatFixed(wavelengthMicron(point.wv_center), 5)} micron` : "";
+  return [
+    `<b>${escapeHtml(target)}</b>`,
+    `Year ${escapeHtml(formatFixed(point.decimal_year, 4))}`,
+    `Run ${escapeHtml(point.moca_rv_sample_run_id)} | Segment ${escapeHtml(point.segment_number ?? point.moca_rv_sampling_segment_id)}`,
+    wave ? `Wavelength ${escapeHtml(wave)}` : "",
+    `Measured RV ${escapeHtml(measured)}`,
+    `${escapeHtml(point.literature_label || "Literature RV")} ${escapeHtml(literature)}`,
+    `Measured - literature ${escapeHtml(bias)}`,
+    point.decimal_year_source ? `Epoch source ${escapeHtml(point.decimal_year_source)}` : "",
+    point.template_name ? `Template ${escapeHtml(basename(point.template_name))}` : "",
+  ].filter(Boolean).join("<br>");
+}
+
+function uncertaintyText(value, uncertainty, unit, digits) {
+  const valueNumber = asNumber(value);
+  if (valueNumber === null) return "unavailable";
+  const uncertaintyNumber = asNumber(uncertainty);
+  const rounded = oneSignificantUncertaintyLabel(valueNumber, uncertaintyNumber);
+  if (rounded) return `${rounded.value} ${unit} +/- ${rounded.unc} ${unit}`;
+  return `${formatFixed(valueNumber, digits ?? 2)} ${unit}`;
+}
+
+function rvbamLiteratureComparisonSignature() {
+  const params = rvbamLiteratureComparisonParams();
+  return Array.from(params.entries()).map(([key, value]) => `${key}=${value}`).sort().join("&");
+}
+
+function updateRvbamLiteratureComparisonMeta(payload, plottedCount, biasCount) {
+  if (!rvbEl["rvb-lit-rv-meta"]) return;
+  const meta = payload?.meta || {};
+  const skipped = meta.skipped || {};
+  const biasSkipped = meta.bias_skipped || {};
+  const skippedParts = [];
+  if (Number(skipped.no_literature_rv || 0)) skippedParts.push(`${skipped.no_literature_rv} without literature RV`);
+  if (Number(skipped.no_kept_segments || 0)) skippedParts.push(`${skipped.no_kept_segments} without kept segments`);
+  if (Number(skipped.no_segment_rv || 0)) skippedParts.push(`${skipped.no_segment_rv} without segment RV`);
+  if (Number(skipped.errors || 0)) skippedParts.push(`${skipped.errors} errors`);
+  if (Number(biasSkipped.no_epoch || 0)) skippedParts.push(`${biasSkipped.no_epoch} segment residuals without epoch`);
+  const candidateCount = Number(meta.candidate_run_count || 0);
+  const cacheText = payload?.cache?.hit ? "cache hit" : "fresh";
+  rvbEl["rvb-lit-rv-meta"].textContent = [
+    `${plottedCount} run points, ${biasCount || 0} segment residuals from ${candidateCount} filtered runs`,
+    skippedParts.length ? `skipped ${skippedParts.join(", ")}` : "",
+    cacheText,
+  ].filter(Boolean).join(" | ");
+}
+
+function renderEmptyLiteratureComparison(message) {
+  renderEmptyLiteratureRvPlot(message);
+  renderEmptyLiteratureBiasPlot(message);
+  if (rvbEl["rvb-lit-rv-meta"] && !rvbState.literatureComparison) {
+    rvbEl["rvb-lit-rv-meta"].textContent = "";
+  }
+}
+
+function renderEmptyLiteratureRvPlot(message) {
+  if (!rvbEl["rvb-lit-rv-plot"]) return;
+  Plotly.react(rvbEl["rvb-lit-rv-plot"], [], emptyLayout(message || "No literature comparison"), plotConfig("rvbam_literature_comparison_empty"));
+}
+
+function renderEmptyLiteratureBiasPlot(message) {
+  if (!rvbEl["rvb-lit-rv-bias-plot"]) return;
+  Plotly.react(rvbEl["rvb-lit-rv-bias-plot"], [], emptyLayout(message || "No literature RV residuals"), plotConfig("rvbam_literature_bias_empty"));
+}
+
+function bindRvbamLiteratureComparisonEvents() {
+  const plot = rvbEl["rvb-lit-rv-plot"];
+  if (!plot?.on) return;
+  rebindPlotlyEvent(plot, "plotly_click", handleRvbamLiteratureComparisonClick);
+}
+
+function bindRvbamLiteratureBiasEvents() {
+  const plot = rvbEl["rvb-lit-rv-bias-plot"];
+  if (!plot?.on) return;
+  rebindPlotlyEvent(plot, "plotly_click", handleRvbamLiteratureBiasClick);
+}
+
+function handleRvbamLiteratureComparisonClick(event) {
+  const runId = numberOrNull(event?.points?.[0]?.customdata);
+  if (!runId) return;
+  rvbState.requestedRunId = runId;
+  rvbState.requestedSegmentId = null;
+  rvbState.selectedSegmentId = null;
+  if (rvbEl["rvb-run"]) rvbEl["rvb-run"].value = String(runId);
+  updateRvbamUrl();
+  loadSelectedRvbamRun();
+}
+
+function handleRvbamLiteratureBiasClick(event) {
+  const customdata = event?.points?.[0]?.customdata;
+  const runId = numberOrNull(Array.isArray(customdata) ? customdata[0] : customdata);
+  const segmentId = numberOrNull(Array.isArray(customdata) ? customdata[1] : null);
+  if (!runId) return;
+  rvbState.requestedRunId = runId;
+  rvbState.requestedSegmentId = segmentId;
+  rvbState.selectedSegmentId = segmentId;
+  if (rvbEl["rvb-run"]) rvbEl["rvb-run"].value = String(runId);
+  updateRvbamUrl();
+  loadSelectedRvbamRun();
+}
+
 function scatterYAxisSpec() {
   const key = rvbEl["rvb-scatter-y"]?.value || "rv_kms";
   return rvbScatterYAxisOptions[key] || rvbScatterYAxisOptions.rv_kms;
 }
 
-function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTrace, ySpec, filteredOutIds = null) {
+function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTrace, ySpec, options = {}) {
   if (!rows.length) return null;
   const selectedpoints = selectedPointIndices(rows);
-  const isFilteredOut = (row) => !ignored && !selectedTrace && filteredOutIds?.has(Number(row.moca_rv_sampling_segment_id));
+  const filtered = Boolean(options.filtered);
+  const errorColor = filtered ? "rgba(168,18,18,0.22)" : "rgba(0,0,0,0.24)";
   return {
     type: "scatter",
     mode: "markers",
     name,
+    opacity: filtered ? 0.28 : 1,
     x: rows.map(segmentWavelengthMicron),
     y: rows.map((row) => asNumber(row[ySpec.key])),
     error_y: showErrors ? {
       type: "data",
       array: rows.map((row) => Math.max(0, asNumber(row[ySpec.errorKey]) ?? 0)),
       visible: true,
-      color: "rgba(0,0,0,0.24)",
-      thickness: 2.1,
-      width: 3,
+      color: errorColor,
+      thickness: filtered ? 1.4 : 2.1,
+      width: filtered ? 2 : 3,
     } : undefined,
-    marker: ignored
+    marker: filtered
+      ? {
+        color: "rgba(168,18,18,0.24)",
+        size,
+        symbol,
+        line: { color: "rgba(168,18,18,0.46)", width: 1.4 },
+      }
+      : ignored
       ? { color: "#9c2f2f", size, symbol, line: { color: "#9c2f2f", width: 2.5 } }
       : selectedTrace
         ? { color: "#ffffff", size, symbol, opacity: 1, line: { color: "#d6a100", width: 4.2 } }
       : {
-        color: rows.map((row) => isFilteredOut(row) ? "rgba(168,18,18,0.96)" : "#ffffff"),
-        size: rows.map((row) => isFilteredOut(row) ? 16 : size),
-        symbol: rows.map((row) => isFilteredOut(row) ? "x-thin" : symbol),
+        color: "#ffffff",
+        size,
+        symbol,
         opacity: selectedTrace ? 1 : 0.98,
         line: {
-          color: rows.map((row) => isFilteredOut(row) ? "rgba(168,18,18,0.96)" : "#000000"),
-          width: rows.map((row) => isFilteredOut(row) ? 2 : 2.2),
+          color: "#000000",
+          width: 2.2,
         },
       },
     customdata: rows.map((row) => Number(row.moca_rv_sampling_segment_id)),
-    text: rows.map((row) => isFilteredOut(row) ? `${segmentHover(row, ySpec)}<br><b>Filtered from average</b>` : segmentHover(row, ySpec)),
+    text: rows.map((row) => filtered ? `${segmentHover(row, ySpec)}<br><b>Filtered from average</b>` : segmentHover(row, ySpec)),
     hoverinfo: "text",
     selectedpoints,
     selected: { marker: { opacity: 1 } },
-    unselected: { marker: { opacity: rvbState.selectedIds ? 0.28 : 1 } },
-  };
-}
-
-function filteredAverageLegendTrace() {
-  return {
-    type: "scatter",
-    mode: "markers",
-    name: "Filtered from average",
-    x: [null],
-    y: [null],
-    marker: {
-      symbol: "x-thin",
-      color: "rgba(168,18,18,0.96)",
-      size: 16,
-      line: { color: "rgba(168,18,18,0.96)", width: 2 },
-    },
-    hoverinfo: "skip",
-    showlegend: true,
+    unselected: { marker: { opacity: rvbState.selectedIds && !filtered ? 0.28 : 1 } },
   };
 }
 
@@ -946,7 +1525,7 @@ function updateRvbamLocalModelControls(localModelFit) {
     button.disabled = !available || !rvbState.selectedSegmentId;
   }
   if (tab) tab.hidden = !fileAvailable;
-  if (!fileAvailable && rvbState.activeTab === "rebuilt") activateRvbamTab("fit");
+  if (!fileAvailable && rvbState.activeTab === "rebuilt") activateRvbamTab("posterior");
 }
 
 function updateRvbamRebuiltCornerControls(payloads) {
@@ -958,7 +1537,7 @@ function updateRvbamRebuiltCornerControls(payloads) {
     button.disabled = !available || !rvbState.selectedSegmentId;
   }
   if (tab) tab.hidden = !available;
-  if (!available && rvbState.activeTab === "rebuilt-corner") activateRvbamTab("corner");
+  if (!available && rvbState.activeTab === "rebuilt-corner") activateRvbamTab("posterior");
 }
 
 function updateRvbamGlobalCornerControls() {
@@ -985,7 +1564,7 @@ function currentRvbamRunId() {
 }
 
 function isRvbamTabName(name) {
-  return ["fit", "rebuilt", "corner", "rebuilt-corner", "global-corner", "posterior", "params", "payload", "spectrum"].includes(String(name || ""));
+  return ["fit", "rebuilt", "corner", "rebuilt-corner", "global-corner", "literature", "posterior", "params", "payload", "spectrum"].includes(String(name || ""));
 }
 
 function activateRequestedRvbamTabIfReady() {
@@ -998,6 +1577,14 @@ function activateRequestedRvbamTabIfReady() {
 }
 
 function maybeAutoLoadRvbamActiveTab() {
+  if (rvbState.activeTab === "literature") {
+    if (rvbState.literatureComparison) {
+      renderRvbamLiteratureComparison();
+    } else {
+      renderEmptyLiteratureComparison("Press Refresh Comparison to load literature RV plots");
+    }
+    return;
+  }
   const segmentId = Number(rvbState.selectedSegmentId);
   if (!segmentId || !rvbState.segmentDetail?.segment) return;
   const activeButton = document.querySelector(`[data-rvb-tab="${rvbState.activeTab}"]`);
@@ -1058,14 +1645,15 @@ function ensureRvbamActiveTabVisible() {
 
 function firstVisibleRvbamTab() {
   const order = [
+    "posterior",
     "rebuilt",
     "fit",
     "rebuilt-corner",
     ...(RVB_SHOW_GLOBAL_CORNER_TAB ? ["global-corner"] : []),
     "corner",
-    "posterior",
     "params",
     "payload",
+    "literature",
     "spectrum",
   ];
   for (const name of order) {
@@ -1156,14 +1744,11 @@ function selectedSegmentMetadataRows(segment) {
     ["Wavelength min", formatWithUnit(wavelengthMicron(segment.wv_min), "micron", 5)],
     ["Wavelength max", formatWithUnit(wavelengthMicron(segment.wv_max), "micron", 5)],
     ["Wavelength center", formatWithUnit(wavelengthMicron(segment.wv_center), "micron", 5)],
-    ["Data contrast", segment.data_contrast],
-    ["Model contrast", segment.model_contrast],
-    ["Model points > 10% contrast", segment.nmodel_10p_contrast],
-    ["Masked outliers", segment.noutliers_masked],
-    ["Median S/N", segment.segment_snr_median],
-    ["S/N p10", segment.segment_snr_p10],
-    ["S/N p90", segment.segment_snr_p90],
-    ["S/N pixels", segment.segment_snr_npoints],
+    ["Data RV content contrast", segment.data_contrast],
+    ["Model RV content contrast", segment.model_contrast],
+    ["Model deep-line pixels", segment.nmodel_10p_contrast],
+    ["Masked high-residual pixels", segment.noutliers_masked],
+    ["Segment median S/N", segment.segment_snr_median],
     ["BERV status", bervStatus.shortLabel],
     ["RVBAM BERV", bervStatus.correctionLabel],
     ["BERV source", bervMetadata.berv_source],
@@ -2071,6 +2656,56 @@ function openRvbamSpectrum() {
   window.open(rvbAppUrl(`spectra?${params.toString()}`), "_blank", "noopener");
 }
 
+function applyRvbamRunDefaultAverageFilters(run) {
+  if (isRvbamFireRun(run)) {
+    if (!hasAnyAverageFilterInputValue() || rvbState.averageFilterPreset === "fire") {
+      setAverageFilterInputValues(rvbFireAverageFilterDefaults);
+      rvbState.averageFilterPreset = "fire";
+      return true;
+    }
+    return false;
+  }
+  if (rvbState.averageFilterPreset === "fire" && averageFilterInputsMatch(rvbFireAverageFilterDefaults)) {
+    clearAverageFilterInputValues();
+    rvbState.averageFilterPreset = "";
+    return true;
+  }
+  rvbState.averageFilterPreset = "";
+  return false;
+}
+
+function isRvbamFireRun(run) {
+  return String(run?.moca_instid || "").toLowerCase().includes("fire");
+}
+
+function hasAnyAverageFilterInputValue() {
+  return rvbAverageFilterInputIds.some((id) => String(rvbEl[id]?.value || "").trim() !== "");
+}
+
+function setAverageFilterInputValues(values) {
+  for (const id of rvbAverageFilterInputIds) {
+    if (Object.prototype.hasOwnProperty.call(values, id)) {
+      rvbEl[id].value = values[id];
+    } else if (rvbState.averageFilterPreset === "fire") {
+      rvbEl[id].value = "";
+    }
+  }
+}
+
+function clearAverageFilterInputValues() {
+  for (const id of rvbAverageFilterInputIds) {
+    rvbEl[id].value = "";
+  }
+}
+
+function averageFilterInputsMatch(values) {
+  return rvbAverageFilterInputIds.every((id) => {
+    const current = String(rvbEl[id]?.value || "").trim();
+    const expected = Object.prototype.hasOwnProperty.call(values, id) ? String(values[id]) : "";
+    return current === expected;
+  });
+}
+
 function selectedRvbamRows() {
   const rows = rvbState.payload?.segments || [];
   if (rvbEl["rvb-use-selection"].checked && rvbState.selectedIds?.size) {
@@ -2099,6 +2734,8 @@ function averageFilters() {
   const minModelContrast = numberOrNull(rvbEl["rvb-min-model-contrast"]?.value);
   const minModel10p = numberOrNull(rvbEl["rvb-min-model-10p"]?.value);
   const minSnr = numberOrNull(rvbEl["rvb-min-snr"]?.value);
+  const segmentWavelengthRanges = parseRvbamWavelengthRanges(rvbEl["rvb-segment-wavelength"]?.value);
+  const maxMaskedOutliers = numberOrNull(rvbEl["rvb-max-masked-outliers"]?.value);
   return {
     maxLsf,
     maxBestChi2,
@@ -2107,8 +2744,11 @@ function averageFilters() {
     minModelContrast,
     minModel10p,
     minSnr,
+    segmentWavelengthRanges,
+    maxMaskedOutliers,
     active: maxLsf !== null || maxBestChi2 !== null || maxRvUnc !== null
-      || minDataContrast !== null || minModelContrast !== null || minModel10p !== null || minSnr !== null,
+      || minDataContrast !== null || minModelContrast !== null || minModel10p !== null
+      || minSnr !== null || segmentWavelengthRanges.length > 0 || maxMaskedOutliers !== null,
   };
 }
 
@@ -2121,7 +2761,16 @@ function passesAverageFilters(row, filters) {
     && passesMinFilter(row.model_contrast, filters.minModelContrast)
     && passesMinFilter(row.nmodel_10p_contrast, filters.minModel10p)
     && passesMinFilter(row.segment_snr_median, filters.minSnr)
+    && passesSegmentWavelengthFilter(row, filters.segmentWavelengthRanges)
+    && passesMaxFilter(row.noutliers_masked, filters.maxMaskedOutliers)
   );
+}
+
+function passesSegmentWavelengthFilter(row, ranges) {
+  if (!ranges?.length) return true;
+  const bounds = segmentWavelengthBoundsMicron(row);
+  if (!bounds) return false;
+  return ranges.some(([lo, hi]) => bounds[0] <= hi && bounds[1] >= lo);
 }
 
 function passesMaxFilter(value, maximum) {
@@ -2322,7 +2971,7 @@ function activateRvbamTab(name) {
     panel.classList.toggle("is-active", panel.id === `rvb-tab-${name}`);
   });
   setTimeout(() => {
-    for (const id of ["rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot"]) {
+    for (const id of ["rvb-posterior-plot", "rvb-correlation-plot", "rvb-rebuilt-corner-plot", "rvb-global-corner-plot", "rvb-rebuilt-fit-plot", "rvb-lit-rv-plot", "rvb-lit-rv-bias-plot"]) {
       if (rvbEl[id]) Plotly.Plots.resize(rvbEl[id]);
     }
   }, 0);
@@ -2360,9 +3009,6 @@ function exportRvbamSegments(format) {
     "nmodel_10p_contrast",
     "noutliers_masked",
     "segment_snr_median",
-    "segment_snr_p10",
-    "segment_snr_p90",
-    "segment_snr_npoints",
     "sampler_type",
     "sampler_name",
     "sampler_variant",
@@ -2412,6 +3058,11 @@ function updateRvbamUrl() {
   copyInputToParam(params, "moca_oid", "rvb-oid");
   copyInputToParam(params, "moca_specid", "rvb-specid");
   copyInputToParam(params, "pipeline", "rvb-pipeline");
+  copyInputToParam(params, "min_segments", "rvb-min-segments");
+  copyInputToParam(params, "max_segments", "rvb-max-segments");
+  copyInputToParam(params, "min_run_snr", "rvb-min-run-snr");
+  for (const alias of ["min_segment_count", "min_available_segments", "max_segment_count", "max_available_segments"]) params.delete(alias);
+  for (const alias of ["min_run_median_snr", "min_median_snr", "min_median_snr_per_pix"]) params.delete(alias);
   if (rvbEl["rvb-has-literature-rv"].checked) params.set("has_literature_rv", "1");
   else params.delete("has_literature_rv");
   copyInputToParam(params, "wavelength_coverage", "rvb-wavelength-coverage");
@@ -2427,10 +3078,13 @@ function updateRvbamUrl() {
   copyInputToParam(params, "min_model_contrast", "rvb-min-model-contrast");
   copyInputToParam(params, "min_model_10p", "rvb-min-model-10p");
   copyInputToParam(params, "min_snr", "rvb-min-snr");
+  copyInputToParam(params, "segment_wavelength", "rvb-segment-wavelength");
+  copyInputToParam(params, "max_masked_outliers", "rvb-max-masked-outliers");
+  for (const alias of ["min_snr_p10", "min_segment_snr_p10", "min_snr_pixels", "min_snr_npoints", "max_noutliers_masked", "segment_wavelength_range", "segment_wv"]) params.delete(alias);
   if (rvbEl["rvb-param-x"].value) params.set("x", rvbEl["rvb-param-x"].value);
   if (rvbEl["rvb-param-y"].value) params.set("y", rvbEl["rvb-param-y"].value);
   params.set("max_points", String(numberInputValue("rvb-max-points", 1800)));
-  if (rvbState.activeTab && rvbState.activeTab !== "fit") params.set("tab", rvbState.activeTab);
+  if (rvbState.activeTab && rvbState.activeTab !== "posterior") params.set("tab", rvbState.activeTab);
   else params.delete("tab");
   const next = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", next);
@@ -2471,7 +3125,7 @@ function formatSegmentCell(row, key) {
   const value = row[key];
   if (["wv_center", "wv_min", "wv_max"].includes(key)) return formatFixed(wavelengthMicron(value), 5);
   if (["data_contrast", "model_contrast"].includes(key)) return formatFixed(value, 4);
-  if (["segment_snr_median", "segment_snr_p10", "segment_snr_p90"].includes(key)) return formatFixed(value, 2);
+  if (key === "segment_snr_median") return formatFixed(value, 2);
   if (["rv_kms", "rv_kms_unc", "lsf", "lsf_unc", "vsini_kms", "vsini_kms_unc", "best_chi2", "lnp_median", "lnp_max"].includes(key)) return formatFixed(value, 3);
   return displayValue(value);
 }
@@ -2505,9 +3159,11 @@ function segmentHover(row, ySpec) {
     `RV ${formatFixed(row.rv_kms, 3)} +/- ${formatFixed(row.rv_kms_unc, 3)} km/s`,
     `LSF ${formatFixed(row.lsf, 3)} km/s`,
     `vsini ${formatFixed(row.vsini_kms, 3)} km/s`,
-    asNumber(row.segment_snr_median) !== null ? `Median S/N ${formatFixed(row.segment_snr_median, 2)}` : "",
-    asNumber(row.data_contrast) !== null ? `Data contrast ${formatFixed(row.data_contrast, 4)}` : "",
-    asNumber(row.model_contrast) !== null ? `Model contrast ${formatFixed(row.model_contrast, 4)}` : "",
+    asNumber(row.segment_snr_median) !== null ? `Segment median S/N ${formatFixed(row.segment_snr_median, 2)} (spectrum quality)` : "",
+    asNumber(row.data_contrast) !== null ? `Data RV content ${formatFixed(row.data_contrast, 4)}: intrinsic fractional data structure after flux errors` : "",
+    asNumber(row.model_contrast) !== null ? `Model RV content ${formatFixed(row.model_contrast, 4)}: template 99-to-1 percentile fractional contrast` : "",
+    asNumber(row.nmodel_10p_contrast) !== null ? `Model deep-line pixels ${formatGenericCell(row.nmodel_10p_contrast)}: pixels at least 10% below high flux` : "",
+    asNumber(row.noutliers_masked) !== null ? `Masked high-residual pixels ${formatGenericCell(row.noutliers_masked)}: fit points removed before final RV` : "",
   ].filter(Boolean).join("<br>");
 }
 
@@ -2525,6 +3181,39 @@ function segmentWavelengthMicron(row) {
   const right = wavelengthMicron(row?.wv_max);
   if (left === null || right === null) return null;
   return (left + right) / 2;
+}
+
+function segmentWavelengthBoundsMicron(row) {
+  let left = wavelengthMicron(row?.wv_min);
+  let right = wavelengthMicron(row?.wv_max);
+  if (left === null || right === null) {
+    const center = segmentWavelengthMicron(row);
+    if (center === null) return null;
+    left = center;
+    right = center;
+  }
+  return left <= right ? [left, right] : [right, left];
+}
+
+function parseRvbamWavelengthRanges(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  const ranges = [];
+  const numberPattern = /[-+]?\d*\.?\d+(?:e[-+]?\d+)?/ig;
+  const pairPattern = /([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(?:-|:|,|\s+)\s*([-+]?\d*\.?\d+(?:e[-+]?\d+)?)/ig;
+  let match;
+  while ((match = pairPattern.exec(text)) !== null) {
+    const left = wavelengthMicron(match[1]);
+    const right = wavelengthMicron(match[2]);
+    if (left === null || right === null) continue;
+    ranges.push(left <= right ? [left, right] : [right, left]);
+  }
+  if (ranges.length) return ranges;
+  while ((match = numberPattern.exec(text)) !== null) {
+    const value = wavelengthMicron(match[0]);
+    if (value !== null) ranges.push([value, value]);
+  }
+  return ranges;
 }
 
 function midpoint(a, b) {

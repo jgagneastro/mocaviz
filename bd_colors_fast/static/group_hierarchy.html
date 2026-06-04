@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Group Hierarchy</title>
+  <link rel="stylesheet" href="static/styles.css?v=group-hierarchy-20260604j">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+</head>
+<body class="group-hierarchy-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Group Hierarchy</div>
+      <div id="gh-status" class="status loading">Loading association hierarchy</div>
+    </header>
+
+    <main class="workspace group-hierarchy-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Navigate</h2>
+          <label for="gh-aid-search">Association</label>
+          <input id="gh-aid-search" type="text" list="gh-aid-options" autocomplete="off" placeholder="Type an association ID or name">
+          <datalist id="gh-aid-options"></datalist>
+          <div class="button-grid group-hierarchy-button-grid">
+            <button id="gh-center" type="button">Center</button>
+            <button id="gh-root" type="button">Root</button>
+          </div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Selection</h2>
+          <div id="gh-selected-summary" class="group-hierarchy-selected-summary">No association selected</div>
+          <div id="gh-branch-stats" class="group-hierarchy-stat-list"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Legend</h2>
+          <div id="gh-color-legend" class="group-hierarchy-legend"></div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Actions</h2>
+          <div class="button-grid group-hierarchy-button-grid">
+            <button id="gh-reload" type="button">Reload</button>
+            <button id="gh-clear-cache" type="button">Clear cache</button>
+          </div>
+          <div id="gh-clear-cache-status" class="plot-hint"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Branch Links</h2>
+          <div id="gh-link-list" class="group-hierarchy-link-list"></div>
+        </section>
+      </aside>
+
+      <section id="gh-visual-area" class="visual-area group-hierarchy-visual-area">
+        <div class="plot-frame group-hierarchy-plot-frame">
+          <div id="gh-plot"></div>
+          <div id="gh-plot-loader" class="plot-loader is-visible" aria-label="Loading association hierarchy">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="group-hierarchy-toolbar">
+          <div class="group-hierarchy-summary">
+            <div id="gh-summary">No hierarchy loaded</div>
+            <div id="gh-hint" class="plot-hint">Click a node to inspect that branch.</div>
+          </div>
+          <div class="export-actions group-hierarchy-actions">
+            <a id="gh-report-link" class="button-link is-disabled" href="#" target="_blank" rel="noopener">MOCAdb report</a>
+            <a id="gh-xyz-link" class="button-link is-disabled" href="#" target="_blank" rel="noopener">JS XYZ map</a>
+            <a id="gh-members-link" class="button-link is-disabled" href="#" target="_blank" rel="noopener">Member query</a>
+          </div>
+        </div>
+
+        <div class="selection-area group-hierarchy-detail-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="gh-detail-title">Selected association</strong>
+              <div id="gh-detail-subtitle" class="plot-hint">Click a sunburst node or use the association search.</div>
+            </div>
+          </div>
+          <div id="gh-details" class="group-hierarchy-details"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="static/group_hierarchy.js?v=group-hierarchy-20260604j"></script>
+</body>
+</html>

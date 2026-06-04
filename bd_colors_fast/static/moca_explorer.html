@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=moca-explorer-20260604a">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+</head>
+<body class="moca-explorer-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Explorer</div>
+      <div id="mex-status" class="status loading">Loading MOCA Explorer</div>
+    </header>
+
+    <main class="workspace moca-explorer-workspace">
+      <aside class="controls">
+        <section class="control-section filters-section">
+          <h2>Associations</h2>
+          <div class="button-grid">
+            <button id="mex-aids-default" type="button">Default</button>
+            <button id="mex-aids-clear" type="button">Clear</button>
+          </div>
+          <div class="designation-picker">
+            <label for="mex-aid-search">Add association</label>
+            <input id="mex-aid-search" type="text" autocomplete="off" placeholder="Type an association name or ID">
+            <div id="mex-aid-results" class="designation-results association-results" hidden></div>
+          </div>
+          <div id="mex-selected-aids" class="designation-selected association-selected"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Memberships</h2>
+          <div id="mex-mtid-list" class="moca-explorer-check-list"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Highlight OIDs</h2>
+          <div class="designation-picker">
+            <label for="mex-object-search">Search by designation</label>
+            <input id="mex-object-search" type="text" autocomplete="off" placeholder="Start typing a designation">
+            <div id="mex-object-results" class="designation-results" hidden></div>
+          </div>
+          <div id="mex-selected-objects" class="designation-selected"></div>
+          <details class="advanced-highlight">
+            <summary>Direct OID entry</summary>
+            <label>
+              moca_oid list
+              <input id="mex-highlight-oids" type="text" value="" placeholder="602, 10995">
+            </label>
+          </details>
+        </section>
+
+        <section class="control-section axes-section">
+          <h2>Plot Layers</h2>
+          <label class="checkline">
+            <input id="mex-hover" type="checkbox">
+            <span>Hover labels</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-cmd-field" type="checkbox" checked>
+            <span>CMD field stars</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-cmd-sequences" type="checkbox" checked>
+            <span>CMD empirical sequences</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-cmd-br" type="checkbox">
+            <span>CMD G_BP - G_RP</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-models" type="checkbox" checked>
+            <span>BANYAN models</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-assmem" type="checkbox">
+            <span>Assume membership</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-asscen" type="checkbox">
+            <span>Association labels</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-science-sequences" type="checkbox" checked>
+            <span>Diagnostic sequences</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-science-log" type="checkbox">
+            <span>Diagnostic log Y</span>
+          </label>
+          <label class="checkline">
+            <input id="mex-science-br" type="checkbox" checked>
+            <span>Diagnostic G_BP - G_RP</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Load</h2>
+          <label>
+            Max member rows
+            <input id="mex-max-objects" type="number" min="1" step="1000" value="80000">
+          </label>
+          <button id="mex-load" type="button">Load MOCA Explorer</button>
+        </section>
+      </aside>
+
+      <section class="visual-area moca-explorer-visual-area">
+        <div id="mex-viewbar" class="moca-explorer-viewbar" role="tablist" aria-label="MOCA Explorer views">
+          <button type="button" class="is-active" data-view="cmd">CMD</button>
+          <button type="button" data-view="xyz">XYZ</button>
+          <button type="button" data-view="uvw">UVW</button>
+          <button type="button" data-view="projections">XYZUVW projections</button>
+          <button type="button" data-view="prot">Rotation</button>
+          <button type="button" data-view="gaiaAct">Gaia Act</button>
+          <button type="button" data-view="ewha">H-alpha</button>
+          <button type="button" data-view="ewli">Lithium</button>
+        </div>
+
+        <div class="plot-frame moca-explorer-plot-frame">
+          <div id="mex-plot"></div>
+          <div id="mex-plot-loader" class="plot-loader is-visible" aria-label="Loading MOCA Explorer">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="moca-explorer-toolbar">
+          <div class="moca-explorer-summary">
+            <div id="mex-summary">No data loaded</div>
+            <div id="mex-subtitle" class="plot-hint">Selection: none</div>
+          </div>
+          <div class="export-actions moca-explorer-actions">
+            <button id="mex-clear-selection" type="button" disabled>Clear selection</button>
+            <button id="mex-export-csv" type="button" disabled>Export CSV</button>
+            <button id="mex-export-tsv" type="button" disabled>Export TSV</button>
+            <button id="mex-export-fits" type="button" disabled>Export FITS table</button>
+            <button id="mex-export-votable" type="button" disabled>Export VOTable</button>
+          </div>
+        </div>
+
+        <div class="selection-area moca-explorer-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="mex-table-title">Displayed members</strong>
+              <div id="mex-table-subtitle" class="plot-hint">Selections appear first.</div>
+            </div>
+          </div>
+          <div id="mex-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help moca-explorer-url-help">
+      <h2>Using URL Parameters</h2>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>asso</code>, <code>moca_aid</code></td><td>Comma-separated association IDs</td><td>Sets the association member sample.</td></tr>
+          <tr><td><code>mtid</code></td><td>Comma-separated membership type IDs</td><td>Sets the membership types included in the sample.</td></tr>
+          <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted objects.</td></tr>
+          <tr><td><code>max_objects</code></td><td>Positive integer</td><td>Caps the member query.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <div class="cache-actions">
+        <button id="mex-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="mex-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/moca_explorer.js?v=moca-explorer-20260604h"></script>
+</body>
+</html>

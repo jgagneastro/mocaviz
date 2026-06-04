@@ -43,6 +43,18 @@
             Wavelength coverage (microns)
             <input id="rvb-wavelength-coverage" type="text" autocomplete="off" placeholder="1.10-1.35 or 1.10, 1.35">
           </label>
+          <label title="Minimum number of plottable RVBAM segments with non-null RV values after the current average filters. Ignored segments are excluded unless Include ignored runs is enabled.">
+            Min available segments
+            <input id="rvb-min-segments" type="number" min="0" step="1" placeholder="No limit">
+          </label>
+          <label title="Maximum number of plottable RVBAM segments with non-null RV values after the current average filters. Ignored segments are excluded unless Include ignored runs is enabled.">
+            Max available segments
+            <input id="rvb-max-segments" type="number" min="0" step="1" placeholder="No limit">
+          </label>
+          <label title="Minimum moca_spectra.median_snr_per_pix for the spectrum associated with the RVBAM run.">
+            Min run median S/N
+            <input id="rvb-min-run-snr" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
           <label>
             RVBAM run
             <select id="rvb-run"></select>
@@ -60,6 +72,11 @@
               <option value="rv_kms_unc">RV uncertainty (km/s)</option>
               <option value="lsf">LSF sigma (km/s)</option>
               <option value="vsini_kms">v sin i (km/s)</option>
+              <option value="segment_snr_median">Segment median S/N</option>
+              <option value="data_contrast">Data RV content</option>
+              <option value="model_contrast">Model RV content</option>
+              <option value="nmodel_10p_contrast">Model deep-line pixels</option>
+              <option value="noutliers_masked">Masked line outliers</option>
               <option value="best_chi2">Best chi2</option>
               <option value="lnp_median">Median log likelihood</option>
               <option value="lnp_max">Max log likelihood</option>
@@ -101,21 +118,29 @@
             Max RV uncertainty (km/s)
             <input id="rvb-max-rv-unc" type="number" min="0" step="0.1" placeholder="No limit">
           </label>
-          <label>
-            Min data contrast
+          <label title="Intrinsic fractional data structure after flux errors; higher values mean the observed segment carries more RV information. Legacy strong cut was about 0.035.">
+            Min data RV content
             <input id="rvb-min-data-contrast" type="number" min="0" step="0.001" placeholder="No limit">
           </label>
-          <label>
-            Min model contrast
+          <label title="Template 99-to-1 percentile fractional flux contrast; higher values mean the model segment has stronger RV-bearing structure. Legacy strong cut was about 0.15.">
+            Min model RV content
             <input id="rvb-min-model-contrast" type="number" min="0" step="0.001" placeholder="No limit">
           </label>
-          <label>
-            Min model points above 10% contrast
+          <label title="Number of model pixels at least 10 percent below the high-flux reference. Legacy checks flagged values below about 100.">
+            Min model deep-line pixels
             <input id="rvb-min-model-10p" type="number" min="0" step="1" placeholder="No limit">
           </label>
-          <label>
-            Min median S/N
+          <label title="Median per-pixel S/N inside the RVBAM wavelength segment. This is a spectrum-quality filter, not one of the legacy RV-content contrast metrics.">
+            Min segment median S/N
             <input id="rvb-min-snr" type="number" min="0" step="1" placeholder="No limit">
+          </label>
+          <label title="Keeps only segments whose wavelength interval overlaps any requested range. Values are microns unless Angstrom-like values are entered.">
+            Segment wavelength range
+            <input id="rvb-segment-wavelength" type="text" autocomplete="off" placeholder="1.45-1.80 or 1.45, 1.80">
+          </label>
+          <label title="Maximum number of high-residual fit points masked before the final segment RV fit. Large values flag problematic wavelength regions.">
+            Max masked line outliers
+            <input id="rvb-max-masked-outliers" type="number" min="0" step="1" placeholder="No limit">
           </label>
         </section>
 
@@ -148,18 +173,19 @@
 
           <section class="rvb-detail-panel" aria-label="Selected RVBAM segment">
             <div class="rvb-tabbar">
-              <button type="button" class="is-active" data-rvb-tab="fit">Model Fit</button>
+              <button type="button" data-rvb-tab="fit">Model Fit</button>
               <button type="button" data-rvb-tab="rebuilt" hidden>Rebuild Model Fit</button>
               <button type="button" data-rvb-tab="corner">Corner Plot</button>
               <button type="button" data-rvb-tab="rebuilt-corner" hidden>Rebuild Corner Plot</button>
               <button type="button" data-rvb-tab="global-corner" hidden>Global Corner Plot</button>
-              <button type="button" data-rvb-tab="posterior">Posteriors</button>
+              <button type="button" data-rvb-tab="literature">Literature RV</button>
+              <button type="button" class="is-active" data-rvb-tab="posterior">Posteriors</button>
               <button type="button" data-rvb-tab="params">Parameters</button>
               <button type="button" data-rvb-tab="payload">Payload</button>
               <button type="button" data-rvb-tab="spectrum">Spectrum</button>
             </div>
 
-            <div id="rvb-tab-fit" class="rvb-tab-panel is-active">
+            <div id="rvb-tab-fit" class="rvb-tab-panel">
               <a id="rvb-model-link" href="#" target="_blank" rel="noopener" hidden>
                 <img id="rvb-model-image" class="rvb-image" alt="RVBAM model fit">
               </a>
@@ -197,7 +223,16 @@
               <div id="rvb-rebuilt-fit-meta" class="rvb-rebuilt-meta"></div>
             </div>
 
-            <div id="rvb-tab-posterior" class="rvb-tab-panel rvb-posterior-panel">
+            <div id="rvb-tab-literature" class="rvb-tab-panel rvb-lit-rv-panel">
+              <div class="rvb-tab-actions">
+                <button id="rvb-load-lit-comparison" type="button">Refresh Comparison</button>
+                <span id="rvb-lit-rv-meta" class="rvb-rebuilt-meta"></span>
+              </div>
+              <div id="rvb-lit-rv-plot"></div>
+              <div id="rvb-lit-rv-bias-plot"></div>
+            </div>
+
+            <div id="rvb-tab-posterior" class="rvb-tab-panel rvb-posterior-panel is-active">
               <div id="rvb-posterior-plot"></div>
               <div id="rvb-correlation-plot"></div>
             </div>
@@ -255,11 +290,26 @@
         <tbody>
           <tr><td><code>run_id</code></td><td>RVBAM run primary key</td><td>Loads one <code>pcat_rv_sampling_runs</code> row.</td></tr>
           <tr><td><code>segment_id</code></td><td>RVBAM segment primary key</td><td>Loads one selected segment.</td></tr>
+          <tr><td><code>tab</code></td><td><code>fit</code>, <code>literature</code>, <code>posterior</code>, ...</td><td>Opens a specific RVBAM diagnostics tab.</td></tr>
           <tr><td><code>scatter_y</code></td><td>Segment field name</td><td>Sets the left scatter plot y-axis.</td></tr>
+          <tr><td><code>min_data_contrast</code>, <code>min_model_contrast</code>, <code>min_model_10p</code>, <code>max_masked_outliers</code>, <code>segment_wavelength</code></td><td>Average filters</td><td>Filters segments by wavelength or legacy RV-content diagnostics before computing the plotted average.</td></tr>
+          <tr><td><code>min_snr</code></td><td>Average filter</td><td>Filters by median segment S/N; this is spectrum quality, not one of the legacy RV-content contrast diagnostics.</td></tr>
           <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>pipeline</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
-          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets or runs with any segment overlapping any requested wavelength range.</td></tr>
+          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code>, <code>min_segments</code>, <code>max_segments</code>, <code>min_run_snr</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets, requested wavelength coverage, filtered available segment count, or spectrum median S/N.</td></tr>
           <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses local synthetic RVBAM payloads.</td></tr>
+        </tbody>
+      </table>
+      <h3>RV Content Diagnostics</h3>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>data_contrast</code></td><td>Intrinsic fractional structure in the observed segment after flux uncertainties are accounted for; higher values mean the data carry more RV-bearing features.</td></tr>
+          <tr><td><code>model_contrast</code></td><td>Template 99-to-1 percentile fractional contrast; higher values mean the model has stronger line structure to anchor an RV.</td></tr>
+          <tr><td><code>nmodel_10p_contrast</code></td><td>Count of model pixels at least 10 percent below the high-flux reference; low counts flag line-poor segments.</td></tr>
+          <tr><td><code>noutliers_masked</code></td><td>High-residual fit pixels masked before the final segment RV fit; large counts flag problematic wavelength regions.</td></tr>
         </tbody>
       </table>
       <h3>Cache</h3>
@@ -270,6 +320,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/rvbam_explorer.js?v=rvbam-20260602-rvdiagnostics"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260604-manual-literature-tab"></script>
 </body>
 </html>

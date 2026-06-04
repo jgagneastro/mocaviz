@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BANYAN Sigma</title>
+  <link rel="stylesheet" href="static/styles.css?v=banyan-sigma-20260604b">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+</head>
+<body class="banyan-sigma-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">BANYAN Sigma</div>
+      <div id="bsig-status" class="status loading">Loading BANYAN Sigma</div>
+    </header>
+
+    <main class="workspace banyan-sigma-workspace">
+      <aside class="controls">
+        <section class="control-section filters-section">
+          <h2>MOCAdb</h2>
+          <div class="designation-picker">
+            <label for="bsig-object-search">Search by designation</label>
+            <input id="bsig-object-search" type="text" autocomplete="off" placeholder="Start typing a designation">
+            <div id="bsig-object-results" class="designation-results" hidden></div>
+          </div>
+          <label>
+            MOCAdb OID
+            <input id="bsig-moca-oid" type="number" min="1" step="1" placeholder="Optional">
+          </label>
+          <div class="button-grid">
+            <button id="bsig-load-object" type="button">Load</button>
+            <button id="bsig-clear-object" type="button">Clear</button>
+          </div>
+          <div id="bsig-loaded-object" class="plot-hint">No object loaded</div>
+        </section>
+
+        <section class="control-section axes-section">
+          <h2>Astrometry</h2>
+          <label>
+            Name
+            <input id="bsig-name" type="text" autocomplete="off" placeholder="Optional">
+          </label>
+          <label>
+            RA (deg)
+            <input id="bsig-ra" type="number" step="any">
+          </label>
+          <label>
+            Dec (deg)
+            <input id="bsig-dec" type="number" step="any">
+          </label>
+          <label>
+            pmRA (mas/yr)
+            <input id="bsig-pmra" type="number" step="any">
+          </label>
+          <label>
+            pmDec (mas/yr)
+            <input id="bsig-pmdec" type="number" step="any">
+          </label>
+          <label>
+            e_pmRA (mas/yr)
+            <input id="bsig-epmra" type="number" step="any">
+          </label>
+          <label>
+            e_pmDec (mas/yr)
+            <input id="bsig-epmdec" type="number" step="any">
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Optional Data</h2>
+          <label class="checkline">
+            <input id="bsig-use-rv" type="checkbox">
+            <span>Use radial velocity</span>
+          </label>
+          <label>
+            RV (km/s)
+            <input id="bsig-rv" type="number" step="any">
+          </label>
+          <label>
+            e_RV (km/s)
+            <input id="bsig-erv" type="number" step="any">
+          </label>
+          <label>
+            Distance input
+            <select id="bsig-distance-mode">
+              <option value="none">None</option>
+              <option value="plx">Parallax</option>
+              <option value="dist">Distance</option>
+            </select>
+          </label>
+          <label>
+            Parallax (mas)
+            <input id="bsig-plx" type="number" step="any">
+          </label>
+          <label>
+            e_Parallax (mas)
+            <input id="bsig-eplx" type="number" step="any">
+          </label>
+          <label>
+            Distance (pc)
+            <input id="bsig-dist" type="number" step="any">
+          </label>
+          <label>
+            e_Distance (pc)
+            <input id="bsig-edist" type="number" step="any">
+          </label>
+          <details class="advanced-highlight">
+            <summary>PSI motion terms</summary>
+            <label class="checkline">
+              <input id="bsig-use-psi" type="checkbox">
+              <span>Use PSI</span>
+            </label>
+            <label>
+              PSIRA
+              <input id="bsig-psira" type="number" step="any">
+            </label>
+            <label>
+              PSIDEC
+              <input id="bsig-psidec" type="number" step="any">
+            </label>
+            <label>
+              e_PSIRA
+              <input id="bsig-epsira" type="number" step="any">
+            </label>
+            <label>
+              e_PSIDEC
+              <input id="bsig-epsidec" type="number" step="any">
+            </label>
+          </details>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Run</h2>
+          <label>
+            Displayed hypotheses
+            <input id="bsig-top-n" type="number" min="1" max="50" step="1" value="4">
+          </label>
+          <label class="checkline">
+            <input id="bsig-limit-parallax-range" type="checkbox" checked>
+            <span>Limit the range of tested associations to 5-sigma of the input parallax</span>
+          </label>
+          <label class="checkline">
+            <input id="bsig-use-manual-range" type="checkbox">
+            <span>Use manual association distance range</span>
+          </label>
+          <div class="bsig-range-grid">
+            <label>
+              Min distance (pc)
+              <input id="bsig-range-min" type="number" min="0" step="any" disabled>
+            </label>
+            <label>
+              Max distance (pc)
+              <input id="bsig-range-max" type="number" min="0" step="any" disabled>
+            </label>
+          </div>
+          <label class="checkline">
+            <input id="bsig-unit-priors" type="checkbox">
+            <span>Unit priors</span>
+          </label>
+          <label class="checkline">
+            <input id="bsig-no-xyz" type="checkbox">
+            <span>No XYZ constraint</span>
+          </label>
+          <button id="bsig-run" type="button">Run BANYAN Sigma</button>
+        </section>
+      </aside>
+
+      <section class="visual-area banyan-sigma-visual-area">
+        <div class="bsig-summary-grid">
+          <div class="bsig-stat">
+            <span>YA probability</span>
+            <strong id="bsig-ya-prob">--</strong>
+          </div>
+          <div class="bsig-stat">
+            <span>Best hypothesis</span>
+            <strong id="bsig-best-hyp">--</strong>
+          </div>
+          <div class="bsig-stat">
+            <span>Best association</span>
+            <strong id="bsig-best-ya">--</strong>
+          </div>
+          <div class="bsig-stat">
+            <span>Field probability</span>
+            <strong id="bsig-field-prob">--</strong>
+          </div>
+          <div class="bsig-stat">
+            <span>Model hypotheses</span>
+            <strong id="bsig-model-count">--</strong>
+          </div>
+        </div>
+
+        <div class="plot-frame banyan-sigma-plot-frame">
+          <div id="bsig-prob-plot"></div>
+          <div id="bsig-plot-loader" class="plot-loader is-visible" aria-label="Loading BANYAN Sigma">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="bsig-toolbar">
+          <div class="bsig-summary">
+            <div id="bsig-summary">No run loaded</div>
+            <div id="bsig-subtitle" class="plot-hint">Top probabilities are shown only for the displayed hypotheses.</div>
+          </div>
+          <div class="export-actions bsig-actions">
+            <button id="bsig-export-csv" type="button" disabled>CSV</button>
+            <button id="bsig-export-tsv" type="button" disabled>TSV</button>
+            <button id="bsig-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+
+        <section class="bsig-info-box" aria-label="BANYAN Sigma information">
+          <p>
+            Please see <a href="https://ui.adsabs.harvard.edu/abs/2018ApJ...856...23G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. (2018)</a>
+            for the details of the BANYAN Sigma classifier and
+            <a href="https://ui.adsabs.harvard.edu/abs/2026arXiv260215695G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. (2026)</a>
+            for the updated BANYAN Sigma models, and please acknowledge both papers when you use results from this tool.
+          </p>
+          <p>
+            The stored BANYAN Sigma results in MOCAdb include an <code>Obs</code> column describing the observables used for the stored results of this star:
+            <code>pm</code> is the minimum set of observables, equatorial coordinates and proper motion; <code>rv</code> is the radial velocity; and <code>plx</code> is the parallax or photometric distance.
+            The <code>YA(%)</code> result is the total membership probability for all possible young associations combined, in percent. Most of the time, this is concentrated in a single association, but for some ambiguous members it can be distributed across more than one.
+            When this happens, <code>all_prob_yas</code> contains more than one <code>moca_aid</code> key with its relative share of the total association probability, in percent.
+            For example, <code>all_prob_yas: BPMG(60); ABDMG(40)</code>, with <code>YA(%): 90%</code>, means the total association probability is divided 60/40 between BPMG and ABDMG; the absolute BPMG probability is 54%, and the ABDMG probability is 36%.
+          </p>
+          <p>
+            The priors of BANYAN Sigma are adjusted such that a selection threshold of 90% in total association probability will recover 90% of the true members across associations when using input measurements with a precision similar to Gaia; see Section 6 of
+            <a href="https://ui.adsabs.harvard.edu/abs/2018ApJ...856...23G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. (2018)</a>.
+            The contamination rate even at a 90% probability threshold varies widely between associations and is usually worse for the nearest associations or those with larger UVW models. When choosing a threshold other than 90%, the recovery rate also becomes association-dependent.
+          </p>
+        </section>
+
+        <div class="bsig-table-grid">
+          <section class="selection-area bsig-result-area">
+            <div class="table-toolbar">
+              <div>
+                <strong>BANYAN Sigma Results</strong>
+                <div id="bsig-result-subtitle" class="plot-hint">No run loaded</div>
+              </div>
+            </div>
+            <div id="bsig-results-table" class="table-scroll"></div>
+          </section>
+
+          <section class="selection-area bsig-stored-area">
+            <div class="table-toolbar">
+              <div>
+                <strong>MOCAdb Stored Results</strong>
+                <div id="bsig-stored-subtitle" class="plot-hint">No object loaded</div>
+              </div>
+            </div>
+            <div id="bsig-stored-table" class="table-scroll"></div>
+          </section>
+
+          <section class="selection-area bsig-observable-area">
+            <div class="table-toolbar">
+              <div>
+                <strong>Inputs</strong>
+                <div id="bsig-input-subtitle" class="plot-hint">Manual values are editable.</div>
+              </div>
+            </div>
+            <div id="bsig-input-table" class="table-scroll"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="static/banyan_sigma.js?v=banyan-sigma-20260604b"></script>
+</body>
+</html>
