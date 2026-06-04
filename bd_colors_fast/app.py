@@ -48,6 +48,7 @@ DEFAULT_PHOTOMETRY_PSIDS = ("mko_jmag", "mko_kmag")
 SIMPLE_PHOTOMETRY_PREFIX = "simple:"
 SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
+SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
 DEFAULT_AXIS_SPECS = {
     "x": ("color", "simple:J", "simple:K"),
@@ -135,16 +136,27 @@ GAIA_CMD_SPT_AXIS_SEQUENCE_IDS = {
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
+    username = args.get("user") or os.environ.get("MOCA_USERNAME", DEFAULT_USERNAME)
+    dbname = args.get("dbase") or os.environ.get("MOCA_DBNAME", DEFAULT_DBNAME)
+    if str(username).strip().lower() == "public":
+        dbname = "mocadb"
     return {
         "host": args.get("host") or os.environ.get("MOCA_HOST", DEFAULT_HOST),
-        "username": args.get("user") or os.environ.get("MOCA_USERNAME", DEFAULT_USERNAME),
+        "username": username,
         "password": args.get("pwd") or os.environ.get("MOCA_PASSWORD", DEFAULT_PASSWORD),
-        "dbname": args.get("dbase") or os.environ.get("MOCA_DBNAME", DEFAULT_DBNAME),
+        "dbname": dbname,
     }
 
 
 def _is_private_db(args: dict[str, Any]) -> bool:
     return str(_db_config(args)["dbname"]).strip("`").lower() == "mocadb_private_tables"
+
+
+def _db_schema_identifier(args: dict[str, Any]) -> str:
+    dbname = str(_db_config(args)["dbname"]).strip("`")
+    if not SAFE_SCHEMA_RE.fullmatch(dbname):
+        raise ValueError(f"Unsafe database name: {dbname!r}")
+    return f"`{dbname}`"
 
 
 def _connection_string(args: dict[str, Any]) -> str:
@@ -11111,9 +11123,13 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     engine = _engine(_connection_string(args))
+    schema = _db_schema_identifier(args)
+    private_db = _is_private_db(args)
+    visibility_columns = "rp.is_public,\n                rp.rls," if private_db else "1 AS is_public,\n                'public' AS rls,"
+    visibility_filter = "\n                AND rp.is_public = 1\n                AND rp.rls = 'public'" if private_db else ""
     with engine.connect() as conn:
         started = time.time()
-        df = _read_sql(conn, """
+        df = _read_sql(conn, f"""
             SELECT
                 rp.id AS prot_id,
                 rp.moca_oid,
@@ -11125,23 +11141,29 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 rp.prot_index AS m,
                 rp.ls_power,
                 rp.ignored,
-                rp.is_public,
-                rp.rls,
+                {visibility_columns}
                 rp.publication_comments,
                 rp.comments,
                 g.source_id,
                 g.phot_g_mean_mag,
                 (g.phot_bp_mean_mag - g.phot_rp_mean_mag) AS bp_rp,
                 (g.phot_g_mean_mag - g.phot_rp_mean_mag) AS grp
-            FROM mocadb_private_tables.data_rotation_periods AS rp
-            LEFT JOIN mocadb_private_tables.cat_gaiadr3 AS g
+            FROM {schema}.data_rotation_periods AS rp
+            LEFT JOIN {schema}.cat_gaiadr3 AS g
                 ON g.moca_oid = rp.moca_oid
             WHERE rp.moca_pid = :moca_pid
-                AND rp.is_public = 1
-                AND rp.rls = 'public'
+                {visibility_filter}
             ORDER BY rp.moca_oid, rp.prot_index, rp.id
         """, {"moca_pid": MORANTA26_PID})
         rows = _moranta26_normalize_catalog_df(df)
+        light_curve_tables_available = (
+            _db_table_exists(conn, "moca_photometric_time_series")
+            and _db_table_exists(conn, "data_photometric_time_series")
+        )
+        if not light_curve_tables_available:
+            for row in rows:
+                row["source_moca_tplcid"] = None
+                row["has_light_curve"] = False
         query_seconds = round(time.time() - started, 3)
 
     clusters = sorted({str(row.get("cluster") or "") for row in rows if row.get("cluster")}) or list(MORANTA26_DEFAULT_CLUSTERS)
@@ -11168,6 +11190,7 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "ignored_row_count": sum(1 for row in rows if row.get("ignored")),
             "null_moca_oid_count": sum(1 for row in rows if row.get("moca_oid") is None),
             "light_curve_link_count": sum(1 for row in rows if row.get("source_moca_tplcid") is not None),
+            "light_curve_tables_available": light_curve_tables_available,
             "literature_period_count": sum(1 for row in rows if row.get("has_literature_period")),
             "query_seconds": query_seconds,
             "include_ignored": True,
@@ -11244,9 +11267,37 @@ def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> 
         return payload
 
     engine = _engine(_connection_string(args))
+    schema = _db_schema_identifier(args)
+    private_db = _is_private_db(args)
+    visibility_filter = "\n                AND h.is_public = 1\n                AND h.rls = 'public'" if private_db else ""
     with engine.connect() as conn:
         started = time.time()
-        header_rows = _records(_read_sql(conn, """
+        tables_available = (
+            _db_table_exists(conn, "moca_photometric_time_series")
+            and _db_table_exists(conn, "data_photometric_time_series")
+        )
+        if not tables_available:
+            query_seconds = round(time.time() - started, 3)
+            payload = {
+                "photseqid": photseqid,
+                "header": None,
+                "rows": [],
+                "periodogram": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "private_db": private_db,
+                    "moca_pid": MORANTA26_PID,
+                    "row_count": 0,
+                    "header_found": False,
+                    "has_points": False,
+                    "tables_available": False,
+                    "query_seconds": query_seconds,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+            _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+            return payload
+        header_rows = _records(_read_sql(conn, f"""
             SELECT
                 h.moca_photseqid,
                 h.moca_oid,
@@ -11254,19 +11305,18 @@ def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> 
                 h.flux_units,
                 h.original_filename,
                 h.comments AS header_comments
-            FROM mocadb_private_tables.moca_photometric_time_series AS h
+            FROM {schema}.moca_photometric_time_series AS h
             WHERE h.moca_pid = :moca_pid
-                AND h.is_public = 1
-                AND h.rls = 'public'
+                {visibility_filter}
                 AND h.moca_photseqid = :photseqid
         """, {"moca_pid": MORANTA26_PID, "photseqid": photseqid}))
-        point_df = _read_sql(conn, """
+        point_df = _read_sql(conn, f"""
             SELECT
                 p.epoch_year,
                 ((p.epoch_year - 2000.0) * 365.25 - 5455.0) AS btjd,
                 p.flux,
                 p.sector
-            FROM mocadb_private_tables.data_photometric_time_series AS p
+            FROM {schema}.data_photometric_time_series AS p
             WHERE p.moca_photseqid = :photseqid
                 AND p.epoch_year IS NOT NULL
                 AND p.flux IS NOT NULL
@@ -11287,6 +11337,7 @@ def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> 
             "row_count": len(rows),
             "header_found": bool(header_rows),
             "has_points": bool(rows),
+            "tables_available": True,
             "query_seconds": query_seconds,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
