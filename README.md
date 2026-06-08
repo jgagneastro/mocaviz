@@ -91,4 +91,4 @@ I also want to eventually implement other data control centers (in distinct .py 
 
 The more long-term features:
 
-- Selecting data points in 3D scatter plots (not yet allowed by plotly).
+- Selecting data points in 3D scatter plots (not yet allowed by plotly)
