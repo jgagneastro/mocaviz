@@ -3450,7 +3450,8 @@ def _parse_spectra_explorer_specids(args: dict[str, Any]) -> list[int]:
 
 def _spectra_explorer_cache_key(args: dict[str, Any], specids: list[int]) -> str:
     bins = _spectra_explorer_bins_per_micron(args)
-    return f"{_spt_db_cache_key(args)}|spectra-explorer|bins:{bins or 'raw'}|" + ",".join(str(int(specid)) for specid in specids)
+    hide_ignored = _spectra_explorer_hide_ignored(args)
+    return f"{_spt_db_cache_key(args)}|spectra-explorer|bins:{bins or 'raw'}|hide-ignored:{int(hide_ignored)}|" + ",".join(str(int(specid)) for specid in specids)
 
 
 def _spectra_explorer_bins_per_micron(args: dict[str, Any]) -> int:
@@ -3462,6 +3463,17 @@ def _spectra_explorer_bins_per_micron(args: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         bins = SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON
     return max(0, min(bins, 20000))
+
+
+def _spectra_explorer_hide_ignored(args: dict[str, Any]) -> bool:
+    if _as_bool(args.get("include_ignored") or args.get("show_ignored")):
+        return False
+    raw = args.get("hide_ignored")
+    if raw is None:
+        raw = args.get("hide_ignored_points")
+    if raw is None or raw == "":
+        return True
+    return not _as_false(raw)
 
 
 def _spectra_explorer_label(row: dict[str, Any]) -> str:
@@ -3573,6 +3585,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
     if not clean_specids:
         raise ValueError("At least one numeric moca_specid is required")
     bins_per_micron = _spectra_explorer_bins_per_micron(args)
+    hide_ignored = _spectra_explorer_hide_ignored(args)
     cache_key = _spectra_explorer_cache_key(args, clean_specids)
     now = time.time()
     cached = _SPECTRA_EXPLORER_CACHE.get(cache_key)
@@ -3610,6 +3623,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             if row.get("moca_specid") is not None
         ] or clean_specids
         valid_specid_clause = ",".join(str(int(specid)) for specid in valid_specids)
+        ignored_clause = "AND COALESCE(ds.ignored, 0) = 0" if hide_ignored else ""
         if bins_per_micron:
             bin_factor = bins_per_micron / 10000.0
             rows_df = _read_sql(conn, f"""
@@ -3617,10 +3631,11 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                     ds.moca_specid,
                     AVG(ds.wavelength_angstrom) * 1e-4 AS lam,
                     AVG(ds.flux_flambda) AS sp,
-                    SQRT(AVG(ds.flux_flambda_unc * ds.flux_flambda_unc)) AS esp
+                    SQRT(AVG(ds.flux_flambda_unc * ds.flux_flambda_unc)) AS esp,
+                    MAX(COALESCE(ds.ignored, 0)) AS ignored
                 FROM data_spectra ds
                 WHERE ds.moca_specid IN ({valid_specid_clause})
-                    AND ds.ignored = 0
+                    {ignored_clause}
                     AND ds.wavelength_angstrom IS NOT NULL
                     AND ds.flux_flambda IS NOT NULL
                 GROUP BY ds.moca_specid, FLOOR(ds.wavelength_angstrom * {bin_factor:.12g})
@@ -3632,10 +3647,11 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                     ds.moca_specid,
                     ds.wavelength_angstrom * 1e-4 AS lam,
                     ds.flux_flambda AS sp,
-                    ds.flux_flambda_unc AS esp
+                    ds.flux_flambda_unc AS esp,
+                    COALESCE(ds.ignored, 0) AS ignored
                 FROM data_spectra ds
                 WHERE ds.moca_specid IN ({valid_specid_clause})
-                    AND ds.ignored = 0
+                    {ignored_clause}
                     AND ds.wavelength_angstrom IS NOT NULL
                     AND ds.flux_flambda IS NOT NULL
                 ORDER BY ds.moca_specid, ds.wavelength_angstrom
@@ -3667,6 +3683,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                 "row_count": len(row_records),
                 "average_resolving_power": _pythonize(average_resolving_power),
                 "bins_per_micron": bins_per_micron or None,
+                "hide_ignored": hide_ignored,
             },
         })
 
@@ -3678,6 +3695,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             "specid_count": len(spectra),
             "row_count": total_rows,
             "bins_per_micron": bins_per_micron or None,
+            "hide_ignored": hide_ignored,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -3710,8 +3728,9 @@ def _mock_spectra_explorer_search(query: str | None, selected_specids: list[int]
     }
 
 
-def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
+def _mock_spectra_explorer_payload(specids: list[int], args: dict[str, Any] | None = None) -> dict[str, Any]:
     selected = specids or list(SPECTRA_EXPLORER_DEFAULT_SPECIDS)
+    hide_ignored = _spectra_explorer_hide_ignored(args or {})
     search_payload = _mock_spectra_explorer_search("", selected)
     metadata_by_specid = {int(row["moca_specid"]): row for row in search_payload["options"]}
     rng = np.random.default_rng(1234)
@@ -3729,15 +3748,18 @@ def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
         flux_flambda_a = flux_flambda_um / 10000.0
         err = np.abs(flux_flambda_a) * (0.03 + 0.02 * index)
         noise = rng.normal(0.0, np.nanmedian(err), size=wave.size)
-        rows = [
-            {
+        rows = []
+        for row_index, (x, y, dy, e) in enumerate(zip(wave, flux_flambda_a, noise, err)):
+            ignored = 1 if row_index and row_index % 97 == 0 else 0
+            if hide_ignored and ignored:
+                continue
+            rows.append({
                 "moca_specid": specid,
                 "lam": round(float(x), 6),
                 "sp": float(y + dy),
                 "esp": float(e),
-            }
-            for x, y, dy, e in zip(wave, flux_flambda_a, noise, err)
-        ]
+                "ignored": ignored,
+            })
         metadata = metadata_by_specid.get(specid) or {
             "moca_specid": specid,
             "moca_oid": 900000 + specid,
@@ -3755,6 +3777,7 @@ def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
             "meta": {
                 "row_count": len(rows),
                 "average_resolving_power": _spt_average_resolving_power(wave),
+                "hide_ignored": hide_ignored,
             },
         })
         total_rows += len(rows)
@@ -3765,6 +3788,7 @@ def _mock_spectra_explorer_payload(specids: list[int]) -> dict[str, Any]:
             "private_db": False,
             "specid_count": len(spectra),
             "row_count": total_rows,
+            "hide_ignored": hide_ignored,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -15263,7 +15287,7 @@ def spectra_explorer_load():
     specids = _parse_spectra_explorer_specids(args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_spectra_explorer_payload(specids)})
+            return jsonify({"ok": True, "source": "mock", **_mock_spectra_explorer_payload(specids, args)})
         payload = _load_spectra_explorer_from_db(args, specids)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:

@@ -82,6 +82,7 @@ function collectSpectraElements() {
     "spe-hover",
     "spe-error-shade",
     "spe-snr",
+    "spe-hide-ignored",
     "spe-xlog",
     "spe-ylog",
     "spe-fnu",
@@ -119,6 +120,9 @@ function readSpectraUrlState() {
   speEl["spe-hover"].checked = asBool(params.get("hover"));
   speEl["spe-error-shade"].checked = asBool(params.get("error_shade") || params.get("errorshade"));
   speEl["spe-snr"].checked = asBool(params.get("snr") || params.get("sn_per_pixel"));
+  speEl["spe-hide-ignored"].checked = asBool(params.get("include_ignored") || params.get("show_ignored"))
+    ? false
+    : !asFalse(params.get("hide_ignored") || params.get("hide_ignored_points"));
   speEl["spe-xlog"].checked = !asFalse(params.get("xlog"));
   speEl["spe-ylog"].checked = !asFalse(params.get("ylog"));
   speEl["spe-fnu"].checked = asBool(params.get("fnu_jy") || params.get("fnu"));
@@ -161,6 +165,7 @@ function bindSpectraControls() {
       updateSpectraUrl();
     });
   }
+  speEl["spe-hide-ignored"].addEventListener("change", loadSpectra);
   speEl["spe-normrange"].addEventListener("change", () => {
     renderSpectra();
     updateSpectraUrl();
@@ -360,6 +365,7 @@ async function loadSpectra() {
   setSpectraStatus("Loading spectra", "loading");
   const params = apiParams();
   params.set("specids", speState.selected.map((item) => item.specid).join(","));
+  params.set("hide_ignored", speEl["spe-hide-ignored"].checked ? "1" : "0");
   const urlParams = new URLSearchParams(window.location.search);
   const requestedBins = urlParams.get("bins") ?? urlParams.get("bins_per_micron") ?? urlParams.get("spe_bins");
   if (requestedBins !== null && requestedBins !== "") {
@@ -502,12 +508,14 @@ function processSpectraPayload() {
   const useFnu = speEl["spe-fnu"].checked;
   const normalize = speEl["spe-normalize"].checked;
   const showSnr = speEl["spe-snr"].checked;
+  const hideIgnored = speEl["spe-hide-ignored"].checked;
   const ylog = speEl["spe-ylog"].checked;
   return (speState.payload.spectra || []).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
     const color = spectrumTraceColor(spectrum, index);
     const rawRows = (spectrum.rows || []).map((row, rowIndex) => {
       const lam = wavelengthMicron(row.lam);
+      const ignored = ignoredFlag(row.ignored);
       const rawFlambdaUm = Number(row.sp) * 10000.0;
       const rawErrFlambdaUm = finite(row.esp) ? Number(row.esp) * 10000.0 : null;
       const converted = useFnu && finite(lam)
@@ -522,10 +530,11 @@ function processSpectraPayload() {
         lam,
         rawFlambdaUm,
         rawErrFlambdaUm,
+        ignored,
         yOriginal: converted,
         yerrOriginal: convertedErr,
       };
-    }).filter((row) => finite(row.lam) && finite(row.yOriginal));
+    }).filter((row) => finite(row.lam) && finite(row.yOriginal) && !(hideIgnored && row.ignored));
     const normCandidates = rawRows.filter((row) => row.lam >= range[0] && row.lam <= range[1] && finite(row.yOriginal) && row.yOriginal !== 0);
     const scale = normalize ? robustMedian(normCandidates.map((row) => row.yOriginal)) : 1;
     const safeScale = finite(scale) && scale !== 0 ? scale : 1;
@@ -547,6 +556,7 @@ function processSpectraPayload() {
           yerr,
           rawFlambdaUm: row.rawFlambdaUm,
           rawErrFlambdaUm: row.rawErrFlambdaUm,
+          ignored: row.ignored,
           normalized: normalize,
           unit: yAxisUnit(),
           rowIndex: row.rowIndex,
@@ -844,6 +854,7 @@ function hoverTemplate() {
       "S/N per pixel = %{y:.6g}",
       "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
       "stored error = %{customdata.rawErrFlambdaUm:.4e} W/m²/μm",
+      "ignored = %{customdata.ignored}",
       "<extra></extra>",
     ].join("<br>");
   }
@@ -854,6 +865,7 @@ function hoverTemplate() {
     `${speEl["spe-normalize"].checked ? "Normalized flux" : "Flux"} = %{y:.6g} %{customdata.unit}`,
     "error = %{customdata.yerr:.3g} %{customdata.unit}",
     "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
+    "ignored = %{customdata.ignored}",
     "<extra></extra>",
   ].join("<br>");
 }
@@ -886,7 +898,7 @@ function renderSpectraTable() {
     speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um"];
+    const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "ignored"];
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
@@ -895,6 +907,7 @@ function renderSpectraTable() {
       display_flux: formatScientific(point.y),
       display_error: finite(point.yerr) ? formatScientific(point.yerr) : "",
       raw_flambda_w_m2_um: formatScientific(point.rawFlambdaUm),
+      ignored: point.ignored,
     }));
     speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot"]) });
     return;
@@ -971,7 +984,7 @@ function renderEmptySpectra(message) {
   setSpectraStatus(message, message.includes("Could not") ? "error" : "");
 }
 
-const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom"];
+const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom", "ignored"];
 const rawSpectrumNumericExportColumns = new Set(rawSpectrumExportColumns);
 
 function rawSpectrumExportRows(spectrum) {
@@ -982,6 +995,7 @@ function rawSpectrumExportRows(spectrum) {
     wavelength_um: row.lam,
     flux_flambda_w_m2_angstrom: row.sp,
     flux_flambda_unc_w_m2_angstrom: row.esp ?? "",
+    ignored: ignoredFlag(row.ignored),
   }));
 }
 
@@ -1009,11 +1023,11 @@ function downloadRawSpectrum(specid, format = "csv") {
   downloadBlob(lines.join("\n"), `mocadb_spectrum_specid${specid}.csv`, "text/csv;charset=utf-8");
 }
 
-const plottedSpectraExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized"];
-const plottedSpectraNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "normalized"]);
+const plottedSpectraExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized", "ignored"];
+const plottedSpectraNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "normalized", "ignored"]);
 
 function exportPlottedSpectra(format) {
-  const columns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized"];
+  const columns = plottedSpectraExportColumns;
   const rows = [];
   (speState.processed || []).forEach((spectrum) => {
     spectrum.points.forEach((point) => {
@@ -1027,6 +1041,7 @@ function exportPlottedSpectra(format) {
         raw_flambda_unc_w_m2_um: point.rawErrFlambdaUm ?? "",
         display_unit: yAxisUnit(),
         normalized: speEl["spe-snr"].checked ? 0 : (speEl["spe-normalize"].checked ? 1 : 0),
+        ignored: point.ignored,
       });
     });
   });
@@ -1077,6 +1092,10 @@ function updateSpectraUrl() {
   setBoolParam(params, "hover", speEl["spe-hover"].checked);
   setBoolParam(params, "error_shade", speEl["spe-error-shade"].checked);
   setBoolParam(params, "snr", speEl["spe-snr"].checked);
+  if (!speEl["spe-hide-ignored"].checked) params.set("hide_ignored", "0");
+  else params.delete("hide_ignored");
+  params.delete("include_ignored");
+  params.delete("show_ignored");
   if (!speEl["spe-xlog"].checked) params.set("xlog", "0");
   else params.delete("xlog");
   if (!speEl["spe-ylog"].checked) params.set("ylog", "0");
@@ -1337,6 +1356,14 @@ function asBool(value) {
 
 function asFalse(value) {
   return ["0", "false", "no", "off"].includes(String(value || "").toLowerCase());
+}
+
+function ignoredFlag(value) {
+  if (value === true) return 1;
+  if (value === false || value === null || value === undefined || value === "") return 0;
+  const number = Number(value);
+  if (Number.isFinite(number)) return number !== 0 ? 1 : 0;
+  return asBool(value) ? 1 : 0;
 }
 
 function formatNumber(value, digits) {

@@ -46,6 +46,10 @@
             <span>Display S/N per pixel</span>
           </label>
           <label class="checkline">
+            <input id="spe-hide-ignored" type="checkbox" checked>
+            <span>Hide ignored spectral points</span>
+          </label>
+          <label class="checkline">
             <input id="spe-xlog" type="checkbox" checked>
             <span>Log X axis</span>
           </label>
@@ -132,6 +136,7 @@
           <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
           <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>
+          <tr><td><code>hide_ignored</code></td><td><code>0</code> shows ignored spectral rows</td><td>Hides <code>data_spectra.ignored = 1</code> rows by default.</td></tr>
           <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for display binning</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows common chemical and atomic feature bands by default.</td></tr>
           <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
@@ -152,6 +157,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectra.js?v=spectral-explorer-tokens-20260604a"></script>
+  <script src="static/spectra.js?v=spectral-explorer-ignored-20260608a"></script>
 </body>
 </html>
