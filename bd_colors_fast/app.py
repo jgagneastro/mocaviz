@@ -31,14 +31,17 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 os.environ["MPLBACKEND"] = "Agg"
 
-_LOCAL_BANYAN_SIGMA_SRC = Path(
-    os.environ.get(
-        "BANYAN_SIGMA_SRC",
-        str(Path(__file__).resolve().parents[2] / "banyan_sigma" / "src"),
-    )
-)
-if _LOCAL_BANYAN_SIGMA_SRC.is_dir():
-    sys.path.insert(0, str(_LOCAL_BANYAN_SIGMA_SRC))
+_BANYAN_SIGMA_SRC_CANDIDATES = []
+if os.environ.get("BANYAN_SIGMA_SRC"):
+    _BANYAN_SIGMA_SRC_CANDIDATES.append(Path(os.environ["BANYAN_SIGMA_SRC"]))
+_BANYAN_SIGMA_SRC_CANDIDATES.extend([
+    Path(__file__).resolve().parents[2] / "banyan_sigma" / "src",
+    Path(__file__).resolve().parent / "vendor",
+])
+for _BANYAN_SIGMA_SRC in _BANYAN_SIGMA_SRC_CANDIDATES:
+    if (_BANYAN_SIGMA_SRC / "banyan_sigma").is_dir():
+        sys.path.insert(0, str(_BANYAN_SIGMA_SRC))
+        break
 
 import numpy as np
 import pandas as pd
@@ -8655,7 +8658,6 @@ def _rvbam_literature_exists_sql(conn: Any, private: bool) -> str:
     if not _db_table_exists(conn, "calc_radial_velocities_combined"):
         return "0 = 1"
 
-    crv_public_clause = "" if private else "AND crv.is_public = 1"
     object_exists = f"""
         EXISTS (
             SELECT 1
@@ -8663,13 +8665,11 @@ def _rvbam_literature_exists_sql(conn: Any, private: bool) -> str:
             WHERE crv.moca_oid = r.moca_oid
               AND crv.radial_velocity_kms IS NOT NULL
               AND COALESCE(crv.ignored, 0) = 0
-              {crv_public_clause}
         )
     """
     if not _db_table_exists(conn, "moca_companions"):
         return object_exists
 
-    companion_public_clause = "" if private else "AND COALESCE(mc.is_public, 0) = 1"
     host_exists = f"""
         EXISTS (
             SELECT 1
@@ -8680,8 +8680,6 @@ def _rvbam_literature_exists_sql(conn: Any, private: bool) -> str:
               AND crv.radial_velocity_kms IS NOT NULL
               AND COALESCE(mc.ignored, 0) = 0
               AND COALESCE(crv.ignored, 0) = 0
-              {companion_public_clause}
-              {crv_public_clause}
         )
     """
     return f"({object_exists} OR {host_exists})"
@@ -10406,12 +10404,22 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
         return None
 
     private_db = _is_private_db(args)
-    preferred_is_public = 0 if private_db else 1
-    crv_public_clause = "" if private_db else "AND crv.is_public = 1"
+    crv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
+    crv_is_public_select = (
+        "crv.is_public"
+        if private_db and crv_has_is_public
+        else ("0 AS is_public" if private_db else "1 AS is_public")
+    )
+    crv_public_order = (
+        "CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,"
+        if private_db and crv_has_is_public
+        else ""
+    )
     params = {
         "moca_oid": target_moca_oid,
-        "preferred_is_public": preferred_is_public,
     }
+    if private_db and crv_has_is_public:
+        params["preferred_is_public"] = 0
     object_rows = _records(_read_sql(conn, f"""
         SELECT
             crv.moca_oid AS literature_moca_oid,
@@ -10420,16 +10428,15 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
             crv.radial_velocity_kms_unc,
             crv.n_measurements,
             crv.n_epochs,
-            crv.is_public
+            {crv_is_public_select}
         FROM calc_radial_velocities_combined crv
         LEFT JOIN moca_objects mo
             ON mo.moca_oid = crv.moca_oid
         WHERE crv.moca_oid = :moca_oid
             AND crv.radial_velocity_kms IS NOT NULL
             AND COALESCE(crv.ignored, 0) = 0
-            {crv_public_clause}
         ORDER BY
-            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            {crv_public_order}
             crv.id DESC
         LIMIT 1
     """, params))
@@ -10438,7 +10445,6 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
 
     if not _db_table_exists(conn, "moca_companions"):
         return None
-    companion_public_clause = "" if private_db else "AND mc.is_public = 1"
     host_rows = _records(_read_sql(conn, f"""
         SELECT
             crv.moca_oid AS literature_moca_oid,
@@ -10448,7 +10454,7 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
             crv.radial_velocity_kms_unc,
             crv.n_measurements,
             crv.n_epochs,
-            crv.is_public
+            {crv_is_public_select}
         FROM moca_companions mc
         JOIN calc_radial_velocities_combined crv
             ON crv.moca_oid = mc.moca_oid_parent
@@ -10458,10 +10464,8 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
             AND COALESCE(mc.ignored, 0) = 0
             AND crv.radial_velocity_kms IS NOT NULL
             AND COALESCE(crv.ignored, 0) = 0
-            {companion_public_clause}
-            {crv_public_clause}
         ORDER BY
-            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            {crv_public_order}
             mc.moca_cid,
             crv.id DESC
         LIMIT 1
@@ -10535,10 +10539,20 @@ def _rvbam_literature_rvs_from_db(
         return {}
 
     private_db = _is_private_db(args)
-    preferred_is_public = 0 if private_db else 1
-    crv_public_clause = "" if private_db else "AND crv.is_public = 1"
+    crv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
+    crv_is_public_select = (
+        "crv.is_public"
+        if private_db and crv_has_is_public
+        else ("0 AS is_public" if private_db else "1 AS is_public")
+    )
+    crv_public_order = (
+        "CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,"
+        if private_db and crv_has_is_public
+        else ""
+    )
     placeholders, params = _rvbam_placeholders("lit_oid", target_oids)
-    params["preferred_is_public"] = preferred_is_public
+    if private_db and crv_has_is_public:
+        params["preferred_is_public"] = 0
     object_rows = _records(_read_sql(conn, f"""
         SELECT
             crv.moca_oid AS target_moca_oid,
@@ -10548,7 +10562,7 @@ def _rvbam_literature_rvs_from_db(
             crv.radial_velocity_kms_unc,
             crv.n_measurements,
             crv.n_epochs,
-            crv.is_public,
+            {crv_is_public_select},
             crv.id AS radial_velocity_id
         FROM calc_radial_velocities_combined crv
         LEFT JOIN moca_objects mo
@@ -10556,10 +10570,9 @@ def _rvbam_literature_rvs_from_db(
         WHERE crv.moca_oid IN ({placeholders})
             AND crv.radial_velocity_kms IS NOT NULL
             AND COALESCE(crv.ignored, 0) = 0
-            {crv_public_clause}
         ORDER BY
             crv.moca_oid,
-            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            {crv_public_order}
             crv.id DESC
     """, params))
 
@@ -10576,9 +10589,9 @@ def _rvbam_literature_rvs_from_db(
     if not missing_oids or not _db_table_exists(conn, "moca_companions"):
         return literature_by_oid
 
-    companion_public_clause = "" if private_db else "AND COALESCE(mc.is_public, 0) = 1"
     host_placeholders, host_params = _rvbam_placeholders("lit_host_oid", missing_oids)
-    host_params["preferred_is_public"] = preferred_is_public
+    if private_db and crv_has_is_public:
+        host_params["preferred_is_public"] = 0
     host_rows = _records(_read_sql(conn, f"""
         SELECT
             mc.moca_oid_child AS target_moca_oid,
@@ -10589,7 +10602,7 @@ def _rvbam_literature_rvs_from_db(
             crv.radial_velocity_kms_unc,
             crv.n_measurements,
             crv.n_epochs,
-            crv.is_public,
+            {crv_is_public_select},
             mc.moca_cid,
             crv.id AS radial_velocity_id
         FROM moca_companions mc
@@ -10601,11 +10614,9 @@ def _rvbam_literature_rvs_from_db(
             AND COALESCE(mc.ignored, 0) = 0
             AND crv.radial_velocity_kms IS NOT NULL
             AND COALESCE(crv.ignored, 0) = 0
-            {companion_public_clause}
-            {crv_public_clause}
         ORDER BY
             mc.moca_oid_child,
-            CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,
+            {crv_public_order}
             mc.moca_cid,
             crv.id DESC
     """, host_params))
@@ -14321,11 +14332,28 @@ def _banyan_sigma_run_cache_key(args: Mapping[str, Any], payload: Mapping[str, A
 
 def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: int) -> dict[str, Any]:
     private_db = _is_private_db(dict(args))
-    is_public = 0 if private_db else None
-    is_public_select = "cbs.is_public" if private_db else "1 AS is_public"
-    is_public_filter = "AND cbs.is_public = :is_public" if private_db else ""
+    cbs_has_is_public = "is_public" in _db_table_columns(conn, "calc_banyan_sigma")
+    model_columns = _db_table_columns(conn, "moca_banyan_sigma_models")
+    model_public_adopted_available = "public_adopted" in model_columns
+    model_adopt_filter = (
+        "(mbsm.adopted = 1 OR mbsm.public_adopted = 1 OR mbsm.moca_bsmdid IS NULL)"
+        if model_public_adopted_available
+        else "(mbsm.adopted = 1 OR mbsm.moca_bsmdid IS NULL)"
+    )
+    model_public_order = (
+        "COALESCE(mbsm.public_adopted, 0) DESC,"
+        if model_public_adopted_available
+        else ""
+    )
+    is_public = 0 if private_db and cbs_has_is_public else None
+    is_public_select = (
+        "cbs.is_public"
+        if private_db and cbs_has_is_public
+        else ("0 AS is_public" if private_db else "1 AS is_public")
+    )
+    is_public_filter = "AND cbs.is_public = :is_public" if private_db and cbs_has_is_public else ""
     params: dict[str, Any] = {"moca_oid": moca_oid}
-    if private_db:
+    if is_public is not None:
         params["is_public"] = 0
     summary_df = _read_sql(conn, """
         SELECT
@@ -14334,7 +14362,7 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
             cbs.moca_aid,
             cbs.moca_bsmdid,
             mbsm.model_name,
-            mbsm.date AS model_date,
+            mbsm.created_timestamp AS model_date,
             mbsm.adopted AS model_adopted,
             cbs.max_observables,
             cbs.mode,
@@ -14369,10 +14397,10 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
         WHERE cbs.moca_oid = :moca_oid
             AND cbs.max_observables = 1
             {is_public_filter}
-            AND (mbsm.adopted = 1 OR mbsm.public_adopted = 1 OR mbsm.moca_bsmdid IS NULL)
+            AND {model_adopt_filter}
         ORDER BY
             COALESCE(mbsm.adopted, 0) DESC,
-            COALESCE(mbsm.public_adopted, 0) DESC,
+            {model_public_order}
             cbs.nobs DESC,
             cbs.ya_prob DESC,
             cbs.id DESC
@@ -14380,6 +14408,8 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
     """.format(
         is_public_select=is_public_select,
         is_public_filter=is_public_filter,
+        model_adopt_filter=model_adopt_filter,
+        model_public_order=model_public_order,
     ), params)
     summaries = _records(summary_df)
     cbs_ids = [int(row["cbs_id"]) for row in summaries if row.get("cbs_id") is not None]
@@ -14425,14 +14455,19 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
 
 def _load_banyan_sigma_object_from_db(args: Mapping[str, Any], moca_oid: int) -> dict[str, Any]:
     private_db = _is_private_db(dict(args))
-    coord_adopt = "eq.adopt_as_reference = 1" if private_db else "eq.public_adopt_as_reference = 1"
-    pm_adopt = "pm.adopted = 1" if private_db else "pm.public_adopted = 1"
-    plx_adopt = "plx.adopted = 1" if private_db else "plx.public_adopted = 1"
-    dist_adopt = "dist.adopted = 1" if private_db else "dist.public_adopted = 1"
-    rv_is_public_select = "rv.is_public AS rv_is_public" if private_db else "1 AS rv_is_public"
-    rv_public_order = "rv.is_public ASC," if private_db else ""
+    coord_adopt = "eq.adopt_as_reference = 1"
+    pm_adopt = "pm.adopted = 1"
+    plx_adopt = "plx.adopted = 1"
+    dist_adopt = "dist.adopted = 1"
     engine = _engine(_connection_string(dict(args)))
     with engine.connect() as conn:
+        rv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
+        rv_is_public_select = (
+            "rv.is_public AS rv_is_public"
+            if private_db and rv_has_is_public
+            else ("0 AS rv_is_public" if private_db else "1 AS rv_is_public")
+        )
+        rv_public_order = "rv.is_public ASC," if private_db and rv_has_is_public else ""
         rows = _records(_read_sql(conn, f"""
             SELECT
                 mo.moca_oid,
