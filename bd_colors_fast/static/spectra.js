@@ -414,67 +414,74 @@ function renderSpectra() {
   const ylog = speEl["spe-ylog"].checked;
   processed.forEach((spectrum, index) => {
     const color = spectrum.color || speColors[index % speColors.length];
-    if (!spectrum.points.length) return;
-    if (showErrorShade) traces.push(...errorShadeTraces(spectrum, color, ylog));
+    const hasRegularPoints = spectrum.points.length > 0;
+    const hasIgnoredPoints = (spectrum.ignoredPoints || []).length > 0;
+    if (!hasRegularPoints && !hasIgnoredPoints) return;
+    if (showErrorShade && hasRegularPoints) traces.push(...errorShadeTraces(spectrum, color, ylog));
     if (spectrum.lowRes && !speEl["spe-disable-lowres"].checked) {
-      traces.push({
-        type: "scattergl",
-        mode: "lines",
-        x: spectrum.points.map((point) => point.lam),
-        y: spectrum.points.map((point) => point.y),
-        line: { color, width: 1.4 },
-        opacity: 0.65,
-        name: spectrum.name,
-        legendgroup: String(spectrum.specid),
-        showlegend: false,
-        hoverinfo: "skip",
-      });
-      traces.push({
-        type: "scattergl",
-        mode: "markers",
-        x: spectrum.points.map((point) => point.lam),
-        y: spectrum.points.map((point) => point.y),
-        customdata: spectrum.points.map((point) => point.custom),
-        marker: {
-          symbol: "circle-open",
-          color,
-          size: 8,
-          line: { color, width: 2 },
-        },
-        error_y: {
-          type: "data",
-          array: spectrum.points.map((point) => point.yerr || 0),
-          visible: spectrum.points.some((point) => finite(point.yerr)),
-          color,
-          thickness: 1,
-          width: 2,
-        },
-        name: spectrum.name,
-        legendgroup: String(spectrum.specid),
-        hovertemplate: hoverTemplate(),
-        hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
-      });
+      if (hasRegularPoints) {
+        traces.push({
+          type: "scattergl",
+          mode: "lines",
+          x: spectrum.points.map((point) => point.lam),
+          y: spectrum.points.map((point) => point.y),
+          line: { color, width: 1.4 },
+          opacity: 0.65,
+          name: spectrum.name,
+          legendgroup: String(spectrum.specid),
+          showlegend: false,
+          hoverinfo: "skip",
+        });
+        traces.push({
+          type: "scattergl",
+          mode: "markers",
+          x: spectrum.points.map((point) => point.lam),
+          y: spectrum.points.map((point) => point.y),
+          customdata: spectrum.points.map((point) => point.custom),
+          marker: {
+            symbol: "circle-open",
+            color,
+            size: 8,
+            line: { color, width: 2 },
+          },
+          error_y: {
+            type: "data",
+            array: spectrum.points.map((point) => point.yerr || 0),
+            visible: spectrum.points.some((point) => finite(point.yerr)),
+            color,
+            thickness: 1,
+            width: 2,
+          },
+          name: spectrum.name,
+          legendgroup: String(spectrum.specid),
+          hovertemplate: hoverTemplate(),
+          hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
+        });
+      }
     } else {
-      const lineData = lineWithGaps(spectrum.points);
-      traces.push({
-        type: "scattergl",
-        mode: "lines",
-        x: lineData.x,
-        y: lineData.y,
-        customdata: lineData.custom,
-        line: { color, width: 1.5 },
-        name: spectrum.name,
-        legendgroup: String(spectrum.specid),
-        hovertemplate: hoverTemplate(),
-        hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
-      });
+      if (hasRegularPoints) {
+        const lineData = lineWithGaps(spectrum.points);
+        traces.push({
+          type: "scattergl",
+          mode: "lines",
+          x: lineData.x,
+          y: lineData.y,
+          customdata: lineData.custom,
+          line: { color, width: 1.5 },
+          name: spectrum.name,
+          legendgroup: String(spectrum.specid),
+          hovertemplate: hoverTemplate(),
+          hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
+        });
+      }
     }
+    if (hasIgnoredPoints) traces.push(ignoredPointsTrace(spectrum, color));
   });
 
   const layout = spectraLayout(processed);
   Plotly.react(speEl["spe-plot"], traces, layout, plotConfig("mocadb_spectral_explorer"));
   bindSpectraPlotEvents();
-  setSpectraExportDisabled(processed.every((spectrum) => !spectrum.points.length));
+  setSpectraExportDisabled(processed.every((spectrum) => !displayedSpectrumPoints(spectrum).length));
   const rowCount = processed.reduce((sum, spectrum) => sum + spectrum.rawRows.length, 0);
   const cacheText = speState.payload.cache?.hit ? " from cache" : "";
   const spectraCountText = pluralize(processed.length, "spectrum", "spectra");
@@ -535,10 +542,10 @@ function processSpectraPayload() {
         yerrOriginal: convertedErr,
       };
     }).filter((row) => finite(row.lam) && finite(row.yOriginal) && !(hideIgnored && row.ignored));
-    const normCandidates = rawRows.filter((row) => row.lam >= range[0] && row.lam <= range[1] && finite(row.yOriginal) && row.yOriginal !== 0);
+    const normCandidates = rawRows.filter((row) => !row.ignored && row.lam >= range[0] && row.lam <= range[1] && finite(row.yOriginal) && row.yOriginal !== 0);
     const scale = normalize ? robustMedian(normCandidates.map((row) => row.yOriginal)) : 1;
     const safeScale = finite(scale) && scale !== 0 ? scale : 1;
-    const points = rawRows.map((row) => {
+    const displayPoints = rawRows.map((row) => {
       const y = showSnr
         ? (finite(row.yerrOriginal) && row.yerrOriginal !== 0 ? row.yOriginal / Math.abs(row.yerrOriginal) : NaN)
         : row.yOriginal / safeScale;
@@ -564,12 +571,15 @@ function processSpectraPayload() {
         },
       };
     }).filter((row) => finite(row.lam) && finite(row.y) && (!ylog || row.y > 0));
+    const points = displayPoints.filter((row) => !row.ignored);
+    const ignoredPoints = hideIgnored ? [] : displayPoints.filter((row) => row.ignored);
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
       name: spectrumLegendName(metadata, Number(spectrum.moca_specid)),
       rawRows,
       points,
+      ignoredPoints,
       lowRes: finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < 100,
       averageResolvingPower: spectrum.meta?.average_resolving_power,
       color,
@@ -606,6 +616,32 @@ function lineWithGaps(points) {
     custom.push(point.custom);
   });
   return { x, y, custom };
+}
+
+function displayedSpectrumPoints(spectrum) {
+  return [...(spectrum.points || []), ...(spectrum.ignoredPoints || [])];
+}
+
+function ignoredPointsTrace(spectrum, color) {
+  const points = spectrum.ignoredPoints || [];
+  return {
+    type: "scattergl",
+    mode: "markers",
+    x: points.map((point) => point.lam),
+    y: points.map((point) => point.y),
+    customdata: points.map((point) => point.custom),
+    marker: {
+      symbol: "x",
+      color,
+      size: 10,
+      line: { color, width: 2 },
+    },
+    name: `${spectrum.name} ignored`,
+    legendgroup: String(spectrum.specid),
+    showlegend: false,
+    hovertemplate: hoverTemplate(),
+    hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
+  };
 }
 
 function errorShadeTraces(spectrum, color, ylog) {
@@ -732,7 +768,7 @@ function spectraLayout(processed) {
   const ylog = speEl["spe-ylog"].checked;
   const shapes = [];
   const annotations = [];
-  const allX = processed.flatMap((spectrum) => spectrum.points.map((point) => point.lam));
+  const allX = processed.flatMap((spectrum) => displayedSpectrumPoints(spectrum).map((point) => point.lam));
   const allY = spectraYAxisValues(processed, ylog);
   const xRange = numericAxisRange(allX, { log: xlog, fallback: xlog ? [0.7, 30] : [0.7, 2.6] });
   const yRange = numericAxisRange(allY, { log: ylog, fallback: null, padFraction: 0.08 });
@@ -827,7 +863,7 @@ function spectraLayout(processed) {
 }
 
 function spectraYAxisValues(processed, ylog) {
-  const values = processed.flatMap((spectrum) => spectrum.points.map((point) => point.y));
+  const values = processed.flatMap((spectrum) => displayedSpectrumPoints(spectrum).map((point) => point.y));
   if (!speEl["spe-error-shade"].checked || speEl["spe-snr"].checked) return values;
   for (const spectrum of processed) {
     for (const segment of errorShadeSegments(spectrum.points, ylog)) {
@@ -1030,7 +1066,7 @@ function exportPlottedSpectra(format) {
   const columns = plottedSpectraExportColumns;
   const rows = [];
   (speState.processed || []).forEach((spectrum) => {
-    spectrum.points.forEach((point) => {
+    displayedSpectrumPoints(spectrum).forEach((point) => {
       rows.push({
         moca_specid: spectrum.specid,
         moca_oid: spectrum.metadata?.moca_oid || "",

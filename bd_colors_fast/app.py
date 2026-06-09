@@ -14320,7 +14320,13 @@ def _banyan_sigma_run_cache_key(args: Mapping[str, Any], payload: Mapping[str, A
 
 
 def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: int) -> dict[str, Any]:
-    is_public = 0 if _is_private_db(dict(args)) else 1
+    private_db = _is_private_db(dict(args))
+    is_public = 0 if private_db else None
+    is_public_select = "cbs.is_public" if private_db else "1 AS is_public"
+    is_public_filter = "AND cbs.is_public = :is_public" if private_db else ""
+    params: dict[str, Any] = {"moca_oid": moca_oid}
+    if private_db:
+        params["is_public"] = 0
     summary_df = _read_sql(conn, """
         SELECT
             cbs.id AS cbs_id,
@@ -14355,14 +14361,14 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
             cbs.mahalanobis,
             cbs.nobs,
             cbs.origin,
-            cbs.is_public,
+            {is_public_select},
             cbs.modified_timestamp
         FROM calc_banyan_sigma cbs
         LEFT JOIN moca_banyan_sigma_models mbsm
             ON mbsm.moca_bsmdid = cbs.moca_bsmdid
         WHERE cbs.moca_oid = :moca_oid
             AND cbs.max_observables = 1
-            AND cbs.is_public = :is_public
+            {is_public_filter}
             AND (mbsm.adopted = 1 OR mbsm.public_adopted = 1 OR mbsm.moca_bsmdid IS NULL)
         ORDER BY
             COALESCE(mbsm.adopted, 0) DESC,
@@ -14371,7 +14377,10 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
             cbs.ya_prob DESC,
             cbs.id DESC
         LIMIT 8
-    """, {"moca_oid": moca_oid, "is_public": is_public})
+    """.format(
+        is_public_select=is_public_select,
+        is_public_filter=is_public_filter,
+    ), params)
     summaries = _records(summary_df)
     cbs_ids = [int(row["cbs_id"]) for row in summaries if row.get("cbs_id") is not None]
     details: list[dict[str, Any]] = []
@@ -14420,7 +14429,8 @@ def _load_banyan_sigma_object_from_db(args: Mapping[str, Any], moca_oid: int) ->
     pm_adopt = "pm.adopted = 1" if private_db else "pm.public_adopted = 1"
     plx_adopt = "plx.adopted = 1" if private_db else "plx.public_adopted = 1"
     dist_adopt = "dist.adopted = 1" if private_db else "dist.public_adopted = 1"
-    rv_public_order = "rv.is_public ASC" if private_db else "rv.is_public DESC"
+    rv_is_public_select = "rv.is_public AS rv_is_public" if private_db else "1 AS rv_is_public"
+    rv_public_order = "rv.is_public ASC," if private_db else ""
     engine = _engine(_connection_string(dict(args)))
     with engine.connect() as conn:
         rows = _records(_read_sql(conn, f"""
@@ -14461,7 +14471,7 @@ def _load_banyan_sigma_object_from_db(args: Mapping[str, Any], moca_oid: int) ->
                 rv.radial_velocity_kms_unc AS erv,
                 rv.n_measurements AS rv_n_measurements,
                 rv.n_epochs AS rv_n_epochs,
-                rv.is_public AS rv_is_public
+                {rv_is_public_select}
             FROM moca_objects mo
             LEFT JOIN data_equatorial_coordinates eq
                 ON eq.moca_oid = mo.moca_oid
@@ -14484,7 +14494,7 @@ def _load_banyan_sigma_object_from_db(args: Mapping[str, Any], moca_oid: int) ->
                 ON rv.moca_oid = mo.moca_oid
                 AND rv.ignored = 0
             WHERE mo.moca_oid = :moca_oid
-            ORDER BY {rv_public_order}, rv.id DESC
+            ORDER BY {rv_public_order} rv.id DESC
             LIMIT 1
         """, {"moca_oid": moca_oid}))
         if not rows:
