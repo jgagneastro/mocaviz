@@ -214,7 +214,9 @@ function filteredMoranta26Rows() {
 }
 
 function renderMoranta26Summary(rows) {
-  const plotRows = rows.filter((row) => hasLiteraturePeriod(row) && finiteNumber(row.prot));
+  const comparisonCandidateRows = rows.filter((row) => hasLiteraturePeriod(row) && finiteNumber(row.prot));
+  const plotRows = moranta26SelectedComparisonRows(rows);
+  const hiddenUnselectedRows = Math.max(0, comparisonCandidateRows.length - plotRows.length);
   const ignoredRows = rows.filter((row) => Number(row.ignored || 0) === 1).length;
   const stars = new Set(rows.map((row) => row.star_key).filter(Boolean)).size;
   const lightCurves = new Set(rows.map((row) => row.source_moca_tplcid).filter((value) => value !== null && value !== undefined)).size;
@@ -223,17 +225,18 @@ function renderMoranta26Summary(rows) {
   m26El["m26-summary"].innerHTML = [
     `<strong>${rows.length.toLocaleString()}</strong> displayed Mora26 period rows`,
     `<strong>${stars.toLocaleString()}</strong> objects`,
-    `<strong>${plotRows.length.toLocaleString()}</strong> rows with literature periods`,
+    `<strong>${plotRows.length.toLocaleString()}</strong> selected-sector rows plotted`,
     `<strong>${passing.toLocaleString()}</strong> rows at prob_all >= ${formatNumber(threshold, 2)}`,
+    `<strong>${hiddenUnselectedRows.toLocaleString()}</strong> unselected-sector comparison rows hidden`,
     `<strong>${ignoredRows.toLocaleString()}</strong> DB ignored rows included`,
     `<strong>${lightCurves.toLocaleString()}</strong> linked light curves`,
   ].join(" | ");
 }
 
 function renderMoranta26PeriodComparison(rows) {
-  const plotRows = rows.filter((row) => hasLiteraturePeriod(row) && finiteNumber(row.prot));
+  const plotRows = moranta26SelectedComparisonRows(rows);
   if (!plotRows.length) {
-    Plotly.react(m26El["m26-plot"], [], emptyPlotLayout("No literature-period comparison rows match the current filters."), plotConfig("moranta26_rotation_empty"));
+    Plotly.react(m26El["m26-plot"], [], emptyPlotLayout("No selected-sector literature-period comparison rows match the current filters."), plotConfig("moranta26_rotation_empty"));
     return;
   }
   const threshold = moranta26Threshold();
@@ -610,9 +613,11 @@ function selectMoranta26SearchResult() {
 function selectMoranta26SourceId(sourceId, options = {}) {
   const normalized = normalizeMoranta26SourceId(sourceId);
   if (!normalized) return false;
-  let match = m26State.rows.find((row) => normalizeMoranta26SourceId(row.source_id) === normalized && row.cluster === m26El["m26-cluster"].value);
+  const currentClusterMatches = m26State.rows.filter((row) => normalizeMoranta26SourceId(row.source_id) === normalized && row.cluster === m26El["m26-cluster"].value);
+  let match = preferredMoranta26SelectionRow(currentClusterMatches);
   if (!match) {
-    match = m26State.rows.find((row) => normalizeMoranta26SourceId(row.source_id) === normalized);
+    const allMatches = m26State.rows.filter((row) => normalizeMoranta26SourceId(row.source_id) === normalized);
+    match = preferredMoranta26SelectionRow(allMatches);
     if (match?.cluster) m26El["m26-cluster"].value = match.cluster;
   }
   if (!match) return false;
@@ -659,7 +664,7 @@ function resolveMoranta26PhasePeriod() {
 
 function bestMoranta26Row(rows) {
   if (!rows?.length) return null;
-  return [...rows].sort((a, b) => Number(b.prob_all ?? -1) - Number(a.prob_all ?? -1) || Number(a.m ?? 999) - Number(b.m ?? 999))[0];
+  return [...rows].sort(moranta26PreferredRowSort)[0];
 }
 
 function moranta26RowSort(a, b) {
@@ -667,6 +672,27 @@ function moranta26RowSort(a, b) {
     || Number(a.sector ?? 999) - Number(b.sector ?? 999)
     || String(a.pipeline || "").localeCompare(String(b.pipeline || ""))
     || Number(b.prob_all ?? -1) - Number(a.prob_all ?? -1);
+}
+
+function moranta26PreferredRowSort(a, b) {
+  return Number(isMoranta26SelectedSectorRow(b)) - Number(isMoranta26SelectedSectorRow(a))
+    || Number(b.prob_all ?? -1) - Number(a.prob_all ?? -1)
+    || Number(a.m ?? 999) - Number(b.m ?? 999)
+    || Number(a.sector ?? 999) - Number(b.sector ?? 999)
+    || String(a.pipeline || "").localeCompare(String(b.pipeline || ""));
+}
+
+function preferredMoranta26SelectionRow(rows) {
+  if (!rows?.length) return null;
+  return [...rows].sort(moranta26PreferredRowSort)[0];
+}
+
+function isMoranta26SelectedSectorRow(row) {
+  return Number(row?.selected || 0) === 1;
+}
+
+function moranta26SelectedComparisonRows(rows) {
+  return rows.filter((row) => isMoranta26SelectedSectorRow(row) && hasLiteraturePeriod(row) && finiteNumber(row.prot));
 }
 
 function markerTrace(rows, xaxis, yaxis, name, marker, showlegend) {
