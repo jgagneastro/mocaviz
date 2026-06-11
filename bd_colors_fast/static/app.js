@@ -55,6 +55,21 @@ const sampleLegendLabels = {
   low_gravity: "Low-gravity",
   subdwarf: "Subdwarf",
 };
+const gravityClassColors = {
+  field: "#8e8e8e",
+  beta: "#7ad151",
+  gamma: "#00a6ff",
+  delta: "#ff3366",
+  subdwarf: "#ff9f1c",
+};
+const gravityClassLegendLabels = {
+  field: "Field",
+  beta: "Beta",
+  gamma: "Gamma",
+  delta: "Delta",
+  subdwarf: "Subdwarf",
+};
+const gravityClassLegendOrder = ["field", "beta", "gamma", "delta", "subdwarf"];
 const binaryLegendColor = "#6f7472";
 const photometricSptLegendColor = "#8a8f8d";
 const photometricSptEdgeColor = "#111";
@@ -69,6 +84,7 @@ const state = {
   selectedDesignations: [],
   hiddenLegendClasses: new Set(),
   hiddenLegendSamples: new Set(),
+  hiddenLegendGravityClasses: new Set(),
   hiddenLegendBinaries: false,
   hiddenLegendPhotdist: false,
   legendClickTimer: null,
@@ -164,8 +180,11 @@ function collectElements() {
     "include-photspt",
     "include-risky-photspt",
     "risky-photspt-line",
+    "use-bickle-spt",
+    "bickle-spt-line",
     "advanced-photometry",
     "color-by-age",
+    "color-by-gravity",
     "visual-area",
     "plot",
     "plot-loader",
@@ -213,10 +232,14 @@ function readInitialUrlState() {
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
   el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
+  el["use-bickle-spt"].checked = asBool(params.get("bickle_spt")) || asBool(params.get("use_bickle_spt")) || asBool(params.get("bickle_spectral_types"));
   el["advanced-photometry"].checked = asBool(params.get("advanced_photometry"));
-  el["color-by-age"].checked = asBool(params.get("agecolor"));
+  const wantsGravityColor = asBool(params.get("gravitycolor")) || asBool(params.get("gravity_color")) || asBool(params.get("color_by_gravity"));
+  el["color-by-age"].checked = asBool(params.get("agecolor")) && !wantsGravityColor;
+  el["color-by-gravity"].checked = wantsGravityColor;
   updatePhotdistControl();
   updateAdvancedPhotometryControl();
+  updateBickleSptControl();
   if (applyAxisErrorDefaults(explicitErrorThresholds)) requestInitialAxisRange();
 }
 
@@ -239,14 +262,19 @@ function bindControls() {
   ]);
   for (const id of axisControls) {
     el[id].addEventListener("change", () => {
+      const wasUsingBickleSpt = bickleSpectralTypesRequested();
       if (id.endsWith("axis-type")) {
         refreshAxisValueControls(id[0], { preferDefaults: true });
         applyAxisErrorDefaults();
       }
       updatePhotdistControl();
       updateAdvancedPhotometryControl();
+      updateBickleSptControl();
       requestInitialAxisRange();
       render();
+      if (wasUsingBickleSpt !== bickleSpectralTypesRequested()) {
+        scheduleBootstrapReload({ resetAxisRange: true });
+      }
     });
   }
   for (const id of ["xerr-max", "yerr-max"]) {
@@ -263,10 +291,18 @@ function bindControls() {
       render();
     });
   }
-  for (const id of ["show-errors", "include-binaries", "color-by-age"]) {
+  for (const id of ["show-errors", "include-binaries"]) {
     el[id].addEventListener("input", render);
     el[id].addEventListener("change", render);
   }
+  el["color-by-age"].addEventListener("change", () => {
+    if (el["color-by-age"].checked) el["color-by-gravity"].checked = false;
+    render();
+  });
+  el["color-by-gravity"].addEventListener("change", () => {
+    if (el["color-by-gravity"].checked) el["color-by-age"].checked = false;
+    render();
+  });
   el["include-photdist"].addEventListener("change", () => {
     state.manualPhotdistChoice = el["include-photdist"].checked;
     requestInitialAxisRange();
@@ -321,6 +357,12 @@ function bindControls() {
     if (el["include-photspt"].checked) {
       scheduleBootstrapReload({ resetAxisRange: true });
     }
+  });
+  el["use-bickle-spt"].addEventListener("change", () => {
+    updateBickleSptControl();
+    requestInitialAxisRange();
+    render();
+    scheduleBootstrapReload({ resetAxisRange: true });
   });
   el["advanced-photometry"].addEventListener("change", () => {
     refreshAxisValueControls("x", { preferDefaults: true });
@@ -415,6 +457,25 @@ function updateAdvancedPhotometryControl() {
   checkbox.closest(".checkline")?.classList.toggle("is-disabled", !enabled);
 }
 
+function updateBickleSptControl() {
+  const checkbox = el["use-bickle-spt"];
+  const line = el["bickle-spt-line"];
+  if (!checkbox || !line) return;
+  const hasLoadedCatalog = Boolean(state.raw?.meta);
+  const privateData = Boolean(state.raw?.meta?.private_db);
+  const spectralAxis = hasSpectralTypeAxis();
+  line.hidden = !hasLoadedCatalog || !privateData;
+  if (hasLoadedCatalog && !privateData) checkbox.checked = false;
+  const enabled = privateData && spectralAxis;
+  checkbox.disabled = !enabled;
+  line.classList.toggle("is-disabled", !enabled);
+  line.title = enabled
+    ? ""
+    : spectralAxis
+      ? "Only available when the active table is mocadb_private_tables."
+      : "Requires at least one spectral-type axis.";
+}
+
 function updatePhotometricSptControl() {
   const checkbox = el["include-photspt"];
   const riskyCheckbox = el["include-risky-photspt"];
@@ -436,6 +497,11 @@ function updatePhotometricSptControl() {
 
 function riskyPhotometricSptRequested() {
   return Boolean(el["include-risky-photspt"]?.checked);
+}
+
+function bickleSpectralTypesRequested() {
+  const privateEligible = state.raw?.meta ? Boolean(state.raw.meta.private_db) : true;
+  return Boolean(el["use-bickle-spt"]?.checked && privateEligible && hasSpectralTypeAxis());
 }
 
 function photometricSptCatalogReady() {
@@ -460,6 +526,10 @@ function buildBootstrapParams() {
   }
   params.set("photspt", el["include-photspt"].checked ? "1" : "0");
   params.set("risky_photspt", riskyPhotometricSptRequested() ? "1" : "0");
+  params.delete("use_bickle_spt");
+  params.delete("bickle_spectral_types");
+  if (bickleSpectralTypesRequested()) params.set("bickle_spt", "1");
+  else params.delete("bickle_spt");
   params.set("advanced_photometry", useAdvancedPhotometrySystems() ? "1" : "0");
   params.set("photdist", includePhotometricDistancesForAxes() ? "1" : "0");
   params.set("xaxis_type", el["x-axis-type"].value || "color");
@@ -485,6 +555,9 @@ function updateUrlFromControls() {
   params.set("errors", el["show-errors"].checked ? "1" : "0");
   params.set("binaries", el["include-binaries"].checked ? "1" : "0");
   params.set("agecolor", el["color-by-age"].checked ? "1" : "0");
+  params.set("gravitycolor", el["color-by-gravity"].checked ? "1" : "0");
+  params.delete("gravity_color");
+  params.delete("color_by_gravity");
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
   const query = params.toString();
@@ -558,6 +631,7 @@ async function loadBootstrap(options = {}) {
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
     updatePhotometricSptControl();
+    updateBickleSptControl();
     if (options.resetAxisRange) requestInitialAxisRange();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
@@ -568,8 +642,9 @@ async function loadBootstrap(options = {}) {
     const count = payload.meta && payload.meta.object_count ? payload.meta.object_count : 0;
     const capped = payload.meta && payload.meta.object_limit_applied ? `, capped at ${payload.meta.max_objects}` : "";
     const sptMode = payload.meta && payload.meta.include_photometric_spt ? ", including photometric spectral types" : ", spectroscopic spectral types only";
+    const bickleMode = payload.meta && payload.meta.use_bickle_spectral_types ? ", Bickle low-gravity spectral types" : "";
     if (payload.ok) {
-      setStatus(`${count.toLocaleString()} objects loaded from ${displaySource(payload.source)}${sptMode}${capped}`);
+      setStatus(`${count.toLocaleString()} objects loaded from ${displaySource(payload.source)}${sptMode}${bickleMode}${capped}`);
     } else {
       setStatus(`Using sample data: ${payload.error}`, true);
     }
@@ -604,6 +679,7 @@ async function bulkPreloadAll() {
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
     updatePhotometricSptControl();
+    updateBickleSptControl();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
     requestInitialAxisRange();
@@ -675,6 +751,7 @@ function clearClientData(options = {}) {
   state.selectedOids = [];
   state.hiddenLegendClasses.clear();
   state.hiddenLegendSamples.clear();
+  state.hiddenLegendGravityClasses.clear();
   state.hiddenLegendBinaries = false;
   state.hiddenLegendPhotdist = false;
   state.featuresLoaded = {
@@ -693,6 +770,7 @@ function clearClientData(options = {}) {
   state.lastAppliedAxisRangeSignature = "";
   state.forceFreshPlot = true;
   updatePhotometricSptControl();
+  updateBickleSptControl();
   if (el.plot && window.Plotly) Plotly.purge(el.plot);
   state.plotBound = false;
   if (el["selection-table"]) el["selection-table"].innerHTML = "";
@@ -1499,6 +1577,12 @@ function hasSpectralTypeAxis() {
   return el["x-axis-type"].value === "spectral_type" || el["y-axis-type"].value === "spectral_type";
 }
 
+function currentColorMode() {
+  if (el["color-by-age"]?.checked) return "age";
+  if (el["color-by-gravity"]?.checked) return "gravity";
+  return "spectral";
+}
+
 function countRowsOutsideRange(rows, plotRanges) {
   const xRange = orderedRange(plotRanges?.x);
   const yRange = orderedRange(plotRanges?.y);
@@ -1518,10 +1602,14 @@ function currentPlotRanges() {
 }
 
 function legendFilteredRows(rows) {
-  const hideClasses = !el["color-by-age"].checked;
+  const colorMode = currentColorMode();
+  const hideClasses = colorMode === "spectral";
+  const hideGravityClasses = colorMode === "gravity";
+  const hideSamples = colorMode !== "gravity";
   return rows.filter((row) => (
     (!hideClasses || !state.hiddenLegendClasses.has(row.spectral_class)) &&
-    !state.hiddenLegendSamples.has(row.age_sample) &&
+    (!hideGravityClasses || !state.hiddenLegendGravityClasses.has(row.gravity_class)) &&
+    (!hideSamples || !state.hiddenLegendSamples.has(row.age_sample)) &&
     (!state.hiddenLegendBinaries || !row.is_binary) &&
     (!state.hiddenLegendPhotdist || !row.is_photometric_distance)
   ));
@@ -1554,6 +1642,7 @@ function buildRows() {
 
     const age = state.maps.ageByOid.get(oid);
     const ageSample = ageSampleFor(object);
+    const gravityClass = gravityClassForObject(object);
     const distance = bestDistance(oid, includePhotdist);
     const row = {
       moca_oid: oid,
@@ -1565,6 +1654,7 @@ function buildRows() {
       distance_pc: distance?.distance_pc ?? null,
       age_myr: Number.isFinite(age) ? age : null,
       age_sample: ageSample,
+      gravity_class: gravityClass,
       is_binary: binary,
       is_photometric_spt: photometricSpt,
       is_photometric_distance: includePhotdist && Number(distance?.photometric_estimate || 0) === 1,
@@ -1811,6 +1901,50 @@ function ageSampleFor(object) {
   return "field";
 }
 
+function gravityClassForObject(object) {
+  const gravity = normalizeGravityText(object.gravity_class);
+  const suffix = normalizeGravityText(object.suffix);
+  const complete = normalizeGravityText(object.complete_spectral_type);
+  const text = `${gravity} ${suffix} ${complete}`;
+  if (isSubdwarfGravityText(suffix, complete)) return "subdwarf";
+  if (matchesGravityText(text, ["delta", "extremely low gravity", "extremely low-g", "el-g", "elg"])) return "delta";
+  if (
+    matchesGravityText(text, ["gamma", "very low gravity", "very low-g", "vl-g", "vlg", "low gravity", "low-g"]) ||
+    /\bb\s*[/_-]\s*g\b/.test(text)
+  ) {
+    return "gamma";
+  }
+  if (matchesGravityText(text, ["beta", "intermediate gravity", "intermediate-g", "int-g", "intg"])) return "beta";
+  return "field";
+}
+
+function normalizeGravityText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\u03b2/g, "beta")
+    .replace(/\u03b3/g, "gamma")
+    .replace(/\u03b4/g, "delta")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSubdwarfGravityText(suffix, complete) {
+  return (
+    /(^|[^a-z])(usd|esd|sd|d\/sd)([^a-z]|$)/.test(suffix) ||
+    /(^|[^a-z])(usd|esd|sd|d\/sd)[a-z0-9]?/.test(complete) ||
+    complete.startsWith("usd") ||
+    complete.startsWith("esd") ||
+    complete.startsWith("sd") ||
+    complete.startsWith("d/sd") ||
+    suffix.includes("blue") ||
+    complete.includes("blue")
+  );
+}
+
+function matchesGravityText(text, tokens) {
+  return tokens.some((token) => text.includes(token));
+}
+
 function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   const renderToken = ++state.plotRenderToken;
   const rangeSignature = options.rangeSignature || axisRangeSignature();
@@ -1843,9 +1977,20 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     state.axisRangeRevision = nextRangeRevision;
   }
   const traces = [];
+  const colorMode = currentColorMode();
 
-  if (el["color-by-age"].checked) {
+  if (colorMode === "age") {
     traces.push(...ageColorTraces(regularRows, opacityByOid, pointOpacity));
+  } else if (colorMode === "gravity") {
+    const good = regularRows.filter((row) => !row.noisy);
+    traces.push(errorBarTrace(good, 0.2, "gravity-good-errors"));
+    traces.push(gravityColorTrace(good, "Objects", rowOpacities(good, opacityByOid, pointOpacity)));
+    const noisy = regularRows.filter((row) => row.noisy);
+    if (noisy.length) {
+      traces.push(errorBarTrace(noisy, 0.11, "gravity-noisy-errors"));
+      traces.push(gravityColorTrace(noisy, "Filtered by error", mutedRowOpacities(noisy, opacityByOid, pointOpacity), false));
+    }
+    traces.push(...gravityLegendTraces(legendRows));
   } else {
     const good = regularRows.filter((row) => !row.noisy);
     traces.push(errorBarTrace(good, 0.2, "default-good-errors"));
@@ -1857,7 +2002,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     }
     traces.push(...legendTraces(legendRows));
   }
-  traces.push(...sampleLegendTraces(legendRows));
+  if (colorMode !== "gravity") traces.push(...sampleLegendTraces(legendRows));
   traces.push(...binaryLegendTraces(legendRows));
   traces.push(...photometricDistanceLegendTraces(legendRows));
   traces.push(...photometricSptLegendTraces(legendRows));
@@ -1931,7 +2076,7 @@ function currentPlotCanvasKey() {
     return [axis, spec.type, spec.value1 || "", spec.value2 || ""].join(":");
   }).join("|");
   return [
-    el["color-by-age"].checked ? "age-color" : "class-color",
+    `${currentColorMode()}-color`,
     includePhotometricDistancesForAxes() ? "photdist" : "spectrodist",
     el["include-binaries"].checked ? "binaries" : "singles",
     el["include-photspt"].checked ? "photspt" : "spectrospt",
@@ -2279,6 +2424,30 @@ function defaultTrace(rows, name, opacity, showlegend = name !== "Objects") {
   };
 }
 
+function gravityColorTrace(rows, name, opacity, showlegend = name !== "Objects") {
+  if (!rows.length) return null;
+  const markerLine = markerLineForRows(rows);
+  return {
+    type: "scattergl",
+    uid: `gravity-${name.toLowerCase().replace(/\W+/g, "-")}`,
+    mode: "markers",
+    x: rows.map(plotX),
+    y: rows.map(plotY),
+    text: rows.map((row) => row.hover),
+    customdata: rows.map((row) => row.moca_oid),
+    hoverinfo: "text",
+    marker: {
+      size: markerSizesForRows(rows, 9),
+      color: rows.map(gravityColorForRow),
+      symbol: rows.map(markerSymbolForRow),
+      opacity,
+      ...(markerLine ? { line: markerLine } : {}),
+    },
+    name,
+    showlegend,
+  };
+}
+
 function highlightedPointTraces(rows) {
   return [
     errorBarTrace(rows, 0.2, "highlighted-errors"),
@@ -2368,10 +2537,13 @@ function selectedPointTraceIndex() {
 function binaryOverlayTraces(rows, opacityByOid, pointOpacity) {
   const binaryRows = rows.filter((row) => row.is_binary);
   if (!binaryRows.length) return [];
+  const colorMode = currentColorMode();
   const colorDomain = ageColorDomain(rows);
-  const edgeColors = el["color-by-age"].checked
+  const edgeColors = colorMode === "age"
     ? binaryRows.map((row) => ageColorForRow(row, colorDomain))
-    : binaryRows.map((row) => classColors[row.spectral_class] || "#1da6b8");
+    : colorMode === "gravity"
+      ? binaryRows.map(gravityColorForRow)
+      : binaryRows.map((row) => classColors[row.spectral_class] || "#1da6b8");
   return [{
     type: "scattergl",
     uid: "binary-overlay",
@@ -2538,6 +2710,10 @@ function ageColorForRow(row, domain) {
   return interpolateColorscale(ageColorscale, t);
 }
 
+function gravityColorForRow(row) {
+  return gravityClassColors[row?.gravity_class] || gravityClassColors.field;
+}
+
 function interpolateColorscale(colorscale, t) {
   for (let index = 1; index < colorscale.length; index += 1) {
     const [rightStop, rightColor] = colorscale[index];
@@ -2624,6 +2800,25 @@ function legendTraces(rows) {
     name: `${klass} class`,
     legendgroup: `class:${klass}`,
     visible: state.hiddenLegendClasses.has(klass) ? "legendonly" : true,
+  }));
+}
+
+function gravityLegendTraces(rows) {
+  const classes = orderedGravityClasses(rows.map((row) => row.gravity_class));
+  return classes.map((klass) => ({
+    type: "scatter",
+    mode: "markers",
+    x: [null],
+    y: [null],
+    marker: {
+      size: 10,
+      color: gravityClassColors[klass] || gravityClassColors.field,
+      symbol: klass === "subdwarf" ? sampleSymbols.subdwarf : klass === "field" ? sampleSymbols.field : sampleSymbols.low_gravity,
+      line: { color: "#252329", width: 1 },
+    },
+    name: gravityClassLegendLabels[klass] || klass,
+    legendgroup: `gravity:${klass}`,
+    visible: state.hiddenLegendGravityClasses.has(klass) ? "legendonly" : true,
   }));
 }
 
@@ -2944,7 +3139,7 @@ function handleLegendDoubleClick(trace) {
 
 function customLegendGroup(trace) {
   const group = String(trace?.legendgroup || "");
-  return group.startsWith("class:") || group.startsWith("sample:") || group.startsWith("binary:") || group.startsWith("photdist:") || group.startsWith("photspt:") ? group : "";
+  return group.startsWith("class:") || group.startsWith("gravity:") || group.startsWith("sample:") || group.startsWith("binary:") || group.startsWith("photdist:") || group.startsWith("photspt:") ? group : "";
 }
 
 function isStaticLegendGroup(group) {
@@ -2954,6 +3149,8 @@ function isStaticLegendGroup(group) {
 function toggleLegendGroup(group) {
   if (group.startsWith("class:")) {
     toggleLegendValue(state.hiddenLegendClasses, group.slice("class:".length));
+  } else if (group.startsWith("gravity:")) {
+    toggleLegendValue(state.hiddenLegendGravityClasses, group.slice("gravity:".length));
   } else if (group.startsWith("sample:")) {
     toggleLegendValue(state.hiddenLegendSamples, group.slice("sample:".length));
   } else if (group.startsWith("binary:")) {
@@ -2967,18 +3164,30 @@ function isolateLegendGroup(group) {
   if (group.startsWith("class:")) {
     const klass = group.slice("class:".length);
     const classes = legendClassValues();
-    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendClasses, classes, klass) && state.hiddenLegendSamples.size === 0;
+    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendClasses, classes, klass) && state.hiddenLegendSamples.size === 0 && state.hiddenLegendGravityClasses.size === 0;
     state.hiddenLegendClasses.clear();
     state.hiddenLegendSamples.clear();
+    state.hiddenLegendGravityClasses.clear();
     if (!alreadyIsolated) {
       classes.filter((item) => item !== klass).forEach((item) => state.hiddenLegendClasses.add(item));
+    }
+  } else if (group.startsWith("gravity:")) {
+    const klass = group.slice("gravity:".length);
+    const classes = legendGravityValues();
+    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendGravityClasses, classes, klass) && state.hiddenLegendClasses.size === 0 && state.hiddenLegendSamples.size === 0;
+    state.hiddenLegendClasses.clear();
+    state.hiddenLegendSamples.clear();
+    state.hiddenLegendGravityClasses.clear();
+    if (!alreadyIsolated) {
+      classes.filter((item) => item !== klass).forEach((item) => state.hiddenLegendGravityClasses.add(item));
     }
   } else if (group.startsWith("sample:")) {
     const sample = group.slice("sample:".length);
     const samples = legendSampleValues();
-    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendSamples, samples, sample) && state.hiddenLegendClasses.size === 0;
+    const alreadyIsolated = isLegendValueIsolated(state.hiddenLegendSamples, samples, sample) && state.hiddenLegendClasses.size === 0 && state.hiddenLegendGravityClasses.size === 0;
     state.hiddenLegendClasses.clear();
     state.hiddenLegendSamples.clear();
+    state.hiddenLegendGravityClasses.clear();
     if (!alreadyIsolated) {
       samples.filter((item) => item !== sample).forEach((item) => state.hiddenLegendSamples.add(item));
     }
@@ -2998,11 +3207,27 @@ function legendSampleValues() {
   return ["field", "low_gravity", "subdwarf"].filter((sample) => state.allRows.some((row) => row.age_sample === sample));
 }
 
+function legendGravityValues() {
+  return orderedGravityClasses(state.allRows.map((row) => row.gravity_class));
+}
+
 function orderedSpectralClasses(classes) {
   const unique = [...new Set(classes.filter(Boolean))];
   return unique.sort((a, b) => {
     const ai = spectralClassLegendOrder.indexOf(a);
     const bi = spectralClassLegendOrder.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function orderedGravityClasses(classes) {
+  const unique = [...new Set(classes.filter(Boolean))];
+  return unique.sort((a, b) => {
+    const ai = gravityClassLegendOrder.indexOf(a);
+    const bi = gravityClassLegendOrder.indexOf(b);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1;
     if (bi !== -1) return 1;
@@ -3040,6 +3265,9 @@ function renderTable(oids) {
   ];
   if (el["color-by-age"].checked) {
     columns.push(tableColumn("age_myr"), tableColumn("age_sample"));
+  }
+  if (el["color-by-gravity"].checked) {
+    columns.push(tableColumn("gravity_class"));
   }
   const headerCells = [
     "plot",
@@ -3091,7 +3319,9 @@ function bdTableMarkerHtml(row) {
 }
 
 function bdTableColor(row) {
-  if (el["color-by-age"]?.checked) return ageColorForRow(row, ageColorDomain(state.rows));
+  const colorMode = currentColorMode();
+  if (colorMode === "age") return ageColorForRow(row, ageColorDomain(state.rows));
+  if (colorMode === "gravity") return gravityColorForRow(row);
   return classColors[row.spectral_class] || "#1da6b8";
 }
 
@@ -3260,6 +3490,7 @@ const exportColumns = [
   "distance_pc",
   "age_myr",
   "age_sample",
+  "gravity_class",
   "x_ref",
   "y_ref",
 ];
@@ -3448,6 +3679,7 @@ function hoverText(row) {
     `<b>${escapeHtml(row.designation)}</b>`,
     `MOCA OID: ${row.moca_oid}`,
     `SpT: ${escapeHtml(row.complete_spectral_type || row.spectral_type)}`,
+    `Gravity class: ${escapeHtml(gravityClassLegendLabels[row.gravity_class] || row.gravity_class || "Field")}`,
     `X (${escapeHtml(plainText(row.x_label))}): ${escapeHtml(measurementText({ value: row.x, error: row.ex }))}`,
     `Y (${escapeHtml(plainText(row.y_label))}): ${escapeHtml(measurementText({ value: row.y, error: row.ey }))}`,
     ...inputLines,

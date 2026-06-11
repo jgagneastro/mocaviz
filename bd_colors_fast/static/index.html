@@ -105,6 +105,10 @@
             <input id="include-risky-photspt" type="checkbox">
             <span>Load risky photometric spectral types (slow)</span>
           </label>
+          <label id="bickle-spt-line" class="checkline" hidden>
+            <input id="use-bickle-spt" type="checkbox">
+            <span>Use Bickle et al. spectral types</span>
+          </label>
           <label class="checkline">
             <input id="advanced-photometry" type="checkbox">
             <span>Use advanced photometry systems</span>
@@ -112,6 +116,10 @@
           <label class="checkline">
             <input id="color-by-age" type="checkbox">
             <span>Color by age</span>
+          </label>
+          <label class="checkline">
+            <input id="color-by-gravity" type="checkbox">
+            <span>Color by gravity class</span>
           </label>
         </section>
       </aside>
@@ -254,6 +262,11 @@
             <td>Includes photometric spectral type estimates. This can be slow because it broadens the source query.</td>
           </tr>
           <tr>
+            <td><code>bickle_spt</code></td>
+            <td><code>false</code></td>
+            <td>In private-table mode with a spectral-type axis, keeps adopted non-low-gravity spectral types and uses Bickle et al. spectral types for the low-gravity branch.</td>
+          </tr>
+          <tr>
             <td><code>advanced_photometry</code></td>
             <td><code>false</code></td>
             <td>Shows all detailed MOCAdb photometry system IDs instead of the simplified band list.</td>
@@ -262,6 +275,11 @@
             <td><code>agecolor</code></td>
             <td><code>false</code></td>
             <td>Colors objects with BANYAN association ages by age and shows objects without ages in gray.</td>
+          </tr>
+          <tr>
+            <td><code>gravitycolor</code></td>
+            <td><code>false</code></td>
+            <td>Colors objects by gravity class: field, beta, gamma, delta, or subdwarf. Beta/gamma classes are folded into gamma. Mutually exclusive with <code>agecolor</code>.</td>
           </tr>
         </tbody>
       </table>
@@ -302,6 +320,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=selected-marker-20260514"></script>
+  <script src="static/app.js?v=gravity-color-20260611a"></script>
 </body>
 </html>

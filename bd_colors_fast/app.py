@@ -66,6 +66,7 @@ OPTIONAL_QUERY_MAX_OBJECTS = max(
 DEFAULT_PHOTOMETRY_PSIDS = ("mko_jmag", "mko_kmag")
 SIMPLE_PHOTOMETRY_PREFIX = "simple:"
 SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
+BICKLE_SPT_METHOD_LIKE = "bickleredlprep_dered_young_sptfit%"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
@@ -318,6 +319,33 @@ def _include_photometric_dist(args: dict[str, Any]) -> bool:
     return any(
         _as_bool(args.get(key))
         for key in ("photdist", "include_photdist", "include_photometric_dist")
+    )
+
+
+def _has_spectral_type_axis(args: dict[str, Any]) -> bool:
+    return any(_axis_spec(args, axis)[0] == "spectral_type" for axis in ("x", "y"))
+
+
+def _use_bickle_spectral_types(args: dict[str, Any]) -> bool:
+    requested = any(
+        _as_bool(args.get(key))
+        for key in ("bickle_spt", "use_bickle_spt", "bickle_spectral_types")
+    )
+    return requested and _is_private_db(args) and _has_spectral_type_axis(args)
+
+
+def _spectral_type_source_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not _use_bickle_spectral_types(args):
+        return "dst.adopted = 1", {}
+    return (
+        """(
+            dst.adopted = 1
+            AND (
+                COALESCE(dst.lowg_like, 0) = 0
+                OR dst.calculation_method LIKE :bickle_spt_method
+            )
+        )""",
+        {"bickle_spt_method": BICKLE_SPT_METHOD_LIKE},
     )
 
 
@@ -575,6 +603,7 @@ def _cache_key(args: dict[str, Any]) -> str:
         str(spt_max),
         str(_include_photometric_spt(args)),
         str(_is_private_db(args) and _include_risky_photometric_spt(args)),
+        str(_use_bickle_spectral_types(args)),
         str(_include_photometric_dist(args)),
         str(limit),
         (
@@ -668,6 +697,9 @@ def _db_table_columns(conn, table_name: str) -> set[str]:
 
 def _selection_sql_parts(args: dict[str, Any]) -> tuple[str, dict[str, Any], str, bool, int | None]:
     range_clause, range_params, spt_label, include_photometric_spt, spt_min = _range_sql(args)
+    source_clause, source_params = _spectral_type_source_filter_sql(args)
+    range_params = {**range_params, **source_params}
+    range_clause = f"({source_clause}) AND ({range_clause})"
     object_limit = _object_limit(args, spt_min, include_photometric_spt)
     limit_clause = f"\n            LIMIT {object_limit}" if object_limit is not None else ""
     return range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause
@@ -678,8 +710,7 @@ def _selected_oids_from_db(conn, args: dict[str, Any]) -> list[int]:
     rows = _records(_read_sql(conn, """
         SELECT dst.moca_oid
         FROM data_spectral_types dst
-        WHERE dst.adopted = 1
-            AND dst.spectral_type_number IS NOT NULL
+        WHERE dst.spectral_type_number IS NOT NULL
             AND {range_clause}
         ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
     """.format(range_clause=range_clause, limit_clause=limit_clause), range_params))
@@ -745,8 +776,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 ON spt_pub.moca_pid = dst.moca_pid
             LEFT JOIN mechanics_object_properties_combined mopc
                 ON mopc.moca_oid = dst.moca_oid
-            WHERE dst.adopted = 1
-                AND dst.spectral_type_number IS NOT NULL
+            WHERE dst.spectral_type_number IS NOT NULL
                 AND {range_clause}
             ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
         """.format(range_clause=range_clause, limit_clause=limit_clause), range_params)
@@ -908,6 +938,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "spt_range": spt_label,
             "include_photometric_spt": include_photometric_spt,
             "include_risky_photometric_spt": _is_private_db(args) and _include_risky_photometric_spt(args),
+            "use_bickle_spectral_types": _use_bickle_spectral_types(args),
             "include_photometric_dist": include_photometric_dist,
             "private_db": _is_private_db(args),
             "max_objects": object_limit,
@@ -1464,6 +1495,7 @@ def _mock_payload() -> dict[str, Any]:
             "photometry_simplebands": list(SIMPLE_PHOTOMETRY_BANDS),
             "include_photometric_spt": True,
             "include_risky_photometric_spt": False,
+            "use_bickle_spectral_types": False,
             "private_db": False,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
