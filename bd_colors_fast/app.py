@@ -147,7 +147,7 @@ BD_EVOLUTION_DEFAULT_IGNORED_MEMBERSHIP_AIDS = tuple(
 )
 BD_EVOLUTION_TRACK_CSV = Path(os.environ.get(
     "BD_EVOLUTION_TRACK_CSV",
-    "/Users/jonathan/Documents/Python/Python_Packages/diamondback_substellar_masses/moca_stitched.csv",
+    str(BASE_DIR / "data" / "moca_stitched.csv"),
 ))
 BD_EVOLUTION_TRACK_NAME = "Sonora Diamondback + MOCAdb empirical extension"
 BD_EVOLUTION_CACHE_SCHEMA = "bd-evolution-v7"
