@@ -15,7 +15,7 @@ ALTER TABLE `data_association_ages`
   ADD INDEX `idx_bdcol_assoc_age_aid_adopted`
   (`moca_aid`, `adopted`, `age_myr`);
 
--- Helps fast spectral typing load only the requested wavelength windows for
+-- Helps MOCAdb spectral typing load only the requested wavelength windows for
 -- all standard spectra, especially before the in-memory cache is warm.
 ALTER TABLE `data_spectra`
   ADD INDEX `idx_fastmocaviz_spectra_specid_ignored_wv`

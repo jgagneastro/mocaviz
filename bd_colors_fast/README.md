@@ -18,7 +18,7 @@ Then open:
 http://127.0.0.1:8061/
 ```
 
-The fast spectral typing prototype is served by the same process:
+The MOCAdb spectral typing app is served by the same process:
 
 ```text
 http://127.0.0.1:8061/spectral-typing
@@ -107,7 +107,7 @@ http://127.0.0.1:8061/rvbam-explorer?mock=1
   objects by default. Override with `BD_COLORS_FAST_MAX_OBJECTS=300000` or a URL
   parameter such as `?max_objects=300000`; use `max_objects=0` for an explicit
   uncapped query.
-- The fast spectral typing page uses Flask JSON endpoints instead of Dash
+- The MOCAdb spectral typing page uses Flask JSON endpoints instead of Dash
   callbacks. The server caches the standards grid, raw spectra, and computed
   comparison payloads; the browser handles navigation, Plotly rendering, URL
   state, and cache clearing.

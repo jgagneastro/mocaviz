@@ -768,7 +768,7 @@ layout = html.Div([
     dcc.Location(id='sp-typing-url'),
     html.Div([
          html.Div([
-              html.H1("MOCA Spectral Typing", id='sp-typing-header'),
+              html.H1("MOCAdb Spectral Typing", id='sp-typing-header'),
               html.P([
                   "This dash app is used to assign spectral types visually.",
                   html.Br(),
