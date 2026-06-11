@@ -432,10 +432,10 @@ async function computeSpectralComparison() {
   const deredden = sptEl["spt-deredden"].checked;
   const cloud = sptEl["spt-cloud"].checked;
   const token = ++sptState.computeToken;
-  const progressive = deredden || cloud;
   const priorityStandardSpecid = currentStandardSpecid();
+  const canShowQuickStandard = priorityStandardSpecid !== null;
   let fullCompleted = false;
-  setTopLoading(!(progressive && priorityStandardSpecid !== null));
+  setTopLoading(!canShowQuickStandard);
   setChi2Loading(true);
   setSpectralStatus("Computing spectral comparison", "loading");
   updateSpectralUrl();
@@ -450,7 +450,7 @@ async function computeSpectralComparison() {
     fix_rv: deredden ? (fixedValue || null) : null,
     priority_standard_specid: priorityStandardSpecid || null,
   };
-  if (progressive && priorityStandardSpecid !== null) {
+  if (canShowQuickStandard) {
     const quickToken = ++sptState.quickComputeToken;
     setSpectralStatus("Computing selected standard", "loading");
     postSpectralJson("api/spectral-typing/standard", {
