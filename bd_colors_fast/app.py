@@ -19407,18 +19407,18 @@ def trueflow_age_pdfs_options():
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_tfage_options()})
+            return _jsonify_clean({"ok": True, "source": "mock", **_mock_tfage_options()})
         payload = _load_tfage_options_from_db(args)
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
-        return jsonify({
+        return _jsonify_clean({
             "ok": False,
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "associations": [],
             "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z", "association_count": 0},
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }, 500)
 
 
 @app.get("/api/trueflow-age-pdfs/search")
@@ -19449,18 +19449,18 @@ def trueflow_age_pdfs_search():
             q = str(query or "").strip().lower()
             if q:
                 options = [row for row in options if q in row["label"].lower()]
-            return jsonify({"ok": True, "source": "mock", "options": options, "value": selected_oid, "meta": {"row_count": len(options)}})
+            return _jsonify_clean({"ok": True, "source": "mock", "options": options, "value": selected_oid, "meta": {"row_count": len(options)}})
         payload = _search_tfage_objects_from_db(args, query, selected_oid)
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
-        return jsonify({
+        return _jsonify_clean({
             "ok": False,
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "options": [],
             "value": None,
             "meta": {"row_count": 0},
-        }), 500
+        }, 500)
 
 
 @app.get("/api/trueflow-age-pdfs/data")
@@ -19471,11 +19471,11 @@ def trueflow_age_pdfs_data():
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_tfage_payload(args)})
+            return _jsonify_clean({"ok": True, "source": "mock", **_mock_tfage_payload(args)})
         payload = _load_tfage_payload_from_db(args)
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
-        return jsonify({
+        return _jsonify_clean({
             "ok": False,
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
@@ -19494,7 +19494,7 @@ def trueflow_age_pdfs_data():
                 "displayable_curve_count": 0,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }, 500)
 
 
 @app.post("/api/trueflow-age-pdfs/cache/clear")
