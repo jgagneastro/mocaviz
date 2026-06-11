@@ -24,6 +24,13 @@ import plotly.graph_objects as go
 from sqlalchemy import bindparam, create_engine, text
 
 
+def _np_trapezoid(y: Any, x: Any) -> Any:
+    trapezoid = getattr(np, "trapezoid", None)
+    if trapezoid is not None:
+        return trapezoid(y, x)
+    return np.trapz(y, x)
+
+
 PAGE_PREFIX = "trueflow-agepdfs-v2"
 
 ONLINE_DB_DEFAULTS = {
@@ -193,7 +200,7 @@ def _normalize_pdf(age_myr: np.ndarray, pdf: np.ndarray) -> np.ndarray:
     if np.count_nonzero(ok) < 2:
         return out
     clipped = np.clip(pdf[ok], 0.0, None)
-    norm = float(np.trapz(clipped, age_myr[ok]))
+    norm = float(_np_trapezoid(clipped, age_myr[ok]))
     if not math.isfinite(norm) or norm <= 0:
         return out
     out[ok] = clipped / norm
@@ -377,7 +384,7 @@ def _log10_age_log_pdf_to_age_pdf(log10_age_grid: np.ndarray, log_pdf: np.ndarra
     log10_age_grid = log10_age_grid[order]
     log_pdf = log_pdf[order]
     log_age_pdf = np.exp(log_pdf - float(np.nanmax(log_pdf)))
-    log_norm = float(np.trapz(log_age_pdf, log10_age_grid))
+    log_norm = float(_np_trapezoid(log_age_pdf, log10_age_grid))
     if not math.isfinite(log_norm) or log_norm <= 0:
         return np.array([], dtype=float), np.array([], dtype=float)
     log_age_pdf /= log_norm

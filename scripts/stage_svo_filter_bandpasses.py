@@ -16,6 +16,13 @@ import numpy as np
 from astropy.io.votable import parse_single_table
 
 
+def np_trapezoid(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    trapezoid = getattr(np, "trapezoid", None)
+    if trapezoid is not None:
+        return trapezoid(y, x)
+    return np.trapz(y, x)
+
+
 SVO_FPS_URL = "https://svo2.cab.inta-csic.es/theory/fps/fps.php"
 
 
@@ -136,7 +143,7 @@ def fetch_svo_profile(request: FilterRequest, timeout: float) -> FilterProfile:
     response_values = response_values[order]
     if wavelength.size < 2:
         raise RuntimeError(f"SVO returned fewer than two profile points for {request.svo_filter_id}")
-    integral = float(np.trapz(response_values, wavelength))
+    integral = float(np_trapezoid(response_values, wavelength))
     if math.isfinite(integral) and integral > 0:
         response_values = response_values / integral
     average, lo, hi = profile_stats(wavelength, response_values)
@@ -195,7 +202,7 @@ def profile_stats(wavelength: np.ndarray, response: np.ndarray) -> tuple[float |
     total = float(cumulative[-1])
     if not math.isfinite(total) or total <= 0:
         return None, float(np.nanmin(wavelength)), float(np.nanmax(wavelength))
-    average = float(np.trapz(wavelength * response, wavelength) / total)
+    average = float(np_trapezoid(wavelength * response, wavelength) / total)
     lo = float(np.interp(0.05 * total, cumulative, wavelength))
     hi = float(np.interp(0.95 * total, cumulative, wavelength))
     return average, lo, hi

@@ -8,6 +8,14 @@ from urllib.parse import quote_plus as urlquote, urlparse, parse_qs
 import os
 from datetime import datetime
 
+
+def _np_trapezoid(y, x):
+    trapezoid = getattr(np, "trapezoid", None)
+    if trapezoid is not None:
+        return trapezoid(y, x)
+    return np.trapz(y, x)
+
+
 # =============================================================================
 # Database connection parameters (match spectral_typing.py)
 # =============================================================================
@@ -99,7 +107,7 @@ def parse_url_flags(search: str):
 
 def _normalize_pdf(age, pdf):
     pdf = np.clip(pdf, 0.0, np.inf)
-    area = np.trapz(pdf, age)
+    area = _np_trapezoid(pdf, age)
     if area <= 0 or not np.isfinite(area):
         return np.zeros_like(pdf)
     return pdf / area
