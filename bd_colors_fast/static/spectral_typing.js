@@ -432,7 +432,7 @@ async function computeSpectralComparison() {
   const deredden = sptEl["spt-deredden"].checked;
   const cloud = sptEl["spt-cloud"].checked;
   const token = ++sptState.computeToken;
-  const priorityStandardSpecid = currentStandardSpecid();
+  const priorityStandardSpecid = canUseQuickStandardPreview() ? currentStandardSpecid() : null;
   const canShowQuickStandard = priorityStandardSpecid !== null;
   let fullCompleted = false;
   setTopLoading(!canShowQuickStandard);
@@ -604,6 +604,16 @@ function currentStandardSpecid() {
   index = Math.min(Math.max(0, index), rows.length - 1);
   const specid = rows[index]?.moca_specid;
   return specid === null || specid === undefined ? null : Number(specid);
+}
+
+function hasExplicitUrlStandardSelection() {
+  return Boolean(sptState.initialGridParam) && sptState.initialGridIndexParam !== null;
+}
+
+function canUseQuickStandardPreview() {
+  return hasExplicitUrlStandardSelection()
+    || sptState.hasAppliedInitialIndex
+    || Boolean(sptState.comparePayload?.entries?.length);
 }
 
 function bestIndexForGrid(grid) {
@@ -1489,15 +1499,18 @@ function plotConfig(filename) {
 function updateSpectralUrl() {
   const fixedValue = fixedParameterValue();
   const params = new URLSearchParams(window.location.search);
+  const hasResolvedSelection = sptState.hasAppliedInitialIndex || Boolean(sptState.comparePayload?.entries?.length);
+  const shouldPersistGrid = hasResolvedSelection || Boolean(sptState.initialGridParam);
+  const shouldPersistIndex = hasResolvedSelection || hasExplicitUrlStandardSelection();
   if (sptState.selectedSpecid !== null) params.set("specid", sptState.selectedSpecid);
   else {
     params.delete("specid");
     params.delete("moca_specid");
     params.delete("grid_index");
   }
-  if (sptState.selectedGrid) params.set("grid", sptState.selectedGrid);
+  if (sptState.selectedGrid && shouldPersistGrid) params.set("grid", sptState.selectedGrid);
   else params.delete("grid");
-  if (sptState.selectedSpecid !== null && sptState.selectedGrid) params.set("grid_index", String(sptState.currentIndex || 0));
+  if (sptState.selectedSpecid !== null && sptState.selectedGrid && shouldPersistIndex) params.set("grid_index", String(sptState.currentIndex || 0));
   else params.delete("grid_index");
   params.set("bins", sptEl["spt-bins"].value || String(sptDefaultBins));
   params.set("norm", sptEl["spt-norm"].value || sptDefaultNormText);
