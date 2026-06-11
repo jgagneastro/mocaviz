@@ -759,6 +759,33 @@ def _records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return output
 
 
+def _json_clean(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_clean(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return _json_clean(value.tolist())
+    if isinstance(value, pd.DataFrame):
+        return _records(value)
+    if isinstance(value, pd.Series):
+        return _json_clean(value.to_dict())
+    if isinstance(value, (list, tuple, set)):
+        return [_json_clean(item) for item in value]
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return None
+    return _pythonize(value)
+
+
+def _jsonify_clean(payload: Mapping[str, Any], status: int | None = None):
+    response = jsonify(_json_clean(payload))
+    if status is not None:
+        response.status_code = status
+    return response
+
+
 def _read_sql(conn, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     return pd.read_sql_query(text(sql), conn, params=params or {})
 
@@ -18223,7 +18250,7 @@ def spectral_typing_compare():
                 cloud_alpha_fixed,
                 cloud_lambda0,
             )
-            return jsonify({"ok": True, "source": "mock", **payload})
+            return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
         payload = _precompute_spt_comparison(
             args,
@@ -18239,7 +18266,7 @@ def spectral_typing_compare():
             priority_standard_specid=priority_standard_specid,
         )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return jsonify({
             "ok": False,
@@ -18335,7 +18362,7 @@ def spectral_typing_standard():
                 cloud_lambda0,
                 only_standard_specid=standard_specid,
             )
-            return jsonify({"ok": True, "source": "mock", **payload})
+            return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
         payload = _precompute_spt_comparison(
             args,
@@ -18351,7 +18378,7 @@ def spectral_typing_standard():
             only_standard_specid=standard_specid,
         )
         payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return jsonify({
             "ok": False,
