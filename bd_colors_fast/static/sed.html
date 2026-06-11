@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb SED Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=sed-explorer-20260611m">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="sed-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb SED Explorer</div>
+      <div id="sed-status" class="status loading">Loading SED</div>
+    </header>
+
+    <main class="workspace sed-workspace">
+      <aside class="controls sed-controls">
+        <section class="control-section axes-section">
+          <h2>Target</h2>
+          <div class="designation-picker">
+            <label for="sed-search">Object</label>
+            <input id="sed-search" type="text" autocomplete="off" placeholder="Type an oid or designation">
+            <div id="sed-results" class="designation-results" hidden></div>
+          </div>
+          <div id="sed-target-token" class="sed-token-list"></div>
+          <div class="sed-inline-layer-block">
+            <h3>Displayed Data</h3>
+            <div id="sed-layer-tokens" class="sed-layer-tokens"></div>
+          </div>
+          <div class="button-grid">
+            <button id="sed-load" type="button">Load SED</button>
+            <button id="sed-clear-cache" type="button">Clear cache</button>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label>
+            X axis
+            <select id="sed-xunit">
+              <option value="um">Microns</option>
+              <option value="nm">Nanometers</option>
+              <option value="angstrom">Angstrom</option>
+            </select>
+          </label>
+          <label>
+            Y axis
+            <select id="sed-yunit">
+              <option value="lambda_flambda">λFλ (W/m²)</option>
+              <option value="flambda">Fλ (W/m²/μm)</option>
+              <option value="fnu">Fν (Jy)</option>
+              <option value="lambda_llambda">λLλ (W)</option>
+              <option value="lambda_llambda_lsun">λLλ (Lsun)</option>
+            </select>
+          </label>
+          <label class="checkline">
+            <input id="sed-xlog" type="checkbox" checked>
+            <span>Log X axis</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-ylog" type="checkbox" checked>
+            <span>Log Y axis</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-hover" type="checkbox" checked>
+            <span>Enable hover metadata</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-hide-ignored" type="checkbox" checked>
+            <span>Hide ignored measurements</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-anchor-spectra" type="checkbox" checked>
+            <span>Anchor spectra to photometry</span>
+          </label>
+          <label class="checkline" title="Anchor ground-based spectra to photometry while leaving space-based spectra at native calibration. Space spectra are recognized from metadata such as JWST, HST, SPHEREx, MIRI, WFC3, STIS, and similar instrument labels.">
+            <input id="sed-anchor-ground-only" type="checkbox" checked>
+            <span>Anchor ground-based spectra only to photometry</span>
+          </label>
+          <label class="checkline" title="Exclude common telluric absorption regions from ground-based spectra before plotting, anchoring, and SED reconstruction.">
+            <input id="sed-exclude-ground-telluric" type="checkbox" checked>
+            <span>Exclude telluric regions for ground-based spectra</span>
+          </label>
+          <label title="Keeps only spectrum samples whose wavelength falls inside any requested range. Values are microns unless Angstrom-like values are entered. Photometry, templates, and extension tails are not clipped by this filter.">
+            Spectrum wavelength ranges
+            <input id="sed-spectrum-ranges" type="text" autocomplete="off" placeholder="1.10-1.35 or 1.10, 1.35">
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Template</h2>
+          <div class="designation-picker">
+            <label for="sed-template-search">Add template</label>
+            <input id="sed-template-search" type="text" autocomplete="off" placeholder="Type a template id, SpT, or grid">
+            <div id="sed-template-results" class="designation-results" hidden></div>
+          </div>
+          <div id="sed-template-token" class="sed-token-list"></div>
+          <label class="checkline">
+            <input id="sed-show-template" type="checkbox" checked>
+            <span>Show scaled template</span>
+          </label>
+          <label>
+            Scale template with
+            <select id="sed-template-scale-mode">
+              <option value="photometry">Photometry</option>
+              <option value="all">Visible SED</option>
+              <option value="spectra">Spectra</option>
+            </select>
+          </label>
+          <button id="sed-clear-template" type="button">Clear template</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Empirical SED</h2>
+          <label class="checkline">
+            <input id="sed-extend-short" type="checkbox" checked>
+            <span>Short-wavelength extension</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-extend-long" type="checkbox" checked>
+            <span>Long-wavelength extension</span>
+          </label>
+        </section>
+      </aside>
+
+      <section id="sed-visual-area" class="visual-area sed-visual-area">
+        <div class="plot-frame sed-plot-frame">
+          <div id="sed-plot"></div>
+          <div id="sed-plot-loader" class="plot-loader is-visible" aria-label="Loading SED">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="sed-selection-toolbar">
+          <div class="button-grid sed-selection-actions">
+            <button id="sed-remove-selection" type="button" disabled>Remove all spectra within current selection</button>
+            <button id="sed-carve-selection" type="button" disabled>Carve out spectra within selection</button>
+            <button id="sed-remove-photometry-selection" type="button" disabled>Remove all photometric points within selection</button>
+            <button id="sed-clear-spectrum-removals" type="button" disabled>Restore spectra disabled by selection</button>
+            <button id="sed-clear-spectrum-carves" type="button" disabled>Restore carved spectrum data</button>
+          </div>
+          <div id="sed-spectrum-selection-note" class="plot-hint">Use Plotly lasso or box select to select spectra or photometry.</div>
+        </div>
+        <div class="sed-empirical-toolbar">
+          <div class="button-grid sed-empirical-actions">
+            <button id="sed-construct" type="button">Construct empirical SED</button>
+            <button id="sed-clear-empirical" type="button">Clear empirical SED</button>
+          </div>
+          <div id="sed-bolometric-summary" class="sed-bolometric-summary">No empirical SED constructed</div>
+        </div>
+        <div class="spectra-toolbar sed-toolbar">
+          <div class="spectra-summary">
+            <div id="sed-summary">No SED loaded</div>
+            <div id="sed-hint" class="plot-hint">Click a photometric point to foreground its bandpass response.</div>
+          </div>
+          <div id="sed-flux-note" class="plot-hint sed-flux-note"></div>
+        </div>
+        <div class="selection-area sed-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="sed-table-title">Selected data</strong>
+              <div id="sed-table-subtitle" class="plot-hint">Hover or click plot elements for metadata.</div>
+            </div>
+          </div>
+          <div id="sed-table" class="table-scroll">No data selected.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="static/sed.js?v=sed-explorer-20260611u"></script>
+</body>
+</html>

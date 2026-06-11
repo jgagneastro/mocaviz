@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Spectral Index Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=spectral-index-explorer-20260611a">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="spectral-index-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Spectral Index Explorer</div>
+      <div id="sie-status" class="status loading">Loading definition</div>
+    </header>
+
+    <main class="workspace spectral-index-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Spectrum</h2>
+          <div class="designation-picker">
+            <label for="sie-spectrum-search">Spectrum</label>
+            <input id="sie-spectrum-search" type="text" autocomplete="off" placeholder="specid, oid, designation, or instrument">
+            <div id="sie-spectrum-results" class="designation-results" hidden></div>
+          </div>
+          <div id="sie-spectrum-selected" class="spectra-selected-list"></div>
+          <div class="button-grid">
+            <button id="sie-load" type="button">Load</button>
+            <button id="sie-open-spectrum" type="button">Open spectrum</button>
+          </div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Observable</h2>
+          <label for="sie-definition-filter">
+            <span class="field-label">Filter</span>
+            <input id="sie-definition-filter" class="spectral-index-definition-filter" type="text" autocomplete="off" placeholder="name, source, species, or UID">
+          </label>
+          <label for="sie-definition-select">
+            <span class="field-label">Definition</span>
+            <select id="sie-definition-select" class="spectral-index-definition-select">
+              <option value="">Loading definitions</option>
+            </select>
+          </label>
+          <div id="sie-definition-selected" class="spectral-index-definition-token"></div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="sie-normalize" type="checkbox" checked>
+            <span>Normalize plotted flux</span>
+          </label>
+          <label class="checkline">
+            <input id="sie-show-continuum" type="checkbox" checked>
+            <span>Show continuum model</span>
+          </label>
+          <label class="checkline">
+            <input id="sie-show-labels" type="checkbox" checked>
+            <span>Show band labels</span>
+          </label>
+          <label class="checkline">
+            <input id="sie-show-points" type="checkbox" checked>
+            <span>Show calculation samples</span>
+          </label>
+          <label class="checkline">
+            <input id="sie-hide-ignored" type="checkbox" checked>
+            <span>Hide ignored spectral points</span>
+          </label>
+        </section>
+      </aside>
+
+      <section class="visual-area spectral-index-visual-area">
+        <div class="plot-frame spectral-index-plot-frame">
+          <div id="sie-plot"></div>
+          <div id="sie-plot-loader" class="plot-loader is-visible" aria-label="Loading spectral index explorer">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+        <div class="spectral-index-toolbar">
+          <div class="spectral-index-summary">
+            <div id="sie-summary">No definition loaded</div>
+            <div id="sie-hint" class="plot-hint">Bands are drawn from MOCAdb definition metadata.</div>
+          </div>
+          <div class="export-actions spectral-index-actions">
+            <button id="sie-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div class="selection-area spectral-index-detail-area">
+          <div class="spectral-index-detail-grid">
+            <div>
+              <strong>Calculation</strong>
+              <div id="sie-calculation-table" class="table-scroll"></div>
+            </div>
+            <div>
+              <strong>Definition bands</strong>
+              <div id="sie-band-table" class="table-scroll"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="static/spectral_index_explorer.js?v=spectral-index-explorer-20260611g"></script>
+</body>
+</html>

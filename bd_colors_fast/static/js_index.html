@@ -23,6 +23,10 @@
           <p class="js-tool-description">Compare MOCAdb objects against photometric, chemical equivalent width or spectral index sequences versus colors or spectral types with MOCAdb sequence overlays.</p>
         </li>
         <li>
+          <a data-js-page href="/js/bd-evolution">Brown Dwarf Evolution Explorer</a>
+          <p class="js-tool-description">Compare MOCAdb brown dwarfs with adopted or BANYAN Sigma membership ages against Sonora Diamondback extended evolutionary tracks with selectable physical axes.</p>
+        </li>
+        <li>
           <a data-js-page href="/js/gaia-cmd">Gaia CMD Explorer</a>
           <p class="js-tool-description">Inspect Gaia color-magnitude diagrams for selected associations and individual MOCAdb objects.</p>
         </li>
@@ -45,6 +49,14 @@
         <li>
           <a data-js-page href="/js/spectra">Spectral Explorer</a>
           <p class="js-tool-description">Load, normalize, and compare selected MOCAdb spectra in an interactive Plotly viewer.</p>
+        </li>
+        <li>
+          <a data-js-page href="/js/spectral-index-explorer">Spectral Index Explorer</a>
+          <p class="js-tool-description">Inspect one spectrum with the MOCAdb wavelength windows, continuum model, and calculated spectral-index or equivalent-width components.</p>
+        </li>
+        <li data-private-schema-only hidden>
+          <a data-js-page href="/js/sed">SED Explorer</a>
+          <p class="js-tool-description">Inspect object-level photometry, spectra, bandpass responses, scaled templates, and empirical bolometric SED integrations.</p>
         </li>
         <li>
           <a data-js-page href="/js/astrometry">Astrometric Explorer</a>
@@ -99,9 +111,16 @@
         || hostname === "0.0.0.0"
         || hostname === "::1"
         || hostname.endsWith(".localhost");
-      document.querySelectorAll("[data-private-schema-only]").forEach((item) => {
-        item.hidden = !(isPrivateSchema || isLocalHost);
-      });
+      const setPrivateVisibility = (activePrivateSchema, options = {}) => {
+        const localHostAllowed = options.localHostAllowed !== false;
+        document.querySelectorAll("[data-private-schema-only]").forEach((item) => {
+          item.hidden = !(activePrivateSchema || (localHostAllowed && isLocalHost));
+        });
+        document.querySelectorAll("[data-private-db-only]").forEach((item) => {
+          item.hidden = !activePrivateSchema;
+        });
+      };
+      setPrivateVisibility(isPrivateSchema);
 
       const connectionParams = new URLSearchParams();
       const carryParam = (targetKey, ...sourceKeys) => {
@@ -114,19 +133,32 @@
       carryParam("pwd", "pwd", "password");
       carryParam("dbase", "dbase", "db", "database");
       carryParam("mock", "mock");
-      if (!connectionParams.toString()) return;
 
-      document.querySelectorAll("a[data-js-page], a[href^='/js/']").forEach((link) => {
-        const href = link.getAttribute("href");
-        if (!href) return;
-        const url = new URL(href, window.location.origin);
-        connectionParams.forEach((value, key) => {
-          url.searchParams.set(key, value);
+      if (connectionParams.toString()) {
+        document.querySelectorAll("a[data-js-page], a[href^='/js/']").forEach((link) => {
+          const href = link.getAttribute("href");
+          if (!href) return;
+          const url = new URL(href, window.location.origin);
+          connectionParams.forEach((value, key) => {
+            url.searchParams.set(key, value);
+          });
+          link.href = url.origin === window.location.origin
+            ? `${url.pathname}${url.search}${url.hash}`
+            : url.toString();
         });
-        link.href = url.origin === window.location.origin
-          ? `${url.pathname}${url.search}${url.hash}`
-          : url.toString();
+      }
+
+      const contextUrl = new URL("/api/js-home/context", window.location.origin);
+      connectionParams.forEach((value, key) => {
+        contextUrl.searchParams.set(key, value);
       });
+      fetch(contextUrl)
+        .then((response) => response.ok ? response.json() : null)
+        .then((payload) => {
+          if (!payload || !payload.ok) return;
+          setPrivateVisibility(Boolean(payload.meta && payload.meta.private_db));
+        })
+        .catch(() => {});
     })();
   </script>
 </body>

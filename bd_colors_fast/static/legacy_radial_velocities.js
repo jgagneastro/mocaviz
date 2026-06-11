@@ -389,15 +389,27 @@ function weightedLegacyRvStats(rows) {
   if (!values.length) {
     return { ok: false, average: NaN, stddev: NaN, n: 0, selectedN: selectedRows.length, badN: rows.filter((row) => row._isBad).length };
   }
-  const weights = values.map((row) => 1 / (row.unc * row.unc));
+  const nominalWeights = values.map((row) => 1 / (row.unc * row.unc));
+  const sortedWeights = [...nominalWeights].sort((a, b) => a - b);
+  const mid = Math.floor(sortedWeights.length / 2);
+  const medianWeight = sortedWeights.length % 2
+    ? sortedWeights[mid]
+    : 0.5 * (sortedWeights[mid - 1] + sortedWeights[mid]);
+  const weightFloor = Number.isFinite(medianWeight) && medianWeight > 0 ? 0.2 * medianWeight : 0;
+  const weights = nominalWeights.map((weight) => (weightFloor > 0 ? Math.max(weight, weightFloor) : weight));
   const weightSum = weights.reduce((sum, value) => sum + value, 0);
   const average = values.reduce((sum, row, index) => sum + row.rv * weights[index], 0) / weightSum;
+  const propagated = Math.sqrt(values.reduce((sum, row, index) => {
+    const normalizedWeight = weights[index] / weightSum;
+    return sum + (normalizedWeight * row.unc) ** 2;
+  }, 0));
   const variance = values.reduce((sum, row, index) => sum + weights[index] * (row.rv - average) ** 2, 0) / weightSum;
   const weightSquareSum = weights.reduce((sum, value) => sum + value * value, 0);
   const correction = 1 - (weightSquareSum / (weightSum * weightSum));
-  const stddev = values.length > 1 && correction > 0
+  const scatter = values.length > 1 && correction > 0
     ? Math.sqrt(Math.max(0, variance / correction))
-    : values[0].unc;
+    : 0;
+  const stddev = Math.sqrt(propagated * propagated + scatter * scatter);
   return {
     ok: Number.isFinite(average) && Number.isFinite(stddev),
     average,

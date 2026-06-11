@@ -2145,14 +2145,15 @@ function frozenPlotlyTableRow(row, axes) {
 }
 
 async function buildFrozenPlotlyStandaloneHtml(snapshot) {
-  const [styleSource, plotlySource] = await Promise.all([
+  const [styleSource, plotlySource, exportFixSource] = await Promise.all([
     fetchFrozenAssetText("static/styles.css"),
     fetchFrozenAssetText("plotly.min.js"),
+    fetchFrozenAssetText("static/plotly_export_fix.js"),
   ]);
-  return frozenPlotlySceneHtml(snapshot, styleSource, plotlySource);
+  return frozenPlotlySceneHtml(snapshot, styleSource, plotlySource, exportFixSource);
 }
 
-function frozenPlotlySceneHtml(snapshot, styleSource, plotlySource) {
+function frozenPlotlySceneHtml(snapshot, styleSource, plotlySource, exportFixSource) {
   const dualClass = snapshot.dual ? " xyz2-page" : "";
   const stage = snapshot.dual ? `
         <div class="xyz2-plot-grid">
@@ -2204,6 +2205,7 @@ ${stage}
     </main>
   </div>
   <script>${scriptSafeText(plotlySource)}</script>
+  <script>${scriptSafeText(exportFixSource)}</script>
   <script>${scriptSafeText(`window.MOCAVIZ_FROZEN_PLOTLY_XYZ_SCENE = ${JSON.stringify(snapshot)};`)}</script>
   <script>${scriptSafeText(frozenPlotlyViewerScript())}</script>
 </body>

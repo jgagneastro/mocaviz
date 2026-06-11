@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="static/styles.css?v=spectral-explorer-tokens-20260604a">
   <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
   <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
 <body class="spectra-page">
   <div class="app-shell">
@@ -50,11 +51,11 @@
             <span>Hide ignored spectral points</span>
           </label>
           <label class="checkline">
-            <input id="spe-xlog" type="checkbox" checked>
+            <input id="spe-xlog" type="checkbox">
             <span>Log X axis</span>
           </label>
           <label class="checkline">
-            <input id="spe-ylog" type="checkbox" checked>
+            <input id="spe-ylog" type="checkbox">
             <span>Log Y axis</span>
           </label>
           <label class="checkline">
@@ -132,7 +133,7 @@
           <tr><td><code>hover</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows detailed hover text for plotted spectral rows.</td></tr>
           <tr><td><code>error_shade</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows a smoothed one-sigma shaded envelope around each displayed spectrum.</td></tr>
           <tr><td><code>snr</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Displays flux divided by flux uncertainty per pixel instead of spectral flux.</td></tr>
-          <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>0</code> disables either log axis</td><td>Both axes use logarithmic scaling by default.</td></tr>
+          <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Enables logarithmic scaling for either axis.</td></tr>
           <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
           <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>

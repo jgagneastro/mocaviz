@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="static/styles.css?v=mocaviz-auth-theme-20260602">
   <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
   <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
 <body class="rvbam-page">
   <div class="app-shell">
@@ -31,9 +32,21 @@
             Spectrum ID
             <input id="rvb-specid" type="number" min="1" step="1">
           </label>
-          <label>
+          <label hidden>
             Pipeline
             <input id="rvb-pipeline" type="text" autocomplete="off" placeholder="rvbam-dev">
+          </label>
+          <label>
+            Instrument
+            <select id="rvb-instid">
+              <option value="">All instruments</option>
+            </select>
+          </label>
+          <label>
+            Atmosphere model
+            <select id="rvb-mgridid">
+              <option value="">All atmosphere models</option>
+            </select>
           </label>
           <label class="checkline">
             <input id="rvb-has-literature-rv" type="checkbox">
@@ -54,6 +67,10 @@
           <label title="Minimum moca_spectra.median_snr_per_pix for the spectrum associated with the RVBAM run.">
             Min run median S/N
             <input id="rvb-min-run-snr" type="number" min="0" step="0.1" placeholder="No limit">
+          </label>
+          <label title="Maximum uncertainty of the weighted RV average computed from plottable segments after the current average filters.">
+            Max resulting RV error (km/s)
+            <input id="rvb-max-resulting-rv-unc" type="number" min="0" step="0.1" placeholder="No limit">
           </label>
           <label>
             RVBAM run
@@ -87,7 +104,15 @@
           </label>
           <label class="checkline">
             <input id="rvb-use-selection" type="checkbox" checked>
-            <span>Use selected segments to compute weighted average</span>
+            <span>Use selected segments to compute run RV</span>
+          </label>
+          <label>
+            RV calculation
+            <select id="rvb-rv-method">
+              <option value="weighted_errors">Weighted errors</option>
+              <option value="median_mad">Median and MAD</option>
+              <option value="weighted_median_mad">Weighted median and weighted MAD</option>
+            </select>
           </label>
           <label class="checkline">
             <input id="rvb-show-errors" type="checkbox" checked>
@@ -106,6 +131,10 @@
 
         <section class="control-section filters-section">
           <h2>Average Filters</h2>
+          <div class="rvb-filter-actions">
+            <button id="rvb-clear-average-filters" type="button">Remove All Filters</button>
+            <button id="rvb-restore-average-filter-defaults" type="button">Restore Defaults</button>
+          </div>
           <label>
             Max LSF width (km/s)
             <input id="rvb-max-lsf" type="number" min="0" step="0.1" placeholder="No limit">
@@ -173,16 +202,20 @@
 
           <section class="rvb-detail-panel" aria-label="Selected RVBAM segment">
             <div class="rvb-tabbar">
-              <button type="button" data-rvb-tab="fit">Model Fit</button>
-              <button type="button" data-rvb-tab="rebuilt" hidden>Rebuild Model Fit</button>
-              <button type="button" data-rvb-tab="corner">Corner Plot</button>
-              <button type="button" data-rvb-tab="rebuilt-corner" hidden>Rebuild Corner Plot</button>
-              <button type="button" data-rvb-tab="global-corner" hidden>Global Corner Plot</button>
-              <button type="button" data-rvb-tab="literature">Literature RV</button>
-              <button type="button" class="is-active" data-rvb-tab="posterior">Posteriors</button>
-              <button type="button" data-rvb-tab="params">Parameters</button>
-              <button type="button" data-rvb-tab="payload">Payload</button>
-              <button type="button" data-rvb-tab="spectrum">Spectrum</button>
+              <div class="rvb-tabbar-row">
+                <button type="button" data-rvb-tab="fit">Model Fit</button>
+                <button type="button" data-rvb-tab="rebuilt" hidden>Rebuild Model Fit</button>
+                <button type="button" data-rvb-tab="corner">Corner Plot</button>
+                <button type="button" data-rvb-tab="rebuilt-corner" hidden>Rebuild Corner Plot</button>
+                <button type="button" data-rvb-tab="global-corner" hidden>Global Corner Plot</button>
+              </div>
+              <div class="rvb-tabbar-row">
+                <button type="button" data-rvb-tab="literature">Literature RV</button>
+                <button type="button" class="is-active" data-rvb-tab="posterior">Posteriors</button>
+                <button type="button" data-rvb-tab="params">Parameters</button>
+                <button type="button" data-rvb-tab="payload">Payload</button>
+                <button type="button" data-rvb-tab="spectrum">Spectrum</button>
+              </div>
             </div>
 
             <div id="rvb-tab-fit" class="rvb-tab-panel">
@@ -225,7 +258,6 @@
 
             <div id="rvb-tab-literature" class="rvb-tab-panel rvb-lit-rv-panel">
               <div class="rvb-tab-actions">
-                <button id="rvb-load-lit-comparison" type="button">Refresh Comparison</button>
                 <span id="rvb-lit-rv-meta" class="rvb-rebuilt-meta"></span>
               </div>
               <div id="rvb-lit-rv-plot"></div>
@@ -275,6 +307,9 @@
               <div id="rvb-table-subtitle" class="plot-hint">Segments are sorted by order, window, and wavelength.</div>
             </div>
           </div>
+          <div class="rvb-info-actions">
+            <button id="rvb-info-open-report" type="button" disabled>Open MOCAdb report</button>
+          </div>
           <div id="rvb-info" class="rvb-info-grid"></div>
           <div id="rvb-segments-table" class="table-scroll"></div>
         </div>
@@ -294,8 +329,8 @@
           <tr><td><code>scatter_y</code></td><td>Segment field name</td><td>Sets the left scatter plot y-axis.</td></tr>
           <tr><td><code>min_data_contrast</code>, <code>min_model_contrast</code>, <code>min_model_10p</code>, <code>max_masked_outliers</code>, <code>segment_wavelength</code></td><td>Average filters</td><td>Filters segments by wavelength or legacy RV-content diagnostics before computing the plotted average.</td></tr>
           <tr><td><code>min_snr</code></td><td>Average filter</td><td>Filters by median segment S/N; this is spectrum quality, not one of the legacy RV-content contrast diagnostics.</td></tr>
-          <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>pipeline</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
-          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code>, <code>min_segments</code>, <code>max_segments</code>, <code>min_run_snr</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets, requested wavelength coverage, filtered available segment count, or spectrum median S/N.</td></tr>
+          <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>moca_instid</code>, <code>moca_mgridid</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
+          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code>, <code>min_segments</code>, <code>max_segments</code>, <code>min_run_snr</code>, <code>max_resulting_rv_unc</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets, requested wavelength coverage, filtered available segment count, spectrum median S/N, or resulting RV uncertainty.</td></tr>
           <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses local synthetic RVBAM payloads.</td></tr>
         </tbody>
@@ -320,6 +355,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/rvbam_explorer.js?v=rvbam-20260604-manual-literature-tab"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260611-rv-weight-ceiling"></script>
 </body>
 </html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brown Dwarf Evolution Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=bd-evolution-20260611d">
+  <script src="static/auth_theme.js?v=mocaviz-auth-theme-20260602"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="bd-evolution-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">Brown Dwarf Evolution Explorer</div>
+      <div id="bde-status" class="status loading">Loading Brown Dwarf Evolution Explorer</div>
+    </header>
+
+    <main class="workspace bd-evolution-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <label>
+            X axis
+            <select id="bde-x-axis"></select>
+          </label>
+          <label>
+            Y axis
+            <select id="bde-y-axis"></select>
+          </label>
+          <label class="checkline">
+            <input id="bde-x-log" type="checkbox" checked>
+            <span>X log</span>
+          </label>
+          <label class="checkline">
+            <input id="bde-y-log" type="checkbox">
+            <span>Y log</span>
+          </label>
+        </section>
+
+        <section class="control-section model-tracks-section">
+          <h2>Model tracks</h2>
+          <label>
+            Track set
+            <select id="bde-track-model">
+              <option value="sonora_diamondback_mocadb">Sonora Diamondback + MOCAdb empirical extension</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Sample</h2>
+          <label>
+            Spectral range
+            <input id="bde-spt-range" type="text" value="L2+">
+          </label>
+          <label class="range-label">
+            <span class="range-heading">
+              <span>Min ya_prob</span>
+              <output id="bde-ya-prob-min-value" for="bde-ya-prob-min">80%</output>
+            </span>
+            <input id="bde-ya-prob-min" type="range" min="0" max="100" step="1" value="80">
+          </label>
+          <label>
+            Ignore groups
+            <input id="bde-ignore-aids" type="text" value="OCTN,CUMA">
+          </label>
+          <div class="designation-picker">
+            <label for="bde-object-search">Display object</label>
+            <input id="bde-object-search" type="text" autocomplete="off" placeholder="Type a designation or MOCA OID">
+            <div id="bde-object-results" class="designation-results" hidden></div>
+            <div id="bde-selected-objects" class="designation-selected" aria-live="polite"></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Direct OID entry</summary>
+            <label>
+              moca_oid list
+              <input id="bde-highlight-oids" type="text" value="" placeholder="571365">
+            </label>
+          </details>
+          <label class="checkline">
+            <input id="bde-remove-companions" type="checkbox">
+            <span>Remove companions</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Layers</h2>
+          <label class="checkline">
+            <input id="bde-tracks" type="checkbox" checked>
+            <span>Show model tracks</span>
+          </label>
+          <label class="checkline">
+            <input id="bde-data-hover" type="checkbox" checked>
+            <span>Hover box for data points</span>
+          </label>
+          <label id="bde-track-hover-line" class="checkline">
+            <input id="bde-track-hover" type="checkbox">
+            <span>Hover box for model tracks</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Options</h2>
+          <label>
+            Age jitter (dex)
+            <input id="bde-age-jitter" type="number" min="0" max="0.08" step="0.002" value="0.016">
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Load</h2>
+          <label>
+            Max object rows
+            <input id="bde-max-objects" type="number" min="1" step="1000" value="120000">
+          </label>
+          <button id="bde-load" type="button">Load objects</button>
+        </section>
+      </aside>
+
+      <section class="visual-area bd-evolution-visual-area">
+        <div class="plot-frame bd-evolution-plot-frame">
+          <div id="bde-plot"></div>
+          <div id="bde-plot-loader" class="plot-loader is-visible" aria-label="Loading Brown Dwarf Evolution Explorer">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="bd-evolution-toolbar">
+          <div class="bd-evolution-summary">
+            <div id="bde-summary">No data loaded</div>
+            <div id="bde-subtitle" class="plot-hint">Selection: none</div>
+          </div>
+          <div class="export-actions bd-evolution-actions">
+            <button id="bde-clear-selection" type="button" disabled>Clear selection</button>
+            <button id="bde-export-csv" type="button" disabled>Export CSV</button>
+            <button id="bde-export-tsv" type="button" disabled>Export TSV</button>
+          </div>
+        </div>
+
+        <div class="selection-area bd-evolution-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="bde-table-title">Selected objects</strong>
+              <div id="bde-table-subtitle" class="plot-hint">Click or lasso points in the plot.</div>
+            </div>
+          </div>
+          <div id="bde-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help bd-evolution-url-help">
+      <h2>Using URL Parameters</h2>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>x</code>, <code>y</code></td><td><code>age_myr</code>, <code>teff_k</code>, <code>mass_mjup</code>, <code>logg</code>, <code>radius_rjup</code></td><td>Sets the plotted axes.</td></tr>
+          <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>1</code> or <code>0</code></td><td>Sets logarithmic axis scaling.</td></tr>
+          <tr><td><code>track_model</code></td><td><code>sonora_diamondback_mocadb</code></td><td>Selects the model-track set.</td></tr>
+          <tr><td><code>spt_range</code></td><td><code>L2+</code> or <code>L2-T8</code></td><td>Limits plotted objects by adopted spectral type. Default is <code>L2+</code>.</td></tr>
+          <tr><td><code>ya_prob_min</code></td><td><code>0</code>-<code>100</code></td><td>Sets the minimum BANYAN Sigma young-association probability for membership ages. Default is <code>80</code>.</td></tr>
+          <tr><td><code>ignore_aids</code></td><td>Comma-separated association IDs</td><td>Excludes confident BANYAN Sigma memberships in these groups. Default is <code>OCTN,CUMA</code>.</td></tr>
+          <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated MOCA OIDs</td><td>Forces these objects into the plotted sample and highlights them.</td></tr>
+          <tr><td><code>remove_companions</code></td><td><code>1</code> or <code>0</code></td><td>Excludes objects listed as children in <code>moca_companions</code>.</td></tr>
+          <tr><td><code>max_objects</code></td><td>Positive integer</td><td>Caps the object query.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+      <h3>Cache</h3>
+      <div class="cache-actions">
+        <button id="bde-clear-cache-bottom" type="button">Clear cache</button>
+        <span id="bde-clear-cache-status" class="cache-status"></span>
+      </div>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/bd_evolution.js?v=bd-evolution-20260611bb"></script>
+</body>
+</html>

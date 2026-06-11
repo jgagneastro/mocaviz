@@ -234,13 +234,25 @@ def update_scatter_plot(selected_dataset, selectedData):
 
     # Calculate weighted average RV excluding outliers
     if not df_filtered.empty:
-        weights = 1 / df_filtered['radial_velocity_kms_unc']**2
-        weighted_avg_rv = np.average(df_filtered['radial_velocity_kms'], weights=weights)
-        variance = np.average((df_filtered['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
-        #This equation does not allow the error to decrease by a factor 1/SQRT(N)
-        weighted_stddev_rv = np.sqrt(variance * (1 / (1 - (np.sum(weights**2) / np.sum(weights)**2))))
-        #This one does
-        #weighted_stddev_rv = np.sqrt(1 / np.sum(weights))*np.sqrt(1.5)#Factor 1.5 for window overlap
+        uncertainties_all = df_filtered['radial_velocity_kms_unc'].to_numpy(dtype=float)
+        valid_uncertainties = np.isfinite(uncertainties_all) & (uncertainties_all > 0)
+        df_weighted = df_filtered.iloc[valid_uncertainties]
+        if not df_weighted.empty:
+            uncertainties = df_weighted['radial_velocity_kms_unc'].to_numpy(dtype=float)
+            raw_weights = 1 / uncertainties**2
+            finite_weights = raw_weights[np.isfinite(raw_weights) & (raw_weights > 0)]
+            weight_floor = 0.2 * float(np.nanmedian(finite_weights))
+            weights = np.maximum(raw_weights, weight_floor)
+            weighted_avg_rv = np.average(df_weighted['radial_velocity_kms'], weights=weights)
+            variance = np.average((df_weighted['radial_velocity_kms'] - weighted_avg_rv)**2, weights=weights)
+            normalized_weights = weights / np.sum(weights)
+            propagated_unc = np.sqrt(np.sum((normalized_weights * uncertainties) ** 2))
+            correction = 1 - (np.sum(weights**2) / np.sum(weights)**2)
+            scatter_unc = np.sqrt(max(0, variance / correction)) if len(df_weighted) > 1 and correction > 0 else 0.0
+            weighted_stddev_rv = np.sqrt(propagated_unc**2 + scatter_unc**2)
+        else:
+            weighted_avg_rv = np.nan
+            weighted_stddev_rv = np.nan
     else:
         weighted_avg_rv = np.nan
         weighted_stddev_rv = np.nan

@@ -174,6 +174,24 @@ body.is-mocadb-team .status.loading::before {
   background: #c7c4ca;
 }
 
+.model-tracks-section {
+  background: #d8d6db;
+}
+
+.rvb-filter-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.rvb-filter-actions button {
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .options-section {
   background: #d8d6db;
 }
@@ -186,6 +204,11 @@ body.is-mocadb-team .axes-section {
 html.is-mocadb-team .filters-section,
 body.is-mocadb-team .filters-section {
   background: #d3bbbb;
+}
+
+html.is-mocadb-team .model-tracks-section,
+body.is-mocadb-team .model-tracks-section {
+  background: #eadede;
 }
 
 html.is-mocadb-team .options-section,
@@ -248,6 +271,19 @@ input[type="range"] {
   width: 100%;
   margin-top: 8px;
   accent-color: var(--accent);
+}
+
+.range-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.range-heading output {
+  color: var(--ink);
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
 }
 
 select:focus,
@@ -1413,6 +1449,363 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   justify-content: flex-end;
 }
 
+.spectral-index-workspace {
+  grid-template-columns: 330px minmax(0, 1fr);
+}
+
+.spectral-index-visual-area {
+  grid-template-rows: minmax(520px, 68vh) auto minmax(230px, 28vh);
+  row-gap: 8px;
+  overflow: auto;
+}
+
+.spectral-index-plot-frame {
+  height: 100%;
+  min-height: 520px;
+}
+
+#sie-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+.spectral-index-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 10px 14px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.spectral-index-summary {
+  min-width: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.spectral-index-actions {
+  width: auto;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.spectral-index-detail-area {
+  min-height: 230px;
+  overflow: auto;
+}
+
+.spectral-index-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.spectral-index-detail-grid > div {
+  min-width: 0;
+}
+
+.spectral-index-detail-grid strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.spectral-index-definition-token {
+  margin-top: 8px;
+}
+
+.spectral-index-definition-filter {
+  min-height: 38px;
+}
+
+.spectral-index-definition-select {
+  min-height: 38px;
+}
+
+.spectral-index-definition-result {
+  min-height: 42px;
+  line-height: 1.22;
+  white-space: normal;
+}
+
+.spectral-index-definition-result span,
+.spectral-index-definition-result small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.spectral-index-definition-result small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sed-workspace {
+  grid-template-columns: 340px minmax(0, 1fr);
+}
+
+.sed-visual-area {
+  grid-template-rows: minmax(560px, 70vh) auto auto auto minmax(190px, 22vh);
+  row-gap: 8px;
+  overflow: auto;
+}
+
+.sed-plot-frame {
+  height: 100%;
+  min-height: 560px;
+}
+
+#sed-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+.sed-token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sed-inline-layer-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.sed-inline-layer-block h3 {
+  margin: 0;
+  color: #3f3a43;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sed-layer-tokens {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 34vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.sed-layer-token {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: auto !important;
+  min-height: 38px;
+  border: 1px solid #aaa6af;
+  border-radius: 6px;
+  background: #eceaee;
+  color: var(--ink);
+  padding: 7px 8px;
+  text-align: left;
+  font-size: 12px;
+  white-space: normal;
+}
+
+.sed-layer-token.is-muted {
+  opacity: 0.48;
+}
+
+.sed-layer-token.is-unavailable {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.sed-layer-symbol {
+  position: relative;
+  flex: 0 0 34px;
+  height: 18px;
+  min-width: 34px;
+  margin-top: 2px;
+}
+
+.sed-layer-symbol::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 8px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--swatch-color, #555555);
+  opacity: 0.7;
+}
+
+.sed-layer-token.is-photometry .sed-layer-symbol::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--swatch-color, #555555);
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px var(--swatch-color, #555555);
+}
+
+.sed-layer-token.is-spectrum .sed-layer-symbol::before {
+  top: 7px;
+  height: 4px;
+}
+
+.sed-layer-token.is-template .sed-layer-symbol::before {
+  background: repeating-linear-gradient(
+    to right,
+    var(--swatch-color, #222222) 0 7px,
+    transparent 7px 11px
+  );
+}
+
+.sed-layer-token.is-empirical .sed-layer-symbol::before {
+  top: 6px;
+  height: 6px;
+  background: #101010;
+}
+
+.sed-layer-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-content: start;
+}
+
+.sed-layer-title,
+.sed-layer-meta {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.22;
+}
+
+.sed-layer-title {
+  font-weight: 750;
+}
+
+.sed-layer-meta {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.sed-toolbar {
+  min-height: 66px;
+}
+
+.sed-flux-note {
+  max-width: 460px;
+  text-align: right;
+}
+
+.sed-bolometric-summary {
+  min-height: 56px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f7f8;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  display: grid;
+  gap: 4px;
+}
+
+.sed-bolometric-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: baseline;
+}
+
+.sed-bolometric-label {
+  color: var(--muted);
+}
+
+.sed-bolometric-value {
+  min-width: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.sed-bolometric-note {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.sed-selection-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sed-selection-actions button {
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+  line-height: 1.2;
+  padding: 6px 8px;
+}
+
+.sed-selection-toolbar {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.sed-empirical-toolbar {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.sed-empirical-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sed-empirical-actions button {
+  height: auto;
+  min-height: 34px;
+  white-space: normal;
+  line-height: 1.2;
+  padding: 6px 8px;
+}
+
 .spectra-table-area {
   min-height: 200px;
 }
@@ -2153,11 +2546,21 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 
 .rvb-tabbar {
   min-width: 0;
-  display: flex;
-  gap: 0;
-  overflow-x: auto;
+  display: grid;
+  grid-template-rows: repeat(2, auto);
+  overflow: hidden;
   background: var(--panel-light);
   border-bottom: 1px solid var(--line);
+}
+
+.rvb-tabbar-row {
+  min-width: 0;
+  display: flex;
+  overflow-x: auto;
+}
+
+.rvb-tabbar-row + .rvb-tabbar-row {
+  border-top: 1px solid var(--line);
 }
 
 .rvb-tabbar button {
@@ -2355,8 +2758,22 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 }
 
 .rvb-info-area {
-  grid-template-rows: auto auto minmax(150px, 1fr);
+  grid-template-rows: auto auto auto minmax(150px, 1fr);
   min-height: 310px;
+}
+
+.rvb-info-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+}
+
+.rvb-info-actions button {
+  height: 28px;
+  padding: 0 10px;
 }
 
 .rvb-info-grid {
@@ -2387,6 +2804,16 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   color: var(--ink);
   font-size: 13px;
   font-weight: 750;
+}
+
+.rvb-info-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.rvb-info-link:hover,
+.rvb-info-link:focus {
+  text-decoration: underline;
 }
 
 .rvb-segment-table,
@@ -2855,6 +3282,77 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   padding-bottom: 34px;
 }
 
+.bd-evolution-workspace {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+.bd-evolution-visual-area {
+  grid-template-rows: minmax(560px, 64vh) auto minmax(240px, 1fr);
+  row-gap: 0;
+  overflow: auto;
+}
+
+.bd-evolution-plot-frame {
+  height: 100%;
+  min-height: 560px;
+}
+
+#bde-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+#bde-plot .modebar {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.bd-evolution-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 10px 14px;
+  background: var(--panel-light);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.bd-evolution-summary {
+  min-width: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.bd-evolution-actions {
+  width: auto;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.bd-evolution-table-area {
+  min-height: 240px;
+}
+
+.bd-evolution-page tbody tr.is-selected td {
+  background: #7fa12a;
+  color: #ffffff;
+  font-weight: 750;
+}
+
+.bd-evolution-page tbody tr.is-selected .report-link {
+  border-color: #ffffff;
+}
+
+.bd-evolution-url-help {
+  padding-bottom: 34px;
+}
+
 .banyan-sigma-workspace {
   grid-template-columns: 330px minmax(0, 1fr);
 }
@@ -3110,6 +3608,18 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
     grid-template-rows: 520px auto 240px;
   }
 
+  .sed-visual-area {
+    grid-template-rows: 560px auto auto auto 240px;
+  }
+
+  .sed-selection-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sed-empirical-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .spectra-toolbar {
     flex-direction: column;
   }
@@ -3117,6 +3627,26 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   .spectra-actions,
   .spectra-download-links {
     justify-content: flex-start;
+  }
+
+  .spectral-index-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .spectral-index-visual-area {
+    grid-template-rows: 520px auto minmax(360px, auto);
+  }
+
+  .spectral-index-toolbar {
+    flex-direction: column;
+  }
+
+  .spectral-index-actions {
+    justify-content: flex-start;
+  }
+
+  .spectral-index-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .xyzuvw-workspace {
@@ -3271,6 +3801,26 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   }
 
   .moca-explorer-actions {
+    justify-content: flex-start;
+  }
+
+  .bd-evolution-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .bd-evolution-visual-area {
+    grid-template-rows: 560px auto minmax(260px, auto);
+  }
+
+  .bd-evolution-plot-frame {
+    min-height: 560px;
+  }
+
+  .bd-evolution-toolbar {
+    flex-direction: column;
+  }
+
+  .bd-evolution-actions {
     justify-content: flex-start;
   }
 

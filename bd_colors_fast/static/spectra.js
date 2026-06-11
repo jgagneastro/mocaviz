@@ -123,8 +123,8 @@ function readSpectraUrlState() {
   speEl["spe-hide-ignored"].checked = asBool(params.get("include_ignored") || params.get("show_ignored"))
     ? false
     : !asFalse(params.get("hide_ignored") || params.get("hide_ignored_points"));
-  speEl["spe-xlog"].checked = !asFalse(params.get("xlog"));
-  speEl["spe-ylog"].checked = !asFalse(params.get("ylog"));
+  speEl["spe-xlog"].checked = asBool(params.get("xlog"));
+  speEl["spe-ylog"].checked = asBool(params.get("ylog"));
   speEl["spe-fnu"].checked = asBool(params.get("fnu_jy") || params.get("fnu"));
   speEl["spe-showfeatures"].checked = params.has("showfeatures")
     ? !asFalse(params.get("showfeatures"))
@@ -1132,10 +1132,8 @@ function updateSpectraUrl() {
   else params.delete("hide_ignored");
   params.delete("include_ignored");
   params.delete("show_ignored");
-  if (!speEl["spe-xlog"].checked) params.set("xlog", "0");
-  else params.delete("xlog");
-  if (!speEl["spe-ylog"].checked) params.set("ylog", "0");
-  else params.delete("ylog");
+  setBoolParam(params, "xlog", speEl["spe-xlog"].checked);
+  setBoolParam(params, "ylog", speEl["spe-ylog"].checked);
   setBoolParam(params, "fnu_jy", speEl["spe-fnu"].checked);
   if (!speEl["spe-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
