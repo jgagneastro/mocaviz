@@ -8001,25 +8001,22 @@ def _moca_explorer_spt_axis(conn) -> list[dict[str, Any]]:
 
 
 def _moca_explorer_association_labels(conn) -> list[dict[str, Any]]:
-    try:
-        return _records(_read_sql(conn, "CALL list_association_labels()"))
-    except Exception:
-        return _records(_read_sql(conn, """
-            SELECT
-                dbs.moca_aid,
-                AVG(dbs.x_cen) AS x,
-                AVG(dbs.y_cen) AS y,
-                AVG(dbs.z_cen) AS z,
-                AVG(dbs.u_cen) AS u,
-                AVG(dbs.v_cen) AS v,
-                AVG(dbs.w_cen) AS w
-            FROM data_banyan_sigma_models dbs
-            JOIN moca_banyan_sigma_models mbsm
-                ON mbsm.moca_bsmdid = dbs.moca_bsmdid
-            WHERE mbsm.adopted = 1
-                AND dbs.moca_aid <> 'FIELD'
-            GROUP BY dbs.moca_aid
-        """))
+    return _records(_read_sql(conn, """
+        SELECT
+            dbs.moca_aid,
+            AVG(dbs.x_cen) AS x,
+            AVG(dbs.y_cen) AS y,
+            AVG(dbs.z_cen) AS z,
+            AVG(dbs.u_cen) AS u,
+            AVG(dbs.v_cen) AS v,
+            AVG(dbs.w_cen) AS w
+        FROM data_banyan_sigma_models dbs
+        JOIN moca_banyan_sigma_models mbsm
+            ON mbsm.moca_bsmdid = dbs.moca_bsmdid
+        WHERE mbsm.adopted = 1
+            AND dbs.moca_aid <> 'FIELD'
+        GROUP BY dbs.moca_aid
+    """))
 
 
 def _load_moca_explorer_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
