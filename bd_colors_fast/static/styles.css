@@ -87,8 +87,37 @@ body.is-mocadb-team .topbar {
   color: #000000;
 }
 
+.topbar-title-group {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.dataviz-home-link {
+  color: #000000;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-decoration: none;
+  opacity: 0.72;
+}
+
+.dataviz-home-link:hover,
+.dataviz-home-link:focus {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 html.is-mocadb-team .brand,
 body.is-mocadb-team .brand {
+  color: #4f2626;
+}
+
+html.is-mocadb-team .dataviz-home-link,
+body.is-mocadb-team .dataviz-home-link {
   color: #4f2626;
 }
 
