@@ -661,7 +661,7 @@ function trueflowObjectSummaryHtml(payload) {
   if ((selection.scope || currentTrueflowScope()) !== "object") return "";
   const target = payload?.target || {};
   const oid = selectedTrueflowObjectOid(payload);
-  const designation = trueflowFullObjectDesignation(target);
+  const designation = trueflowDisplayedObjectDesignation(target);
   const spectralType = trueflowAdoptedSpectralTypeText(target.adopted_spectral_type);
   const lines = [];
   if (designation || oid) {
@@ -674,9 +674,11 @@ function trueflowObjectSummaryHtml(payload) {
   return lines.join("");
 }
 
-function trueflowFullObjectDesignation(target) {
-  const direct = String(target?.full_designation || target?.moca_designation || target?.designation || "").trim();
+function trueflowDisplayedObjectDesignation(target) {
+  const direct = String(target?.designation || "").trim();
   if (direct) return direct;
+  const fallback = String(target?.full_designation || target?.moca_designation || "").trim();
+  if (fallback) return fallback;
   const designations = Array.isArray(target?.designations) ? target.designations : [];
   return String(designations.find((value) => String(value || "").trim()) || "").trim();
 }
