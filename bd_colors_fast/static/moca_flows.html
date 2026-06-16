@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCA Flows</title>
+  <link rel="stylesheet" href="static/styles.css?v=moca-flows-20260616k">
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="moca-flows-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCA Flows</div>
+      <div id="mflows-status" class="status loading">Loading MOCAFlows panels</div>
+    </header>
+
+    <main class="workspace mflows-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Target</h2>
+          <label class="checkline">
+            <input id="mflows-scope-object" type="radio" name="mflows-scope" value="object">
+            <span>Object mode</span>
+          </label>
+          <label class="checkline">
+            <input id="mflows-scope-association" type="radio" name="mflows-scope" value="association">
+            <span>Association mode</span>
+          </label>
+
+          <div id="mflows-object-controls">
+            <div class="designation-picker">
+              <label for="mflows-object-search">Find object</label>
+              <input id="mflows-object-search" type="text" autocomplete="off" placeholder="Type a designation or MOCA OID">
+              <div id="mflows-object-results" class="designation-results" hidden></div>
+            </div>
+            <label>
+              MOCA OID
+              <input id="mflows-oid-input" type="number" placeholder="11266">
+            </label>
+          </div>
+
+          <div id="mflows-association-controls">
+            <label>
+              Quick search
+              <input id="mflows-aid-filter" type="text" autocomplete="off" placeholder="AID or association name">
+            </label>
+            <label>
+              Minimum stacked stars
+              <input id="mflows-min-stacked-stars" type="number" min="0" step="1" inputmode="numeric" placeholder="0">
+            </label>
+            <label>
+              MOCA AID
+              <select id="mflows-aid-select"></select>
+            </label>
+          </div>
+          <button id="mflows-load" type="button">Load Panels</button>
+        </section>
+
+        <section id="mflows-stack-section" class="control-section filters-section">
+          <h2>Stacking</h2>
+          <label>
+            Association stack
+            <select id="mflows-stack-mode">
+              <option value="hbm">HBM stacking</option>
+              <option value="normal">Normal stacking</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>M/H</h2>
+          <label>
+            Metallicity treatment
+            <select id="mflows-mh-treatment">
+              <option value="db">Condition age likelihood on available [M/H] in MOCAdb</option>
+              <option value="marginalized">Marginalize over [M/H]</option>
+              <option value="copula2d">2D age-[M/H] likelihood maps</option>
+            </select>
+          </label>
+          <label>
+            PDF product
+            <select id="mflows-curve-role">
+              <option value="likelihood">Likelihood</option>
+              <option value="prior">Prior</option>
+              <option value="posterior" selected>Posterior</option>
+            </select>
+          </label>
+          <label>
+            MOCAFlows model version
+            <select id="mflows-model-version">
+              <option value="">Loading model versions</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="mflows-log-x" type="checkbox">
+            <span>Log age axis</span>
+          </label>
+          <label class="checkline">
+            <input id="mflows-log-y" type="checkbox">
+            <span>Log density axis</span>
+          </label>
+          <label class="checkline">
+            <input id="mflows-fixed-xrange" type="checkbox">
+            <span>Fixed full age range</span>
+          </label>
+          <label class="checkline">
+            <input id="mflows-compact" type="checkbox">
+            <span>Compact panels</span>
+          </label>
+        </section>
+      </aside>
+
+      <section class="visual-area mflows-visual-area">
+        <div class="mflows-toolbar">
+          <div class="mflows-summary">
+            <div id="mflows-summary">No panels loaded</div>
+            <div id="mflows-hint" class="plot-hint">MOCAFlows observable PDFs and stack products appear below.</div>
+          </div>
+          <div class="export-actions mflows-actions">
+            <button id="mflows-open-report" type="button" disabled>Open MOCAdb report</button>
+            <button id="mflows-export-csv" type="button" disabled>Export panel CSV</button>
+            <button id="mflows-clear-cache" type="button">Clear cache</button>
+          </div>
+        </div>
+        <div id="mflows-panel-grid" class="mflows-panel-grid"></div>
+        <div id="mflows-empty" class="mflows-empty" hidden>No MOCAFlows panels available for this target.</div>
+        <section id="mflows-run-metadata" class="mflows-run-metadata" hidden></section>
+      </section>
+    </main>
+  </div>
+  <script src="static/moca_flows.js?v=moca-flows-20260616ak"></script>
+</body>
+</html>

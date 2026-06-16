@@ -1885,6 +1885,7 @@ function parseInteger(value) {
 }
 
 function finite(value) {
+  if (value === null || value === undefined || value === "") return false;
   return Number.isFinite(Number(value));
 }
 

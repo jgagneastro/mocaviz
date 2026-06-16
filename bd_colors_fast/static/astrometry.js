@@ -2,18 +2,36 @@ const atmDefaultOid = 602;
 const atmMissionColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62"];
 const atmBinSizeDays = 50;
 const atmPhaseBinSizeDays = 20;
+const atmAssumedParallaxPc = 20;
+const atmAssumedParallaxMas = 1000 / atmAssumedParallaxPc;
+const atmFilterRangeDelayMs = 2000;
+const atmNoCalibrationMethodKey = "__none__";
+const atmCalibrationMethodDescriptions = {
+  astrnet_gaiadr2_plus_gaiadr3_offset: "Legacy full two-stage recalibration: keep the local astrometry.net SIP/WCS solution, then apply the median Gaia DR3 residual offset after propagating Gaia PM/parallax to the frame epoch. This branch is used when the full astrometry.net solution gives the best Gaia residual MAD.",
+  astrnet_gaiadr2_plus_gaiadr3_offset_py: "Python full two-stage recalibration: keep the local astrometry.net SIP/WCS solution, then apply the median Gaia DR3 residual offset after propagating Gaia PM/parallax to the frame epoch. This branch is used when the full astrometry.net solution gives the best Gaia residual MAD.",
+  astrnet_gaiadr2_offset_plus_gaiadr3_offset: "Legacy offset-only astrometry.net branch: run astrometry.net, keep only its median R.A./Decl. offset instead of the full SIP/WCS solution, then apply the median Gaia DR3 residual offset. This branch is used when the offset-only astrometry.net correction has the best Gaia residual MAD.",
+  astrnet_gaiadr2_offset_plus_gaiadr3_offset_py: "Python offset-only astrometry.net branch: run astrometry.net, keep only its median R.A./Decl. offset instead of the full SIP/WCS solution, then apply the median Gaia DR3 residual offset. This branch is used when the offset-only astrometry.net correction has the best Gaia residual MAD.",
+  gaiadr3_offset: "Legacy Gaia-only branch: skip or discard the astrometry.net correction and apply only the median Gaia DR3 residual offset to the original frame coordinates. This is used when astrometry.net fails, is skipped, or makes the Gaia residual MAD worse.",
+  gaiadr3_offset_py: "Python Gaia-only branch: skip or discard the astrometry.net correction and apply only the median Gaia DR3 residual offset to the original frame coordinates. This is used when astrometry.net fails, is skipped, or makes the Gaia residual MAD worse.",
+  low_gaia_nref_zero_offset: "Legacy diagnostic fallback: too few usable Gaia DR3 reference stars were available, so no positional offset was applied and the row records a zero-offset calibration with low reference-star count.",
+  low_gaia_nref_zero_offset_py: "Python diagnostic fallback: too few usable Gaia DR3 reference stars were available, so no positional offset was applied and the row records a zero-offset calibration with low reference-star count.",
+  "mock recalibration": "Synthetic recalibration used only by the local mock astrometry dataset.",
+};
 
 const atmState = {
   selectedOid: null,
   selectedTargetLabel: "",
   payload: null,
   selectedMissions: new Set(),
+  selectedCalibrationMethods: new Set(),
   selectedIds: new Set(),
   manualRejectedIds: new Set(),
   processedRows: [],
   searchTimer: null,
   hasUserMissionChoice: false,
+  hasUserCalibrationChoice: false,
   initialMissions: [],
+  initialCalibrationMethods: [],
   fitResult: null,
   fitBusy: false,
   pushBusy: false,
@@ -21,6 +39,7 @@ const atmState = {
   authContext: null,
   lastPrepared: null,
   pushFitSignature: "",
+  rangeDelayTimer: null,
 };
 
 const atmEl = {};
@@ -61,6 +80,9 @@ function collectAstrometryElements() {
     "atm-missions-all",
     "atm-missions-none",
     "atm-mission-list",
+    "atm-calibration-methods-all",
+    "atm-calibration-methods-none",
+    "atm-calibration-method-list",
     "atm-subtract-pm",
     "atm-subtract-plx",
     "atm-phase-yearly",
@@ -73,6 +95,7 @@ function collectAstrometryElements() {
     "atm-revert-raw",
     "atm-fit-method",
     "atm-fit-outlier-mixture",
+    "atm-fit-error-floor",
     "atm-fit-method-note",
     "atm-reject-selected-fit",
     "atm-reset-manual-rejections",
@@ -96,7 +119,6 @@ function collectAstrometryElements() {
     "atm-push-status",
     "atm-ra-plot",
     "atm-dec-plot",
-    "atm-plot-loader",
     "atm-summary",
     "atm-export-csv",
     "atm-export-tsv",
@@ -116,6 +138,10 @@ function readAstrometryUrlState() {
   const params = new URLSearchParams(window.location.search);
   atmState.selectedOid = parseInteger(params.get("moca_oid") || params.get("oid"));
   atmState.initialMissions = (params.get("missions") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  atmState.initialCalibrationMethods = (params.get("calibration_methods") || params.get("calib_methods") || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
   atmEl["atm-subtract-pm"].checked = asBool(params.get("subtract_pm"));
   atmEl["atm-subtract-plx"].checked = asBool(params.get("subtract_plx"));
   atmEl["atm-phase-yearly"].checked = asBool(params.get("phase"));
@@ -135,6 +161,12 @@ function readAstrometryUrlState() {
       ? params.get("fit_outlier_mixture")
       : params.get("outlier_mixture");
     atmEl["atm-fit-outlier-mixture"].checked = !asFalse(outlierParam);
+  }
+  if (atmEl["atm-fit-error-floor"]) {
+    const floorParam = params.has("fit_error_floor")
+      ? params.get("fit_error_floor")
+      : params.get("error_floor");
+    atmEl["atm-fit-error-floor"].checked = !asFalse(floorParam);
   }
 }
 
@@ -158,6 +190,9 @@ function bindAstrometryControls() {
     atmState.selectedTargetLabel = "";
     atmState.payload = null;
     atmState.selectedIds.clear();
+    atmState.selectedCalibrationMethods.clear();
+    atmState.initialCalibrationMethods = [];
+    atmState.hasUserCalibrationChoice = false;
     clearAstrometryFit({ render: false });
     atmEl["atm-target-search"].value = "";
     updateSelectedTargetDisplay();
@@ -173,7 +208,7 @@ function bindAstrometryControls() {
     atmState.hasUserMissionChoice = true;
     clearAstrometryFit({ render: false });
     renderMissionList();
-    renderAstrometry();
+    renderAstrometryWithDelayedRanges();
     updateAstrometryUrl();
   });
   atmEl["atm-missions-none"].addEventListener("click", () => {
@@ -181,7 +216,23 @@ function bindAstrometryControls() {
     atmState.hasUserMissionChoice = true;
     clearAstrometryFit({ render: false });
     renderMissionList();
-    renderAstrometry();
+    renderAstrometryWithDelayedRanges();
+    updateAstrometryUrl();
+  });
+  atmEl["atm-calibration-methods-all"].addEventListener("click", () => {
+    atmState.selectedCalibrationMethods = new Set(astrometryCalibrationMethodOptions().map((row) => row.value));
+    atmState.hasUserCalibrationChoice = true;
+    clearAstrometryFit({ render: false });
+    renderCalibrationMethodList();
+    renderAstrometryWithDelayedRanges();
+    updateAstrometryUrl();
+  });
+  atmEl["atm-calibration-methods-none"].addEventListener("click", () => {
+    atmState.selectedCalibrationMethods.clear();
+    atmState.hasUserCalibrationChoice = true;
+    clearAstrometryFit({ render: false });
+    renderCalibrationMethodList();
+    renderAstrometryWithDelayedRanges();
     updateAstrometryUrl();
   });
   for (const id of ["atm-subtract-pm", "atm-subtract-plx", "atm-phase-yearly", "atm-bin", "atm-display-absolute", "atm-display-reference"]) {
@@ -200,13 +251,17 @@ function bindAstrometryControls() {
   atmEl["atm-display-merged"].addEventListener("change", async () => {
     const availableMissions = (atmState.payload?.missions || []).map((row) => row.value);
     const hadAllMissionsSelected = availableMissions.length > 0 && availableMissions.every((mission) => atmState.selectedMissions.has(mission));
+    const availableCalibrationMethods = astrometryCalibrationMethodOptions().map((row) => row.value);
+    const hadAllCalibrationMethodsSelected = availableCalibrationMethods.length > 0
+      && availableCalibrationMethods.every((method) => atmState.selectedCalibrationMethods.has(method));
     if (hadAllMissionsSelected) atmState.hasUserMissionChoice = false;
+    if (hadAllCalibrationMethodsSelected) atmState.hasUserCalibrationChoice = false;
     atmState.selectedIds.clear();
     clearAstrometryFit({ render: false });
     updateAstrometryUrl();
     await loadAstrometryObject();
   });
-  for (const id of ["atm-fit-method", "atm-fit-outlier-mixture"]) {
+  for (const id of ["atm-fit-method", "atm-fit-outlier-mixture", "atm-fit-error-floor"]) {
     if (!atmEl[id]) continue;
     atmEl[id].addEventListener("change", () => {
       clearAstrometryFit({ render: false });
@@ -283,6 +338,7 @@ function updateAstrometryFitControlState() {
   }
   select.disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-outlier-mixture"]) atmEl["atm-fit-outlier-mixture"].disabled = Boolean(atmState.fitBusy);
+  if (atmEl["atm-fit-error-floor"]) atmEl["atm-fit-error-floor"].disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-method-note"]) {
     const note = select.value === "ultranest"
       ? ultranest.message || "UltraNest fits run on the server and can be slow."
@@ -483,6 +539,35 @@ function isManuallyRejectedAstrometryRow(row) {
   return atmState.manualRejectedIds.has(astrometryRowIdKey(row));
 }
 
+function astrometryFitRejectedIdSet() {
+  const fit = atmState.fitResult;
+  const ids = new Set();
+  if (!fit?.outlierMixture) return ids;
+  (Array.isArray(fit.outlierIds) ? fit.outlierIds : []).forEach((id) => ids.add(String(id)));
+  if (!ids.size && Array.isArray(fit.responsibilities)) {
+    fit.responsibilities.forEach((row) => {
+      if (row?.inlier === false && row.id !== undefined && row.id !== null) ids.add(String(row.id));
+    });
+  }
+  return ids;
+}
+
+function isFitRejectedAstrometryRow(row) {
+  return astrometryFitRejectedIdSet().has(astrometryRowIdKey(row));
+}
+
+function astrometryAcceptedRows(rows) {
+  const fitRejectedIds = astrometryFitRejectedIdSet();
+  return (rows || []).filter((row) => (
+    !isManuallyRejectedAstrometryRow(row)
+    && !fitRejectedIds.has(astrometryRowIdKey(row))
+  ));
+}
+
+function astrometryBinnableRows(rows) {
+  return astrometryAcceptedRows(rows);
+}
+
 async function searchAstrometryTargets(query, options = {}) {
   const selectedOid = options.selectedOid ?? null;
   const quiet = Boolean(options.quiet);
@@ -565,6 +650,9 @@ function selectAstrometryTarget(option, options = {}) {
     atmState.selectedMissions.clear();
     atmState.initialMissions = [];
     atmState.hasUserMissionChoice = false;
+    atmState.selectedCalibrationMethods.clear();
+    atmState.initialCalibrationMethods = [];
+    atmState.hasUserCalibrationChoice = false;
     clearAstrometryFit({ render: false });
   }
   atmEl["atm-target-search"].value = atmState.selectedTargetLabel;
@@ -589,6 +677,7 @@ async function loadAstrometryObject() {
     atmState.payload = null;
     atmState.selectedIds.clear();
     atmState.manualRejectedIds.clear();
+    atmState.selectedCalibrationMethods.clear();
     clearAstrometryFit({ render: false });
     setAstrometryStatus(payload.error || "Could not load astrometry", "error");
     renderEmptyAstrometry(payload.error || "Could not load astrometry");
@@ -601,7 +690,9 @@ async function loadAstrometryObject() {
   atmEl["atm-target-search"].value = atmState.selectedTargetLabel;
   updateSelectedTargetDisplay();
   initializeMissionSelection();
+  initializeCalibrationMethodSelection();
   renderMissionList();
+  renderCalibrationMethodList();
   renderAstrometry();
   setAstrometryStatus(`${payload.meta?.row_count || 0} astrometric measurements loaded${payload.cache?.hit ? " from cache" : ""}`, "");
 }
@@ -637,7 +728,80 @@ function renderMissionList() {
       else atmState.selectedMissions.delete(input.value);
       atmState.hasUserMissionChoice = true;
       clearAstrometryFit({ render: false });
-      renderAstrometry();
+      renderAstrometryWithDelayedRanges();
+      updateAstrometryUrl();
+    });
+  });
+}
+
+function astrometryCalibrationMethodKey(rowOrValue) {
+  if (rowOrValue && typeof rowOrValue === "object") {
+    const value = String(rowOrValue.calibration_method || "").trim();
+    return value || atmNoCalibrationMethodKey;
+  }
+  const value = String(rowOrValue || "").trim();
+  return value || atmNoCalibrationMethodKey;
+}
+
+function astrometryCalibrationMethodLabel(value) {
+  return value === atmNoCalibrationMethodKey ? "No calibration method / mission default" : value;
+}
+
+function astrometryCalibrationMethodOptions(rows = null) {
+  const sourceRows = rows || atmState.payload?.rows || [];
+  const counts = new Map();
+  sourceRows.forEach((row) => {
+    const value = astrometryCalibrationMethodKey(row);
+    counts.set(value, (counts.get(value) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .map(([value, count]) => ({
+      value,
+      count,
+      label: `${astrometryCalibrationMethodLabel(value)} (${count})`,
+    }))
+    .sort((a, b) => {
+      if (a.value === atmNoCalibrationMethodKey) return 1;
+      if (b.value === atmNoCalibrationMethodKey) return -1;
+      return astrometryCalibrationMethodLabel(a.value).localeCompare(astrometryCalibrationMethodLabel(b.value));
+    });
+}
+
+function initializeCalibrationMethodSelection() {
+  const available = new Set(astrometryCalibrationMethodOptions().map((row) => row.value));
+  if (atmState.hasUserCalibrationChoice) {
+    atmState.selectedCalibrationMethods = new Set([...atmState.selectedCalibrationMethods].filter((method) => available.has(method)));
+    return;
+  }
+  if (atmState.initialCalibrationMethods.length) {
+    atmState.selectedCalibrationMethods = new Set(atmState.initialCalibrationMethods
+      .map((method) => astrometryCalibrationMethodKey(method))
+      .filter((method) => available.has(method)));
+  } else {
+    atmState.selectedCalibrationMethods = new Set(available);
+  }
+}
+
+function renderCalibrationMethodList() {
+  const methods = astrometryCalibrationMethodOptions();
+  if (!methods.length) {
+    atmEl["atm-calibration-method-list"].innerHTML = `<div class="plot-hint">No calibration methods loaded</div>`;
+    return;
+  }
+  atmEl["atm-calibration-method-list"].innerHTML = methods.map((method) => {
+    const label = astrometryCalibrationMethodLabel(method.value);
+    return `<label class="checkline mission-check calibration-method-check" title="${escapeHtml(astrometryCalibrationMethodDescription(method.value))}">
+      <input type="checkbox" value="${escapeHtml(method.value)}" ${atmState.selectedCalibrationMethods.has(method.value) ? "checked" : ""}>
+      <span>${escapeHtml(method.label || label)}</span>
+    </label>`;
+  }).join("");
+  atmEl["atm-calibration-method-list"].querySelectorAll("input").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) atmState.selectedCalibrationMethods.add(input.value);
+      else atmState.selectedCalibrationMethods.delete(input.value);
+      atmState.hasUserCalibrationChoice = true;
+      clearAstrometryFit({ render: false });
+      renderAstrometryWithDelayedRanges();
       updateAstrometryUrl();
     });
   });
@@ -650,7 +814,7 @@ function updateSelectedTargetDisplay() {
   atmEl["atm-open-report"].disabled = !normalizedMocaOid(currentAstrometryReportOid());
 }
 
-function renderAstrometry() {
+function renderAstrometry(options = {}) {
   if (!atmState.payload) {
     renderEmptyAstrometry("No target loaded");
     return;
@@ -658,8 +822,8 @@ function renderAstrometry() {
   const prepared = prepareAstrometryRows();
   atmState.processedRows = prepared.rows;
   atmState.lastPrepared = prepared;
-  renderAstrometryPlot("ra", prepared);
-  renderAstrometryPlot("dec", prepared);
+  renderAstrometryPlot("ra", prepared, options);
+  renderAstrometryPlot("dec", prepared, options);
   renderAstrometrySummary(prepared);
   renderAstrometryTable();
   updateAstrometryUrl();
@@ -670,6 +834,38 @@ function renderAstrometry() {
   updateAstrometryManagementVisibility();
 }
 
+function astrometryCurrentAxisRange(plotEl, axisName) {
+  const range = plotEl?.layout?.[axisName]?.range;
+  if (!Array.isArray(range) || range.length < 2) return null;
+  const lo = Number(range[0]);
+  const hi = Number(range[1]);
+  return finite(lo) && finite(hi) && lo !== hi ? [lo, hi] : null;
+}
+
+function astrometryCurrentPlotRanges() {
+  return {
+    ra: {
+      x: astrometryCurrentAxisRange(atmEl["atm-ra-plot"], "xaxis"),
+      y: astrometryCurrentAxisRange(atmEl["atm-ra-plot"], "yaxis"),
+    },
+    dec: {
+      x: astrometryCurrentAxisRange(atmEl["atm-dec-plot"], "xaxis"),
+      y: astrometryCurrentAxisRange(atmEl["atm-dec-plot"], "yaxis"),
+    },
+  };
+}
+
+function renderAstrometryWithDelayedRanges() {
+  const heldRanges = astrometryCurrentPlotRanges();
+  const hasHeldRange = Boolean(heldRanges.ra.x || heldRanges.ra.y || heldRanges.dec.x || heldRanges.dec.y);
+  renderAstrometry(hasHeldRange ? { heldRanges } : {});
+  if (atmState.rangeDelayTimer) window.clearTimeout(atmState.rangeDelayTimer);
+  atmState.rangeDelayTimer = window.setTimeout(() => {
+    atmState.rangeDelayTimer = null;
+    if (atmState.payload) renderAstrometry();
+  }, atmFilterRangeDelayMs);
+}
+
 function prepareAstrometryRows() {
   const payload = atmState.payload;
   const allRows = (payload.rows || []).map((row) => ({ ...row }));
@@ -678,18 +874,37 @@ function prepareAstrometryRows() {
     ? allRows.filter((row) => row.calibration_method || Number(row.include_in_recalibrated_display) === 1 || (displayMerged && Number(row.single_epoch) === 0))
     : allRows;
   const baseRows = recalFiltered.length ? recalFiltered : allRows;
-  const missionRows = baseRows.filter((row) => atmState.selectedMissions.has(String(row.mission || "No mission")));
+  const calibrationOptions = astrometryCalibrationMethodOptions(allRows);
+  const selectedCalibrationMethods = new Set([...atmState.selectedCalibrationMethods].map((method) => astrometryCalibrationMethodKey(method)));
+  const calibrationRows = selectedCalibrationMethods.size
+    ? baseRows.filter((row) => selectedCalibrationMethods.has(astrometryCalibrationMethodKey(row)))
+    : [];
+  const missionRows = calibrationRows.filter((row) => atmState.selectedMissions.has(String(row.mission || "No mission")));
   const rows = missionRows.filter((row) => finite(row.measurement_epoch_yr));
   const useRaw = atmEl["atm-revert-raw"].checked;
   const reference = normalizedReference(payload.reference, rows, useRaw);
   const pm = payload.pm || {};
   const plx = payload.parallax || {};
-  const pmra = finite(pm.pmra_masyr) ? Number(pm.pmra_masyr) : 0;
-  const pmdec = finite(pm.pmdec_masyr) ? Number(pm.pmdec_masyr) : 0;
+  const hasPmra = finite(pm.pmra_masyr);
+  const hasPmdec = finite(pm.pmdec_masyr);
+  const hasLiteraturePm = hasPmra && hasPmdec;
+  const hasLiteraturePlx = finite(plx.parallax_mas);
+  const pmra = hasPmra ? Number(pm.pmra_masyr) : 0;
+  const pmdec = hasPmdec ? Number(pm.pmdec_masyr) : 0;
   const pmraUnc = finite(pm.pmra_masyr_unc) ? Number(pm.pmra_masyr_unc) : 0;
   const pmdecUnc = finite(pm.pmdec_masyr_unc) ? Number(pm.pmdec_masyr_unc) : 0;
-  const plxValue = finite(plx.parallax_mas) ? Number(plx.parallax_mas) : 0;
+  const plxValue = hasLiteraturePlx ? Number(plx.parallax_mas) : 0;
   const plxUnc = finite(plx.parallax_mas_unc) ? Number(plx.parallax_mas_unc) : 0;
+  const fit = atmState.fitResult;
+  const subtractPmra = finite(fit?.pmra) ? Number(fit.pmra) : pmra;
+  const subtractPmdec = finite(fit?.pmdec) ? Number(fit.pmdec) : pmdec;
+  const subtractPmraUnc = finite(fit?.pmraUnc) ? Number(fit.pmraUnc) : pmraUnc;
+  const subtractPmdecUnc = finite(fit?.pmdecUnc) ? Number(fit.pmdecUnc) : pmdecUnc;
+  const subtractPmSource = finite(fit?.pmra) && finite(fit?.pmdec) ? "fit" : (hasLiteraturePm ? "literature" : "none");
+  const hasFittedPlx = fit?.mode === "pm_plx" && finite(fit.plx);
+  const subtractPlxValue = hasFittedPlx ? Number(fit.plx) : plxValue;
+  const subtractPlxUnc = hasFittedPlx && finite(fit.plxUnc) ? Number(fit.plxUnc) : plxUnc;
+  const subtractPlxSource = hasFittedPlx ? "fit" : (hasLiteraturePlx ? "literature" : "none");
   const refRaUnc = finite(payload.reference?.ra_unc_mas) ? Number(payload.reference.ra_unc_mas) : null;
   const refDecUnc = finite(payload.reference?.dec_unc_mas) ? Number(payload.reference.dec_unc_mas) : null;
   const displayReference = atmEl["atm-display-reference"].checked;
@@ -741,12 +956,12 @@ function prepareAstrometryRows() {
     let relRa = baseRelRa;
     let relDec = baseRelDec;
     if (atmEl["atm-subtract-pm"].checked) {
-      relRa -= pmra * (epoch - refEpoch);
-      relDec -= pmdec * (epoch - refEpoch);
+      relRa -= subtractPmra * (epoch - refEpoch);
+      relDec -= subtractPmdec * (epoch - refEpoch);
     }
     if (atmEl["atm-subtract-plx"].checked) {
-      relRa -= plxValue * pf.ra;
-      relDec -= plxValue * pf.dec;
+      relRa -= subtractPlxValue * pf.ra;
+      relDec -= subtractPlxValue * pf.dec;
     }
     const x = atmEl["atm-phase-yearly"].checked ? yearlyPhase(epoch) : epoch;
     return {
@@ -766,9 +981,9 @@ function prepareAstrometryRows() {
     refRa,
     refDec,
     refEpoch,
-    pmra,
-    pmdec,
-    plxValue,
+    pmra: subtractPmra,
+    pmdec: subtractPmdec,
+    plxValue: subtractPlxValue,
   });
   const xValues = [
     ...processed.map((row) => row.plot_x),
@@ -787,8 +1002,16 @@ function prepareAstrometryRows() {
     pmdecUnc,
     plxValue,
     plxUnc,
+    subtractPmra,
+    subtractPmdec,
+    subtractPmraUnc,
+    subtractPmdecUnc,
+    subtractPmSource,
+    subtractPlxValue,
+    subtractPlxUnc,
+    subtractPlxSource,
   });
-  const binned = atmEl["atm-bin"].checked ? binAstrometryRows(processed) : [];
+  const binned = atmEl["atm-bin"].checked ? binAstrometryRows(astrometryBinnableRows(processed)) : [];
   return {
     rows: processed,
     binned,
@@ -802,8 +1025,41 @@ function prepareAstrometryRows() {
       source: astrometryPublicationInfo(payload.reference, "Reference coordinates"),
     },
     referenceAstrometry,
-    pm: { pmra, pmdec, pmraUnc, pmdecUnc, reference: pm.reference, source: astrometryPublicationInfo(pm, pm.reference || "Proper motion") },
-    parallax: { value: plxValue, uncertainty: plxUnc, reference: plx.reference, source: astrometryPublicationInfo(plx, plx.reference || "Parallax") },
+    pm: {
+      pmra: hasPmra ? pmra : null,
+      pmdec: hasPmdec ? pmdec : null,
+      pmraUnc: finite(pm.pmra_masyr_unc) ? pmraUnc : null,
+      pmdecUnc: finite(pm.pmdec_masyr_unc) ? pmdecUnc : null,
+      hasPmra,
+      hasPmdec,
+      hasValue: hasLiteraturePm,
+      reference: pm.reference,
+      source: astrometryPublicationInfo(pm, pm.reference || "Proper motion"),
+    },
+    parallax: {
+      value: hasLiteraturePlx ? plxValue : null,
+      uncertainty: finite(plx.parallax_mas_unc) ? plxUnc : null,
+      hasValue: hasLiteraturePlx,
+      reference: plx.reference,
+      source: astrometryPublicationInfo(plx, plx.reference || "Parallax"),
+    },
+    subtraction: {
+      pmra: subtractPmra,
+      pmdec: subtractPmdec,
+      pmraUnc: subtractPmraUnc,
+      pmdecUnc: subtractPmdecUnc,
+      pmSource: subtractPmSource,
+      plxValue: subtractPlxValue,
+      plxUnc: subtractPlxUnc,
+      plxSource: subtractPlxSource,
+    },
+    calibration: {
+      options: calibrationOptions,
+      selectedValues: [...selectedCalibrationMethods],
+      selected: calibrationOptions.filter((method) => selectedCalibrationMethods.has(method.value)),
+      rejected: calibrationOptions.filter((method) => !selectedCalibrationMethods.has(method.value)),
+      filteredOutCount: baseRows.length - calibrationRows.length,
+    },
     usedFallbackRecalibration: atmEl["atm-only-recalibrated"].checked && !recalFiltered.length && allRows.length > 0,
   };
 }
@@ -868,7 +1124,27 @@ function normalizedReference(reference, rows, useRaw) {
   return { ra, dec, epoch };
 }
 
-function buildAstrometryModel({ xRange, rows, refRa, refDec, refEpoch, pmra, pmdec, pmraUnc, pmdecUnc, plxValue, plxUnc }) {
+function buildAstrometryModel({
+  xRange,
+  rows,
+  refRa,
+  refDec,
+  refEpoch,
+  pmra,
+  pmdec,
+  pmraUnc,
+  pmdecUnc,
+  plxValue,
+  plxUnc,
+  subtractPmra,
+  subtractPmdec,
+  subtractPmraUnc,
+  subtractPmdecUnc,
+  subtractPmSource,
+  subtractPlxValue,
+  subtractPlxUnc,
+  subtractPlxSource,
+}) {
   if (!rows.length || !finite(xRange[0]) || !finite(xRange[1]) || xRange[0] === xRange[1]) {
     return { x: [], ra: [], dec: [], raUpper: [], raLower: [], decUpper: [], decLower: [] };
   }
@@ -888,16 +1164,30 @@ function buildAstrometryModel({ xRange, rows, refRa, refDec, refEpoch, pmra, pmd
     const epoch = atmEl["atm-phase-yearly"].checked ? xv + roundedCenter : xv;
     const dt = epoch - refEpoch;
     const pf = parallaxMotion(refRa, refDec, epoch);
-    let modelRa = atmEl["atm-subtract-pm"].checked ? 0 : pmra * dt;
-    let modelDec = atmEl["atm-subtract-pm"].checked ? 0 : pmdec * dt;
-    if (!atmEl["atm-subtract-plx"].checked) {
-      modelRa += plxValue * pf.ra;
-      modelDec += plxValue * pf.dec;
+    let modelRa = pmra * dt;
+    let modelDec = pmdec * dt;
+    if (atmEl["atm-subtract-pm"].checked) {
+      modelRa -= subtractPmra * dt;
+      modelDec -= subtractPmdec * dt;
     }
-    const pmRaSigma = atmEl["atm-subtract-pm"].checked ? 0 : Math.abs(dt * pmraUnc);
-    const pmDecSigma = atmEl["atm-subtract-pm"].checked ? 0 : Math.abs(dt * pmdecUnc);
-    const plxRaSigma = atmEl["atm-subtract-plx"].checked ? 0 : Math.abs(pf.ra * plxUnc);
-    const plxDecSigma = atmEl["atm-subtract-plx"].checked ? 0 : Math.abs(pf.dec * plxUnc);
+    modelRa += plxValue * pf.ra;
+    modelDec += plxValue * pf.dec;
+    if (atmEl["atm-subtract-plx"].checked) {
+      modelRa -= subtractPlxValue * pf.ra;
+      modelDec -= subtractPlxValue * pf.dec;
+    }
+    const pmRaSigma = atmEl["atm-subtract-pm"].checked
+      ? (subtractPmSource === "fit" ? Math.abs(dt) * Math.sqrt(pmraUnc ** 2 + subtractPmraUnc ** 2) : 0)
+      : Math.abs(dt * pmraUnc);
+    const pmDecSigma = atmEl["atm-subtract-pm"].checked
+      ? (subtractPmSource === "fit" ? Math.abs(dt) * Math.sqrt(pmdecUnc ** 2 + subtractPmdecUnc ** 2) : 0)
+      : Math.abs(dt * pmdecUnc);
+    const plxRaSigma = atmEl["atm-subtract-plx"].checked
+      ? (subtractPlxSource === "fit" ? Math.abs(pf.ra) * Math.sqrt(plxUnc ** 2 + subtractPlxUnc ** 2) : 0)
+      : Math.abs(pf.ra * plxUnc);
+    const plxDecSigma = atmEl["atm-subtract-plx"].checked
+      ? (subtractPlxSource === "fit" ? Math.abs(pf.dec) * Math.sqrt(plxUnc ** 2 + subtractPlxUnc ** 2) : 0)
+      : Math.abs(pf.dec * plxUnc);
     const sigRa = Math.sqrt(pmRaSigma ** 2 + plxRaSigma ** 2);
     const sigDec = Math.sqrt(pmDecSigma ** 2 + plxDecSigma ** 2);
     x.push(xv);
@@ -989,10 +1279,23 @@ function astrometryYSeries(prepared, axis, offsets) {
 }
 
 function astrometryYError(prepared, axis, sigmaMas) {
-  if (!displayAbsoluteAstrometry()) return sigmaMas;
-  if (!finite(sigmaMas)) return 0;
+  const sigma = astrometryDisplayedSigmaMas(axis, sigmaMas);
+  if (!displayAbsoluteAstrometry()) return sigma;
   const divisor = axis === "ra" ? astrometryRaDegreeDivisor(prepared) : 3600 * 1000;
-  return finite(divisor) && Math.abs(divisor) > 1e-12 ? Math.abs(Number(sigmaMas) / divisor) : 0;
+  return finite(divisor) && Math.abs(divisor) > 1e-12 ? Math.abs(Number(sigma) / divisor) : 0;
+}
+
+function astrometryFitErrorFloorMas(axis) {
+  const fit = atmState.fitResult;
+  if (!fit?.errorFloor) return 0;
+  const floor = axis === "ra" ? fit.errorFloorRa : fit.errorFloorDec;
+  return finite(floor) && Number(floor) > 0 ? Number(floor) : 0;
+}
+
+function astrometryDisplayedSigmaMas(axis, sigmaMas) {
+  const sigma = finite(sigmaMas) && Number(sigmaMas) > 0 ? Number(sigmaMas) : 0;
+  const floor = astrometryFitErrorFloorMas(axis);
+  return floor > 0 ? Math.sqrt(sigma ** 2 + floor ** 2) : sigma;
 }
 
 function astrometryOffsetToDegrees(prepared, axis, offsetMas) {
@@ -1013,7 +1316,31 @@ function astrometryRaDegreeDivisor(prepared) {
   return finite(cosDec) ? cosDec * 3600 * 1000 : NaN;
 }
 
-function renderAstrometryPlot(axis, prepared) {
+function buildAstrometryAssumedParallaxCurve(prepared) {
+  if (!atmEl["atm-subtract-pm"]?.checked || !atmEl["atm-phase-yearly"]?.checked) return null;
+  if (!finite(prepared.reference.ra) || !finite(prepared.reference.dec)) return null;
+  const centerEpoch = mean(prepared.rows.map((row) => row.plot_epoch_abs).filter(finite));
+  const baseYear = Math.round(centerEpoch || prepared.reference.epoch || 2000);
+  const n = 240;
+  const x = [];
+  const ra = [];
+  const dec = [];
+  for (let index = 0; index < n; index += 1) {
+    const phase = index / (n - 1);
+    const pf = parallaxMotion(prepared.reference.ra, prepared.reference.dec, baseYear + phase);
+    x.push(phase);
+    ra.push(atmAssumedParallaxMas * pf.ra);
+    dec.push(atmAssumedParallaxMas * pf.dec);
+  }
+  return {
+    x,
+    ra,
+    dec,
+    label: `${atmAssumedParallaxPc} pc parallax guide`,
+  };
+}
+
+function renderAstrometryPlot(axis, prepared, options = {}) {
   const isRa = axis === "ra";
   const plotEl = isRa ? atmEl["atm-ra-plot"] : atmEl["atm-dec-plot"];
   const displayAbsolute = displayAbsoluteAstrometry();
@@ -1028,6 +1355,9 @@ function renderAstrometryPlot(axis, prepared) {
   const yHoverLabel = displayAbsolute ? `${isRa ? "R.A." : "Decl."}` : `${isRa ? "R.A." : "Decl."} offset`;
   const yHoverUnit = displayAbsolute ? "deg" : "mas";
   const yHoverFormat = displayAbsolute ? ".8f" : ".2f";
+  const assumedParallaxCurve = buildAstrometryAssumedParallaxCurve(prepared);
+  const assumedParallaxOffsets = assumedParallaxCurve ? (isRa ? assumedParallaxCurve.ra : assumedParallaxCurve.dec) : [];
+  const assumedParallaxY = assumedParallaxCurve ? astrometryYSeries(prepared, axis, assumedParallaxOffsets) : [];
   traces.push({
     x: prepared.model.x,
     y: modelY,
@@ -1058,6 +1388,21 @@ function renderAstrometryPlot(axis, prepared) {
     showlegend: isRa,
     hoverinfo: "skip",
   });
+  if (assumedParallaxCurve) {
+    traces.push({
+      x: assumedParallaxCurve.x,
+      y: assumedParallaxY,
+      type: "scatter",
+      mode: "lines",
+      line: { color: "rgba(37,35,41,0.34)", width: 2.5, dash: "dot" },
+      name: assumedParallaxCurve.label,
+      legendgroup: "astrometry-assumed-parallax",
+      showlegend: true,
+      hovertemplate: displayAbsolute
+        ? `${assumedParallaxCurve.label}<br>phase %{x:.3f}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`
+        : `${assumedParallaxCurve.label}<br>phase %{x:.3f}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`,
+    });
+  }
   const missionStyles = astrometryMissionStyles(prepared.rows);
   const missions = [...missionStyles.keys()];
   missions.forEach((mission) => {
@@ -1210,14 +1555,25 @@ function renderAstrometryPlot(axis, prepared) {
       hovertemplate: "%{text}<extra></extra>",
     });
   }
+  const rangeRows = astrometryAcceptedRows(prepared.rows);
   const yValues = [
-    ...prepared.rows.map((row) => astrometryYValue(prepared, axis, row)),
+    ...rangeRows.map((row) => astrometryYValue(prepared, axis, row)),
     ...modelY,
+    ...assumedParallaxY,
     ...fitY,
     ...(referenceMarker ? [astrometryYValue(prepared, axis, referenceMarker)] : []),
     ...(fittedReferenceMarker ? [astrometryYValue(prepared, axis, fittedReferenceMarker)] : []),
   ].filter(finite);
-  const yRange = paddedRange(yValues, null);
+  const computedYRange = paddedRange(yValues, null);
+  const computedXRange = paddedRange([
+    ...prepared.rows.map((row) => row.plot_x),
+    ...(referenceMarker ? [referenceMarker.plot_x] : []),
+    ...(fittedReferenceMarker ? [fittedReferenceMarker.plot_x] : []),
+  ].filter(finite), atmEl["atm-phase-yearly"].checked ? [0, 1] : null);
+  const heldXRange = options.heldRanges?.[axis]?.x;
+  const heldYRange = options.heldRanges?.[axis]?.y;
+  const xRange = heldXRange || computedXRange;
+  const yRange = heldYRange || computedYRange;
   const sexagesimalTicks = displayAbsolute ? astrometrySexagesimalTickSpec(yRange, axis) : null;
   const layout = {
     title: {
@@ -1236,11 +1592,7 @@ function renderAstrometryPlot(axis, prepared) {
       tickformat: atmEl["atm-phase-yearly"].checked ? ".2f" : ".1f",
       separatethousands: false,
       automargin: true,
-      range: paddedRange([
-        ...prepared.rows.map((row) => row.plot_x),
-        ...(referenceMarker ? [referenceMarker.plot_x] : []),
-        ...(fittedReferenceMarker ? [fittedReferenceMarker.plot_x] : []),
-      ].filter(finite), atmEl["atm-phase-yearly"].checked ? [0, 1] : null),
+      range: xRange,
       showline: true,
       mirror: true,
       linecolor: "#000000",
@@ -1282,7 +1634,6 @@ function renderAstrometryPlot(axis, prepared) {
       bgcolor: "rgba(255,255,255,0.86)",
       groupclick: "togglegroup",
     },
-    annotations: isRa ? [summaryAnnotation(prepared)] : [],
   };
   Plotly.react(plotEl, traces, layout, plotConfig(`astrometry_${axis}_oid_${atmState.selectedOid || "unknown"}`));
   if (typeof plotEl.removeAllListeners === "function") {
@@ -1347,6 +1698,7 @@ function buildAstrometryFitRequest(mode, prepared) {
     mode,
     fitter: selectedAstrometryFitMethod(),
     outlierMixture: atmEl["atm-fit-outlier-mixture"] ? atmEl["atm-fit-outlier-mixture"].checked : true,
+    errorFloor: atmEl["atm-fit-error-floor"] ? atmEl["atm-fit-error-floor"].checked : true,
     reference: {
       ra: prepared.reference.ra,
       dec: prepared.reference.dec,
@@ -1480,13 +1832,12 @@ function predictAstrometryFit(fit, prepared, epoch) {
     dec += Number(fitPlx) * pf.dec;
   }
   if (atmEl["atm-subtract-pm"].checked) {
-    ra -= prepared.pm.pmra * (epoch - prepared.reference.epoch);
-    dec -= prepared.pm.pmdec * (epoch - prepared.reference.epoch);
+    ra -= prepared.subtraction.pmra * (epoch - prepared.reference.epoch);
+    dec -= prepared.subtraction.pmdec * (epoch - prepared.reference.epoch);
   }
   if (atmEl["atm-subtract-plx"].checked) {
-    const adoptedPlx = finite(prepared.parallax.value) ? Number(prepared.parallax.value) : 0;
-    ra -= adoptedPlx * pf.ra;
-    dec -= adoptedPlx * pf.dec;
+    ra -= prepared.subtraction.plxValue * pf.ra;
+    dec -= prepared.subtraction.plxValue * pf.dec;
   }
   return { ra, dec };
 }
@@ -1501,13 +1852,12 @@ function astrometryFittedReferenceMarker(prepared) {
   let relRa = Number(fit.posRa);
   let relDec = Number(fit.posDec);
   if (atmEl["atm-subtract-pm"].checked) {
-    relRa -= prepared.pm.pmra * (epoch - prepared.reference.epoch);
-    relDec -= prepared.pm.pmdec * (epoch - prepared.reference.epoch);
+    relRa -= prepared.subtraction.pmra * (epoch - prepared.reference.epoch);
+    relDec -= prepared.subtraction.pmdec * (epoch - prepared.reference.epoch);
   }
   if (atmEl["atm-subtract-plx"].checked) {
-    const adoptedPlx = finite(prepared.parallax.value) ? Number(prepared.parallax.value) : 0;
-    relRa -= adoptedPlx * pf.ra;
-    relDec -= adoptedPlx * pf.dec;
+    relRa -= prepared.subtraction.plxValue * pf.ra;
+    relDec -= prepared.subtraction.plxValue * pf.dec;
   }
   return {
     id: "fitted-reference-position",
@@ -1545,35 +1895,12 @@ function updateAstrometryFitSummary(message = "") {
   }
   const fit = atmState.fitResult;
   if (!fit) {
-    atmEl["atm-fit-summary"].textContent = "No fit computed";
+    atmEl["atm-fit-summary"].textContent = "";
     if (atmEl["atm-clear-fit"]) atmEl["atm-clear-fit"].disabled = true;
     return;
   }
-  atmEl["atm-fit-summary"].innerHTML = astrometryFitInlineSummary(fit);
+  atmEl["atm-fit-summary"].textContent = "";
   if (atmEl["atm-clear-fit"]) atmEl["atm-clear-fit"].disabled = false;
-}
-
-function astrometryFitInlineSummary(fit) {
-  const parts = [
-    `<strong>${escapeHtml(fit.label)}</strong>`,
-    `PMRA ${formatValueError(fit.pmra, fit.pmraUnc, "mas/yr")}`,
-    `PMDEC ${formatValueError(fit.pmdec, fit.pmdecUnc, "mas/yr")}`,
-  ];
-  if (fit.mode === "pm_plx") {
-    parts.push(`parallax ${formatValueError(fit.plx, fit.plxUnc, "mas")}`);
-  } else if (finite(fit.fixedPlx) && Number(fit.fixedPlx) !== 0) {
-    parts.push(`adopted parallax fixed at ${formatNumber(fit.fixedPlx, 2)} mas`);
-  }
-  if (fit.outlierMixture && finite(fit.nInliers) && finite(fit.nRows)) {
-    parts.push(`inliers ${fit.nInliers}/${fit.nRows}`);
-  } else {
-    parts.push(`N=${fit.nRows}`);
-  }
-  if (atmState.manualRejectedIds.size) {
-    parts.push(`manual rejects ${atmState.manualRejectedIds.size}`);
-  }
-  parts.push(`reduced chi2=${formatNumber(fit.reducedChi2, 2)}`);
-  return parts.join(" | ");
 }
 
 function astrometrySelectedMissionLabels() {
@@ -1740,16 +2067,9 @@ function setAstrometryPushStatus(content, mode = "", html = false) {
 }
 
 function astrometryFitOutlierRows(prepared) {
-  const fit = atmState.fitResult;
-  if (!fit?.outlierMixture) return [];
-  const ids = new Set((Array.isArray(fit.outlierIds) ? fit.outlierIds : []).map((id) => String(id)));
-  if (!ids.size && Array.isArray(fit.responsibilities)) {
-    fit.responsibilities.forEach((row) => {
-      if (row?.inlier === false && row.id !== undefined && row.id !== null) ids.add(String(row.id));
-    });
-  }
+  const ids = astrometryFitRejectedIdSet();
   if (!ids.size) return [];
-  return prepared.rows.filter((row) => ids.has(String(row.id)));
+  return prepared.rows.filter((row) => ids.has(astrometryRowIdKey(row)));
 }
 
 function astrometryManualRejectedRows(prepared) {
@@ -1850,7 +2170,7 @@ function astrometryPublicationInfo(row, fallback = "") {
   const name = explicitName || sourceId || fallback || "";
   const rawBibcode = raw.publication_bibcode || raw.bibcode || "";
   const bibcode = rawBibcode || (looksLikeAdsBibcode(raw.moca_pid) ? raw.moca_pid : "");
-  const hasSource = Boolean(explicitName || sourceId || rawBibcode || raw.bibcode);
+  const hasSource = Boolean(explicitName || sourceId || rawBibcode || raw.bibcode) && !astrometryPlaceholderReference(name);
   return {
     name,
     bibcode,
@@ -1874,6 +2194,7 @@ function astrometryAdsUrl(info) {
     return `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(bibcode)}/abstract`;
   }
   const query = String(info?.query || "").trim();
+  if (astrometryPlaceholderReference(query || info?.name)) return "";
   return query ? `https://ui.adsabs.harvard.edu/search/q=${encodeURIComponent(query)}` : "";
 }
 
@@ -1881,29 +2202,9 @@ function looksLikeAdsBibcode(value) {
   return /^\d{4}.{14}[A-Za-z0-9.]$/.test(String(value || ""));
 }
 
-function summaryAnnotation(prepared) {
-  const pm = prepared.pm;
-  const plx = prepared.parallax;
-  const coordRef = prepared.reference?.source;
-  return {
-    xref: "paper",
-    yref: "paper",
-    x: 0.01,
-    y: 0.99,
-    xanchor: "left",
-    yanchor: "top",
-    text: [
-      `<b>PMRA:</b> ${formatValueError(pm.pmra, pm.pmraUnc, "mas/yr")}`,
-      `<b>PMDEC:</b> ${formatValueError(pm.pmdec, pm.pmdecUnc, "mas/yr")}`,
-      `<b>Parallax:</b> ${formatValueError(plx.value, plx.uncertainty, "mas")}`,
-      `<br><b>PM ref:</b> ${astrometryPublicationMarkup(pm.source, pm.reference || "N/A")}`,
-      `<b>Parallax ref:</b> ${astrometryPublicationMarkup(plx.source, plx.reference || "N/A")}`,
-      `<b>Coord ref:</b> ${astrometryPublicationMarkup(coordRef, "N/A")}`,
-    ].join(" | "),
-    showarrow: false,
-    font: { size: 13, color: "#252329" },
-    bgcolor: "rgba(255,255,255,0.72)",
-  };
+function astrometryPlaceholderReference(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return !text || text === "n/a" || text === "none" || text.startsWith("no adopted ");
 }
 
 function handleAstrometrySelection(event) {
@@ -1957,6 +2258,51 @@ function astrometrySummaryTextLine(label, value) {
   return `<span class="astrometry-summary-symbol">${escapeHtml(label)}</span><span class="astrometry-summary-value">= ${escapeHtml(value)}</span>`;
 }
 
+function astrometryCalibrationMethodDescription(value) {
+  const method = astrometryCalibrationMethodKey(value);
+  if (method === atmNoCalibrationMethodKey) {
+    return "No data_equatorial_coordinates.calibration_method value is stored for these rows. They are not tagged with a detection-level recalibration branch; if shown while the recalibrated-only option is enabled, they survived through mission-level include_in_recalibrated_display, merged-row display, or the no-recalibrated-rows fallback.";
+  }
+  if (atmCalibrationMethodDescriptions[method]) return atmCalibrationMethodDescriptions[method];
+  const legacyMethod = method.endsWith("_py") ? method.slice(0, -3) : method;
+  if (atmCalibrationMethodDescriptions[legacyMethod]) {
+    return `${atmCalibrationMethodDescriptions[legacyMethod]} The _py suffix marks rows written by the Python moca_tap_xm recalibration port rather than legacy IDL.`;
+  }
+  const lower = method.toLowerCase();
+  const provenance = lower.endsWith("_py") ? " The _py suffix marks rows written by the Python moca_tap_xm recalibration port." : "";
+  if (lower.includes("astrnet") && lower.includes("gaiadr3")) {
+    return `Astrometry.net plus Gaia DR3 recalibration branch not explicitly documented in the local UI map; inspect moca_tap_xm.recalibration for its exact branch-selection rule.${provenance}`;
+  }
+  if (lower.includes("gaiadr3")) {
+    return `Gaia DR3-based recalibration branch not explicitly documented in the local UI map; inspect moca_tap_xm.recalibration for its exact branch-selection rule.${provenance}`;
+  }
+  return `Stored data_equatorial_coordinates.calibration_method token not explicitly documented in the local UI map; accepting it keeps rows tagged with this recalibration workflow.${provenance}`;
+}
+
+function astrometryCalibrationSummaryMarkup(prepared) {
+  const calibration = prepared.calibration || {};
+  const options = calibration.options || [];
+  if (!options.length) return "";
+  const selected = new Set(calibration.selectedValues || []);
+  const acceptedCount = options.filter((method) => selected.has(method.value)).length;
+  const status = acceptedCount === options.length
+    ? "all accepted"
+    : `${acceptedCount}/${options.length} accepted${calibration.filteredOutCount ? `; ${calibration.filteredOutCount} rows excluded before mission filtering` : ""}`;
+  const lines = options.map((method) => {
+    const label = `${astrometryCalibrationMethodLabel(method.value)}${selected.has(method.value) ? "" : " (not accepted)"}`;
+    return `
+      <div class="astrometry-summary-line">
+        <span class="astrometry-summary-symbol">${escapeHtml(label)}</span>
+        <span class="astrometry-summary-value">${escapeHtml(astrometryCalibrationMethodDescription(method.value))}</span>
+      </div>`;
+  }).join("");
+  return `
+    <div class="astrometry-summary-calibration">
+      <div class="astrometry-summary-title"><strong>Calibration method filters</strong> <span class="astrometry-summary-source">${escapeHtml(status)}</span></div>
+      ${lines}
+    </div>`;
+}
+
 function astrometryCoordinateLines(coordinates) {
   return [
     astrometryCoordinateLine("&alpha;", coordinates.ra, coordinates.raUncMas, formatRaSexagesimal),
@@ -1984,19 +2330,39 @@ function astrometryCoordinateDifferenceLines(prepared, fit) {
 
 function astrometryProperMotionDifferenceLines(prepared, fit) {
   if (!fit) return [];
-  return [
-    astrometrySummarySubhead("literature - fitted"),
-    astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&alpha;</sub>", prepared.pm.pmra, fit.pmra, prepared.pm.pmraUnc, fit.pmraUnc, "mas/yr"),
-    astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&delta;</sub>", prepared.pm.pmdec, fit.pmdec, prepared.pm.pmdecUnc, fit.pmdecUnc, "mas/yr"),
-  ];
+  const lines = [];
+  if (prepared.pm.hasPmra && finite(fit.pmra)) {
+    lines.push(astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&alpha;</sub>", prepared.pm.pmra, fit.pmra, prepared.pm.pmraUnc, fit.pmraUnc, "mas/yr"));
+  }
+  if (prepared.pm.hasPmdec && finite(fit.pmdec)) {
+    lines.push(astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&delta;</sub>", prepared.pm.pmdec, fit.pmdec, prepared.pm.pmdecUnc, fit.pmdecUnc, "mas/yr"));
+  }
+  return lines.length ? [astrometrySummarySubhead("literature - fitted"), ...lines] : [];
 }
 
 function astrometryParallaxDifferenceLines(prepared, fit) {
-  if (!fit || fit.mode !== "pm_plx") return [];
+  if (!fit || fit.mode !== "pm_plx" || !prepared.parallax.hasValue) return [];
   return [
     astrometrySummarySubhead("literature - fitted"),
     astrometrySummaryDifferenceLine("&Delta;&varpi;", prepared.parallax.value, fit.plx, prepared.parallax.uncertainty, fit.plxUnc, "mas"),
   ];
+}
+
+function astrometryReferenceProperMotionLines(prepared) {
+  const lines = [];
+  if (prepared.pm.hasPmra) {
+    lines.push(astrometrySummaryValueLine("&mu;<sub>&alpha;</sub>", prepared.pm.pmra, prepared.pm.pmraUnc, "mas/yr"));
+  }
+  if (prepared.pm.hasPmdec) {
+    lines.push(astrometrySummaryValueLine("&mu;<sub>&delta;</sub>", prepared.pm.pmdec, prepared.pm.pmdecUnc, "mas/yr"));
+  }
+  return lines;
+}
+
+function astrometryReferenceParallaxLines(prepared) {
+  return prepared.parallax.hasValue
+    ? [astrometrySummaryValueLine("&varpi;", prepared.parallax.value, prepared.parallax.uncertainty, "mas")]
+    : [];
 }
 
 function astrometryFittedCoordinate(fit, prepared) {
@@ -2024,25 +2390,70 @@ function astrometryFitMeta(fit) {
   } else if (finite(fit.nRows)) {
     parts.push(`N=${fit.nRows}`);
   }
+  if (fit.errorFloor && (finite(fit.errorFloorRa) || finite(fit.errorFloorDec))) {
+    const floorRa = finite(fit.errorFloorRa) ? formatNumber(fit.errorFloorRa, 1) : "?";
+    const floorDec = finite(fit.errorFloorDec) ? formatNumber(fit.errorFloorDec, 1) : "?";
+    parts.push(`error floor ${floorRa}/${floorDec} mas`);
+  }
   if (finite(fit.reducedChi2)) parts.push(`reduced chi2=${formatNumber(fit.reducedChi2, 2)}`);
   return parts.join("; ");
+}
+
+function astrometryFitDiagnosticsLines(fit) {
+  if (!fit) return [];
+  const lines = [
+    astrometrySummaryTextLine("method", fit.label || fit.fitterLabel || "fit"),
+  ];
+  if (fit.outlierMixture && finite(fit.nInliers) && finite(fit.nRows)) {
+    lines.push(astrometrySummaryTextLine("inliers", `${fit.nInliers}/${fit.nRows}`));
+    if (finite(fit.nOutliers)) lines.push(astrometrySummaryTextLine("outliers", `${fit.nOutliers}`));
+  } else if (finite(fit.nRows)) {
+    lines.push(astrometrySummaryTextLine("fit rows", `${fit.nRows}`));
+  }
+  if (atmState.manualRejectedIds.size) {
+    lines.push(astrometrySummaryTextLine("manual rejects", `${atmState.manualRejectedIds.size}`));
+  }
+  if (finite(fit.chi2)) lines.push(astrometrySummaryTextLine("chi2", formatNumber(fit.chi2, 2)));
+  if (finite(fit.dof)) lines.push(astrometrySummaryTextLine("dof", `${fit.dof}`));
+  if (finite(fit.reducedChi2)) {
+    lines.push(astrometrySummaryTextLine("reduced chi2", formatNumber(fit.reducedChi2, 2)));
+  }
+  if (fit.errorFloor && (finite(fit.errorFloorRa) || finite(fit.errorFloorDec))) {
+    lines.push(astrometrySummarySubhead("error floor in plotted error bars"));
+    if (finite(fit.errorFloorRa)) {
+      lines.push(astrometrySummaryTextLine("R.A.", `${formatNumber(fit.errorFloorRa, 1)} mas`));
+    }
+    if (finite(fit.errorFloorDec)) {
+      lines.push(astrometrySummaryTextLine("Decl.", `${formatNumber(fit.errorFloorDec, 1)} mas`));
+    }
+  }
+  return lines;
 }
 
 function renderAstrometrySummary(prepared) {
   const target = atmState.payload.target || {};
   const rows = prepared.rows;
   const missionCount = new Set(rows.map((row) => row.mission)).size;
+  const calibrationAcceptedCount = prepared.calibration?.selected?.length || 0;
+  const calibrationTotalCount = prepared.calibration?.options?.length || 0;
   const manualRejectedCount = astrometryManualRejectedRows(prepared).length;
   const recalcNote = prepared.usedFallbackRecalibration ? " Recalibrated-only filter had no rows, so all rows are shown." : "";
   const fit = atmState.fitResult;
   const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
-  const sections = [
-    astrometrySummarySection(
-      "Reference coordinate",
-      astrometryPublicationMarkup(prepared.reference.source, "N/A"),
-      astrometryCoordinateLines(prepared.reference),
-    ),
-  ];
+  const calibrationSummary = astrometryCalibrationSummaryMarkup(prepared);
+  const sections = [];
+  if (fit) {
+    sections.push(astrometrySummarySection(
+      "Fit diagnostics",
+      "",
+      astrometryFitDiagnosticsLines(fit),
+    ));
+  }
+  sections.push(astrometrySummarySection(
+    "Reference coordinate",
+    astrometryPublicationMarkup(prepared.reference.source, "N/A"),
+    astrometryCoordinateLines(prepared.reference),
+  ));
   if (fittedCoordinate) {
     sections.push(astrometrySummarySection(
       "Fitted coordinate",
@@ -2051,16 +2462,12 @@ function renderAstrometrySummary(prepared) {
         ...astrometryCoordinateLines(fittedCoordinate),
         ...astrometryCoordinateDifferenceLines(prepared, fit),
       ],
-      { meta: astrometryFitMeta(fit) },
     ));
   }
   sections.push(astrometrySummarySection(
     "Reference proper motion",
     astrometryPublicationMarkup(prepared.pm.source, prepared.pm.reference || "N/A"),
-    [
-      astrometrySummaryValueLine("&mu;<sub>&alpha;</sub>", prepared.pm.pmra, prepared.pm.pmraUnc, "mas/yr"),
-      astrometrySummaryValueLine("&mu;<sub>&delta;</sub>", prepared.pm.pmdec, prepared.pm.pmdecUnc, "mas/yr"),
-    ],
+    astrometryReferenceProperMotionLines(prepared),
   ));
   if (fit) {
     sections.push(astrometrySummarySection(
@@ -2076,7 +2483,7 @@ function renderAstrometrySummary(prepared) {
   sections.push(astrometrySummarySection(
     "Reference parallax",
     astrometryPublicationMarkup(prepared.parallax.source, prepared.parallax.reference || "N/A"),
-    [astrometrySummaryValueLine("&varpi;", prepared.parallax.value, prepared.parallax.uncertainty, "mas")],
+    astrometryReferenceParallaxLines(prepared),
   ));
   if (fit?.mode === "pm_plx") {
     sections.push(astrometrySummarySection(
@@ -2094,10 +2501,12 @@ function renderAstrometrySummary(prepared) {
       <span>oid${escapeHtml(target.moca_oid)}</span>
       <span>${rows.length} measurements</span>
       <span>${missionCount} missions</span>
+      ${calibrationTotalCount ? `<span>${calibrationAcceptedCount}/${calibrationTotalCount} calibration methods accepted</span>` : ""}
       ${manualRejectedCount ? `<span>${manualRejectedCount} manually rejected from fit</span>` : ""}
     </div>
     <div class="astrometry-summary-grid">${sections.join("")}</div>
     ${recalcNote ? `<div class="astrometry-summary-note">${escapeHtml(recalcNote.trim())}</div>` : ""}
+    ${calibrationSummary}
   `;
 }
 
@@ -2387,7 +2796,9 @@ function setAstrometryStatus(text, mode = "") {
 }
 
 function setAstrometryLoading(loading) {
-  atmEl["atm-plot-loader"].classList.toggle("is-visible", Boolean(loading));
+  document.querySelectorAll("#atm-visual-area .atm-plot-loader").forEach((loader) => {
+    loader.classList.toggle("is-visible", Boolean(loading));
+  });
 }
 
 function updateAstrometryUrl() {
@@ -2401,6 +2812,12 @@ function updateAstrometryUrl() {
   }
   if (atmState.hasUserMissionChoice && atmState.selectedMissions.size) params.set("missions", [...atmState.selectedMissions].join(","));
   else params.delete("missions");
+  if ((atmState.hasUserCalibrationChoice || atmState.initialCalibrationMethods.length) && atmState.selectedCalibrationMethods.size) {
+    params.set("calibration_methods", [...atmState.selectedCalibrationMethods].join(","));
+  } else {
+    params.delete("calibration_methods");
+  }
+  params.delete("calib_methods");
   setBoolParam(params, "subtract_pm", atmEl["atm-subtract-pm"].checked);
   setBoolParam(params, "subtract_plx", atmEl["atm-subtract-plx"].checked);
   setBoolParam(params, "phase", atmEl["atm-phase-yearly"].checked);
@@ -2412,6 +2829,8 @@ function updateAstrometryUrl() {
   else params.delete("fit_method");
   if (atmEl["atm-fit-outlier-mixture"] && !atmEl["atm-fit-outlier-mixture"].checked) params.set("fit_outlier_mixture", "0");
   else params.delete("fit_outlier_mixture");
+  if (atmEl["atm-fit-error-floor"] && !atmEl["atm-fit-error-floor"].checked) params.set("fit_error_floor", "0");
+  else params.delete("fit_error_floor");
   if (!atmEl["atm-display-reference"].checked) params.set("display_reference", "0");
   else params.delete("display_reference");
   if (!atmEl["atm-adjust-reference"].checked) params.set("adjust_ref", "0");

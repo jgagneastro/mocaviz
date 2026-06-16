@@ -82,6 +82,9 @@ const state = {
   rows: [],
   selectedOids: [],
   selectedDesignations: [],
+  selectedAssociationHighlights: [],
+  associationHighlightSearchTimer: null,
+  associationHighlightMeta: null,
   hiddenLegendClasses: new Set(),
   hiddenLegendSamples: new Set(),
   hiddenLegendGravityClasses: new Set(),
@@ -131,6 +134,29 @@ function appUrl(path) {
   return new URL(String(path || "").replace(/^\/+/, ""), appBaseUrl).toString();
 }
 
+async function fetchJsonUrl(url, options = {}) {
+  const response = await fetch(url, options);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    payload = null;
+  }
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `${response.status} ${response.statusText}`);
+  }
+  return payload;
+}
+
+function searchConnectionParams() {
+  const current = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams();
+  for (const key of ["host", "port", "user", "pwd", "dbase", "db", "database", "mock"]) {
+    if (current.has(key)) params.set(key, current.get(key) || "");
+  }
+  return params;
+}
+
 const el = {};
 
 document.addEventListener("DOMContentLoaded", init);
@@ -167,10 +193,17 @@ function collectElements() {
     "y-value-2-wrap",
     "y-value-1-label",
     "y-value-2-label",
+    "quantity-filter",
     "spt-range",
     "highlight-designation-search",
     "highlight-designation-results",
     "highlight-designation-selected",
+    "highlight-association-search",
+    "highlight-association-results",
+    "highlight-association-selected",
+    "highlight-ya-prob-min",
+    "highlight-ya-prob-output",
+    "highlight-association-status",
     "highlight-oids",
     "xerr-max",
     "yerr-max",
@@ -224,6 +257,10 @@ function readInitialUrlState() {
   el["spt-range"].value = params.get("spt_range") || "L2+";
   el["highlight-oids"].value = params.get("moca_oid") || params.get("oid") || "";
   state.selectedDesignations = parseDesignationParams(params);
+  state.selectedAssociationHighlights = parseAssociationHighlightParams(params);
+  const yaProbMin = firstUrlParam(params, "highlight_ya_prob_min", "highlight_min_ya_prob", "highlight_membership_prob_min", "banyan_ya_prob_min", "ya_prob_min");
+  if (yaProbMin !== null) el["highlight-ya-prob-min"].value = String(clamp(Number(yaProbMin), 0, 100));
+  updateAssociationYaProbOutput();
   el["xerr-max"].value = params.get("xerr_max") || "";
   el["yerr-max"].value = params.get("yerr_max") || "";
   el["show-errors"].checked = asBool(params.get("errors"));
@@ -277,6 +314,14 @@ function bindControls() {
       }
     });
   }
+  el["quantity-filter"].addEventListener("input", () => {
+    const changedX = refreshAxisValueControls("x");
+    const changedY = refreshAxisValueControls("y");
+    if (changedX || changedY) {
+      requestInitialAxisRange();
+      render();
+    }
+  });
   for (const id of ["xerr-max", "yerr-max"]) {
     el[id].addEventListener("input", () => {
       state.autoErrorDefaults[id[0]] = false;
@@ -342,6 +387,36 @@ function bindControls() {
     const button = event.target instanceof Element ? event.target.closest("button[data-remove-designation]") : null;
     if (!button) return;
     removeDesignation(button.dataset.removeDesignation);
+  });
+  el["highlight-association-search"].addEventListener("focus", () => {
+    renderAssociationHighlightPicker();
+    scheduleAssociationHighlightSearch();
+  });
+  el["highlight-association-search"].addEventListener("input", () => scheduleAssociationHighlightSearch());
+  el["highlight-association-search"].addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    selectAssociationHighlightFromInput();
+  });
+  el["highlight-association-results"].addEventListener("mousedown", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-association-aid]") : null;
+    if (!button) return;
+    event.preventDefault();
+    selectAssociationHighlight(button.dataset.associationAid, button.dataset.associationLabel);
+  });
+  el["highlight-association-selected"].addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-remove-association-aid]") : null;
+    if (!button) return;
+    removeAssociationHighlight(button.dataset.removeAssociationAid);
+  });
+  el["highlight-ya-prob-min"].addEventListener("input", () => {
+    updateAssociationYaProbOutput();
+    renderAssociationHighlightPicker();
+  });
+  el["highlight-ya-prob-min"].addEventListener("change", () => {
+    updateAssociationYaProbOutput();
+    if (state.selectedAssociationHighlights.length) reloadForAssociationHighlights();
+    else updateUrlFromControls();
   });
   el["include-photspt"].addEventListener("change", () => {
     requestInitialAxisRange();
@@ -524,6 +599,25 @@ function buildBootstrapParams() {
   if (state.selectedDesignations.length) {
     params.set("designation", state.selectedDesignations.join(","));
   }
+  for (const key of [
+    "highlight_aid",
+    "highlight_aids",
+    "highlight_group",
+    "highlight_groups",
+    "banyan_aid",
+    "banyan_group",
+    "highlight_ya_prob_min",
+    "highlight_min_ya_prob",
+    "highlight_membership_prob_min",
+    "banyan_ya_prob_min",
+    "ya_prob_min",
+  ]) {
+    params.delete(key);
+  }
+  if (state.selectedAssociationHighlights.length) {
+    params.set("highlight_aid", state.selectedAssociationHighlights.map((row) => row.value).join(","));
+    params.set("highlight_ya_prob_min", String(associationHighlightYaProbMin()));
+  }
   params.set("photspt", el["include-photspt"].checked ? "1" : "0");
   params.set("risky_photspt", riskyPhotometricSptRequested() ? "1" : "0");
   params.delete("use_bickle_spt");
@@ -630,8 +724,10 @@ async function loadBootstrap(options = {}) {
     state.raw = payload;
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
+    state.associationHighlightMeta = payload.meta?.association_highlights || null;
     updatePhotometricSptControl();
     updateBickleSptControl();
+    renderAssociationHighlightPicker();
     if (options.resetAxisRange) requestInitialAxisRange();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
@@ -749,6 +845,7 @@ function clearClientData(options = {}) {
   state.allRows = [];
   state.rows = [];
   state.selectedOids = [];
+  state.associationHighlightMeta = null;
   state.hiddenLegendClasses.clear();
   state.hiddenLegendSamples.clear();
   state.hiddenLegendGravityClasses.clear();
@@ -1357,6 +1454,117 @@ function removeDesignation(designation) {
   render();
 }
 
+function renderAssociationHighlightPicker() {
+  if (!el["highlight-association-selected"]) return;
+  updateAssociationYaProbOutput();
+  el["highlight-association-search"].placeholder = state.selectedAssociationHighlights.length
+    ? "Add another group"
+    : "Type an association ID";
+  el["highlight-association-selected"].innerHTML = state.selectedAssociationHighlights.map((row) => {
+    const value = row.value || "";
+    const label = row.label || value;
+    return `
+      <span class="designation-chip">
+        <span>${escapeHtml(label)}</span>
+        <button type="button" data-remove-association-aid="${escapeHtml(value)}" aria-label="Remove ${escapeHtml(label)}">x</button>
+      </span>
+    `;
+  }).join("");
+  renderAssociationHighlightStatus();
+}
+
+function renderAssociationHighlightStatus() {
+  const status = el["highlight-association-status"];
+  if (!status) return;
+  if (!state.selectedAssociationHighlights.length) {
+    status.textContent = "";
+    return;
+  }
+  const aids = state.selectedAssociationHighlights.map((row) => row.value).join(", ");
+  const yaProb = associationHighlightYaProbMin();
+  const loadedCount = Number(state.associationHighlightMeta?.loaded_object_count);
+  status.textContent = Number.isFinite(loadedCount)
+    ? `${loadedCount.toLocaleString()} loaded BANYAN ${aids} members at >= ${yaProb}%`
+    : `BANYAN ${aids} members will be highlighted at >= ${yaProb}%`;
+}
+
+function scheduleAssociationHighlightSearch() {
+  window.clearTimeout(state.associationHighlightSearchTimer);
+  state.associationHighlightSearchTimer = window.setTimeout(runAssociationHighlightSearch, 180);
+}
+
+async function runAssociationHighlightSearch() {
+  const query = el["highlight-association-search"]?.value.trim() || "";
+  if (!query) {
+    el["highlight-association-results"].hidden = true;
+    el["highlight-association-results"].innerHTML = "";
+    return [];
+  }
+  const params = searchConnectionParams();
+  params.set("q", query);
+  try {
+    const payload = await fetchJsonUrl(appUrl(`api/bd-colors/associations/search?${params.toString()}`));
+    const selected = new Set(state.selectedAssociationHighlights.map((row) => row.value));
+    const options = (payload.options || [])
+      .map((row) => ({
+        value: String(row.value || "").trim().toUpperCase(),
+        label: row.label || row.value || "",
+      }))
+      .filter((row) => row.value && !selected.has(row.value));
+    el["highlight-association-results"].innerHTML = options.length
+      ? options.map((row) => `
+          <button type="button" class="designation-result" data-association-aid="${escapeHtml(row.value)}" data-association-label="${escapeHtml(row.label)}">
+            ${escapeHtml(row.label)}
+          </button>
+        `).join("")
+      : `<div class="designation-result-note">No matches</div>`;
+    el["highlight-association-results"].hidden = false;
+    return options;
+  } catch (error) {
+    el["highlight-association-results"].innerHTML = `<div class="designation-result-note">${escapeHtml(error.message || String(error))}</div>`;
+    el["highlight-association-results"].hidden = false;
+    return [];
+  }
+}
+
+async function selectAssociationHighlightFromInput() {
+  const query = el["highlight-association-search"]?.value.trim() || "";
+  if (!query) return;
+  const normalizedQuery = query.toUpperCase();
+  const options = await runAssociationHighlightSearch();
+  const match = options.find((row) => row.value === normalizedQuery)
+    || options.find((row) => row.value.startsWith(normalizedQuery))
+    || options[0]
+    || { value: normalizedQuery, label: normalizedQuery };
+  selectAssociationHighlight(match.value, match.label);
+}
+
+function selectAssociationHighlight(value, label = "") {
+  const aid = String(value || "").trim().toUpperCase();
+  if (!aid) return;
+  if (!state.selectedAssociationHighlights.some((row) => row.value === aid)) {
+    state.selectedAssociationHighlights.push({ value: aid, label: label || aid });
+  }
+  el["highlight-association-search"].value = "";
+  el["highlight-association-results"].hidden = true;
+  el["highlight-association-results"].innerHTML = "";
+  reloadForAssociationHighlights();
+}
+
+function removeAssociationHighlight(value) {
+  const aid = String(value || "").trim().toUpperCase();
+  state.selectedAssociationHighlights = state.selectedAssociationHighlights.filter((row) => row.value !== aid);
+  reloadForAssociationHighlights();
+}
+
+function reloadForAssociationHighlights() {
+  state.associationHighlightMeta = null;
+  renderAssociationHighlightPicker();
+  updateUrlFromControls();
+  requestInitialAxisRange();
+  scheduleBootstrapReload({ resetAxisRange: true });
+}
+
 function refreshAxisValueControls(axis, optionsConfig = {}) {
   const type = el[`${axis}-axis-type`].value;
   const value1 = el[`${axis}-value-1`];
@@ -1387,16 +1595,19 @@ function refreshAxisValueControls(axis, optionsConfig = {}) {
 
   const old1 = value1.value;
   const old2 = value2.value;
-  value1.innerHTML = options.map((item) => optionHtml(item.value, item.label)).join("");
-  value2.innerHTML = options.map((item) => optionHtml(item.value, item.label)).join("");
-  const default1 = preferredOptionValue(type, options, 0);
-  const default2 = preferredOptionValue(type, options, 1);
+  const filterValue = quantityFilterValue();
+  const filteredOptions1 = filteredQuantityOptions(options, filterValue, [old1]);
+  const filteredOptions2 = filteredQuantityOptions(options, filterValue, [old2]);
+  value1.innerHTML = filteredOptions1.map((item) => optionHtml(item.value, item.label)).join("");
+  value2.innerHTML = filteredOptions2.map((item) => optionHtml(item.value, item.label)).join("");
+  const default1 = preferredOptionValue(type, filteredOptions1, 0);
+  const default2 = preferredOptionValue(type, filteredOptions2, 1);
   value1.value = optionsConfig.preferDefaults
     ? default1
-    : (options.some((item) => item.value === old1) ? old1 : default1);
+    : (filteredOptions1.some((item) => item.value === old1) ? old1 : default1);
   value2.value = optionsConfig.preferDefaults
     ? default2
-    : (options.some((item) => item.value === old2) ? old2 : default2);
+    : (filteredOptions2.some((item) => item.value === old2) ? old2 : default2);
   const changed = value1.value !== old1 || value2.value !== old2;
 
   const needsOne = ["color", "absolute_magnitude", "spectral_index", "equivalent_width"].includes(type);
@@ -1405,6 +1616,32 @@ function refreshAxisValueControls(axis, optionsConfig = {}) {
   wrap1.style.display = needsOne && options.length ? "block" : "none";
   wrap2.style.display = type === "color" && options.length > 1 ? "block" : "none";
   return changed;
+}
+
+function quantityFilterValue() {
+  return String(el["quantity-filter"]?.value || "").trim();
+}
+
+function filteredQuantityOptions(options, filterValue, preserveValues = []) {
+  const filterTokens = quantityFilterTokens(filterValue);
+  if (!filterTokens.length) return options;
+  const selectedValues = new Set(preserveValues.filter(Boolean));
+  return options.filter((item) => {
+    if (selectedValues.has(item.value)) return true;
+    return quantityOptionMatches(item, filterTokens);
+  });
+}
+
+function quantityFilterTokens(filterValue) {
+  return String(filterValue || "")
+    .split(/\s+/)
+    .map((token) => normalizeOptionText(token))
+    .filter(Boolean);
+}
+
+function quantityOptionMatches(item, filterTokens) {
+  const searchable = normalizeOptionText(`${item.label || ""} ${item.value || ""}`);
+  return filterTokens.every((token) => searchable.includes(token));
 }
 
 function preferredOptionValue(type, options, fallbackIndex = 0) {
@@ -1425,7 +1662,7 @@ function preferredOptionValue(type, options, fallbackIndex = 0) {
     });
     if (sodium1138) return sodium1138.value;
   }
-  return options[fallbackIndex]?.value || "";
+  return options[fallbackIndex]?.value || options[0]?.value || "";
 }
 
 function defaultPhotometryValue(simpleBand) {
@@ -1628,7 +1865,8 @@ function buildRows() {
   for (const object of state.raw.catalog.objects || []) {
     const oid = Number(object.moca_oid);
     const spt = Number(object.spectral_type_number);
-    const isHighlighted = highlighted.has(oid);
+    const associationHighlight = associationHighlightForObject(object);
+    const isHighlighted = highlighted.has(oid) || Boolean(associationHighlight);
     const binary = isBinary(object);
     const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
     if (!Number.isFinite(spt)) continue;
@@ -1670,12 +1908,27 @@ function buildRows() {
       y_ref: y.ref,
       input_data: mergeAxisInputs(x.inputs, y.inputs),
       highlighted: isHighlighted,
+      highlight_association: associationHighlight?.aid || "",
+      highlight_ya_prob: associationHighlight?.yaProb ?? null,
       noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
     };
     row.hover = hoverText(row);
     rows.push(row);
   }
   return rows;
+}
+
+function associationHighlightForObject(object) {
+  if (!state.selectedAssociationHighlights.length) return null;
+  const selectedAids = new Set(state.selectedAssociationHighlights.map((row) => row.value));
+  const yaProb = numericValue(object.highlight_ya_prob);
+  if (!Number.isFinite(yaProb) || yaProb < associationHighlightYaProbMin()) return null;
+  const aids = String(object.highlight_moca_aids || object.highlight_moca_aid || "")
+    .split(/[,\s]+/)
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+  const aid = aids.find((value) => selectedAids.has(value));
+  return aid ? { aid, yaProb } : null;
 }
 
 function axisSpec(axis) {
@@ -3254,10 +3507,12 @@ function renderTable(oids) {
   }
   const showAllSpectraLinks = selected.some((row) => allSpectrumSpecidsForRow(row).length);
   const showSpectrumLinks = selected.some((row) => spectrumSpecidsForRow(row).length);
+  const showAssociationHighlight = selected.some((row) => row.highlight_association);
   const columns = [
     tableColumn("moca_oid"),
     tableColumn("designation"),
     tableColumn("spectral_type"),
+    ...(showAssociationHighlight ? [tableColumn("highlight_association"), tableColumn("highlight_ya_prob")] : []),
     ...(showSpectrumLinks ? [spectrumSpecidTableColumn()] : []),
     tableColumn("x"),
     tableColumn("y"),
@@ -3326,8 +3581,11 @@ function bdTableColor(row) {
 }
 
 function tableColumn(key) {
+  const labels = {
+    age_sample: "gravity_class",
+  };
   return {
-    label: key,
+    label: labels[key] || key,
     value: (row) => key === "moca_oid" ? formatIntegerCell(row[key]) : formatCell(row[key]),
   };
 }
@@ -3491,6 +3749,8 @@ const exportColumns = [
   "age_myr",
   "age_sample",
   "gravity_class",
+  "highlight_association",
+  "highlight_ya_prob",
   "x_ref",
   "y_ref",
 ];
@@ -3504,6 +3764,7 @@ const numericExportColumns = new Set([
   "ey",
   "distance_pc",
   "age_myr",
+  "highlight_ya_prob",
 ]);
 
 function exportRows() {
@@ -3680,6 +3941,7 @@ function hoverText(row) {
     `MOCA OID: ${row.moca_oid}`,
     `SpT: ${escapeHtml(row.complete_spectral_type || row.spectral_type)}`,
     `Gravity class: ${escapeHtml(gravityClassLegendLabels[row.gravity_class] || row.gravity_class || "Field")}`,
+    row.highlight_association ? `BANYAN: ${escapeHtml(row.highlight_association)} (${escapeHtml(formatCell(row.highlight_ya_prob))}%)` : null,
     `X (${escapeHtml(plainText(row.x_label))}): ${escapeHtml(measurementText({ value: row.x, error: row.ex }))}`,
     `Y (${escapeHtml(plainText(row.y_label))}): ${escapeHtml(measurementText({ value: row.y, error: row.ey }))}`,
     ...inputLines,
@@ -3758,6 +4020,51 @@ function parseDesignationParams(params) {
     }
   }
   return selected;
+}
+
+function parseAssociationHighlightParams(params) {
+  const rawValues = [
+    ...params.getAll("highlight_aid"),
+    ...params.getAll("highlight_aids"),
+    ...params.getAll("highlight_group"),
+    ...params.getAll("highlight_groups"),
+    ...params.getAll("banyan_aid"),
+    ...params.getAll("banyan_group"),
+  ];
+  const selected = [];
+  const seen = new Set();
+  for (const raw of rawValues) {
+    for (const value of String(raw || "").replace(/;/g, ",").split(",")) {
+      const aid = value.trim().toUpperCase();
+      if (!aid || seen.has(aid)) continue;
+      seen.add(aid);
+      selected.push({ value: aid, label: aid });
+    }
+  }
+  return selected;
+}
+
+function firstUrlParam(params, ...keys) {
+  for (const key of keys) {
+    if (params.has(key)) return params.get(key);
+  }
+  return null;
+}
+
+function clamp(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
+}
+
+function associationHighlightYaProbMin() {
+  return Math.round(clamp(Number(el["highlight-ya-prob-min"]?.value), 0, 100));
+}
+
+function updateAssociationYaProbOutput() {
+  if (el["highlight-ya-prob-output"]) {
+    el["highlight-ya-prob-output"].textContent = `${associationHighlightYaProbMin()}%`;
+  }
 }
 
 function normalizeDesignation(value) {

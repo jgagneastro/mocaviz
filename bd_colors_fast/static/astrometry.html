@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=astrometry-mocadb-push-20260615a">
+  <link rel="stylesheet" href="static/styles.css?v=astrometry-calibration-wrap-20260616">
   <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
@@ -39,6 +39,15 @@
             <button id="atm-missions-none" type="button">None</button>
           </div>
           <div id="atm-mission-list" class="mission-list"></div>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Calibration</h2>
+          <div class="mission-actions">
+            <button id="atm-calibration-methods-all" type="button">All</button>
+            <button id="atm-calibration-methods-none" type="button">None</button>
+          </div>
+          <div id="atm-calibration-method-list" class="mission-list calibration-method-list"></div>
         </section>
 
         <section class="control-section options-section">
@@ -95,6 +104,10 @@
             <input id="atm-fit-outlier-mixture" type="checkbox" checked>
             <span>Reject outliers with two-component likelihood</span>
           </label>
+          <label class="checkline">
+            <input id="atm-fit-error-floor" type="checkbox" checked>
+            <span>Fit extra astrometric error floor</span>
+          </label>
           <div class="button-grid astrometry-fit-actions">
             <button id="atm-reject-selected-fit" type="button" disabled>Reject selected from fit</button>
             <button id="atm-reset-manual-rejections" type="button" disabled>Reset manual rejections</button>
@@ -105,7 +118,7 @@
             <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
           </div>
           <button id="atm-clear-fit" type="button" disabled>Clear fit</button>
-          <div id="atm-fit-summary" class="plot-hint">No fit computed</div>
+          <div id="atm-fit-summary" class="plot-hint"></div>
         </section>
 
         <section id="atm-management-tools" class="control-section astrometry-management-section" hidden>
@@ -159,12 +172,15 @@
       <section id="atm-visual-area" class="visual-area astrometry-visual-area">
         <div class="plot-frame astrometry-plot-frame">
           <div id="atm-ra-plot"></div>
-          <div id="atm-plot-loader" class="plot-loader is-visible" aria-label="Loading astrometry">
+          <div class="plot-loader atm-plot-loader is-visible" aria-label="Loading R.A. astrometry">
             <div class="plot-loader-ring"></div>
           </div>
         </div>
         <div class="plot-frame astrometry-plot-frame">
           <div id="atm-dec-plot"></div>
+          <div class="plot-loader atm-plot-loader is-visible" aria-label="Loading Decl. astrometry">
+            <div class="plot-loader-ring"></div>
+          </div>
         </div>
         <div class="astrometry-toolbar">
           <div>
@@ -203,6 +219,7 @@
         <tbody>
           <tr><td><code>moca_oid</code>, <code>oid</code></td><td>Numeric MOCA OID</td><td>Loads that object. Defaults to <code>602</code>.</td></tr>
           <tr><td><code>missions</code></td><td>Comma-separated mission labels</td><td>Shows only those mission traces.</td></tr>
+          <tr><td><code>calibration_methods</code></td><td>Comma-separated method labels</td><td>Shows only rows with accepted calibration methods. Use <code>__none__</code> for rows without a stored method.</td></tr>
           <tr><td><code>subtract_pm</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted proper motion from the plotted offsets.</td></tr>
           <tr><td><code>subtract_plx</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted parallax motion from the plotted offsets.</td></tr>
           <tr><td><code>phase</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Plots yearly phase instead of absolute epoch.</td></tr>
@@ -215,6 +232,7 @@
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
           <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
           <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses the moving-star plus outlier likelihood during PM fits by default.</td></tr>
+          <tr><td><code>fit_error_floor</code></td><td><code>0</code> disables it</td><td>Fits an extra RA/Decl. astrometric error floor by default.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
       </table>
@@ -230,6 +248,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=astrometry-mocadb-push-20260615a"></script>
+    <script src="static/astrometry.js?v=astrometry-filter-range-delay-20260616"></script>
 </body>
 </html>

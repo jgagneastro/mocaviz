@@ -20,6 +20,10 @@
       <aside class="controls">
         <section class="control-section axes-section">
           <h2>Axes</h2>
+          <label class="quantity-filter-control">
+            <span class="field-label">Filter quantities</span>
+            <input id="quantity-filter" type="text" autocomplete="off" placeholder="Name or ID">
+          </label>
           <div class="axis-group">
             <h3>X axis</h3>
             <label>
@@ -67,6 +71,20 @@
             <div id="highlight-designation-results" class="designation-results" hidden></div>
             <div id="highlight-designation-selected" class="designation-selected" aria-live="polite"></div>
           </div>
+          <div class="designation-picker">
+            <label for="highlight-association-search">Highlight BANYAN group</label>
+            <input id="highlight-association-search" type="text" autocomplete="off" placeholder="Type an association ID">
+            <div id="highlight-association-results" class="designation-results association-results" hidden></div>
+            <div id="highlight-association-selected" class="designation-selected association-selected" aria-live="polite"></div>
+          </div>
+          <label>
+            <span class="range-heading">
+              <span>Minimum BANYAN probability</span>
+              <output id="highlight-ya-prob-output">90%</output>
+            </span>
+            <input id="highlight-ya-prob-min" type="range" min="0" max="100" step="1" value="90">
+          </label>
+          <div id="highlight-association-status" class="plot-hint association-highlight-status"></div>
           <details class="advanced-highlight">
             <summary>Use MOCA OIDs</summary>
             <label>
@@ -214,6 +232,16 @@
             <td>Preselects designation-based highlights for objects already loaded in the current catalog. Use repeated parameters for several names, for example <code>?designation=WISEA%20J0000&amp;designation=2MASS%20J0001</code>.</td>
           </tr>
           <tr>
+            <td><code>highlight_aid</code></td>
+            <td>Comma-separated association IDs</td>
+            <td>Highlights BANYAN Sigma members in the selected association, for example <code>highlight_aid=ABDMG</code>.</td>
+          </tr>
+          <tr>
+            <td><code>highlight_ya_prob_min</code></td>
+            <td><code>0</code>-<code>100</code></td>
+            <td>Sets the minimum BANYAN Sigma young-association probability for highlighted association members. Default is <code>90</code>.</td>
+          </tr>
+          <tr>
             <td><code>oid</code></td>
             <td>Comma-separated OIDs</td>
             <td>Alias for <code>moca_oid</code>.</td>
@@ -321,6 +349,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=gravity-color-20260611a"></script>
+  <script src="static/app.js?v=quantity-filter-20260616a"></script>
 </body>
 </html>

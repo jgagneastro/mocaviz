@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Atmospheric Retrieval Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=retrieval-explorer-20260616a">
+  <link rel="stylesheet" href="static/styles.css?v=retrieval-explorer-20260616i">
   <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
@@ -50,13 +50,33 @@
             <span>Show T/P uncertainty envelope</span>
           </label>
           <label class="checkline">
+            <input id="rex-log-temperature-axis" type="checkbox">
+            <span>Use log temperature axis for T/P profile</span>
+          </label>
+          <label class="checkline">
+            <input id="rex-log-pressure-axis" type="checkbox" checked>
+            <span>Use log pressure axis for T/P profile</span>
+          </label>
+          <label class="checkline">
+            <input id="rex-show-sibling-tp-profiles" type="checkbox">
+            <span>Show other T/P profiles for this object</span>
+          </label>
+          <label class="checkline">
+            <input id="rex-display-condensation-curves" type="checkbox" checked>
+            <span>Display condensation curves</span>
+          </label>
+          <label class="checkline">
+            <input id="rex-display-noncrossing-condensation-curves" type="checkbox">
+            <span>Display condensation curves that do not cross the T/P profile</span>
+          </label>
+          <label class="checkline">
             <input id="rex-show-clouds" type="checkbox" checked>
             <span>Show cloud pressure markers</span>
           </label>
           <label>
             Abundance comparison
             <select id="rex-abundance-mode">
-              <option value="object">Selected object and retrievals</option>
+              <option value="object">Other retrievals</option>
               <option value="population">Population context</option>
             </select>
           </label>
@@ -100,6 +120,7 @@
         <section class="selection-area retrieval-detail-area">
           <div class="rvb-tabbar retrieval-tabbar">
             <button type="button" data-rex-tab="abundances">Abundances</button>
+            <button type="button" data-rex-tab="fundamentals">Fundamentals</button>
             <button type="button" data-rex-tab="parameters">Parameters</button>
             <button type="button" data-rex-tab="spectrum">Spectrum</button>
             <button type="button" data-rex-tab="corner">Corner</button>
@@ -111,8 +132,18 @@
             </div>
           </div>
 
+          <div id="rex-tab-fundamentals" class="retrieval-tab-panel" hidden>
+            <div class="retrieval-fundamental-panel">
+              <div id="rex-fundamental-cards" class="retrieval-fundamental-cards"></div>
+              <div>
+                <strong>Retrieval-derived physical parameters</strong>
+                <div id="rex-fundamental-table" class="table-scroll"></div>
+              </div>
+            </div>
+          </div>
+
           <div id="rex-tab-parameters" class="retrieval-tab-panel" hidden>
-            <div class="retrieval-detail-grid">
+            <div class="retrieval-detail-grid retrieval-detail-stack">
               <div>
                 <strong>Scalar parameters</strong>
                 <div id="rex-parameter-table" class="table-scroll"></div>
@@ -139,6 +170,6 @@
       </section>
     </main>
   </div>
-  <script src="static/retrieval_explorer.js?v=retrieval-explorer-20260616a"></script>
+  <script src="static/retrieval_explorer.js?v=retrieval-explorer-20260616q"></script>
 </body>
 </html>

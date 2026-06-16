@@ -87,6 +87,7 @@ app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
 _BOOTSTRAP_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FEATURE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_BDPHOT_STATIC_ROWS_CACHE: dict[tuple[str, str, str, str, str], tuple[float, list[dict[str, Any]]]] = {}
 _SPT_GRID_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPT_SPECTRUM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SPT_COMPARE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -262,6 +263,75 @@ XYZUVW_MODEL_CONTOURS = (
 )
 TRUEFLOW_AGE_DEFAULT_OID = int(os.environ.get("TRUEFLOW_AGE_DEFAULT_OID", "11266"))
 TRUEFLOW_AGE_CACHE_SCHEMA = "object-fallback-v1"
+MOCA_FLOWS_DEFAULT_AID = os.environ.get("MOCA_FLOWS_DEFAULT_AID", "ABDMG").strip().upper() or "ABDMG"
+MOCA_FLOWS_FEH_DEPENDENT_RESULT_KEYS = {
+    "gaia_cmd",
+    "stacked",
+    "association_stacked",
+    "full_forward_model",
+    "association_full_forward_model",
+}
+MOCA_FLOWS_FEH_METHOD_PREFIXES = ("mffeh_", "mfafeh_", "mfhbmfeh_")
+MOCA_FLOWS_LEGACY_METHOD_PREFIXES = ("tf_",)
+MOCA_FLOWS_OBJECT_RESULT_ALIASES = {
+    "association_stacked": "stacked",
+    "association_full_forward_model": "full_forward_model",
+}
+MOCA_FLOWS_RESULT_LABELS = {
+    "lithium": "Lithium",
+    "li_lowres": "Lithium (low-resolution R < 10,000)",
+    "ali_combined": "Lithium abundance A(Li)",
+    "prot": "Rotation Period",
+    "prot_amp": "Rotation Period Amplitude",
+    "vsini": "vsini",
+    "halpha": "H-alpha",
+    "gaia_act": "Gaia Activity Index",
+    "varg": "VarG'",
+    "varbp": "VarBP'",
+    "varrp": "VarRP'",
+    "galex_nuv": "GALEX NUV",
+    "log_lx": "log LX",
+    "radio_lnu": "Radio log L_nu",
+    "gaia_cmd": "Gaia CMD",
+    "rprimehk": "log R′HK",
+    "r_prime_hk": "log R′HK",
+    "log_rprimehk": "log R′HK",
+    "log_r_prime_hk": "log R′HK",
+    "log_rhk": "log R′HK",
+    "s_mount_wilson": "S-index",
+    "s_ph": "Sph",
+    "toomre_t": "Toomre T",
+    "vtan": "Vtan",
+    "stacked": "Multiplicative PDF stack",
+    "association_stacked": "Multiplicative PDF stack",
+    "full_forward_model": "Full Forward Model",
+    "association_full_forward_model": "Full Forward Model",
+}
+MOCA_FLOWS_RESULT_ORDER = [
+    "full_forward_model",
+    "association_full_forward_model",
+    "stacked",
+    "association_stacked",
+    "gaia_cmd",
+    "lithium",
+    "li_lowres",
+    "ali_combined",
+    "prot",
+    "prot_amp",
+    "vsini",
+    "halpha",
+    "gaia_act",
+    "s_mount_wilson",
+    "s_ph",
+    "varg",
+    "varbp",
+    "varrp",
+    "galex_nuv",
+    "log_lx",
+    "radio_lnu",
+    "toomre_t",
+    "vtan",
+]
 GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
 GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 10.0
@@ -407,6 +477,93 @@ def _highlight_oids(args: dict[str, Any]) -> list[int]:
     return oids
 
 
+def _bdphot_highlight_aids(args: dict[str, Any]) -> list[str]:
+    raw = (
+        args.get("highlight_aid")
+        or args.get("highlight_aids")
+        or args.get("highlight_group")
+        or args.get("highlight_groups")
+        or args.get("banyan_aid")
+        or args.get("banyan_group")
+        or ""
+    )
+    values: list[str] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip().upper()
+        if value and SAFE_ID_RE.match(value) and value not in values:
+            values.append(value)
+    return values[:40]
+
+
+def _bdphot_highlight_ya_prob_min(args: dict[str, Any]) -> float:
+    for key in (
+        "highlight_ya_prob_min",
+        "highlight_min_ya_prob",
+        "highlight_membership_prob_min",
+        "banyan_ya_prob_min",
+        "ya_prob_min",
+    ):
+        raw = args.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        text_value = str(raw).strip().lower()
+        if text_value in {"all", "any", "none", "off", "false", "no"}:
+            return 0.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return max(0.0, min(100.0, value))
+    return 90.0
+
+
+def _bdphot_highlight_rows_from_db(conn, args: dict[str, Any], oids: Sequence[int]) -> list[dict[str, Any]]:
+    aids = _bdphot_highlight_aids(args)
+    clean_oids: list[int] = []
+    seen_oids: set[int] = set()
+    for oid in oids:
+        try:
+            oid_int = int(oid)
+        except (TypeError, ValueError):
+            continue
+        if oid_int > 0 and oid_int not in seen_oids:
+            seen_oids.add(oid_int)
+            clean_oids.append(oid_int)
+    if not aids or not clean_oids:
+        return []
+    aid_clause, aid_params = _sql_in_clause("bdphot_highlight_aid", aids)
+    params: dict[str, Any] = {
+        **aid_params,
+        "bdphot_highlight_ya_prob_min": _bdphot_highlight_ya_prob_min(args),
+    }
+    return _records(_read_sql_expanding(conn, f"""
+        SELECT
+            cbs.moca_oid,
+            SUBSTRING_INDEX(
+                GROUP_CONCAT(cbs.moca_aid ORDER BY cbs.ya_prob DESC, cbs.moca_aid SEPARATOR ','),
+                ',',
+                1
+            ) AS highlight_moca_aid,
+            GROUP_CONCAT(DISTINCT cbs.moca_aid ORDER BY cbs.moca_aid SEPARATOR ',') AS highlight_moca_aids,
+            MAX(cbs.ya_prob) AS highlight_ya_prob
+        FROM calc_banyan_sigma cbs
+        WHERE cbs.moca_oid IN :bdphot_highlight_oids
+            AND cbs.max_observables = 1
+            AND cbs.moca_aid IN ({aid_clause})
+            AND cbs.ya_prob >= :bdphot_highlight_ya_prob_min
+            AND cbs.moca_bsmdid = (
+                SELECT mbsm.moca_bsmdid
+                FROM moca_banyan_sigma_models mbsm
+                WHERE mbsm.adopted = 1
+                ORDER BY mbsm.moca_bsmdid DESC
+                LIMIT 1
+            )
+        GROUP BY cbs.moca_oid
+        ORDER BY MAX(cbs.ya_prob) DESC, cbs.moca_oid
+    """, "bdphot_highlight_oids", clean_oids, params))
+
+
 def _as_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -517,7 +674,13 @@ def _object_limit(args: dict[str, Any], spt_min: float, include_photometric_spt:
 def _range_sql(args: dict[str, Any]) -> tuple[str, dict[str, Any], str, bool, float]:
     spt_min, spt_max, label = _spt_window(args)
     include_photometric_spt = _include_photometric_spt(args)
-    oids = _highlight_oids(args)
+    oids: list[int] = []
+    seen_oids: set[int] = set()
+    for oid in _highlight_oids(args):
+        oid_int = int(oid)
+        if oid_int > 0 and oid_int not in seen_oids:
+            seen_oids.add(oid_int)
+            oids.append(oid_int)
     if spt_max is None:
         spt_clause = "dst.spectral_type_number >= :spt_min"
         params = {"spt_min": spt_min}
@@ -741,6 +904,8 @@ def _cache_key(args: dict[str, Any]) -> str:
     cfg = _db_config(args)
     spt_min, spt_max, _label = _spt_window(args)
     oids = ",".join(str(oid) for oid in _highlight_oids(args))
+    highlight_aids = ",".join(_bdphot_highlight_aids(args))
+    highlight_ya_prob_min = f"{_bdphot_highlight_ya_prob_min(args):.3f}"
     limit = _object_limit(args, spt_min, _include_photometric_spt(args))
     return "|".join([
         cfg["host"],
@@ -762,6 +927,8 @@ def _cache_key(args: dict[str, Any]) -> str:
         ),
         _sequence_key(args),
         oids,
+        highlight_aids,
+        highlight_ya_prob_min,
     ])
 
 
@@ -908,7 +1075,6 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     engine = _engine(_connection_string(args))
-    range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
     with engine.connect() as conn:
         timings: dict[str, float | int] = {}
 
@@ -919,19 +1085,42 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             timings[f"{name}_rows"] = len(rows)
             return rows
 
-        photometry_options = read_records("photometry_options", """
+        def read_static_records(
+            name: str,
+            sql: str,
+            params: dict[str, Any] | None = None,
+            cache_variant: str = "",
+        ) -> list[dict[str, Any]]:
+            params_key = json.dumps(params or {}, sort_keys=True, default=str)
+            cache_name = f"bdphot:{name}:{cache_variant}:{params_key}"
+            static_cache_key = _db_metadata_cache_key(conn, cache_name)
+            cached_rows = _BDPHOT_STATIC_ROWS_CACHE.get(static_cache_key)
+            if cached_rows and now - cached_rows[0] < CACHE_SECONDS:
+                rows = copy.deepcopy(cached_rows[1])
+                timings[name] = 0.0
+                timings[f"{name}_rows"] = len(rows)
+                timings[f"{name}_cache_hit"] = 1
+                return rows
+            rows = read_records(name, sql, params)
+            _BDPHOT_STATIC_ROWS_CACHE[static_cache_key] = (time.time(), copy.deepcopy(rows))
+            timings[f"{name}_cache_hit"] = 0
+            return rows
+
+        range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
+
+        photometry_options = read_static_records("photometry_options", """
             SELECT moca_psid, name, system_band_simple
             FROM moca_photometry_systems
             ORDER BY name, moca_psid
         """)
 
-        spectral_index_options = read_records("spectral_index_options", """
+        spectral_index_options = read_static_records("spectral_index_options", """
             SELECT moca_siid, description
             FROM moca_spectral_indices
             ORDER BY description, moca_siid
         """)
 
-        equivalent_width_options = read_records("equivalent_width_options", """
+        equivalent_width_options = read_static_records("equivalent_width_options", """
             SELECT moca_spid, description
             FROM moca_chemical_species
             ORDER BY description, moca_spid
@@ -949,7 +1138,8 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 dst.complete_spectral_type,
                 dst.photometric_estimate AS spectral_type_photometric_estimate,
                 COALESCE(spt_pub.name, CAST(spt_pub.moca_pid AS CHAR), dst.origin, 'No reference') AS spt_ref,
-                mopc.all_prop_confidences
+                mopc.all_prop_confidences,
+                1 AS row_available
             FROM data_spectral_types dst
             JOIN moca_objects mo
                 ON mo.moca_oid = dst.moca_oid
@@ -960,9 +1150,37 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             WHERE dst.spectral_type_number IS NOT NULL
                 AND {range_clause}
             ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
-        """.format(range_clause=range_clause, limit_clause=limit_clause), range_params)
+        """.format(
+            range_clause=range_clause,
+            limit_clause=limit_clause,
+        ), range_params)
 
         selected_oids = [int(row["moca_oid"]) for row in objects if row.get("moca_oid") is not None]
+        started = time.time()
+        highlight_rows = _bdphot_highlight_rows_from_db(conn, args, selected_oids)
+        timings["association_highlight_rows"] = round(time.time() - started, 3)
+        timings["association_highlight_rows_rows"] = len(highlight_rows)
+        highlight_by_oid = {
+            int(row["moca_oid"]): row
+            for row in highlight_rows
+            if row.get("moca_oid") is not None
+        }
+        for row in objects:
+            try:
+                oid = int(row["moca_oid"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            highlight = highlight_by_oid.get(oid)
+            if not highlight:
+                continue
+            row["highlight_moca_aid"] = highlight.get("highlight_moca_aid")
+            row["highlight_moca_aids"] = highlight.get("highlight_moca_aids")
+            row["highlight_ya_prob"] = highlight.get("highlight_ya_prob")
+        highlight_loaded_oids = {
+            int(row["moca_oid"])
+            for row in objects
+            if row.get("moca_oid") is not None and row.get("highlight_moca_aid")
+        }
         dd_oid_filter = _oid_filter_sql("dd", selected_oids)
         spectra_oid_filter = _oid_filter_sql("ms", selected_oids)
         include_photometric_dist = _include_photometric_dist(args)
@@ -1056,7 +1274,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             ORDER BY ms.moca_oid, ms.moca_specid
         """.format(spectra_oid_filter=spectra_oid_filter))
 
-        median_colors = read_records("median_colors", """
+        median_colors = read_static_records("median_colors", """
             SELECT
                 moca_pid,
                 moca_psid1,
@@ -1072,7 +1290,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
         """)
 
         sequence_filter, sequence_params = _sequence_filter_sql(args)
-        sequences = read_records("sequences", """
+        sequences = read_static_records("sequences", """
             SELECT
                 ms.moca_seqid,
                 ms.name_bdcolapp,
@@ -1093,7 +1311,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 AND ms.yaxis_type_bdcolapp IS NOT NULL
                 AND {sequence_filter}
             ORDER BY ms.moca_seqid, das.xdata
-        """.format(sequence_filter=sequence_filter), sequence_params)
+        """.format(sequence_filter=sequence_filter), sequence_params, cache_variant=_sequence_key(args))
 
     payload = {
         "options": {
@@ -1130,6 +1348,11 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "photometry_psids": photometry_psids,
             "photometry_simplebands": photometry_simplebands,
             "sequence_key": _sequence_key(args),
+            "association_highlights": {
+                "aids": _bdphot_highlight_aids(args),
+                "ya_prob_min": _bdphot_highlight_ya_prob_min(args),
+                "loaded_object_count": len(highlight_loaded_oids),
+            },
             "lazy_features": ["designations", "spectralIndices", "equivalentWidths", "ages"],
             "timings": timings,
         },
@@ -1529,6 +1752,8 @@ def _mock_payload() -> dict[str, Any]:
         suffix = "sd" if i % 29 == 0 else None
         binary_flag = "multiple_system:C" if i % 23 == 0 else None
         photometric_spt = 1 if i % 31 == 0 else 0
+        mock_aid = ["ABDMG", "BPMG", "TWA", "THA"][(i // 6) % 4] if i % 6 == 0 else None
+        mock_ya_prob = round(50 + ((i * 7) % 50) + rng.random(), 3) if mock_aid else None
         objects.append({
             "moca_oid": oid,
             "designation": f"MOCK J{i:04d}",
@@ -1542,6 +1767,8 @@ def _mock_payload() -> dict[str, Any]:
             "spectral_type_public_adopted": 0 if photometric_spt and i % 2 else 1,
             "spt_ref": "mock",
             "all_prop_confidences": binary_flag,
+            "mock_banyan_moca_aid": mock_aid,
+            "mock_banyan_ya_prob": mock_ya_prob,
         })
         designations.extend([
             {"moca_oid": oid, "designation": f"MOCK J{i:04d}"},
@@ -1681,6 +1908,30 @@ def _mock_payload() -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
+
+
+def _apply_mock_bdphot_association_highlights(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    aids = set(_bdphot_highlight_aids(args))
+    ya_prob_min = _bdphot_highlight_ya_prob_min(args)
+    loaded_oids: set[int] = set()
+    for row in payload.get("catalog", {}).get("objects", []):
+        row.pop("highlight_moca_aid", None)
+        row.pop("highlight_moca_aids", None)
+        row.pop("highlight_ya_prob", None)
+        aid = str(row.get("mock_banyan_moca_aid") or "").upper()
+        ya_prob = _safe_float(row.get("mock_banyan_ya_prob"))
+        if aid and aid in aids and ya_prob is not None and ya_prob >= ya_prob_min:
+            row["highlight_moca_aid"] = aid
+            row["highlight_moca_aids"] = aid
+            row["highlight_ya_prob"] = round(float(ya_prob), 3)
+            if row.get("moca_oid") is not None:
+                loaded_oids.add(int(row["moca_oid"]))
+    payload.setdefault("meta", {})["association_highlights"] = {
+        "aids": sorted(aids),
+        "ya_prob_min": ya_prob_min,
+        "loaded_object_count": len(loaded_oids),
+    }
+    return payload
 
 
 def _spt_db_cache_key(args: dict[str, Any]) -> str:
@@ -3791,6 +4042,7 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
     counts = {
         "bootstrap": len(_BOOTSTRAP_CACHE),
         "features": len(_FEATURE_CACHE),
+        "bdPhotometryStaticRows": len(_BDPHOT_STATIC_ROWS_CACHE),
         "spectralTypingGrid": len(_SPT_GRID_CACHE),
         "spectralTypingSpectra": len(_SPT_SPECTRUM_CACHE),
         "spectralTypingComparisons": len(_SPT_COMPARE_CACHE),
@@ -3803,6 +4055,7 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
     }
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
+    _BDPHOT_STATIC_ROWS_CACHE.clear()
     _SPT_GRID_CACHE.clear()
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
@@ -4065,6 +4318,7 @@ def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, se
             ms.instrument_mode_name,
             ms.spectrum_name,
             ms.data_collection_date,
+            ms.median_spectral_resolving_power,
             COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
             mo.designation,
             spt.spectral_type
@@ -4158,6 +4412,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
+                ms.median_spectral_resolving_power,
                 COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
                 mo.designation,
                 spt.spectral_type
@@ -4224,9 +4479,15 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
     for specid in clean_specids:
         spec_rows = rows_df[rows_df["moca_specid"].astype(int) == int(specid)] if not rows_df.empty else pd.DataFrame()
         metadata = metadata_by_specid.get(int(specid), {"moca_specid": int(specid), "label": f"specid{int(specid)}"})
-        average_resolving_power = (
+        grid_average_resolving_power = (
             _spt_average_resolving_power(spec_rows["lam"].to_numpy(dtype=float))
             if not spec_rows.empty else None
+        )
+        stored_average_resolving_power = _spt_float(metadata.get("median_spectral_resolving_power"))
+        average_resolving_power = (
+            grid_average_resolving_power
+            if bins_per_micron
+            else (stored_average_resolving_power or grid_average_resolving_power)
         )
         row_records = _records(spec_rows)
         total_rows += len(row_records)
@@ -4237,6 +4498,8 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             "meta": {
                 "row_count": len(row_records),
                 "average_resolving_power": _pythonize(average_resolving_power),
+                "stored_average_resolving_power": _pythonize(stored_average_resolving_power),
+                "grid_average_resolving_power": _pythonize(grid_average_resolving_power),
                 "bins_per_micron": bins_per_micron or None,
                 "hide_ignored": hide_ignored,
             },
@@ -9275,6 +9538,27 @@ def _tfage_load_posteriors(args: dict[str, Any]) -> bool:
     return _as_bool(args.get("posteriors")) or _as_bool(args.get("posterior")) or "posteriors" in checkbox
 
 
+def _tfage_normalize_curve_role(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"posterior", "posteriors"}:
+        return "posterior"
+    if raw in {"prior", "priors"}:
+        return "prior"
+    return "likelihood"
+
+
+def _tfage_has_explicit_curve_role(args: dict[str, Any]) -> bool:
+    return any(str(args.get(key) or "").strip() for key in ("curve_role", "role", "pdf_role", "product"))
+
+
+def _tfage_requested_curve_role(args: dict[str, Any]) -> str:
+    for key in ("curve_role", "role", "pdf_role", "product"):
+        raw = str(args.get(key) or "").strip()
+        if raw:
+            return _tfage_normalize_curve_role(raw)
+    return "posterior"
+
+
 def _tfage_db_config(args: dict[str, Any], scope: str) -> dict[str, str]:
     if scope == "object":
         return {
@@ -9339,30 +9623,20 @@ def _tfage_cache_key(args: dict[str, Any], scope: str, target: int | str | None)
         TRUEFLOW_AGE_CACHE_SCHEMA,
         scope,
         str(target or ""),
+        _tfage_requested_curve_role(args),
+        str(int(_tfage_has_explicit_curve_role(args))),
         str(int(_tfage_load_posteriors(args))),
     ])
 
 
 def _tfage_table_exists(engine, table_name: str) -> bool:
-    query = text("""
-        SELECT COUNT(*) AS n
-        FROM information_schema.tables
-        WHERE table_schema = DATABASE()
-            AND table_name = :table_name
-    """)
     with engine.connect() as conn:
-        return int(conn.execute(query, {"table_name": table_name}).scalar() or 0) > 0
+        return _db_table_exists(conn, table_name)
 
 
 def _tfage_columns(engine, table_name: str) -> set[str]:
-    query = text("""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-            AND table_name = :table_name
-    """)
     with engine.connect() as conn:
-        return {str(row[0]) for row in conn.execute(query, {"table_name": table_name})}
+        return _db_table_columns(conn, table_name)
 
 
 def _tfage_qid(name: str) -> str:
@@ -9503,7 +9777,8 @@ def _tfage_blob_curve_sort_key(curve: _TfAgeCurve) -> tuple[Any, ...]:
     )
 
 
-def _tfage_deduplicate_blob_curves(curves: list[_TfAgeCurve], *, prefer_posteriors: bool) -> list[_TfAgeCurve]:
+def _tfage_deduplicate_blob_curves(curves: list[_TfAgeCurve], *, preferred_role: str) -> list[_TfAgeCurve]:
+    preferred_role = _tfage_normalize_curve_role(preferred_role)
     by_key: dict[tuple[Any, ...], _TfAgeCurve] = {}
     for curve in curves:
         key = _tfage_blob_curve_sort_key(curve)
@@ -9513,9 +9788,7 @@ def _tfage_deduplicate_blob_curves(curves: list[_TfAgeCurve], *, prefer_posterio
             continue
         role = (curve.metadata or {}).get("curve_role")
         current_role = (current.metadata or {}).get("curve_role")
-        if prefer_posteriors and role == "posterior" and current_role != "posterior":
-            by_key[key] = curve
-        elif not prefer_posteriors and role == "likelihood" and current_role != "likelihood":
+        if role == preferred_role and current_role != preferred_role:
             by_key[key] = curve
     return list(by_key.values())
 
@@ -9583,12 +9856,172 @@ def _tfage_curve_from_log_pdf_row(data: dict[str, Any], age_meta: dict[Any, dict
     )
 
 
+def _tfage_fetch_hbm_member_stats(engine, scope: str, age_ids: Sequence[int]) -> dict[tuple[int, str], dict[str, Any]]:
+    if scope != "association" or not age_ids:
+        return {}
+    table_name = "calc_association_age_hbm_member_probabilities"
+    if not _tfage_table_exists(engine, table_name):
+        return {}
+    cols = _tfage_columns(engine, table_name)
+    required = {"association_age_id", "result_key", "inlier_probability", "outlier_probability"}
+    if not required.issubset(cols):
+        return {}
+    query = text(f"""
+        SELECT association_age_id,
+               result_key,
+               COUNT(*) AS n_hbm_members,
+               SUM(CASE WHEN inlier_probability < 0.5 THEN 1 ELSE 0 END) AS n_hbm_outliers,
+               SUM(CASE WHEN inlier_probability < 0.5 THEN 1 ELSE 0 END) AS n_p_lt_0p50,
+               SUM(CASE WHEN inlier_probability < 0.9 THEN 1 ELSE 0 END) AS n_p_lt_0p90,
+               MIN(inlier_probability) AS min_p_inlier,
+               MAX(outlier_probability) AS max_p_outlier
+        FROM {_tfage_qid(table_name)}
+        WHERE association_age_id IN :age_ids
+        GROUP BY association_age_id, result_key
+    """).bindparams(bindparam("age_ids", expanding=True))
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"age_ids": [int(value) for value in age_ids]}).mappings().all()
+    stats: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        age_id = row.get("association_age_id")
+        result_key = row.get("result_key")
+        if age_id is None or result_key in (None, ""):
+            continue
+        stats[(int(age_id), str(result_key))] = {
+            "n_hbm_members": _pythonize(row.get("n_hbm_members")),
+            "n_hbm_outliers": _pythonize(row.get("n_hbm_outliers")),
+            "n_p_lt_0p50": _pythonize(row.get("n_p_lt_0p50")),
+            "n_p_lt_0p90": _pythonize(row.get("n_p_lt_0p90")),
+            "min_p_inlier": _pythonize(row.get("min_p_inlier")),
+            "max_p_outlier": _pythonize(row.get("max_p_outlier")),
+        }
+    return stats
+
+
+def _tfage_merge_hbm_member_stats(curve: _TfAgeCurve, stats: Mapping[str, Any] | None) -> None:
+    if not stats:
+        return
+    meta = curve.metadata or {}
+    metadata_json = _tfage_parse_metadata_json(meta.get("metadata_json"))
+    if not isinstance(metadata_json, dict):
+        metadata_json = {}
+    metadata_json.update({key: value for key, value in stats.items() if value is not None})
+    meta["metadata_json"] = metadata_json
+    curve.metadata = meta
+
+
+def _tfage_fetch_referenced_prior_curves(
+    engine,
+    blob_table: str,
+    age_ids: Sequence[int],
+    age_meta: dict[Any, dict[str, Any]],
+) -> list[_TfAgeCurve]:
+    if not age_ids:
+        return []
+    if not (
+        _tfage_table_exists(engine, blob_table)
+        and _tfage_table_exists(engine, "calc_age_pdf_priors")
+        and _tfage_table_exists(engine, "calc_age_pdf_grids")
+    ):
+        return []
+    blob_cols = _tfage_columns(engine, blob_table)
+    prior_cols = _tfage_columns(engine, "calc_age_pdf_priors")
+    if not {"id", "age_id", "result_key", "prior_id"}.issubset(blob_cols):
+        return []
+    required_prior_cols = {"id", "prior_key", "grid_id", "pdf_space", "log_pdf_blob"}
+    if not required_prior_cols.issubset(prior_cols):
+        return []
+
+    wanted_blob_cols = [
+        "id",
+        "age_id",
+        "result_key",
+        "used_colors",
+        "n_contributors",
+        "curve_role",
+        "peak_age_myr",
+        "age_lo_myr",
+        "age_hi_myr",
+        "peak_log10_age_myr",
+        "log10_age_lo",
+        "log10_age_hi",
+        "eps_peak",
+        "eps_mean",
+        "eps_lo",
+        "eps_hi",
+        "metadata_json",
+    ]
+    wanted_prior_cols = [
+        "id",
+        "prior_key",
+        "pdf_space",
+        "dtype",
+        "byte_order",
+        "compression",
+        "compression_level",
+        "log_pdf_sha256",
+        "log_pdf_blob",
+        "source",
+        "metadata_json",
+    ]
+    blob_aliases = {
+        "id": "parent_id",
+        "curve_role": "parent_curve_role",
+        "metadata_json": "parent_metadata_json",
+    }
+    select_blob = ",\n               ".join(
+        f"b.{_tfage_qid(col)} AS {_tfage_qid(blob_aliases.get(col, col))}"
+        for col in wanted_blob_cols
+        if col in blob_cols
+    )
+    prior_aliases = {"id": "prior_id"}
+    select_prior = ",\n               ".join(
+        f"p.{_tfage_qid(col)} AS {_tfage_qid(prior_aliases.get(col, col))}"
+        for col in wanted_prior_cols
+        if col in prior_cols
+    )
+    query = text(f"""
+        SELECT {select_blob},
+               {select_prior},
+               g.id AS grid_row_id,
+               g.coordinate AS grid_coordinate,
+               g.n_grid AS grid_n_grid,
+               g.dtype AS grid_dtype,
+               g.byte_order AS grid_byte_order,
+               g.compression AS grid_compression,
+               g.grid_sha256 AS grid_sha256,
+               g.grid_blob AS grid_blob
+        FROM {_tfage_qid(blob_table)} AS b
+        JOIN calc_age_pdf_priors AS p
+            ON p.id = b.prior_id
+        JOIN calc_age_pdf_grids AS g
+            ON g.id = p.grid_id
+        WHERE b.age_id IN :age_ids
+            AND b.prior_id IS NOT NULL
+        ORDER BY b.age_id, b.result_key, p.id, b.curve_role, b.id
+    """).bindparams(bindparam("age_ids", expanding=True))
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"age_ids": [int(value) for value in age_ids]}).mappings().all()
+
+    curves: list[_TfAgeCurve] = []
+    for row in rows:
+        row_data = dict(row)
+        row_data["id"] = f"prior-{row_data.get('prior_id')}-parent-{row_data.get('parent_id')}"
+        row_data["curve_role"] = "prior"
+        curve = _tfage_curve_from_log_pdf_row(row_data, age_meta)
+        if curve is not None:
+            curves.append(curve)
+    return _tfage_deduplicate_blob_curves(curves, preferred_role="prior")
+
+
 def _tfage_fetch_blob_curves(
     engine,
     scope: str,
     age_rows: pd.DataFrame,
     *,
-    load_posteriors: bool = False,
+    curve_role: str = "likelihood",
+    include_likelihood_fallback: bool = False,
+    include_hbm_member_stats: bool = True,
 ) -> list[_TfAgeCurve]:
     if age_rows.empty or "id" not in age_rows:
         return []
@@ -9604,6 +10037,18 @@ def _tfage_fetch_blob_curves(
     required = {"id", "age_id", "grid_id", "result_key", "curve_role", "pdf_space", "log_pdf_blob"}
     if not required.issubset(blob_cols):
         return []
+    requested_role = _tfage_normalize_curve_role(curve_role)
+    age_meta = age_rows.set_index("id", drop=False).to_dict(orient="index")
+    hbm_member_stats = _tfage_fetch_hbm_member_stats(engine, scope, age_ids) if include_hbm_member_stats else {}
+    if requested_role == "prior":
+        curves = _tfage_fetch_referenced_prior_curves(engine, blob_table, age_ids, age_meta)
+        for curve in curves:
+            meta = curve.metadata or {}
+            stats = None
+            if meta.get("age_id") is not None and meta.get("result_key") not in (None, ""):
+                stats = hbm_member_stats.get((int(meta.get("age_id")), str(meta.get("result_key"))))
+            _tfage_merge_hbm_member_stats(curve, stats)
+        return curves
 
     wanted_blob_cols = [
         "id",
@@ -9618,9 +10063,13 @@ def _tfage_fetch_blob_curves(
         "compression_level",
         "log_pdf_sha256",
         "log_pdf_blob",
+        "log_pdf_floor",
         "peak_age_myr",
         "age_lo_myr",
         "age_hi_myr",
+        "peak_log10_age_myr",
+        "log10_age_lo",
+        "log10_age_hi",
         "n_contributors",
         "used_colors",
         "metadata_json",
@@ -9633,7 +10082,11 @@ def _tfage_fetch_blob_curves(
     select_blob = ",\n               ".join(
         f"b.{_tfage_qid(col)} AS {_tfage_qid(col)}" for col in wanted_blob_cols if col in blob_cols
     )
-    role_values = ("posterior", "likelihood") if load_posteriors else ("likelihood",)
+    role_values = (
+        ("posterior", "likelihood")
+        if requested_role == "posterior" and include_likelihood_fallback
+        else (requested_role,)
+    )
     query = text(f"""
         SELECT {select_blob},
                g.id AS grid_row_id,
@@ -9654,13 +10107,15 @@ def _tfage_fetch_blob_curves(
     with engine.connect() as conn:
         rows = conn.execute(query, {"age_ids": age_ids, "role_values": role_values}).mappings().all()
 
-    age_meta = age_rows.set_index("id", drop=False).to_dict(orient="index")
     curves = []
     for row in rows:
-        curve = _tfage_curve_from_log_pdf_row(dict(row), age_meta)
+        row_data = dict(row)
+        curve = _tfage_curve_from_log_pdf_row(row_data, age_meta)
         if curve is not None:
+            stats = hbm_member_stats.get((int(row_data.get("age_id")), str(row_data.get("result_key"))))
+            _tfage_merge_hbm_member_stats(curve, stats)
             curves.append(curve)
-    return _tfage_deduplicate_blob_curves(curves, prefer_posteriors=load_posteriors)
+    return _tfage_deduplicate_blob_curves(curves, preferred_role=requested_role)
 
 
 def _tfage_fetch_legacy_pdf_curves(engine, scope: str, age_rows: pd.DataFrame) -> list[_TfAgeCurve]:
@@ -9879,6 +10334,48 @@ def _tfage_adopted_age_payload(engine, age_rows: pd.DataFrame) -> dict[str, Any]
         return None
     row, adoption_flag = selected
     return _tfage_age_marker_payload(engine, row, adoption_flag=adoption_flag, kind="adopted")
+
+
+def _tfage_row_adoption_flag(row: dict[str, Any]) -> str:
+    labels = []
+    for flag, label in (
+        ("adopted", "adopted"),
+        ("public_adopted", "public adopted"),
+        ("adopt_asis", "adopted as-is"),
+        ("public_adopt_asis", "public adopted as-is"),
+    ):
+        if flag in row and _as_bool(row.get(flag)):
+            labels.append(label)
+    return ", ".join(labels)
+
+
+def _tfage_age_measurements_payload(engine, age_rows: pd.DataFrame) -> list[dict[str, Any]]:
+    if age_rows.empty:
+        return []
+    measurements: list[dict[str, Any]] = []
+    for row in age_rows.to_dict(orient="records"):
+        marker = _tfage_age_marker_payload(
+            engine,
+            row,
+            adoption_flag=_tfage_row_adoption_flag(row),
+            kind="measurement",
+        )
+        if not marker:
+            continue
+        marker["is_adopted"] = bool(_tfage_row_adoption_flag(row))
+        marker["quality_flag"] = _pythonize(row.get("quality_flag"))
+        marker["origin"] = _pythonize(row.get("origin"))
+        marker["method_short"] = _pythonize(row.get("method_short"))
+        marker["method_detailed"] = _pythonize(row.get("method_detailed"))
+        measurements.append(marker)
+    measurements.sort(
+        key=lambda item: (
+            not bool(item.get("is_adopted")),
+            float(item.get("value_myr") or 0.0),
+            str(item.get("method") or ""),
+        )
+    )
+    return measurements
 
 
 def _tfage_private_schema(args: dict[str, Any], scope: str) -> bool:
@@ -10211,10 +10708,18 @@ def _tfage_load_curves(
     scope: str,
     target: int | str,
     *,
+    curve_role: str = "likelihood",
     load_blob_posteriors: bool = False,
 ) -> tuple[pd.DataFrame, list[_TfAgeCurve]]:
     age_rows = _tfage_fetch_age_rows(engine, scope, target)
-    blob_curves = _tfage_fetch_blob_curves(engine, scope, age_rows, load_posteriors=load_blob_posteriors)
+    requested_role = _tfage_normalize_curve_role(curve_role)
+    blob_curves = _tfage_fetch_blob_curves(
+        engine,
+        scope,
+        age_rows,
+        curve_role=requested_role,
+        include_likelihood_fallback=bool(load_blob_posteriors and requested_role == "posterior"),
+    )
     legacy_curves = _tfage_fetch_legacy_pdf_curves(engine, scope, age_rows)
     stored_curves = blob_curves + legacy_curves
     skip_age_ids = _tfage_all_stored_pdf_age_ids(engine, scope, age_rows)
@@ -10263,6 +10768,17 @@ def _tfage_curve_summary_row(curve: _TfAgeCurve) -> dict[str, Any]:
     }
 
 
+def _tfage_parse_metadata_json(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return _json_clean(value)
+    try:
+        return _json_clean(json.loads(str(value)))
+    except Exception:
+        return _pythonize(value)
+
+
 def _tfage_curve_payload(curve: _TfAgeCurve) -> dict[str, Any]:
     meta = curve.metadata or {}
     scalar = meta.get("scalar_row") or {}
@@ -10283,10 +10799,33 @@ def _tfage_curve_payload(curve: _TfAgeCurve) -> dict[str, Any]:
             "age_id": _pythonize(meta.get("age_id") if meta.get("age_id") is not None else scalar.get("id")),
             "result_key": _pythonize(meta.get("result_key")),
             "curve_role": _pythonize(meta.get("curve_role")),
+            "pdf_space": _pythonize(meta.get("pdf_space")),
             "used_colors": _pythonize(meta.get("used_colors")),
             "n_contributors": _pythonize(meta.get("n_contributors")),
+            "peak_age_myr": _pythonize(meta.get("peak_age_myr")),
+            "age_lo_myr": _pythonize(meta.get("age_lo_myr")),
+            "age_hi_myr": _pythonize(meta.get("age_hi_myr")),
+            "peak_log10_age_myr": _pythonize(meta.get("peak_log10_age_myr")),
+            "log10_age_lo": _pythonize(meta.get("log10_age_lo")),
+            "log10_age_hi": _pythonize(meta.get("log10_age_hi")),
+            "eps_peak": _pythonize(meta.get("eps_peak")),
+            "eps_mean": _pythonize(meta.get("eps_mean")),
+            "eps_lo": _pythonize(meta.get("eps_lo")),
+            "eps_hi": _pythonize(meta.get("eps_hi")),
+            "prior_id": _pythonize(meta.get("prior_id")),
+            "metadata_json": _tfage_parse_metadata_json(meta.get("metadata_json")),
             "moca_pid": _pythonize(scalar.get("moca_pid")),
             "calculation_method": _pythonize(scalar.get("calculation_method")),
+            "method": _pythonize(scalar.get("method")),
+            "method_detailed": _pythonize(scalar.get("method_detailed")),
+            "comments": _pythonize(scalar.get("comments")),
+            "created_timestamp": _pythonize(scalar.get("created_timestamp")),
+            "modified_timestamp": _pythonize(scalar.get("modified_timestamp")),
+            "age_row_id": _pythonize(scalar.get("id")),
+            "age_myr": _pythonize(scalar.get("age_myr")),
+            "age_myr_unc": _pythonize(scalar.get("age_myr_unc")),
+            "age_myr_unc_pos": _pythonize(scalar.get("age_myr_unc_pos")),
+            "age_myr_unc_neg": _pythonize(scalar.get("age_myr_unc_neg")),
         },
     }
 
@@ -10483,9 +11022,92 @@ def _tfage_target_info(engine, scope: str, target: int | str | None, args: dict[
     return {"moca_aid": str(target)}
 
 
+def _tfage_count_value(value: Any) -> int | None:
+    number = _safe_float(value)
+    if number is None:
+        return None
+    return max(0, int(round(number)))
+
+
+def _tfage_mocaflows_hbm_expr(
+    age_cols: set[str],
+    blob_cols: set[str],
+    *,
+    age_alias: str = "daa",
+    blob_alias: str = "b",
+) -> str:
+    hbm_terms: list[str] = []
+    for table_alias, cols, candidates in (
+        (age_alias, age_cols, ("calculation_method", "method", "method_detailed", "comments", "origin")),
+        (blob_alias, blob_cols, ("result_key",)),
+    ):
+        for col in candidates:
+            if col not in cols:
+                continue
+            expr = f"LOWER(COALESCE({table_alias}.{_tfage_qid(col)}, ''))"
+            hbm_terms.extend([
+                f"{expr} LIKE 'mfhbm%'",
+                f"{expr} LIKE '%hbm%'",
+                f"{expr} LIKE '%hierarchical bayesian%'",
+                f"{expr} LIKE '%hierarchical_bayesian%'",
+                f"{expr} LIKE '%outlier rejection%'",
+            ])
+    return "(" + " OR ".join(hbm_terms) + ")" if hbm_terms else "0"
+
+
+def _tfage_association_stacked_counts_from_db(engine) -> dict[str, dict[str, int]]:
+    if not (
+        _tfage_table_exists(engine, "data_association_ages")
+        and _tfage_table_exists(engine, "calc_association_age_pdf_blobs")
+    ):
+        return {}
+    age_cols = _tfage_columns(engine, "data_association_ages")
+    blob_cols = _tfage_columns(engine, "calc_association_age_pdf_blobs")
+    if not {"id", "moca_aid"}.issubset(age_cols):
+        return {}
+    if not {"age_id", "n_contributors"}.issubset(blob_cols):
+        return {}
+
+    hbm_expr = _tfage_mocaflows_hbm_expr(age_cols, blob_cols)
+    query = text(f"""
+        SELECT moca_aid,
+               MAX(n_contributors) AS stacked_member_count,
+               MAX(CASE WHEN is_hbm = 1 THEN n_contributors END) AS hbm_stacked_member_count,
+               MAX(CASE WHEN is_hbm = 0 THEN n_contributors END) AS normal_stacked_member_count
+        FROM (
+            SELECT daa.moca_aid AS moca_aid,
+                   b.n_contributors AS n_contributors,
+                   CASE WHEN {hbm_expr} THEN 1 ELSE 0 END AS is_hbm
+            FROM data_association_ages AS daa
+            JOIN calc_association_age_pdf_blobs AS b
+                ON b.age_id = daa.id
+            WHERE daa.moca_aid IS NOT NULL
+                AND daa.moca_aid <> ''
+                AND b.n_contributors IS NOT NULL
+        ) stacked_counts
+        GROUP BY moca_aid
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(query).mappings().all()
+
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        aid = str(row.get("moca_aid") or "").strip().upper()
+        if not aid:
+            continue
+        item: dict[str, int] = {}
+        for key in ("stacked_member_count", "hbm_stacked_member_count", "normal_stacked_member_count"):
+            count = _tfage_count_value(row.get(key))
+            if count is not None:
+                item[key] = count
+        if item:
+            counts[aid] = item
+    return counts
+
+
 def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     scope = "association"
-    cache_key = f"{_tfage_cache_key(args, scope, 'options')}|options"
+    cache_key = f"{_tfage_cache_key(args, scope, 'options')}|options-counts-v1"
     now = time.time()
     cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -10495,6 +11117,7 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
     engine = _engine(_tfage_connection_string(args, scope))
     associations: list[dict[str, Any]] = []
+    count_map = _tfage_association_stacked_counts_from_db(engine)
     if _tfage_table_exists(engine, "data_association_ages"):
         with engine.connect() as conn:
             if _tfage_table_exists(engine, "moca_associations"):
@@ -10519,7 +11142,9 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         associations = [
             {
                 "value": row.get("moca_aid"),
+                "name": row.get("name"),
                 "label": f"{row.get('moca_aid')} - {row.get('name')}" if row.get("name") else row.get("moca_aid"),
+                **count_map.get(str(row.get("moca_aid") or "").strip().upper(), {}),
             }
             for row in rows
             if row.get("moca_aid")
@@ -10529,6 +11154,57 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "association_count": len(associations),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_mflows_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    scope = "association"
+    cache_key = f"{_tfage_cache_key(args, scope, 'options')}|mflows-options-counts-v2"
+    now = time.time()
+    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    started = time.time()
+    engine = _engine(_tfage_connection_string(args, scope))
+    count_map = _tfage_association_stacked_counts_from_db(engine)
+    aids = sorted(count_map)
+    names: dict[str, str] = {}
+    if aids and _tfage_table_exists(engine, "moca_associations"):
+        with engine.connect() as conn:
+            rows = _records(_read_sql_expanding(conn, """
+                SELECT ma.moca_aid, ma.name
+                FROM moca_associations ma
+                WHERE ma.moca_aid IN :mflows_option_aids
+                ORDER BY ma.moca_aid
+            """, "mflows_option_aids", aids))
+        names = {
+            str(row.get("moca_aid") or "").strip().upper(): str(row.get("name") or "").strip()
+            for row in rows
+            if row.get("moca_aid")
+        }
+    associations = []
+    for aid in aids:
+        name = names.get(aid, "")
+        associations.append({
+            "value": aid,
+            "name": name or None,
+            "label": f"{aid} - {name}" if name else aid,
+            **count_map.get(aid, {}),
+        })
+    payload = {
+        "associations": associations,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "association_count": len(associations),
+            "option_scope": "mocaflows_blob_associations",
+            "timings": {"options_total": round(time.time() - started, 3)},
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -10594,7 +11270,9 @@ def _search_tfage_objects_from_db(args: dict[str, Any], query: str, selected_oid
 def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     scope = _tfage_scope(args)
     target = _tfage_target(args, scope)
-    load_posteriors = _tfage_load_posteriors(args)
+    curve_role = _tfage_requested_curve_role(args)
+    load_posteriors = curve_role == "posterior"
+    allow_likelihood_fallback = bool(load_posteriors and not _tfage_has_explicit_curve_role(args))
     cache_key = _tfage_cache_key(args, scope, target)
     now = time.time()
     cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
@@ -10604,17 +11282,19 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         return payload
     if target in (None, ""):
         return {
-            "selection": {"scope": scope, "target": None, "load_posteriors": load_posteriors},
+            "selection": {"scope": scope, "target": None, "curve_role": curve_role, "load_posteriors": load_posteriors},
             "target": {},
             "curves": [],
             "tableRows": [],
             "adoptedAge": None,
+            "ageMeasurements": [],
             "membershipAge": None,
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "age_row_count": 0,
                 "curve_count": 0,
                 "displayable_curve_count": 0,
+                "curve_role": curve_role,
                 "load_posteriors": load_posteriors,
             },
             "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -10622,7 +11302,13 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
     started = time.time()
     engine = _engine(_tfage_connection_string(args, scope))
-    age_rows, curves = _tfage_load_curves(engine, scope, target, load_blob_posteriors=load_posteriors)
+    age_rows, curves = _tfage_load_curves(
+        engine,
+        scope,
+        target,
+        curve_role=curve_role,
+        load_blob_posteriors=allow_likelihood_fallback,
+    )
     displayable = _tfage_displayable_curves(curves)
     fallback_used = False
     if scope == "object" and not displayable:
@@ -10632,7 +11318,8 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 fallback_engine,
                 scope,
                 target,
-                load_blob_posteriors=load_posteriors,
+                curve_role=curve_role,
+                load_blob_posteriors=allow_likelihood_fallback,
             )
             fallback_displayable = _tfage_displayable_curves(fallback_curves)
             if fallback_displayable:
@@ -10644,6 +11331,7 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     curve_payloads = [_tfage_curve_payload(curve) for curve in displayable]
     target_info = _tfage_target_info(engine, scope, target, args)
     adopted_age = _tfage_adopted_age_payload(engine, age_rows)
+    age_measurements = _tfage_age_measurements_payload(engine, age_rows)
     membership_age = _tfage_membership_age_payload(engine, args, target) if scope == "object" else None
     payload = {
         "selection": {
@@ -10651,18 +11339,21 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "target": target,
             "moca_oid": int(target) if scope == "object" else None,
             "moca_aid": str(target) if scope == "association" else None,
+            "curve_role": curve_role,
             "load_posteriors": load_posteriors,
         },
         "target": target_info,
         "curves": curve_payloads,
         "tableRows": [row["summary"] for row in curve_payloads],
         "adoptedAge": adopted_age,
+        "ageMeasurements": age_measurements,
         "membershipAge": membership_age,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "age_row_count": int(len(age_rows)),
             "curve_count": int(len(curves)),
             "displayable_curve_count": int(len(curve_payloads)),
+            "curve_role": curve_role,
             "load_posteriors": load_posteriors,
             "object_age_fallback": fallback_used,
             "source_counts": {
@@ -10679,10 +11370,38 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
 def _mock_tfage_options() -> dict[str, Any]:
     associations = [
-        {"value": "ABDMG", "label": "ABDMG - AB Doradus moving group"},
-        {"value": "BPMG", "label": "BPMG - beta Pictoris moving group"},
-        {"value": "TWA", "label": "TWA - TW Hydrae association"},
-        {"value": "THA", "label": "THA - Tucana-Horologium association"},
+        {
+            "value": "ABDMG",
+            "name": "AB Doradus moving group",
+            "label": "ABDMG - AB Doradus moving group",
+            "stacked_member_count": 602,
+            "hbm_stacked_member_count": 602,
+            "normal_stacked_member_count": 385,
+        },
+        {
+            "value": "BPMG",
+            "name": "beta Pictoris moving group",
+            "label": "BPMG - beta Pictoris moving group",
+            "stacked_member_count": 210,
+            "hbm_stacked_member_count": 210,
+            "normal_stacked_member_count": 178,
+        },
+        {
+            "value": "TWA",
+            "name": "TW Hydrae association",
+            "label": "TWA - TW Hydrae association",
+            "stacked_member_count": 45,
+            "hbm_stacked_member_count": 45,
+            "normal_stacked_member_count": 38,
+        },
+        {
+            "value": "THA",
+            "name": "Tucana-Horologium association",
+            "label": "THA - Tucana-Horologium association",
+            "stacked_member_count": 120,
+            "hbm_stacked_member_count": 120,
+            "normal_stacked_member_count": 96,
+        },
     ]
     return {
         "associations": associations,
@@ -10694,10 +11413,12 @@ def _mock_tfage_options() -> dict[str, Any]:
 def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
     scope = _tfage_scope(args)
     target = _tfage_target(args, scope)
+    curve_role = _tfage_requested_curve_role(args)
+    load_posteriors = curve_role == "posterior"
     age = np.geomspace(1.0, 5000.0, 900)
     specs = [
-        ("mocaflows-young-likelihood", "MOCAFlows color likelihood (age_id=101)", "MOCAFlows", 35.0, 0.22, False),
-        ("mocaflows-hbm-likelihood", "mfhbm posterior-like likelihood (age_id=102); HBM", "MOCAFlows", 55.0, 0.28, True),
+        (f"mocaflows-young-{curve_role}", f"MOCAFlows color {curve_role} (age_id=101)", "MOCAFlows", 35.0, 0.22, False),
+        (f"mocaflows-hbm-{curve_role}", f"mfhbm {curve_role} (age_id=102); HBM", "MOCAFlows", 55.0, 0.28, True),
         ("legacy-lithium", "lithium boundary legacy PDF (age_id=88)", "Legacy", 130.0, 0.32, False),
         ("gaussian-kinematic", "kinematic age asymmetric Gaussian (age_id=77)", "Scalar Gaussian", 45.0, 0.18, False),
     ]
@@ -10714,7 +11435,7 @@ def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
             pdf_age=pdf,
             metadata={
                 "age_id": key.rsplit("-", 1)[-1],
-                "curve_role": "likelihood",
+                "curve_role": curve_role,
                 "result_key": key,
                 "scalar_row": {
                     "calculation_method": "mfhbm mock" if is_hbm else f"{source} mock",
@@ -10795,24 +11516,994 @@ def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
             "target": target,
             "moca_oid": int(target) if scope == "object" and target is not None else None,
             "moca_aid": str(target) if scope == "association" and target is not None else None,
-            "load_posteriors": _tfage_load_posteriors(args),
+            "curve_role": curve_role,
+            "load_posteriors": load_posteriors,
         },
         "target": target_info,
         "curves": curves,
         "tableRows": [curve["summary"] for curve in curves],
         "adoptedAge": adopted_age,
+        "ageMeasurements": [adopted_age],
         "membershipAge": membership_age if scope == "object" else None,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "age_row_count": 4,
             "curve_count": len(curves),
             "displayable_curve_count": len(curves),
-            "load_posteriors": _tfage_load_posteriors(args),
+            "curve_role": curve_role,
+            "load_posteriors": load_posteriors,
             "source_counts": {"MOCAFlows": 2, "Legacy": 1, "Scalar Gaussian": 1},
             "timings": {"load_total": 0.02},
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
+
+
+def _mflows_requested_stack_mode(args: dict[str, Any]) -> str:
+    raw = str(args.get("stack_mode") or args.get("stack") or args.get("stacking") or "").strip().lower()
+    if raw in {"hbm", "hierarchical", "hierarchical_bayesian", "hierarchical-bayesian"}:
+        return "hbm"
+    if raw in {"normal", "simple", "stack", "stacking"}:
+        return "normal"
+    checkbox = {part.strip().lower() for part in str(args.get("checkbox") or "").split(",") if part.strip()}
+    return "hbm" if "hbm" in checkbox else "normal"
+
+
+def _mflows_requested_mh_treatment(args: dict[str, Any]) -> str:
+    raw = str(
+        args.get("mh_treatment")
+        or args.get("metallicity")
+        or args.get("feh")
+        or args.get("mh")
+        or ""
+    ).strip().lower()
+    aliases = {
+        "db": "db",
+        "database": "db",
+        "conditioned": "db",
+        "conditioned_db": "db",
+        "conditioned-on-db": "db",
+        "marginalized": "marginalized",
+        "marginalised": "marginalized",
+        "field": "marginalized",
+        "field_prior": "marginalized",
+        "copula": "copula2d",
+        "copula2d": "copula2d",
+        "2d": "copula2d",
+        "age_feh": "copula2d",
+        "age-feh": "copula2d",
+    }
+    return aliases.get(raw, "db")
+
+
+def _mflows_result_key_from_curve(curve: Mapping[str, Any]) -> str:
+    meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+    result_key = str(meta.get("result_key") or "").strip()
+    if result_key:
+        return result_key
+    key = str(curve.get("key") or curve.get("label") or "").lower()
+    for known in MOCA_FLOWS_RESULT_ORDER:
+        if known in key:
+            return known
+    if "full forward" in key:
+        return "full_forward_model"
+    if "stack" in key or "toomre" in key or "vtan" in key:
+        return "stacked"
+    return key.replace(" ", "_")[:64] or "mocaflows"
+
+
+def _mflows_result_label(result_key: str) -> str:
+    return (
+        MOCA_FLOWS_RESULT_LABELS.get(result_key)
+        or MOCA_FLOWS_RESULT_LABELS.get(str(result_key or "").lower())
+        or result_key.replace("_", " ").strip().title()
+        or "MOCAFlows"
+    )
+
+
+def _mflows_kinematic_result_label(result_key: str, curve: Mapping[str, Any]) -> str:
+    result_key = str(result_key or "").strip()
+    if result_key == "vtan":
+        return "Vtan"
+    if result_key != "toomre_t":
+        return _mflows_result_label(result_key)
+    meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+    scalar = meta.get("scalar_row") if isinstance(meta.get("scalar_row"), Mapping) else {}
+    summary = curve.get("summary") if isinstance(curve.get("summary"), Mapping) else {}
+    text = " ".join(
+        str(value or "").lower()
+        for value in (
+            curve.get("label"),
+            meta.get("calculation_method"),
+            meta.get("comments"),
+            scalar.get("calculation_method"),
+            scalar.get("method"),
+            scalar.get("method_detailed"),
+            scalar.get("comments"),
+            summary.get("calculation_method"),
+            summary.get("comments"),
+        )
+        if value not in (None, "")
+    )
+    has_toomre = "toomre" in text or "toomre_t" in text
+    has_vtan = "vtan" in text or "v tan" in text or "tangential" in text
+    if has_toomre and has_vtan:
+        return "Toomre T / Vtan"
+    if has_vtan and not has_toomre:
+        return "Vtan"
+    return "Toomre T"
+
+
+def _mflows_result_order(result_key: str) -> int:
+    try:
+        return MOCA_FLOWS_RESULT_ORDER.index(result_key)
+    except ValueError:
+        return 1000
+
+
+def _mflows_curve_calculation_method(curve: Mapping[str, Any]) -> str:
+    meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+    scalar = meta.get("scalar_row") if isinstance(meta.get("scalar_row"), Mapping) else {}
+    summary = curve.get("summary") if isinstance(curve.get("summary"), Mapping) else {}
+    for value in (
+        meta.get("calculation_method"),
+        meta.get("method"),
+        meta.get("method_detailed"),
+        scalar.get("calculation_method"),
+        scalar.get("method"),
+        scalar.get("method_detailed"),
+        summary.get("calculation_method"),
+    ):
+        text_value = str(value or "").strip().lower()
+        if text_value:
+            return text_value
+    return ""
+
+
+def _mflows_curve_uses_db_feh(curve: Mapping[str, Any]) -> bool:
+    method = _mflows_curve_calculation_method(curve)
+    return method.startswith(MOCA_FLOWS_FEH_METHOD_PREFIXES)
+
+
+def _mflows_curve_is_legacy_trueflow(curve: Mapping[str, Any]) -> bool:
+    method = _mflows_curve_calculation_method(curve)
+    return method.startswith(MOCA_FLOWS_LEGACY_METHOD_PREFIXES)
+
+
+def _mflows_result_can_use_feh(result_key: str) -> bool:
+    return str(result_key or "").strip() in MOCA_FLOWS_FEH_DEPENDENT_RESULT_KEYS
+
+
+def _mflows_metadata_candidate_map(metadata_json: Any) -> Any:
+    if not isinstance(metadata_json, Mapping):
+        return None
+    for key in ("age_feh_map", "ageFehMap", "copula2d", "copula_2d", "map2d", "map"):
+        value = metadata_json.get(key)
+        if isinstance(value, Mapping):
+            return value
+    products = metadata_json.get("products")
+    if isinstance(products, Mapping):
+        for value in products.values():
+            if isinstance(value, Mapping):
+                nested = _mflows_metadata_candidate_map(value)
+                if nested is not None:
+                    return nested
+    return None
+
+
+def _mflows_map_payload_from_curve(curve: Mapping[str, Any]) -> dict[str, Any] | None:
+    meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+    candidate = _mflows_metadata_candidate_map(meta.get("metadata_json"))
+    if not isinstance(candidate, Mapping):
+        return None
+    age = candidate.get("age_myr") or candidate.get("age") or candidate.get("x")
+    feh = candidate.get("feh") or candidate.get("mh") or candidate.get("metallicity") or candidate.get("y")
+    density = (
+        candidate.get("density")
+        or candidate.get("posterior")
+        or candidate.get("likelihood")
+        or candidate.get("z")
+        or candidate.get("values")
+    )
+    if age is None or feh is None or density is None:
+        return None
+    try:
+        age_values = [float(value) for value in age]
+        feh_values = [float(value) for value in feh]
+        z_values = [[float(item) for item in row] for row in density]
+    except Exception:
+        return None
+    if len(age_values) < 2 or len(feh_values) < 2 or len(z_values) != len(feh_values):
+        return None
+    if any(len(row) != len(age_values) for row in z_values):
+        return None
+    return {
+        "age_myr": age_values,
+        "feh": feh_values,
+        "density": z_values,
+        "z_label": str(candidate.get("z_label") or "Posterior density"),
+    }
+
+
+def _mflows_select_curves(curves: Sequence[Mapping[str, Any]], scope: str, stack_mode: str, mh_treatment: str) -> list[dict[str, Any]]:
+    mocaflows = [
+        dict(curve)
+        for curve in curves
+        if str(curve.get("source") or "").strip() == "MOCAFlows"
+        and not _mflows_curve_is_legacy_trueflow(curve)
+    ]
+    if scope == "object":
+        object_result_keys = {_mflows_result_key_from_curve(curve) for curve in mocaflows}
+        mocaflows = [
+            curve for curve in mocaflows
+            if not (
+                _mflows_result_key_from_curve(curve) in MOCA_FLOWS_OBJECT_RESULT_ALIASES
+                and MOCA_FLOWS_OBJECT_RESULT_ALIASES[_mflows_result_key_from_curve(curve)] in object_result_keys
+            )
+        ]
+    if scope == "association":
+        want_hbm = stack_mode == "hbm"
+        mocaflows = [
+            curve for curve in mocaflows
+            if bool(curve.get("is_hbm_mocaflows")) == want_hbm
+        ]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for curve in mocaflows:
+        grouped.setdefault(_mflows_result_key_from_curve(curve), []).append(curve)
+    selected: list[dict[str, Any]] = []
+    for result_key, group in grouped.items():
+        non_feh_group = [curve for curve in group if not _mflows_curve_uses_db_feh(curve)]
+        if not _mflows_result_can_use_feh(result_key):
+            selected.extend(non_feh_group)
+            continue
+        if _mflows_result_can_use_feh(result_key):
+            if mh_treatment == "db":
+                preferred = [curve for curve in group if _mflows_curve_uses_db_feh(curve)]
+                group = preferred or non_feh_group
+            elif mh_treatment == "marginalized":
+                group = non_feh_group
+            elif mh_treatment == "copula2d":
+                preferred = [curve for curve in group if _mflows_map_payload_from_curve(curve)]
+                group = preferred
+        selected.extend(group)
+    selected.sort(key=lambda curve: (
+        _mflows_result_order(_mflows_result_key_from_curve(curve)),
+        str((curve.get("metadata") or {}).get("curve_role") if isinstance(curve.get("metadata"), Mapping) else ""),
+        str(curve.get("key") or curve.get("label") or ""),
+    ))
+    return selected
+
+
+def _mflows_panel_from_curve(curve: Mapping[str, Any], index: int, mh_treatment: str) -> dict[str, Any]:
+    result_key = _mflows_result_key_from_curve(curve)
+    meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+    return {
+        "key": str(curve.get("key") or f"mocaflows-{index}"),
+        "result_key": result_key,
+        "title": _mflows_kinematic_result_label(result_key, curve) if result_key in {"toomre_t", "vtan"} else _mflows_result_label(result_key),
+        "curve": dict(curve),
+        "map": _mflows_map_payload_from_curve(curve),
+        "uses_db_feh": _mflows_result_can_use_feh(result_key) and _mflows_curve_uses_db_feh(curve),
+        "mh_sensitive": _mflows_result_can_use_feh(result_key),
+        "curve_role": _pythonize(meta.get("curve_role")),
+        "metadata": {
+            "age_id": _pythonize(meta.get("age_id")),
+            "result_key": result_key,
+            "n_contributors": _pythonize(meta.get("n_contributors")),
+            "used_colors": _pythonize(meta.get("used_colors")),
+            "peak_age_myr": _pythonize(meta.get("peak_age_myr")),
+            "age_lo_myr": _pythonize(meta.get("age_lo_myr")),
+            "age_hi_myr": _pythonize(meta.get("age_hi_myr")),
+            "eps_peak": _pythonize(meta.get("eps_peak")),
+            "eps_mean": _pythonize(meta.get("eps_mean")),
+            "eps_lo": _pythonize(meta.get("eps_lo")),
+            "eps_hi": _pythonize(meta.get("eps_hi")),
+            "calculation_method": _pythonize(meta.get("calculation_method")),
+            "moca_pid": _pythonize(meta.get("moca_pid")),
+            "comments": _pythonize(meta.get("comments")),
+            "created_timestamp": _pythonize(meta.get("created_timestamp")),
+            "modified_timestamp": _pythonize(meta.get("modified_timestamp")),
+            "age_row_id": _pythonize(meta.get("age_row_id") or meta.get("age_id")),
+            "mh_treatment": mh_treatment,
+        },
+    }
+
+
+def _mflows_uncertainty_pair(row: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    sym = _safe_float(row.get("feh_unc"))
+    lo = _safe_float(row.get("feh_unc_neg"))
+    hi = _safe_float(row.get("feh_unc_pos"))
+    if lo is None:
+        lo = sym
+    if hi is None:
+        hi = sym
+    return (abs(lo) if lo is not None else None, abs(hi) if hi is not None else None)
+
+
+def _mflows_metallicity_payload_from_engine(engine, scope: str, target: int | str | None) -> dict[str, Any] | None:
+    if target in (None, ""):
+        return None
+    table = "data_object_metallicities" if scope == "object" else "data_association_metallicities"
+    target_col = "moca_oid" if scope == "object" else "moca_aid"
+    if not _tfage_table_exists(engine, table):
+        return None
+    cols = _tfage_columns(engine, table)
+    if not {target_col, "feh_val"}.issubset(cols):
+        return None
+    alias = "met"
+    wanted = [
+        "id",
+        target_col,
+        "moca_pid",
+        "abundance_type",
+        "feh_string",
+        "feh_val",
+        "feh_unc",
+        "feh_unc_pos",
+        "feh_unc_neg",
+        "method",
+        "method_detailed",
+        "calculation_method",
+        "quality_flag",
+        "adopted",
+        "public_adopted",
+        "adopt_asis",
+        "public_adopt_asis",
+        "comments",
+        "bibcode",
+    ]
+    select_parts = [
+        f"{alias}.{_tfage_qid(col)} AS {_tfage_qid(col)}"
+        for col in wanted
+        if col in cols
+    ]
+    join = ""
+    if "moca_pid" in cols and _tfage_table_exists(engine, "moca_publications"):
+        pub_cols = _tfage_columns(engine, "moca_publications")
+        if "name" in pub_cols:
+            select_parts.append("mp.name AS reference_name")
+        if "bibcode" in pub_cols:
+            select_parts.append("mp.bibcode AS reference_bibcode")
+        join = "LEFT JOIN moca_publications mp ON mp.moca_pid = met.moca_pid"
+    ignored_clause = "AND COALESCE(met.ignored, 0) = 0" if "ignored" in cols else ""
+    abundance_clause = ""
+    if "abundance_type" in cols:
+        abundance_clause = "AND (met.abundance_type IS NULL OR met.abundance_type IN ('[Fe/H]', 'Fe/H', 'M/H', '[M/H]'))"
+    order_terms = []
+    for col in ("adopted", "public_adopted", "adopt_asis", "public_adopt_asis"):
+        if col in cols:
+            order_terms.append(f"COALESCE(met.{_tfage_qid(col)}, 0) DESC")
+    if "id" in cols:
+        order_terms.append("met.id DESC")
+    order_sql = ", ".join(order_terms) or "met.feh_val DESC"
+    query = text(f"""
+        SELECT {", ".join(select_parts)}
+        FROM {_tfage_qid(table)} met
+        {join}
+        WHERE met.{_tfage_qid(target_col)} = :target
+            AND met.feh_val IS NOT NULL
+            {ignored_clause}
+            {abundance_clause}
+        ORDER BY {order_sql}
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        row = conn.execute(query, {"target": target}).mappings().first()
+    if not row:
+        return None
+    data = dict(row)
+    lo, hi = _mflows_uncertainty_pair(data)
+    reference_name = _tfage_first_text(data, ("reference_name", "moca_pid", "bibcode"))
+    reference_bibcode = _tfage_first_text(data, ("reference_bibcode", "bibcode"))
+    return {
+        "id": _pythonize(data.get("id")),
+        "scope": scope,
+        "target": _pythonize(target),
+        "source_table": table,
+        "value": _pythonize(data.get("feh_val")),
+        "uncertainty_minus": lo,
+        "uncertainty_plus": hi,
+        "abundance_type": _pythonize(data.get("abundance_type") or "[Fe/H]"),
+        "feh_string": _pythonize(data.get("feh_string")),
+        "method": _pythonize(data.get("method") or data.get("method_detailed") or data.get("calculation_method")),
+        "quality_flag": _pythonize(data.get("quality_flag")),
+        "moca_pid": _pythonize(data.get("moca_pid")),
+        "reference_name": reference_name or "ADS reference",
+        "reference_bibcode": reference_bibcode,
+        "reference_query": reference_name or reference_bibcode or _tfage_first_text(data, ("moca_pid",)),
+        "ads_url": _tfage_ads_url(reference_bibcode, reference_name or reference_bibcode or _tfage_first_text(data, ("moca_pid",))),
+        "comments": _pythonize(data.get("comments")),
+        "adoption_flag": _tfage_row_adoption_flag(data),
+    }
+
+
+def _mflows_metallicity_payload(args: dict[str, Any], scope: str, target: int | str | None) -> dict[str, Any] | None:
+    try:
+        engine = _engine(_tfage_connection_string(args, scope))
+        payload = _mflows_metallicity_payload_from_engine(engine, scope, target)
+        if payload is not None:
+            return payload
+    except Exception:
+        pass
+    if scope == "object":
+        try:
+            engine = _engine(_connection_string(args))
+            return _mflows_metallicity_payload_from_engine(engine, scope, target)
+        except Exception:
+            return None
+    return None
+
+
+def _mflows_feh_prior_from_metadata(metadata_json: Any) -> Mapping[str, Any] | None:
+    if not isinstance(metadata_json, Mapping):
+        return None
+    direct = metadata_json.get("feh_prior")
+    if isinstance(direct, Mapping):
+        return direct
+    nested_input = metadata_json.get("input")
+    if isinstance(nested_input, Mapping) and isinstance(nested_input.get("feh_prior"), Mapping):
+        return nested_input["feh_prior"]
+    for value in metadata_json.values():
+        if isinstance(value, Mapping):
+            nested = _mflows_feh_prior_from_metadata(value)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _mflows_metallicity_payload_from_feh_prior(
+    prior: Mapping[str, Any],
+    scope: str,
+    target: int | str | None,
+) -> dict[str, Any] | None:
+    value = _safe_float(prior.get("feh"))
+    if value is None:
+        return None
+    lo = (
+        _safe_float(prior.get("effective_feh_unc_neg"))
+        or _safe_float(prior.get("feh_unc_neg"))
+        or _safe_float(prior.get("effective_feh_unc"))
+        or _safe_float(prior.get("feh_unc"))
+    )
+    hi = (
+        _safe_float(prior.get("effective_feh_unc_pos"))
+        or _safe_float(prior.get("feh_unc_pos"))
+        or _safe_float(prior.get("effective_feh_unc"))
+        or _safe_float(prior.get("feh_unc"))
+    )
+    reference_name = _pythonize(prior.get("label") or prior.get("source_moca_pid") or prior.get("source_bibcode"))
+    reference_bibcode = _pythonize(prior.get("source_bibcode"))
+    return {
+        "id": _pythonize(prior.get("source_id")),
+        "scope": scope,
+        "target": _pythonize(target),
+        "source_table": _pythonize(prior.get("source_table") or "MOCAFlows metadata"),
+        "value": value,
+        "uncertainty_minus": abs(lo) if lo is not None else None,
+        "uncertainty_plus": abs(hi) if hi is not None else None,
+        "abundance_type": "[Fe/H]",
+        "method": _pythonize(prior.get("source_kind") or "MOCAFlows Fe/H prior"),
+        "moca_pid": _pythonize(prior.get("source_moca_pid")),
+        "reference_name": reference_name or "MOCAFlows Fe/H prior",
+        "reference_bibcode": reference_bibcode,
+        "reference_query": reference_name or reference_bibcode,
+        "ads_url": _tfage_ads_url(reference_bibcode, reference_name or reference_bibcode),
+        "adoption_flag": "adopted" if _as_bool(prior.get("source_adopted")) else "",
+    }
+
+
+def _mflows_metallicity_payload_from_curves(
+    curves: Sequence[Mapping[str, Any]],
+    scope: str,
+    target: int | str | None,
+) -> dict[str, Any] | None:
+    for curve in curves:
+        meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+        prior = _mflows_feh_prior_from_metadata(meta.get("metadata_json"))
+        if prior is None:
+            continue
+        payload = _mflows_metallicity_payload_from_feh_prior(prior, scope, target)
+        if payload is not None:
+            return payload
+    return None
+
+
+def _mflows_mh_treatment_payload(mh_treatment: str, metallicity: dict[str, Any] | None) -> dict[str, Any]:
+    labels = {
+        "db": (
+            "Conditioned on available MOCAdb [M/H]"
+            if metallicity is not None
+            else "No MOCAdb [M/H] measurement available"
+        ),
+        "marginalized": "M/H marginalized from the 2D copula",
+        "copula2d": "2D age-[M/H] likelihood maps",
+    }
+    return {
+        "mode": mh_treatment,
+        "label": labels.get(mh_treatment, labels["db"]),
+        "dbMeasurement": metallicity,
+        "has_db_measurement": metallicity is not None,
+    }
+
+
+def _mflows_payload_from_tfage(
+    args: dict[str, Any],
+    tf_payload: dict[str, Any],
+    *,
+    metallicity_override: dict[str, Any] | None = None,
+    lookup_metallicity: bool = True,
+) -> dict[str, Any]:
+    selection = dict(tf_payload.get("selection") or {})
+    scope = str(selection.get("scope") or _tfage_scope(args))
+    target = selection.get("target")
+    stack_mode = _mflows_requested_stack_mode(args)
+    mh_treatment = _mflows_requested_mh_treatment(args)
+    curve_role = _tfage_normalize_curve_role(selection.get("curve_role") or _tfage_requested_curve_role(args))
+    curves = _mflows_select_curves(tf_payload.get("curves") or [], scope, stack_mode, mh_treatment)
+    panels = [_mflows_panel_from_curve(curve, index, mh_treatment) for index, curve in enumerate(curves)]
+    metallicity = _mflows_metallicity_payload(args, scope, target) if lookup_metallicity else metallicity_override
+    if metallicity is None:
+        metallicity = _mflows_metallicity_payload_from_curves(curves, scope, target)
+    selection.update({
+        "scope": scope,
+        "target": target,
+        "stack_mode": stack_mode,
+        "mh_treatment": mh_treatment,
+        "curve_role": curve_role,
+        "load_posteriors": curve_role == "posterior",
+    })
+    meta = dict(tf_payload.get("meta") or {})
+    meta.update({
+        "mocaflows_panel_count": len(panels),
+        "mocaflows_curve_count": len(curves),
+        "mocaflows_map_count": sum(1 for panel in panels if panel.get("map")),
+        "stack_mode": stack_mode,
+        "mh_treatment": mh_treatment,
+        "curve_role": curve_role,
+        "load_posteriors": curve_role == "posterior",
+    })
+    return {
+        "selection": selection,
+        "target": tf_payload.get("target") or {},
+        "panels": panels,
+        "curves": [],
+        "tableRows": [curve.get("summary") or {} for curve in curves],
+        "adoptedAge": tf_payload.get("adoptedAge"),
+        "membershipAge": tf_payload.get("membershipAge"),
+        "ageMeasurements": tf_payload.get("ageMeasurements") or [],
+        "metallicity": _mflows_mh_treatment_payload(mh_treatment, metallicity),
+        "meta": meta,
+        "cache": tf_payload.get("cache") or {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+
+
+def _mflows_show_measurements_requested(args: Mapping[str, Any]) -> bool:
+    raw = args.get("show_measurements") if "show_measurements" in args else args.get("measurements")
+    if raw is not None and str(raw).strip() != "":
+        return _as_bool(raw)
+    checkbox = {part.strip().lower() for part in str(args.get("checkbox") or "").split(",") if part.strip()}
+    return "show_measurements" in checkbox or "measurements" in checkbox
+
+
+def _mflows_association_has_blob(
+    engine,
+    target: int | str | None,
+) -> bool:
+    if target in (None, ""):
+        return False
+    if not (
+        _tfage_table_exists(engine, "data_association_ages")
+        and _tfage_table_exists(engine, "calc_association_age_pdf_blobs")
+    ):
+        return False
+    age_cols = _tfage_columns(engine, "data_association_ages")
+    blob_cols = _tfage_columns(engine, "calc_association_age_pdf_blobs")
+    if not {"id", "moca_aid"}.issubset(age_cols) or not {"id", "age_id"}.issubset(blob_cols):
+        return False
+    query = text(f"""
+        SELECT 1
+        FROM data_association_ages AS daa
+        JOIN calc_association_age_pdf_blobs AS b
+            ON b.age_id = daa.id
+        WHERE daa.moca_aid = :target
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        return conn.execute(query, {"target": str(target)}).first() is not None
+
+
+def _load_mflows_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    scope = _tfage_scope(args)
+    target = _tfage_target(args, scope)
+    curve_role = _tfage_requested_curve_role(args)
+    stack_mode = _mflows_requested_stack_mode(args)
+    mh_treatment = _mflows_requested_mh_treatment(args)
+    show_measurements = _mflows_show_measurements_requested(args)
+    allow_likelihood_fallback = bool(curve_role == "posterior" and not _tfage_has_explicit_curve_role(args))
+    cache_key = "|".join([
+        _tfage_cache_key(args, scope, target),
+        "mflows-data-v9",
+        stack_mode,
+        mh_treatment,
+        str(int(show_measurements)),
+    ])
+    now = time.time()
+    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    started_total = time.time()
+    timings: dict[str, float] = {}
+    if target in (None, ""):
+        return _mflows_payload_from_tfage(args, {
+            "selection": {
+                "scope": scope,
+                "target": None,
+                "moca_oid": None,
+                "moca_aid": None,
+                "curve_role": curve_role,
+                "load_posteriors": curve_role == "posterior",
+            },
+            "target": {},
+            "curves": [],
+            "tableRows": [],
+            "adoptedAge": None,
+            "ageMeasurements": [],
+            "membershipAge": None,
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "age_row_count": 0,
+                "curve_count": 0,
+                "displayable_curve_count": 0,
+                "curve_role": curve_role,
+                "load_posteriors": curve_role == "posterior",
+                "timings": {"mflows_total": 0.0},
+            },
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        })
+
+    engine = _engine(_tfage_connection_string(args, scope))
+    if scope == "association":
+        started = time.time()
+        has_blob = _mflows_association_has_blob(engine, target)
+        timings["blob_presence"] = round(time.time() - started, 3)
+        if not has_blob:
+            tf_payload = {
+                "selection": {
+                    "scope": scope,
+                    "target": target,
+                    "moca_oid": None,
+                    "moca_aid": str(target) if target is not None else None,
+                    "curve_role": curve_role,
+                    "load_posteriors": curve_role == "posterior",
+                },
+                "target": {"moca_aid": str(target)} if target is not None else {},
+                "curves": [],
+                "tableRows": [],
+                "adoptedAge": None,
+                "ageMeasurements": [],
+                "membershipAge": None,
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "age_row_count": 0,
+                    "age_rows_skipped": True,
+                    "blob_presence": False,
+                    "curve_count": 0,
+                    "displayable_curve_count": 0,
+                    "curve_role": curve_role,
+                    "load_posteriors": curve_role == "posterior",
+                    "object_age_fallback": False,
+                    "source_counts": {},
+                    "timings": timings,
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+            payload = _mflows_payload_from_tfage(
+                args,
+                tf_payload,
+                metallicity_override=None,
+                lookup_metallicity=False,
+            )
+            payload.setdefault("meta", {}).setdefault("timings", {}).update(timings)
+            payload["meta"]["timings"]["mflows_total"] = round(time.time() - started_total, 3)
+            _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+            return payload
+
+    def load_age_rows_and_curves(load_engine) -> tuple[pd.DataFrame, list[_TfAgeCurve], dict[str, float]]:
+        local_timings: dict[str, float] = {}
+        local_started = time.time()
+        local_age_rows = _tfage_fetch_age_rows(load_engine, scope, target)
+        local_timings["age_rows"] = round(time.time() - local_started, 3)
+
+        local_started = time.time()
+        local_curves = _tfage_fetch_blob_curves(
+            load_engine,
+            scope,
+            local_age_rows,
+            curve_role=curve_role,
+            include_likelihood_fallback=allow_likelihood_fallback,
+            include_hbm_member_stats=stack_mode == "hbm",
+        )
+        local_timings["blob_curves"] = round(time.time() - local_started, 3)
+        return local_age_rows, local_curves, local_timings
+
+    age_rows, curves, load_timings = load_age_rows_and_curves(engine)
+    timings.update(load_timings)
+    fallback_used = False
+
+    if scope == "object" and not _tfage_displayable_curves(curves):
+        fallback_engine = _tfage_object_fallback_engine(args)
+        if fallback_engine is not None:
+            fallback_age_rows, fallback_curves, fallback_timings = load_age_rows_and_curves(fallback_engine)
+            if _tfage_displayable_curves(fallback_curves):
+                timings.update({f"primary_{key}": value for key, value in load_timings.items()})
+                timings.update(fallback_timings)
+                engine = fallback_engine
+                age_rows = fallback_age_rows
+                curves = fallback_curves
+                fallback_used = True
+
+    started = time.time()
+    displayable = _tfage_displayable_curves(curves)
+    curve_payloads = [_tfage_curve_payload(curve) for curve in displayable]
+    timings["curve_payloads"] = round(time.time() - started, 3)
+
+    started = time.time()
+    target_info = _tfage_target_info(engine, scope, target, args)
+    timings["target_info"] = round(time.time() - started, 3)
+
+    started = time.time()
+    adopted_age = _tfage_adopted_age_payload(engine, age_rows)
+    timings["adopted_age"] = round(time.time() - started, 3)
+
+    age_measurements: list[dict[str, Any]] = []
+    if show_measurements:
+        started = time.time()
+        age_measurements = _tfage_age_measurements_payload(engine, age_rows)
+        timings["age_measurements"] = round(time.time() - started, 3)
+
+    membership_age = None
+    if scope == "object":
+        started = time.time()
+        membership_age = _tfage_membership_age_payload(engine, args, target)
+        timings["membership_age"] = round(time.time() - started, 3)
+
+    tf_payload = {
+        "selection": {
+            "scope": scope,
+            "target": target,
+            "moca_oid": int(target) if scope == "object" else None,
+            "moca_aid": str(target) if scope == "association" else None,
+            "curve_role": curve_role,
+            "load_posteriors": curve_role == "posterior",
+        },
+        "target": target_info,
+        "curves": curve_payloads,
+        "tableRows": [row["summary"] for row in curve_payloads],
+        "adoptedAge": adopted_age,
+        "ageMeasurements": age_measurements,
+        "membershipAge": membership_age,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "age_row_count": int(len(age_rows)),
+            "curve_count": int(len(curves)),
+            "displayable_curve_count": int(len(curve_payloads)),
+            "curve_role": curve_role,
+            "load_posteriors": curve_role == "posterior",
+            "object_age_fallback": fallback_used,
+            "source_counts": {
+                source: sum(1 for curve in curve_payloads if curve["source"] == source)
+                for source in sorted({curve["source"] for curve in curve_payloads})
+            },
+            "timings": timings,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    payload = _mflows_payload_from_tfage(args, tf_payload)
+    payload.setdefault("meta", {}).setdefault("timings", {}).update(timings)
+    payload["meta"]["timings"]["mflows_total"] = round(time.time() - started_total, 3)
+    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _mock_mflows_curve_payload(
+    *,
+    result_key: str,
+    center: float,
+    sigma: float,
+    n_contributors: int,
+    hbm: bool,
+    age_grid: np.ndarray,
+    curve_role: str,
+    secondary: float | None = None,
+) -> dict[str, Any]:
+    curve_role = _tfage_normalize_curve_role(curve_role)
+    role_sigma_scale = {"prior": 1.65, "posterior": 0.8}.get(curve_role, 1.0)
+    sigma *= role_sigma_scale
+    log_age = np.log(age_grid)
+    pdf = np.exp(-0.5 * ((log_age - math.log(center)) / sigma) ** 2)
+    if secondary is not None:
+        pdf += 0.45 * np.exp(-0.5 * ((log_age - math.log(secondary)) / (sigma * 0.9)) ** 2)
+    pdf = _tfage_normalize_pdf(age_grid, pdf)
+    pct = _tfage_percentiles(age_grid, pdf) or (center * 0.8, center, center * 1.2)
+    peak = float(age_grid[int(np.nanargmax(pdf))])
+    calc_method = ("mfhbmfeh_" if hbm else "mfafeh_") + result_key[:10].replace("_", "")
+    return {
+        "key": f"mock-{result_key}-{curve_role}-{'hbm' if hbm else 'normal'}",
+        "label": f"{result_key} {curve_role} (mock MOCAFlows)",
+        "source": "MOCAFlows",
+        "age_myr": [float(value) for value in age_grid],
+        "pdf_age": [float(value) for value in pdf],
+        "is_hbm_mocaflows": hbm,
+        "summary": {
+            "curve": _mflows_result_label(result_key),
+            "source": "MOCAFlows",
+            "age": f"{pct[1]:.3g} (+{pct[2] - pct[1]:.3g}/-{pct[1] - pct[0]:.3g}) Myr",
+            "calculation_method": calc_method,
+            "moca_pid": "mock",
+            "adopted": 0,
+            "public_adopted": 0,
+            "comments": "Synthetic MOCAFlows panel for smoke testing",
+        },
+        "metadata": {
+            "age_id": f"mock-{result_key}",
+            "result_key": result_key,
+            "curve_role": curve_role,
+            "pdf_space": "log_pdf_dlog10age",
+            "used_colors": "BP-RP, G-RP" if result_key == "gaia_cmd" else "",
+            "n_contributors": n_contributors,
+            "peak_age_myr": peak,
+            "age_lo_myr": float(pct[0]),
+            "age_hi_myr": float(pct[2]),
+            "eps_peak": 0.08 if hbm else None,
+            "eps_mean": 0.09 if hbm else None,
+            "eps_lo": 0.04 if hbm else None,
+            "eps_hi": 0.18 if hbm else None,
+            "moca_pid": "mock",
+            "calculation_method": calc_method,
+            "comments": "Synthetic MOCAFlows panel for smoke testing",
+            "metadata_json": {
+                "min_p_inlier": 0.87 if hbm else None,
+                "n_p_lt_0p50": 1 if hbm and n_contributors < 10 else 0,
+                "n_p_lt_0p90": 4 if hbm and n_contributors > 20 else 0,
+            },
+        },
+    }
+
+
+def _mock_mflows_map(age_grid: np.ndarray, center: float, feh_center: float, curve_role: str) -> dict[str, Any]:
+    curve_role = _tfage_normalize_curve_role(curve_role)
+    age = np.geomspace(max(1.0, center / 12.0), min(12000.0, center * 12.0), 72)
+    feh = np.linspace(feh_center - 0.35, feh_center + 0.35, 54)
+    log_age = np.log(age)
+    zz = []
+    for fvalue in feh:
+        ridge = math.log(center) + 0.7 * (fvalue - feh_center)
+        zrow = np.exp(-0.5 * ((log_age - ridge) / 0.34) ** 2 - 0.5 * ((fvalue - feh_center) / 0.12) ** 2)
+        zz.append([float(value) for value in zrow])
+    return {
+        "age_myr": [float(value) for value in age],
+        "feh": [float(value) for value in feh],
+        "density": zz,
+        "z_label": f"Mock joint {curve_role}",
+    }
+
+
+def _mock_mflows_payload(args: dict[str, Any]) -> dict[str, Any]:
+    scope = _tfage_scope(args)
+    target = _tfage_target(args, scope)
+    stack_mode = _mflows_requested_stack_mode(args)
+    mh_treatment = _mflows_requested_mh_treatment(args)
+    curve_role = _tfage_requested_curve_role(args)
+    hbm = stack_mode == "hbm"
+    age_grid = np.geomspace(1.0, 12000.0, 280)
+    specs = [
+        ("lithium", 740, 0.26, 1, None),
+        ("prot", 119, 0.09, 28, None),
+        ("prot_amp", 114, 0.48, 22, 2.0),
+        ("vsini", 110, 0.58, 7, None),
+        ("halpha", 475, 0.62, 1, None),
+        ("gaia_act", 50, 0.44, 4, None),
+        ("varg", 99, 0.31, 6, 2.2),
+        ("varbp", 36, 1.16, 6, 2.5),
+        ("varrp", 45, 0.42, 6, 2.3),
+        ("galex_nuv", 10, 0.55, 6, 70),
+        ("log_lx", 60, 0.70, 1, None),
+        ("radio_lnu", 35, 0.95, 1, None),
+        ("gaia_cmd", 316, 0.25, 41, None),
+        ("stacked", 119, 0.06, 42, None),
+        ("full_forward_model", 129, 0.09, 42, None),
+    ]
+    curves = [
+        _mock_mflows_curve_payload(
+            result_key=result_key,
+            center=center,
+            sigma=sigma,
+            n_contributors=n_contributors,
+            hbm=hbm,
+            age_grid=age_grid,
+            curve_role=curve_role,
+            secondary=secondary,
+        )
+        for result_key, center, sigma, n_contributors, secondary in specs
+    ]
+    for curve in curves:
+        result_key = curve["metadata"]["result_key"]
+        if result_key in {"gaia_cmd", "full_forward_model"}:
+            curve["metadata"]["metadata_json"]["age_feh_map"] = _mock_mflows_map(
+                age_grid,
+                curve["metadata"]["peak_age_myr"],
+                -0.02,
+                curve_role,
+            )
+    target_info = (
+        {"moca_aid": target or MOCA_FLOWS_DEFAULT_AID, "name": "Mock association"}
+        if scope == "association"
+        else {"moca_oid": int(target or TRUEFLOW_AGE_DEFAULT_OID), "designation": "Mock MOCAFlows target"}
+    )
+    adopted_age = {
+        "value_myr": 120.0,
+        "uncertainty_minus_myr": 12.0,
+        "uncertainty_plus_myr": 14.0,
+        "lower_myr": 108.0,
+        "upper_myr": 134.0,
+        "method": "Mock adopted association age",
+        "reference_name": "Mock Age Reference et al. (2026)",
+        "reference_bibcode": "2026Mock....4D",
+        "ads_url": _tfage_ads_url("2026Mock....4D"),
+        "kind": "adopted",
+    }
+    metallicity = {
+        "id": "mock-feh",
+        "scope": scope,
+        "target": target,
+        "source_table": "data_association_metallicities" if scope == "association" else "data_object_metallicities",
+        "value": -0.02,
+        "uncertainty_minus": 0.06,
+        "uncertainty_plus": 0.07,
+        "abundance_type": "[Fe/H]",
+        "method": "Mock adopted MOCAdb [Fe/H]",
+        "moca_pid": "mock",
+        "reference_name": "Mock Metallicity Reference et al. (2026)",
+        "reference_bibcode": "2026Mock....7M",
+        "reference_query": "Mock Metallicity Reference et al. (2026)",
+        "ads_url": _tfage_ads_url("2026Mock....7M"),
+        "adoption_flag": "adopted",
+    }
+    tf_payload = {
+        "selection": {
+            "scope": scope,
+            "target": target,
+            "moca_oid": int(target) if scope == "object" and target is not None else None,
+            "moca_aid": str(target) if scope == "association" and target is not None else None,
+            "curve_role": curve_role,
+            "load_posteriors": curve_role == "posterior",
+        },
+        "target": target_info,
+        "curves": curves,
+        "tableRows": [curve["summary"] for curve in curves],
+        "adoptedAge": adopted_age if scope == "association" else None,
+        "membershipAge": adopted_age if scope == "object" else None,
+        "ageMeasurements": [adopted_age],
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "displayable_curve_count": len(curves),
+            "curve_role": curve_role,
+            "load_posteriors": curve_role == "posterior",
+            "mock": True,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+    payload = _mflows_payload_from_tfage(
+        args,
+        tf_payload,
+        metallicity_override=metallicity,
+        lookup_metallicity=False,
+    )
+    payload["source"] = "mock"
+    return payload
 
 
 def _astrometry_db_cache_key(args: dict[str, Any], oid: int) -> str:
@@ -10878,6 +12569,7 @@ def _astrometry_fit_capabilities(args: dict[str, Any]) -> dict[str, Any]:
         "defaults": {
             "fitter": "scipy",
             "outlier_mixture": True,
+            "error_floor": True,
         },
     }
 
@@ -11157,19 +12849,25 @@ def _astrometry_mixture_responsibilities(
     mixture_weight: float,
     outlier_scale_ra: float,
     outlier_scale_dec: float,
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
 ) -> np.ndarray:
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     s_ra = np.asarray(arrays["s_ra"], dtype=float)
     s_dec = np.asarray(arrays["s_dec"], dtype=float)
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
-    sig_ra_out = np.sqrt(s_ra**2 + float(outlier_scale_ra) ** 2)
-    sig_dec_out = np.sqrt(s_dec**2 + float(outlier_scale_dec) ** 2)
+    floor_ra = max(float(error_floor_ra or 0.0), 0.0)
+    floor_dec = max(float(error_floor_dec or 0.0), 0.0)
+    sig_ra_mov = np.sqrt(s_ra**2 + floor_ra**2)
+    sig_dec_mov = np.sqrt(s_dec**2 + floor_dec**2)
+    sig_ra_out = np.sqrt(sig_ra_mov**2 + float(outlier_scale_ra) ** 2)
+    sig_dec_out = np.sqrt(sig_dec_mov**2 + float(outlier_scale_dec) ** 2)
     w = float(np.clip(mixture_weight, 1e-4, 1.0 - 1e-4))
     log_mov = (
         math.log(w)
-        - 0.5 * (((y_ra - ra_model) / s_ra) ** 2 + ((y_dec - dec_model) / s_dec) ** 2)
-        - np.log(2.0 * math.pi * s_ra * s_dec)
+        - 0.5 * (((y_ra - ra_model) / sig_ra_mov) ** 2 + ((y_dec - dec_model) / sig_dec_mov) ** 2)
+        - np.log(2.0 * math.pi * sig_ra_mov * sig_dec_mov)
     )
     log_out = (
         math.log(1.0 - w)
@@ -11185,17 +12883,81 @@ def _astrometry_stationary_offsets(
     responsibilities: Any,
     outlier_scale_ra: float,
     outlier_scale_dec: float,
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
 ) -> tuple[float, float]:
     r = np.asarray(responsibilities, dtype=float)
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
-    sig_ra_out = np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + float(outlier_scale_ra) ** 2)
-    sig_dec_out = np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + float(outlier_scale_dec) ** 2)
+    s_ra = np.asarray(arrays["s_ra"], dtype=float)
+    s_dec = np.asarray(arrays["s_dec"], dtype=float)
+    sig_ra_out = np.sqrt(s_ra**2 + max(float(error_floor_ra or 0.0), 0.0) ** 2 + float(outlier_scale_ra) ** 2)
+    sig_dec_out = np.sqrt(s_dec**2 + max(float(error_floor_dec or 0.0), 0.0) ** 2 + float(outlier_scale_dec) ** 2)
     w_ra = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_ra_out, 1e-3, np.inf) ** 2
     w_dec = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_dec_out, 1e-3, np.inf) ** 2
     stationary_ra = float(np.sum(w_ra * y_ra) / np.sum(w_ra)) if np.sum(w_ra) > 0 else float(np.nanmedian(y_ra))
     stationary_dec = float(np.sum(w_dec * y_dec) / np.sum(w_dec)) if np.sum(w_dec) > 0 else float(np.nanmedian(y_dec))
     return stationary_ra, stationary_dec
+
+
+def _astrometry_weighted_quantile(values: Any, weights: Any, quantile: float) -> float:
+    vals = np.asarray(values, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    valid = np.isfinite(vals) & np.isfinite(w) & (w > 0)
+    if not np.any(valid):
+        return float("nan")
+    vals = vals[valid]
+    w = w[valid]
+    order = np.argsort(vals)
+    vals = vals[order]
+    w = w[order]
+    cumulative = np.cumsum(w)
+    total = float(cumulative[-1])
+    if total <= 0:
+        return float("nan")
+    return float(np.interp(float(np.clip(quantile, 0.0, 1.0)) * total, cumulative, vals))
+
+
+def _astrometry_residual_error_floor(
+    arrays: Mapping[str, Any],
+    params: Any,
+    responsibilities: Any | None = None,
+) -> tuple[float, float]:
+    n = np.asarray(arrays["t"]).size
+    weights = np.ones(n, dtype=float) if responsibilities is None else np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+    weights = np.maximum(weights, 1e-3)
+    ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+
+    def axis_floor(residual: Any, sigma: Any) -> float:
+        abs_resid = np.abs(np.asarray(residual, dtype=float))
+        sig = np.asarray(sigma, dtype=float)
+        med_abs = _astrometry_weighted_quantile(abs_resid, weights, 0.5)
+        med_sigma = _astrometry_weighted_quantile(sig, weights, 0.5)
+        if not np.isfinite(med_abs) or not np.isfinite(med_sigma):
+            return 0.0
+        robust_sigma = med_abs / 0.67448975
+        floor_sq = robust_sigma**2 - med_sigma**2
+        if not np.isfinite(floor_sq) or floor_sq <= 0:
+            return 0.0
+        return float(math.sqrt(floor_sq))
+
+    return (
+        axis_floor(np.asarray(arrays["y_ra"], dtype=float) - ra_model, arrays["s_ra"]),
+        axis_floor(np.asarray(arrays["y_dec"], dtype=float) - dec_model, arrays["s_dec"]),
+    )
+
+
+def _astrometry_arrays_with_error_floor(
+    arrays: Mapping[str, Any],
+    error_floor_ra: float,
+    error_floor_dec: float,
+) -> dict[str, Any]:
+    local = dict(arrays)
+    floor_ra = max(float(error_floor_ra or 0.0), 0.0)
+    floor_dec = max(float(error_floor_dec or 0.0), 0.0)
+    local["s_ra"] = np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + floor_ra**2)
+    local["s_dec"] = np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + floor_dec**2)
+    return local
 
 
 def _astrometry_raw_fit_result(
@@ -11211,6 +12973,9 @@ def _astrometry_raw_fit_result(
     mixture_weight: float | None = None,
     outlier_scale_ra: float | None = None,
     outlier_scale_dec: float | None = None,
+    error_floor: bool = False,
+    error_floor_ra: float | None = None,
+    error_floor_dec: float | None = None,
 ) -> dict[str, Any]:
     p = np.asarray(params, dtype=float)
     cov = np.asarray(covariance, dtype=float)
@@ -11226,9 +12991,13 @@ def _astrometry_raw_fit_result(
         inlier_mask[order[: int(arrays["min_rows"])]] = True
 
     ra_model, dec_model = _astrometry_model_from_params(arrays, p)
+    floor_ra = max(float(error_floor_ra or 0.0), 0.0) if error_floor else 0.0
+    floor_dec = max(float(error_floor_dec or 0.0), 0.0) if error_floor else 0.0
+    s_ra_eff = np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + floor_ra**2)
+    s_dec_eff = np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + floor_dec**2)
     chi2_per_row = (
-        ((np.asarray(arrays["y_ra"]) - ra_model) / np.asarray(arrays["s_ra"])) ** 2
-        + ((np.asarray(arrays["y_dec"]) - dec_model) / np.asarray(arrays["s_dec"])) ** 2
+        ((np.asarray(arrays["y_ra"]) - ra_model) / s_ra_eff) ** 2
+        + ((np.asarray(arrays["y_dec"]) - dec_model) / s_dec_eff) ** 2
     )
     chi2 = float(np.nansum(chi2_per_row[inlier_mask]))
     dof = max(2 * int(np.sum(inlier_mask)) - int(arrays["n_params"]), 1)
@@ -11275,16 +13044,32 @@ def _astrometry_raw_fit_result(
         "mixtureWeight": float(mixture_weight) if mixture_weight is not None and np.isfinite(mixture_weight) else None,
         "outlierScaleRa": float(outlier_scale_ra) if outlier_scale_ra is not None and np.isfinite(outlier_scale_ra) else None,
         "outlierScaleDec": float(outlier_scale_dec) if outlier_scale_dec is not None and np.isfinite(outlier_scale_dec) else None,
+        "errorFloor": bool(error_floor),
+        "errorFloorRa": float(floor_ra) if error_floor and np.isfinite(floor_ra) else None,
+        "errorFloorDec": float(floor_dec) if error_floor and np.isfinite(floor_dec) else None,
     }
 
 
-def _astrometry_scipy_fit(arrays: Mapping[str, Any], outlier_mixture: bool) -> dict[str, Any]:
+def _astrometry_scipy_fit(
+    arrays: Mapping[str, Any],
+    outlier_mixture: bool,
+    error_floor: bool = True,
+) -> dict[str, Any]:
     params, covariance = _astrometry_curve_fit(arrays)
     stationary_ra = float(np.nanmedian(np.asarray(arrays["y_ra"], dtype=float)))
     stationary_dec = float(np.nanmedian(np.asarray(arrays["y_dec"], dtype=float)))
     mixture_weight = 1.0
     outlier_scale_ra, outlier_scale_dec = _astrometry_outlier_scales(arrays)
     responsibilities = np.ones(np.asarray(arrays["t"]).size, dtype=float)
+    error_floor_ra = 0.0
+    error_floor_dec = 0.0
+
+    if error_floor:
+        error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
+        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+        params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
+    else:
+        working_arrays = dict(arrays)
 
     if outlier_mixture:
         mixture_weight = 0.8
@@ -11297,13 +13082,20 @@ def _astrometry_scipy_fit(arrays: Mapping[str, Any], outlier_mixture: bool) -> d
                 mixture_weight,
                 outlier_scale_ra,
                 outlier_scale_dec,
+                error_floor_ra=error_floor_ra,
+                error_floor_dec=error_floor_dec,
             )
-            params, covariance = _astrometry_curve_fit(arrays, p0=params, sigma_scale=responsibilities)
+            if error_floor:
+                error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
+                working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+            params, covariance = _astrometry_curve_fit(working_arrays, p0=params, sigma_scale=responsibilities)
             stationary_ra, stationary_dec = _astrometry_stationary_offsets(
                 arrays,
                 responsibilities,
                 outlier_scale_ra,
                 outlier_scale_dec,
+                error_floor_ra=error_floor_ra,
+                error_floor_dec=error_floor_dec,
             )
             mixture_weight = float(np.clip(np.nanmean(responsibilities), 0.05, 0.98))
         responsibilities = _astrometry_mixture_responsibilities(
@@ -11314,7 +13106,14 @@ def _astrometry_scipy_fit(arrays: Mapping[str, Any], outlier_mixture: bool) -> d
             mixture_weight,
             outlier_scale_ra,
             outlier_scale_dec,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
         )
+    elif error_floor:
+        for _ in range(4):
+            error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
+            working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+            params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
 
     return {
         "params": params,
@@ -11325,6 +13124,8 @@ def _astrometry_scipy_fit(arrays: Mapping[str, Any], outlier_mixture: bool) -> d
         "mixture_weight": mixture_weight,
         "outlier_scale_ra": outlier_scale_ra,
         "outlier_scale_dec": outlier_scale_dec,
+        "error_floor_ra": error_floor_ra,
+        "error_floor_dec": error_floor_dec,
     }
 
 
@@ -11367,6 +13168,7 @@ def _astrometry_ultranest_fit(
     arrays: Mapping[str, Any],
     seed_fit: Mapping[str, Any],
     outlier_mixture: bool,
+    error_floor: bool = True,
 ) -> dict[str, Any]:
     if not _astrometry_ultranest_available():
         raise RuntimeError("UltraNest is not installed in this Python environment.")
@@ -11381,12 +13183,16 @@ def _astrometry_ultranest_fit(
     mixture_weight = float(seed_fit.get("mixture_weight") if seed_fit.get("mixture_weight") is not None else 0.8)
     outlier_scale_ra = float(seed_fit.get("outlier_scale_ra") if seed_fit.get("outlier_scale_ra") is not None else _astrometry_outlier_scales(arrays)[0])
     outlier_scale_dec = float(seed_fit.get("outlier_scale_dec") if seed_fit.get("outlier_scale_dec") is not None else _astrometry_outlier_scales(arrays)[1])
+    error_floor_ra = max(float(seed_fit.get("error_floor_ra") or 0.0), 0.0) if error_floor else 0.0
+    error_floor_dec = max(float(seed_fit.get("error_floor_dec") or 0.0), 0.0) if error_floor else 0.0
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     s_ra = np.asarray(arrays["s_ra"], dtype=float)
     s_dec = np.asarray(arrays["s_dec"], dtype=float)
-    sig_ra_out = np.sqrt(s_ra**2 + outlier_scale_ra**2)
-    sig_dec_out = np.sqrt(s_dec**2 + outlier_scale_dec**2)
+    sig_ra_mov = np.sqrt(s_ra**2 + error_floor_ra**2)
+    sig_dec_mov = np.sqrt(s_dec**2 + error_floor_dec**2)
+    sig_ra_out = np.sqrt(sig_ra_mov**2 + outlier_scale_ra**2)
+    sig_dec_out = np.sqrt(sig_dec_mov**2 + outlier_scale_dec**2)
 
     def transform(unit_cube: Any) -> list[float]:
         u = np.asarray(unit_cube, dtype=float)
@@ -11395,8 +13201,8 @@ def _astrometry_ultranest_fit(
     def loglike(theta: Any) -> float:
         ra_model, dec_model = _astrometry_model_from_params(arrays, theta)
         mov = (
-            -0.5 * (((y_ra - ra_model) / s_ra) ** 2 + ((y_dec - dec_model) / s_dec) ** 2)
-            - np.log(2.0 * math.pi * s_ra * s_dec)
+            -0.5 * (((y_ra - ra_model) / sig_ra_mov) ** 2 + ((y_dec - dec_model) / sig_dec_mov) ** 2)
+            - np.log(2.0 * math.pi * sig_ra_mov * sig_dec_mov)
         )
         if not outlier_mixture:
             return float(np.nansum(mov))
@@ -11435,6 +13241,8 @@ def _astrometry_ultranest_fit(
             mixture_weight,
             outlier_scale_ra,
             outlier_scale_dec,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
         )
         if outlier_mixture
         else np.ones(np.asarray(arrays["t"]).size, dtype=float)
@@ -11448,6 +13256,8 @@ def _astrometry_ultranest_fit(
         "mixture_weight": mixture_weight,
         "outlier_scale_ra": outlier_scale_ra,
         "outlier_scale_dec": outlier_scale_dec,
+        "error_floor_ra": error_floor_ra,
+        "error_floor_dec": error_floor_dec,
     }
 
 
@@ -11457,14 +13267,15 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
     if fitter not in {"scipy", "ultranest"}:
         raise ValueError("Fit method must be 'scipy' or 'ultranest'.")
     outlier_mixture = not _as_false(body.get("outlierMixture", body.get("outlier_mixture", True)))
+    error_floor = not _as_false(body.get("errorFloor", body.get("error_floor", True)))
 
-    scipy_fit = _astrometry_scipy_fit(arrays, outlier_mixture=outlier_mixture)
+    scipy_fit = _astrometry_scipy_fit(arrays, outlier_mixture=outlier_mixture, error_floor=error_floor)
     if fitter == "ultranest":
         capabilities = _astrometry_fit_capabilities(args)
         ultranest_capability = capabilities["fitters"]["ultranest"]
         if not ultranest_capability["enabled"]:
             raise RuntimeError(ultranest_capability["message"] or "UltraNest fitting is not available.")
-        raw_fit = _astrometry_ultranest_fit(arrays, scipy_fit, outlier_mixture=outlier_mixture)
+        raw_fit = _astrometry_ultranest_fit(arrays, scipy_fit, outlier_mixture=outlier_mixture, error_floor=error_floor)
     else:
         raw_fit = scipy_fit
 
@@ -11480,6 +13291,9 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
         mixture_weight=raw_fit.get("mixture_weight"),
         outlier_scale_ra=raw_fit.get("outlier_scale_ra"),
         outlier_scale_dec=raw_fit.get("outlier_scale_dec"),
+        error_floor=error_floor,
+        error_floor_ra=raw_fit.get("error_floor_ra"),
+        error_floor_dec=raw_fit.get("error_floor_dec"),
     )
     return {"fit": _pythonize(fit), "capabilities": _astrometry_fit_capabilities(args)}
 
@@ -20425,12 +22239,18 @@ RETRIEVAL_EXPLORER_REQUIRED_TABLES = (
     "moca_atmosphere_parameters",
     "moca_atmosphere_profile_quantities",
 )
+RETRIEVAL_EXPLORER_CONDENSATION_TABLES = (
+    "moca_condensates",
+    "moca_condensation_curve_sets",
+    "data_condensation_curves",
+    "data_condensation_curve_points",
+)
 
 
 def _retrieval_cache_key(args: dict[str, Any], *parts: Any) -> str:
     cfg = _db_config(args)
     return "|".join([
-        "retrieval-explorer-v1",
+        "retrieval-explorer-v2",
         str(cfg.get("host") or ""),
         str(cfg.get("port") or ""),
         str(cfg.get("username") or ""),
@@ -20457,6 +22277,16 @@ def _retrieval_missing_tables(conn) -> list[str]:
     return [table for table in RETRIEVAL_EXPLORER_REQUIRED_TABLES if not _db_table_exists(conn, table)]
 
 
+def _retrieval_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 def _retrieval_option_label(row: Mapping[str, Any]) -> str:
     designation = row.get("designation") or row.get("object_designation") or f"oid{row.get('moca_oid') or '?'}"
     source = row.get("bibcode") or row.get("moca_pid") or "unknown source"
@@ -20480,6 +22310,220 @@ def _retrieval_search_rows_to_options(rows: list[dict[str, Any]]) -> list[dict[s
         item["label"] = _retrieval_option_label(item)
         options.append(item)
     return options
+
+
+def _retrieval_object_fundamental_row(
+    source: Mapping[str, Any],
+    *,
+    source_table: str,
+    moca_atparid: str,
+    parameter_name: str,
+    parameter_symbol: str,
+    value: float | None,
+    value_unc: float | None,
+    value_unit: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    row = {
+        "id": source.get("id"),
+        "atmosphere_structure_id": None,
+        "moca_atparid": moca_atparid,
+        "parameter_index": 0,
+        "component_kind": "total",
+        "component_label": "",
+        "species_formula": "",
+        "pressure_bar": None,
+        "log10_pressure_bar": None,
+        "wavelength_um": None,
+        "wavelength_min_um": None,
+        "wavelength_max_um": None,
+        "value": value,
+        "value_unc": value_unc,
+        "value_unc_pos": None,
+        "value_unc_neg": None,
+        "value_p2p4": None,
+        "value_p16": None,
+        "value_p50": None,
+        "value_p84": None,
+        "value_p97p6": None,
+        "value_text": None,
+        "value_unit": value_unit,
+        "is_upper_limit": 0,
+        "comments": source.get("comments"),
+        "parameter_name": parameter_name,
+        "parameter_symbol": parameter_symbol,
+        "parameter_kind": "derived_atmosphere",
+        "value_space": "linear",
+        "default_unit": value_unit,
+        "is_logarithmic": 0,
+        "parameter_description": f"Object-level {parameter_name.lower()} matched to this retrieval by moca_oid and moca_pid.",
+        "moca_oid": source.get("moca_oid"),
+        "moca_pid": source.get("moca_pid"),
+        "bibcode": source.get("bibcode"),
+        "quality": source.get("quality"),
+        "ignored": source.get("ignored"),
+        "adopted": source.get("adopted"),
+        "is_public": source.get("is_public"),
+        "source_table": source_table,
+        "fallback_source": "object_level_same_oid_pid",
+    }
+    return row
+
+
+def _load_retrieval_object_fundamentals_from_db(
+    args: dict[str, Any],
+    moca_oid: int,
+    moca_pid: str,
+) -> dict[str, Any]:
+    include_ignored = _as_bool(args.get("include_ignored") or args.get("show_ignored"))
+    moca_pid = str(moca_pid or "").strip()
+    if not moca_oid or not moca_pid:
+        return {
+            "fundamentalParameters": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "private_db": _is_private_db(args),
+                "include_ignored": include_ignored,
+                "message": "moca_oid and moca_pid are required.",
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }
+    cache_key = _retrieval_cache_key(args, "object-fundamentals", moca_oid, moca_pid, include_ignored)
+    now = time.time()
+    cached = _RETRIEVAL_EXPLORER_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    ignored_clause = "" if include_ignored else "AND COALESCE(ignored, 0) = 0"
+    engine = _engine(_connection_string(args))
+    rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        if _db_table_exists(conn, "data_teff"):
+            for row in _records(_read_sql(conn, f"""
+                SELECT id, moca_oid, moca_pid, bibcode, teff_k, teff_k_unc,
+                    quality, ignored, adopted, is_public, comments
+                FROM data_teff
+                WHERE moca_oid = :moca_oid
+                    AND moca_pid = :moca_pid
+                    {ignored_clause}
+                ORDER BY COALESCE(adopted, 0) DESC, id DESC
+                LIMIT 1
+            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
+                out = _retrieval_object_fundamental_row(
+                    row,
+                    source_table="data_teff",
+                    moca_atparid="TEFF_K",
+                    parameter_name="Effective temperature",
+                    parameter_symbol="Teff",
+                    value=_retrieval_float_or_none(row.get("teff_k")),
+                    value_unc=_retrieval_float_or_none(row.get("teff_k_unc")),
+                    value_unit="K",
+                )
+                if out is not None:
+                    rows.append(out)
+        if _db_table_exists(conn, "data_masses"):
+            for row in _records(_read_sql(conn, f"""
+                SELECT id, moca_oid, moca_pid, bibcode, mass_msun, mass_msun_unc,
+                    mass_msun_unc_pos, mass_msun_unc_neg, quality, ignored,
+                    adopted, is_public, comments
+                FROM data_masses
+                WHERE moca_oid = :moca_oid
+                    AND moca_pid = :moca_pid
+                    {ignored_clause}
+                ORDER BY COALESCE(adopted, 0) DESC, id DESC
+                LIMIT 1
+            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
+                unc = _retrieval_float_or_none(row.get("mass_msun_unc"))
+                unc_pos = _retrieval_float_or_none(row.get("mass_msun_unc_pos"))
+                unc_neg = _retrieval_float_or_none(row.get("mass_msun_unc_neg"))
+                out = _retrieval_object_fundamental_row(
+                    row,
+                    source_table="data_masses",
+                    moca_atparid="MASS_MJUP",
+                    parameter_name="Mass",
+                    parameter_symbol="M",
+                    value=(
+                        _retrieval_float_or_none(row.get("mass_msun")) * BD_EVOLUTION_MSUN_TO_MJUP
+                        if _retrieval_float_or_none(row.get("mass_msun")) is not None else None
+                    ),
+                    value_unc=(
+                        unc * BD_EVOLUTION_MSUN_TO_MJUP
+                        if unc is not None else None
+                    ),
+                    value_unit="Mjup",
+                )
+                if out is not None:
+                    out["value_unc_pos"] = unc_pos * BD_EVOLUTION_MSUN_TO_MJUP if unc_pos is not None else None
+                    out["value_unc_neg"] = unc_neg * BD_EVOLUTION_MSUN_TO_MJUP if unc_neg is not None else None
+                    rows.append(out)
+        if _db_table_exists(conn, "data_radii"):
+            for row in _records(_read_sql(conn, f"""
+                SELECT id, moca_oid, moca_pid, bibcode, radius_rsun, radius_rsun_unc,
+                    quality, ignored, adopted, is_public, comments
+                FROM data_radii
+                WHERE moca_oid = :moca_oid
+                    AND moca_pid = :moca_pid
+                    {ignored_clause}
+                ORDER BY COALESCE(adopted, 0) DESC, id DESC
+                LIMIT 1
+            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
+                radius = _retrieval_float_or_none(row.get("radius_rsun"))
+                radius_unc = _retrieval_float_or_none(row.get("radius_rsun_unc"))
+                out = _retrieval_object_fundamental_row(
+                    row,
+                    source_table="data_radii",
+                    moca_atparid="RADIUS_RJUP",
+                    parameter_name="Radius",
+                    parameter_symbol="R",
+                    value=radius / BD_EVOLUTION_RJUP_TO_RSUN if radius is not None else None,
+                    value_unc=radius_unc / BD_EVOLUTION_RJUP_TO_RSUN if radius_unc is not None else None,
+                    value_unit="Rjup",
+                )
+                if out is not None:
+                    rows.append(out)
+        if _db_table_exists(conn, "data_logg"):
+            for row in _records(_read_sql(conn, f"""
+                SELECT id, moca_oid, moca_pid, bibcode, logg, logg_unc,
+                    quality, ignored, adopted, is_public, comments
+                FROM data_logg
+                WHERE moca_oid = :moca_oid
+                    AND moca_pid = :moca_pid
+                    {ignored_clause}
+                ORDER BY COALESCE(adopted, 0) DESC, id DESC
+                LIMIT 1
+            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
+                out = _retrieval_object_fundamental_row(
+                    row,
+                    source_table="data_logg",
+                    moca_atparid="LOGG_CGS",
+                    parameter_name="Surface gravity",
+                    parameter_symbol="logg",
+                    value=_retrieval_float_or_none(row.get("logg")),
+                    value_unc=_retrieval_float_or_none(row.get("logg_unc")),
+                    value_unit="dex(cgs)",
+                )
+                if out is not None:
+                    rows.append(out)
+
+    order = {"TEFF_K": 0, "MASS_MJUP": 1, "RADIUS_RJUP": 2, "LOGG_CGS": 3}
+    rows.sort(key=lambda row: order.get(str(row.get("moca_atparid") or ""), 99))
+    payload = {
+        "fundamentalParameters": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(rows),
+            "private_db": _is_private_db(args),
+            "include_ignored": include_ignored,
+            "match": "moca_oid+moca_pid",
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RETRIEVAL_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
 
 
 def _mock_retrieval_search(args: dict[str, Any]) -> dict[str, Any]:
@@ -20549,6 +22593,91 @@ def _mock_retrieval_search(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
+
+
+def _mock_retrieval_condensation_curves() -> list[dict[str, Any]]:
+    log_pressures = np.linspace(-6.0, 3.0, 19)
+    h2o_temperatures = [
+        158.19, 163.05, 168.22, 173.73, 179.60, 185.87, 192.59,
+        199.81, 207.59, 215.99, 225.10, 235.00, 245.81, 257.67,
+        270.73, 286.98, 306.03, 328.21, 354.41,
+    ]
+    specs = [
+        {
+            "moca_ccurveid": "FE_METAL_VISSCHER2010_SOLAR",
+            "moca_condid": "fe_metal",
+            "moca_ccsetid": "visscher2010_solar_analytic",
+            "curve_label": "Fe metal condensation",
+            "condensate_name": "Iron metal",
+            "condensate_formula": "Fe",
+            "mineral_name": "iron",
+            "phase_label": "metal_solid",
+            "source_equation_label": "Visscher2010 Eq.2",
+            "source_bibcode": "2010ApJ...716.1060V",
+            "temperatures": [float(10000.0 / (5.44 - 0.48 * float(logp))) for logp in log_pressures],
+        },
+        {
+            "moca_ccurveid": "FORSTERITE_MG2SIO4_VISSCHER2010_SOLAR",
+            "moca_condid": "forsterite_mg2sio4",
+            "moca_ccsetid": "visscher2010_solar_analytic",
+            "curve_label": "Forsterite Mg2SiO4 condensation",
+            "condensate_name": "Forsterite",
+            "condensate_formula": "Mg2SiO4",
+            "mineral_name": "forsterite",
+            "phase_label": "solid",
+            "source_equation_label": "Visscher2010 Eq.18",
+            "source_bibcode": "2010ApJ...716.1060V",
+            "temperatures": [float(10000.0 / (5.89 - 0.37 * float(logp))) for logp in log_pressures],
+        },
+        {
+            "moca_ccurveid": "ENSTATITE_MGSIO3_VISSCHER2010_SOLAR",
+            "moca_condid": "enstatite_mgsio3",
+            "moca_ccsetid": "visscher2010_solar_analytic",
+            "curve_label": "Enstatite MgSiO3 condensation",
+            "condensate_name": "Enstatite",
+            "condensate_formula": "MgSiO3",
+            "mineral_name": "enstatite",
+            "phase_label": "solid",
+            "source_equation_label": "Visscher2010 Eq.20",
+            "source_bibcode": "2010ApJ...716.1060V",
+            "temperatures": [float(10000.0 / (6.26 - 0.35 * float(logp))) for logp in log_pressures],
+        },
+        {
+            "moca_ccurveid": "H2O_ICE_LIQUID_MURPHYKOOP2005_XH2O5E4",
+            "moca_condid": "h2o_ice_liquid",
+            "moca_ccsetid": "h2o_murphykoop2005_xh2o5e4_starter",
+            "curve_label": "H2O ice/liquid condensation starter",
+            "condensate_name": "Water",
+            "condensate_formula": "H2O",
+            "mineral_name": None,
+            "phase_label": "ice_or_liquid",
+            "source_equation_label": "MurphyKoop2005",
+            "source_bibcode": "2005QJRMS.131.1539M",
+            "temperatures": h2o_temperatures,
+        },
+    ]
+    curves: list[dict[str, Any]] = []
+    for spec in specs:
+        temperatures = spec.pop("temperatures")
+        points = [
+            {
+                "source_point_index": index,
+                "pressure_bar": float(10.0 ** float(log_pressure)),
+                "log10_pressure_bar": float(log_pressure),
+                "temperature_k": float(temperature),
+                "point_source_kind": "mock_starter_curve",
+            }
+            for index, (log_pressure, temperature) in enumerate(zip(log_pressures, temperatures, strict=False), start=1)
+        ]
+        curves.append({
+            **spec,
+            "curve_status": "active",
+            "transition_label": "gas_to_condensed",
+            "pressure_unit": "bar",
+            "temperature_unit": "K",
+            "points": points,
+        })
+    return curves
 
 
 def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[str, Any]:
@@ -20724,6 +22853,7 @@ def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[st
         {posterior_params[index]: float(value) for index, value in enumerate(row)}
         for row in samples
     ]
+    condensation_curves = _mock_retrieval_condensation_curves()
     atmosphere = {
         "id": int(atmosphere_id),
         "atmosphere_structure_id": int(atmosphere_id),
@@ -20731,6 +22861,8 @@ def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[st
         "designation": "SIMP J013656.5+093347.3",
         "moca_pid": "Nase25",
         "bibcode": "2025A&A...702A...1N",
+        "publication_name": "Nasedkin et al. 2025",
+        "publication_bibcode": "2025A&A...702A...1N",
         "structure_kind": "phase_resolved_retrieval",
         "retrieval_code": "petitRADTRANS retrieval",
         "retrieval_model": "full-rotation fiducial retrieval",
@@ -20748,6 +22880,7 @@ def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[st
         "profileRows": [*profiles, *contribution_rows],
         "cloudParameters": cloud_parameters,
         "scalarParameters": scalar_parameters,
+        "condensationCurves": condensation_curves,
         "abundances": abundances,
         "comparisonAbundances": comparison,
         "solarReferences": [
@@ -20776,6 +22909,10 @@ def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[st
             "mock": True,
             "profile_count": len(profiles),
             "contribution_count": len(contribution_rows),
+            "scalar_parameter_count": len(scalar_parameters),
+            "cloud_parameter_count": len(cloud_parameters),
+            "condensation_curve_count": len(condensation_curves),
+            "condensation_curve_point_count": sum(len(curve.get("points") or []) for curve in condensation_curves),
             "abundance_count": len(abundances),
             "comparison_abundance_count": len(comparison),
         },
@@ -20928,6 +23065,157 @@ def _load_retrieval_search_from_db(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _retrieval_select_column(alias: str, columns: set[str], column: str, output: str | None = None) -> str:
+    out = output or column
+    if column in columns:
+        return f"{alias}.`{column}` AS `{out}`"
+    return f"NULL AS `{out}`"
+
+
+def _load_retrieval_condensation_curves_from_db(conn) -> list[dict[str, Any]]:
+    if not all(_db_table_exists(conn, table) for table in RETRIEVAL_EXPLORER_CONDENSATION_TABLES):
+        return []
+    curve_cols = _db_table_columns(conn, "data_condensation_curves")
+    point_cols = _db_table_columns(conn, "data_condensation_curve_points")
+    condensate_cols = _db_table_columns(conn, "moca_condensates")
+    set_cols = _db_table_columns(conn, "moca_condensation_curve_sets")
+    if not {"id", "moca_ccurveid", "moca_condid", "moca_ccsetid"}.issubset(curve_cols):
+        return []
+    if not {"condensation_curve_id", "pressure_bar", "temperature_k"}.issubset(point_cols):
+        return []
+    if "moca_condid" not in condensate_cols or "moca_ccsetid" not in set_cols:
+        return []
+
+    select_terms = [
+        "dcc.`id` AS `condensation_curve_id`",
+        "dcc.`moca_ccurveid` AS `moca_ccurveid`",
+        "dcc.`moca_condid` AS `moca_condid`",
+        "dcc.`moca_ccsetid` AS `moca_ccsetid`",
+        _retrieval_select_column("dcc", curve_cols, "curve_label"),
+        _retrieval_select_column("dcc", curve_cols, "curve_status"),
+        _retrieval_select_column("dcc", curve_cols, "transition_label"),
+        _retrieval_select_column("dcc", curve_cols, "phase_label"),
+        _retrieval_select_column("dcc", curve_cols, "source_equation_label"),
+        _retrieval_select_column("dcc", curve_cols, "valid_log10_pressure_bar_min"),
+        _retrieval_select_column("dcc", curve_cols, "valid_log10_pressure_bar_max"),
+        _retrieval_select_column("dcc", curve_cols, "comments", "curve_comments"),
+        _retrieval_select_column("mc", condensate_cols, "display_name", "condensate_name"),
+        _retrieval_select_column("mc", condensate_cols, "condensate_formula"),
+        _retrieval_select_column("mc", condensate_cols, "mineral_name"),
+        _retrieval_select_column("mc", condensate_cols, "condensate_kind"),
+        _retrieval_select_column("ccs", set_cols, "set_name"),
+        _retrieval_select_column("ccs", set_cols, "source_bibcode", "set_source_bibcode"),
+        _retrieval_select_column("ccs", set_cols, "source_doi"),
+        _retrieval_select_column("ccs", set_cols, "source_url"),
+        _retrieval_select_column("ccs", set_cols, "chemistry_assumption"),
+        _retrieval_select_column("ccs", set_cols, "pressure_unit"),
+        _retrieval_select_column("ccs", set_cols, "temperature_unit"),
+        _retrieval_select_column("dccp", point_cols, "id", "condensation_curve_point_id"),
+        _retrieval_select_column("dccp", point_cols, "source_point_index"),
+        "dccp.`pressure_bar` AS `pressure_bar`",
+        _retrieval_select_column("dccp", point_cols, "log10_pressure_bar"),
+        "dccp.`temperature_k` AS `temperature_k`",
+        _retrieval_select_column("dccp", point_cols, "point_source_kind"),
+    ]
+    ignored_clauses = []
+    for alias, columns in (
+        ("dcc", curve_cols),
+        ("dccp", point_cols),
+        ("mc", condensate_cols),
+        ("ccs", set_cols),
+    ):
+        if "ignored" in columns:
+            ignored_clauses.append(f"COALESCE({alias}.`ignored`, 0) = 0")
+    where_sql = " AND ".join(ignored_clauses) if ignored_clauses else "1 = 1"
+    order_terms = []
+    if "curve_label" in curve_cols:
+        order_terms.append("dcc.`curve_label`")
+    order_terms.append("dcc.`moca_ccurveid`")
+    if "source_point_index" in point_cols:
+        order_terms.append("dccp.`source_point_index`")
+    if "log10_pressure_bar" in point_cols:
+        order_terms.append("dccp.`log10_pressure_bar`")
+    order_terms.append("dccp.`pressure_bar`")
+    try:
+        rows = _records(_read_sql(conn, f"""
+            SELECT
+                {", ".join(select_terms)}
+            FROM data_condensation_curves dcc
+            JOIN moca_condensates mc
+                ON mc.`moca_condid` = dcc.`moca_condid`
+            JOIN moca_condensation_curve_sets ccs
+                ON ccs.`moca_ccsetid` = dcc.`moca_ccsetid`
+            JOIN data_condensation_curve_points dccp
+                ON dccp.`condensation_curve_id` = dcc.`id`
+            WHERE {where_sql}
+            ORDER BY {", ".join(order_terms)}
+        """))
+    except Exception:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        pressure = _retrieval_float_or_none(row.get("pressure_bar"))
+        temperature = _retrieval_float_or_none(row.get("temperature_k"))
+        if pressure is None or pressure <= 0 or temperature is None:
+            continue
+        curve_key = str(row.get("moca_ccurveid") or row.get("condensation_curve_id") or "").strip()
+        if not curve_key:
+            continue
+        curve = grouped.get(curve_key)
+        if curve is None:
+            curve = {
+                "condensation_curve_id": _retrieval_int_value(row.get("condensation_curve_id")),
+                "moca_ccurveid": row.get("moca_ccurveid"),
+                "moca_condid": row.get("moca_condid"),
+                "moca_ccsetid": row.get("moca_ccsetid"),
+                "curve_label": row.get("curve_label"),
+                "curve_status": row.get("curve_status"),
+                "transition_label": row.get("transition_label"),
+                "phase_label": row.get("phase_label"),
+                "source_equation_label": row.get("source_equation_label"),
+                "valid_log10_pressure_bar_min": _retrieval_float_or_none(row.get("valid_log10_pressure_bar_min")),
+                "valid_log10_pressure_bar_max": _retrieval_float_or_none(row.get("valid_log10_pressure_bar_max")),
+                "curve_comments": row.get("curve_comments"),
+                "condensate_name": row.get("condensate_name"),
+                "condensate_formula": row.get("condensate_formula"),
+                "mineral_name": row.get("mineral_name"),
+                "condensate_kind": row.get("condensate_kind"),
+                "set_name": row.get("set_name"),
+                "source_bibcode": row.get("set_source_bibcode"),
+                "source_doi": row.get("source_doi"),
+                "source_url": row.get("source_url"),
+                "chemistry_assumption": row.get("chemistry_assumption"),
+                "pressure_unit": row.get("pressure_unit") or "bar",
+                "temperature_unit": row.get("temperature_unit") or "K",
+                "points": [],
+            }
+            grouped[curve_key] = curve
+        log_pressure = _retrieval_float_or_none(row.get("log10_pressure_bar"))
+        if log_pressure is None:
+            log_pressure = math.log10(pressure)
+        curve["points"].append({
+            "condensation_curve_point_id": _retrieval_int_value(row.get("condensation_curve_point_id")),
+            "source_point_index": _retrieval_int_value(row.get("source_point_index")),
+            "pressure_bar": pressure,
+            "log10_pressure_bar": log_pressure,
+            "temperature_k": temperature,
+            "point_source_kind": row.get("point_source_kind"),
+        })
+
+    curves = []
+    for curve in grouped.values():
+        curve["points"].sort(key=lambda point: (
+            point.get("source_point_index") is None,
+            point.get("source_point_index") or 0,
+            point.get("log10_pressure_bar") or 0,
+        ))
+        if len(curve["points"]) >= 2:
+            curves.append(curve)
+    curves.sort(key=lambda curve: str(curve.get("curve_label") or curve.get("moca_ccurveid") or ""))
+    return curves
+
+
 def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int) -> dict[str, Any]:
     include_ignored = _as_bool(args.get("include_ignored") or args.get("show_ignored"))
     cache_key = _retrieval_cache_key(args, "atmosphere", atmosphere_id, include_ignored)
@@ -20950,6 +23238,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                 "profileRows": [],
                 "cloudParameters": [],
                 "scalarParameters": [],
+                "condensationCurves": [],
                 "abundances": [],
                 "comparisonAbundances": [],
                 "solarReferences": _retrieval_solar_references(),
@@ -20967,6 +23256,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
             SELECT
                 das.*,
                 mo.designation,
+                mp.name AS publication_name,
                 mp.bibcode AS publication_bibcode,
                 ms.spectrum_name,
                 ms.instrument_name AS spectrum_instrument_name,
@@ -20990,6 +23280,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                 "profileRows": [],
                 "cloudParameters": [],
                 "scalarParameters": [],
+                "condensationCurves": [],
                 "abundances": [],
                 "comparisonAbundances": [],
                 "solarReferences": _retrieval_solar_references(),
@@ -21063,6 +23354,30 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                     ma.default_unit,
                     ma.is_logarithmic,
                     mo.designation,
+                    (
+                        SELECT COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, ''))
+                        FROM data_spectral_types dst
+                        WHERE dst.moca_oid = dom.moca_oid
+                            AND COALESCE(dst.ignored, 0) = 0
+                            AND COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, '')) IS NOT NULL
+                        ORDER BY COALESCE(dst.adopted, 0) DESC,
+                            COALESCE(dst.public_adopted, 0) DESC,
+                            COALESCE(dst.photometric_estimate, 0) ASC,
+                            dst.id DESC
+                        LIMIT 1
+                    ) AS spectral_type,
+                    (
+                        SELECT dst.spectral_type_number
+                        FROM data_spectral_types dst
+                        WHERE dst.moca_oid = dom.moca_oid
+                            AND COALESCE(dst.ignored, 0) = 0
+                            AND dst.spectral_type_number IS NOT NULL
+                        ORDER BY COALESCE(dst.adopted, 0) DESC,
+                            COALESCE(dst.public_adopted, 0) DESC,
+                            COALESCE(dst.photometric_estimate, 0) ASC,
+                            dst.id DESC
+                        LIMIT 1
+                    ) AS spectral_type_number,
                     COALESCE(dom.bibcode, mp.bibcode) AS source_bibcode,
                     CASE WHEN dom.moca_pid = :moca_pid THEN 1 ELSE 0 END AS same_publication,
                     CASE
@@ -21101,6 +23416,30 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                         dom.id,
                         dom.moca_oid,
                         mo.designation,
+                        (
+                            SELECT COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, ''))
+                            FROM data_spectral_types dst
+                            WHERE dst.moca_oid = dom.moca_oid
+                                AND COALESCE(dst.ignored, 0) = 0
+                                AND COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, '')) IS NOT NULL
+                            ORDER BY COALESCE(dst.adopted, 0) DESC,
+                                COALESCE(dst.public_adopted, 0) DESC,
+                                COALESCE(dst.photometric_estimate, 0) ASC,
+                                dst.id DESC
+                            LIMIT 1
+                        ) AS spectral_type,
+                        (
+                            SELECT dst.spectral_type_number
+                            FROM data_spectral_types dst
+                            WHERE dst.moca_oid = dom.moca_oid
+                                AND COALESCE(dst.ignored, 0) = 0
+                                AND dst.spectral_type_number IS NOT NULL
+                            ORDER BY COALESCE(dst.adopted, 0) DESC,
+                                COALESCE(dst.public_adopted, 0) DESC,
+                                COALESCE(dst.photometric_estimate, 0) ASC,
+                                dst.id DESC
+                            LIMIT 1
+                        ) AS spectral_type_number,
                         dom.moca_pid,
                         COALESCE(dom.bibcode, mp.bibcode) AS source_bibcode,
                         dom.abundance_type,
@@ -21159,6 +23498,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                 LIMIT 100
             """, {"moca_oid": moca_oid}))
             sibling_atmospheres = _retrieval_search_rows_to_options(sibling_rows)
+        condensation_curves = _load_retrieval_condensation_curves_from_db(conn)
 
     temp_profiles = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "TEMP_K"]
     contribution_rows = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "CONTRIB_FUNC"]
@@ -21170,6 +23510,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
         "profileRows": profile_rows,
         "cloudParameters": cloud_rows,
         "scalarParameters": scalar_rows,
+        "condensationCurves": condensation_curves,
         "abundances": abundances,
         "comparisonAbundances": comparison_abundances,
         "solarReferences": _retrieval_solar_references(),
@@ -21191,6 +23532,8 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
             "contribution_count": len(contribution_rows),
             "scalar_parameter_count": len(scalar_rows),
             "cloud_parameter_count": len(cloud_rows),
+            "condensation_curve_count": len(condensation_curves),
+            "condensation_curve_point_count": sum(len(curve.get("points") or []) for curve in condensation_curves),
             "abundance_count": len(abundances),
             "comparison_abundance_count": len(comparison_abundances),
         },
@@ -21457,6 +23800,16 @@ def trueflow_age_pdfs_fast_page():
     return send_from_directory(STATIC_DIR, "trueflow_age_pdfs.html")
 
 
+@app.get("/moca-flows")
+@app.get("/moca_flows")
+@app.get("/mocaflows")
+@app.get("/js/moca-flows")
+@app.get("/js/moca_flows")
+@app.get("/js/mocaflows")
+def moca_flows_page():
+    return send_from_directory(STATIC_DIR, "moca_flows.html")
+
+
 @app.get("/legacy-radial-velocities")
 @app.get("/legacy_radial_velocities")
 @app.get("/legacy-rvs")
@@ -21566,6 +23919,7 @@ def retrieval_explorer_atmosphere(atmosphere_id: int):
             "profileRows": [],
             "cloudParameters": [],
             "scalarParameters": [],
+            "condensationCurves": [],
             "abundances": [],
             "comparisonAbundances": [],
             "solarReferences": _retrieval_solar_references(),
@@ -21574,6 +23928,43 @@ def retrieval_explorer_atmosphere(atmosphere_id: int):
             "posterior": {"available": False},
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "private_db": _is_private_db(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 500)
+
+
+@app.get("/api/retrieval-explorer/object-fundamentals/<int:moca_oid>/<moca_pid>")
+@app.get("/api/retrieval_explorer/object-fundamentals/<int:moca_oid>/<moca_pid>")
+@app.get("/js/api/retrieval-explorer/object-fundamentals/<int:moca_oid>/<moca_pid>")
+@app.get("/js/api/retrieval_explorer/object-fundamentals/<int:moca_oid>/<moca_pid>")
+def retrieval_explorer_object_fundamentals(moca_oid: int, moca_pid: str):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean({
+                "ok": True,
+                "source": "mock",
+                "fundamentalParameters": [],
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "row_count": 0,
+                    "private_db": True,
+                    "mock": True,
+                },
+                "cache": {"hit": False, "ttl_seconds": 0},
+            })
+        payload = _load_retrieval_object_fundamentals_from_db(args, int(moca_oid), str(moca_pid or ""))
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return _jsonify_clean({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "fundamentalParameters": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
                 "private_db": _is_private_db(args),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
@@ -21598,14 +23989,14 @@ def retrieval_explorer_clear_cache():
 def bootstrap():
     args = dict(request.args)
     if args.get("mock") in {"1", "true", "yes"}:
-        payload = _mock_payload()
+        payload = _apply_mock_bdphot_association_highlights(_mock_payload(), args)
         return jsonify({"ok": True, "source": "mock", **payload})
 
     try:
         payload = _load_bootstrap_from_db(args)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
-        payload = _mock_payload()
+        payload = _apply_mock_bdphot_association_highlights(_mock_payload(), args)
         return jsonify({
             "ok": False,
             "source": "mock",
@@ -21629,7 +24020,7 @@ def preload():
 
     args = dict(request.args)
     if args.get("mock") in {"1", "true", "yes"}:
-        payload = _mock_payload()
+        payload = _apply_mock_bdphot_association_highlights(_mock_payload(), args)
         catalog = payload["catalog"]
         private_db = _is_private_db(args)
         include_photometric_spt = True
@@ -22617,8 +25008,12 @@ def moca_explorer_object_search():
 
 @app.get("/api/moca-explorer/associations/search")
 @app.get("/api/moca_explorer/associations/search")
+@app.get("/api/bd-colors/associations/search")
+@app.get("/api/bd_colors/associations/search")
 @app.get("/js/api/moca-explorer/associations/search")
 @app.get("/js/api/moca_explorer/associations/search")
+@app.get("/js/api/bd-colors/associations/search")
+@app.get("/js/api/bd_colors/associations/search")
 def moca_explorer_association_search():
     args = dict(request.args)
     query = args.get("q") or args.get("search") or ""
@@ -23074,14 +25469,19 @@ def xyzuvw_clear_cache():
 
 @app.get("/api/trueflow-age-pdfs/options")
 @app.get("/api/age-pdfs/options")
+@app.get("/api/moca-flows/options")
 @app.get("/js/api/trueflow-age-pdfs/options")
 @app.get("/js/api/age-pdfs/options")
+@app.get("/js/api/moca-flows/options")
 def trueflow_age_pdfs_options():
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
             return _jsonify_clean({"ok": True, "source": "mock", **_mock_tfage_options()})
-        payload = _load_tfage_options_from_db(args)
+        if "moca-flows" in str(request.path) or "mocaflows" in str(request.path):
+            payload = _load_mflows_options_from_db(args)
+        else:
+            payload = _load_tfage_options_from_db(args)
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return _jsonify_clean({
@@ -23096,8 +25496,10 @@ def trueflow_age_pdfs_options():
 
 @app.get("/api/trueflow-age-pdfs/search")
 @app.get("/api/age-pdfs/search")
+@app.get("/api/moca-flows/search")
 @app.get("/js/api/trueflow-age-pdfs/search")
 @app.get("/js/api/age-pdfs/search")
+@app.get("/js/api/moca-flows/search")
 def trueflow_age_pdfs_search():
     args = dict(request.args)
     query = args.get("q") or args.get("search") or ""
@@ -23136,6 +25538,48 @@ def trueflow_age_pdfs_search():
         }, 500)
 
 
+@app.get("/api/moca-flows/data")
+@app.get("/api/mocaflows/data")
+@app.get("/js/api/moca-flows/data")
+@app.get("/js/api/mocaflows/data")
+def moca_flows_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean({"ok": True, "source": "mock", **_mock_mflows_payload(args)})
+        payload = _load_mflows_payload_from_db(args)
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return _jsonify_clean({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": {
+                "scope": _tfage_scope(args),
+                "target": _tfage_target(args, _tfage_scope(args)),
+                "stack_mode": _mflows_requested_stack_mode(args),
+                "mh_treatment": _mflows_requested_mh_treatment(args),
+                "curve_role": _tfage_requested_curve_role(args),
+                "load_posteriors": _tfage_requested_curve_role(args) == "posterior",
+            },
+            "target": {},
+            "panels": [],
+            "curves": [],
+            "tableRows": [],
+            "adoptedAge": None,
+            "membershipAge": None,
+            "ageMeasurements": [],
+            "metallicity": _mflows_mh_treatment_payload(_mflows_requested_mh_treatment(args), None),
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "mocaflows_panel_count": 0,
+                "mocaflows_curve_count": 0,
+                "curve_role": _tfage_requested_curve_role(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 500)
+
+
 @app.get("/api/trueflow-age-pdfs/data")
 @app.get("/api/age-pdfs/data")
 @app.get("/js/api/trueflow-age-pdfs/data")
@@ -23155,16 +25599,19 @@ def trueflow_age_pdfs_data():
             "selection": {
                 "scope": _tfage_scope(args),
                 "target": _tfage_target(args, _tfage_scope(args)),
-                "load_posteriors": _tfage_load_posteriors(args),
+                "curve_role": _tfage_requested_curve_role(args),
+                "load_posteriors": _tfage_requested_curve_role(args) == "posterior",
             },
             "target": {},
             "curves": [],
             "tableRows": [],
+            "ageMeasurements": [],
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "age_row_count": 0,
                 "curve_count": 0,
                 "displayable_curve_count": 0,
+                "curve_role": _tfage_requested_curve_role(args),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }, 500)
@@ -23172,8 +25619,10 @@ def trueflow_age_pdfs_data():
 
 @app.post("/api/trueflow-age-pdfs/cache/clear")
 @app.post("/api/age-pdfs/cache/clear")
+@app.post("/api/moca-flows/cache/clear")
 @app.post("/js/api/trueflow-age-pdfs/cache/clear")
 @app.post("/js/api/age-pdfs/cache/clear")
+@app.post("/js/api/moca-flows/cache/clear")
 def trueflow_age_pdfs_clear_cache():
     age_count = len(_TRUEFLOW_AGE_CACHE)
     _TRUEFLOW_AGE_CACHE.clear()
@@ -23790,6 +26239,7 @@ def astrometry_clear_cache():
 def clear_cache():
     bootstrap_count = len(_BOOTSTRAP_CACHE)
     feature_count = len(_FEATURE_CACHE)
+    bdphot_static_rows_count = len(_BDPHOT_STATIC_ROWS_CACHE)
     spt_grid_count = len(_SPT_GRID_CACHE)
     spt_spectrum_count = len(_SPT_SPECTRUM_CACHE)
     spt_compare_count = len(_SPT_COMPARE_CACHE)
@@ -23812,6 +26262,7 @@ def clear_cache():
     column_metadata_count = len(_DB_COLUMNS_CACHE)
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
+    _BDPHOT_STATIC_ROWS_CACHE.clear()
     _SPT_GRID_CACHE.clear()
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
@@ -23837,6 +26288,7 @@ def clear_cache():
         "cleared": {
             "bootstrap": bootstrap_count,
             "features": feature_count,
+            "bdPhotometryStaticRows": bdphot_static_rows_count,
             "spectralTypingGrid": spt_grid_count,
             "spectralTypingSpectra": spt_spectrum_count,
             "spectralTypingComparisons": spt_compare_count,
