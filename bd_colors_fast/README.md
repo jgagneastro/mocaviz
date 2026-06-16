@@ -103,10 +103,9 @@ http://127.0.0.1:8061/rvbam-explorer?mock=1
   (`photometric_estimate = 0`). That path uses MOCAdb's existing
   `quicklook_adopted_sptn2` composite index.
 - Broader source queries are opt-in. Including photometric spectral types or
-  starting the spectral range before `L0` applies a safety cap of 1,000,000
-  objects by default. Override with `BD_COLORS_FAST_MAX_OBJECTS=300000` or a URL
-  parameter such as `?max_objects=300000`; use `max_objects=0` for an explicit
-  uncapped query.
+  starting the spectral range before `L0` applies a safety cap of 5,000 objects
+  by default. Numeric `max_objects` requests above that broad-query cap are
+  clamped; use `max_objects=0` for an explicit uncapped query.
 - The MOCAdb spectral typing page uses Flask JSON endpoints instead of Dash
   callbacks. The server caches the standards grid, raw spectra, and computed
   comparison payloads; the browser handles navigation, Plotly rendering, URL

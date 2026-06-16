@@ -22,7 +22,7 @@ const classColors = {
 const spectralClassLegendOrder = ["M", "L", "T", "Y"];
 const simplePhotometryPrefix = "simple:";
 const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
-const broadSampleMaxObjects = 1000000;
+const broadSampleMaxObjects = 5000;
 const spectralTypeJitterAmplitude = 0.3;
 const yDwarfRangePaddingFraction = 0.05;
 const ageColorbarLength = 0.7371;
@@ -685,7 +685,7 @@ function normalizeBroadSampleCap(params, forceBroad = usesBroadSample()) {
   const current = String(params.get("max_objects") || "").trim().toLowerCase();
   if (["0", "none", "uncapped", "all"].includes(current)) return;
   const value = Number(current);
-  if (!Number.isFinite(value) || value < broadSampleMaxObjects) {
+  if (!Number.isFinite(value) || value < 1 || value > broadSampleMaxObjects) {
     params.set("max_objects", String(broadSampleMaxObjects));
   }
 }

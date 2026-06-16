@@ -66,11 +66,9 @@ DEFAULT_DBNAME = "mocadb"
 MOCA_TEAM_USERS = {"collaborators", "management"}
 
 CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_CACHE_SECONDS", "900"))
-BROAD_QUERY_MAX_OBJECTS = 1000000
-OPTIONAL_QUERY_MAX_OBJECTS = max(
-    int(os.environ.get("BD_COLORS_FAST_OPTIONAL_MAX_OBJECTS", str(BROAD_QUERY_MAX_OBJECTS))),
-    BROAD_QUERY_MAX_OBJECTS,
-)
+BROAD_QUERY_MAX_OBJECTS = 5000
+OPTIONAL_QUERY_MAX_OBJECTS = max(1, int(os.environ.get("BD_COLORS_FAST_OPTIONAL_MAX_OBJECTS", str(BROAD_QUERY_MAX_OBJECTS))))
+SELECTED_OID_JOIN_THRESHOLD = max(1, int(os.environ.get("BD_COLORS_FAST_SELECTED_OID_JOIN_THRESHOLD", "1000")))
 DEFAULT_PHOTOMETRY_PSIDS = ("mko_jmag", "mko_kmag")
 SIMPLE_PHOTOMETRY_PREFIX = "simple:"
 SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
@@ -667,7 +665,7 @@ def _object_limit(args: dict[str, Any], spt_min: float, include_photometric_spt:
     except (TypeError, ValueError):
         value = OPTIONAL_QUERY_MAX_OBJECTS
     if is_broad_query:
-        value = max(value, OPTIONAL_QUERY_MAX_OBJECTS)
+        value = min(value, OPTIONAL_QUERY_MAX_OBJECTS)
     return max(1, min(value, 1000000))
 
 
@@ -704,6 +702,10 @@ def _oid_filter_sql(alias: str, oids: list[int]) -> str:
         return "0 = 1"
     oid_list = ",".join(str(int(oid)) for oid in oids)
     return f"{alias}.moca_oid IN ({oid_list})"
+
+
+def _should_use_selected_oid_join(oids: Sequence[int]) -> bool:
+    return len(oids) >= SELECTED_OID_JOIN_THRESHOLD
 
 
 def _simple_band_option_rows(counts: dict[str, int] | None = None) -> list[dict[str, Any]]:
@@ -1053,15 +1055,19 @@ def _selection_sql_parts(args: dict[str, Any]) -> tuple[str, dict[str, Any], str
     return range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause
 
 
-def _selected_oids_from_db(conn, args: dict[str, Any]) -> list[int]:
-    range_clause, range_params, _spt_label, _include_photometric_spt, _object_limit, limit_clause = _selection_sql_parts(args)
-    rows = _records(_read_sql(conn, """
+def _selected_oids_subquery_sql(range_clause: str, limit_clause: str) -> str:
+    return """
         SELECT dst.moca_oid
         FROM data_spectral_types dst
         WHERE dst.spectral_type_number IS NOT NULL
             AND {range_clause}
         ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
-    """.format(range_clause=range_clause, limit_clause=limit_clause), range_params))
+    """.format(range_clause=range_clause, limit_clause=limit_clause)
+
+
+def _selected_oids_from_db(conn, args: dict[str, Any]) -> list[int]:
+    range_clause, range_params, _spt_label, _include_photometric_spt, _object_limit, limit_clause = _selection_sql_parts(args)
+    rows = _records(_read_sql(conn, _selected_oids_subquery_sql(range_clause, limit_clause), range_params))
     return [int(row["moca_oid"]) for row in rows if row.get("moca_oid") is not None]
 
 
@@ -1107,6 +1113,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             return rows
 
         range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
+        selected_oids_subquery = _selected_oids_subquery_sql(range_clause, limit_clause)
 
         photometry_options = read_static_records("photometry_options", """
             SELECT moca_psid, name, system_band_simple
@@ -1231,7 +1238,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             ORDER BY dd.moca_oid, dd.photometric_estimate
         """.format(dd_oid_filter=dd_oid_filter, dd_phot_filter=dd_phot_filter))
 
-        photometry = read_records("photometry", """
+        photometry_select_sql = """
             SELECT
                 dp.moca_oid,
                 dp.moca_psid,
@@ -1247,19 +1254,49 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     dp.calculation_method,
                     'No reference'
                 )) AS photometry_ref
-            FROM data_photometry dp
-            JOIN moca_photometry_systems ps
-                ON ps.moca_psid = dp.moca_psid
-            LEFT JOIN moca_publications phot_pub
-                ON phot_pub.moca_pid = dp.moca_pid
-            WHERE dp.adopted = 1
-                AND dp.magnitude IS NOT NULL
-                AND dp.magnitude_unc IS NOT NULL
-                AND {dp_phot_filter}
-                AND {dp_oid_filter}
-            GROUP BY dp.moca_oid, dp.moca_psid
-            ORDER BY dp.moca_oid, dp.moca_psid
-        """.format(dp_oid_filter=dp_oid_filter, dp_phot_filter=dp_phot_filter), dp_phot_params)
+        """
+        if _should_use_selected_oid_join(selected_oids):
+            photometry_params = {**range_params, **dp_phot_params}
+            photometry = read_records("photometry", """
+                {photometry_select_sql}
+                FROM ({selected_oids_subquery}) selected_oids
+                STRAIGHT_JOIN data_photometry dp
+                    ON dp.moca_oid = selected_oids.moca_oid
+                STRAIGHT_JOIN moca_photometry_systems ps
+                    ON ps.moca_psid = dp.moca_psid
+                LEFT JOIN moca_publications phot_pub
+                    ON phot_pub.moca_pid = dp.moca_pid
+                WHERE dp.adopted = 1
+                    AND dp.magnitude IS NOT NULL
+                    AND dp.magnitude_unc IS NOT NULL
+                    AND {dp_phot_filter}
+                GROUP BY dp.moca_oid, dp.moca_psid
+                ORDER BY dp.moca_oid, dp.moca_psid
+            """.format(
+                photometry_select_sql=photometry_select_sql,
+                selected_oids_subquery=selected_oids_subquery,
+                dp_phot_filter=dp_phot_filter,
+            ), photometry_params)
+        else:
+            photometry = read_records("photometry", """
+                {photometry_select_sql}
+                FROM data_photometry dp
+                JOIN moca_photometry_systems ps
+                    ON ps.moca_psid = dp.moca_psid
+                LEFT JOIN moca_publications phot_pub
+                    ON phot_pub.moca_pid = dp.moca_pid
+                WHERE dp.adopted = 1
+                    AND dp.magnitude IS NOT NULL
+                    AND dp.magnitude_unc IS NOT NULL
+                    AND {dp_phot_filter}
+                    AND {dp_oid_filter}
+                GROUP BY dp.moca_oid, dp.moca_psid
+                ORDER BY dp.moca_oid, dp.moca_psid
+            """.format(
+                photometry_select_sql=photometry_select_sql,
+                dp_oid_filter=dp_oid_filter,
+                dp_phot_filter=dp_phot_filter,
+            ), dp_phot_params)
 
         spectra = read_records("spectra", """
             SELECT
@@ -7552,8 +7589,10 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             params.update(highlight_oid_params)
             target_oid_predicate = f"mo.moca_oid IN ({highlight_oid_clause})"
             spt_clause = f"({spt_clause} OR {target_oid_predicate})"
+            highlight_order = f"CASE WHEN {target_oid_predicate} THEN 0 ELSE 1 END, mo.moca_oid"
         else:
             target_oid_predicate = "0 = 1"
+            highlight_order = "mo.moca_oid"
         if private_db and cbs_has_is_public:
             params["cbs_is_public"] = 0
         active_model_rows = _records(_read_sql(conn, f"""
@@ -7600,7 +7639,7 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 )
             """
         rows_df = _read_sql(conn, f"""
-            SELECT STRAIGHT_JOIN
+            SELECT
                 mo.designation,
                 mo.moca_oid,
                 spt.spectral_type AS spt,
@@ -7681,6 +7720,7 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 AND COALESCE(obj_age.age_myr, assoc_age.age_myr) IS NOT NULL
                 {ignored_membership_filter}
                 {companion_filter}
+            ORDER BY {highlight_order}
             LIMIT {max_objects}
         """, params)
         tracks, track_meta = _bd_evolution_load_tracks(conn)
@@ -21930,10 +21970,10 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
         if model_public_adopted_available
         else "(mbsm.adopted = 1 OR mbsm.moca_bsmdid IS NULL)"
     )
-    model_public_order = (
-        "COALESCE(mbsm.public_adopted, 0) DESC,"
+    model_public_sort_expr = (
+        "COALESCE(mbsm.public_adopted, 0)"
         if model_public_adopted_available
-        else ""
+        else "COALESCE(NULL, 0)"
     )
     is_public = 0 if private_db and cbs_has_is_public else None
     is_public_select = (
@@ -21945,93 +21985,150 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
     params: dict[str, Any] = {"moca_oid": moca_oid}
     if is_public is not None:
         params["is_public"] = 0
-    summary_df = _read_sql(conn, """
+    stored_rows = _records(_read_sql(conn, """
+        WITH summaries AS (
+            SELECT
+                cbs.id AS cbs_id,
+                cbs.moca_oid,
+                cbs.moca_aid,
+                cbs.moca_bsmdid,
+                mbsm.model_name,
+                mbsm.created_timestamp AS model_date,
+                mbsm.adopted AS model_adopted,
+                cbs.max_observables,
+                cbs.mode,
+                cbs.observables,
+                cbs.ya_prob,
+                cbs.list_prob_yas,
+                cbs.list_prob_yas AS all_prob_yas,
+                cbs.best_hyp,
+                cbs.best_ya,
+                cbs.d_opt,
+                cbs.ed_opt,
+                cbs.rv_opt,
+                cbs.erv_opt,
+                cbs.xyz_sep,
+                cbs.xyz_sig,
+                cbs.uvw_sep,
+                cbs.uvw_sig,
+                cbs.x_opt,
+                cbs.y_opt,
+                cbs.z_opt,
+                cbs.u_opt,
+                cbs.v_opt,
+                cbs.w_opt,
+                cbs.mahalanobis,
+                cbs.nobs,
+                cbs.origin,
+                {is_public_select},
+                cbs.modified_timestamp,
+                COALESCE(mbsm.adopted, 0) AS model_adopted_sort,
+                {model_public_sort_expr} AS model_public_adopted_sort
+            FROM calc_banyan_sigma cbs
+            LEFT JOIN moca_banyan_sigma_models mbsm
+                ON mbsm.moca_bsmdid = cbs.moca_bsmdid
+            WHERE cbs.moca_oid = :moca_oid
+                AND cbs.max_observables = 1
+                {is_public_filter}
+                AND {model_adopt_filter}
+            ORDER BY
+                COALESCE(mbsm.adopted, 0) DESC,
+                {model_public_sort_expr} DESC,
+                cbs.nobs DESC,
+                cbs.ya_prob DESC,
+                cbs.id DESC
+            LIMIT 8
+        )
         SELECT
-            cbs.id AS cbs_id,
-            cbs.moca_oid,
-            cbs.moca_aid,
-            cbs.moca_bsmdid,
-            mbsm.model_name,
-            mbsm.created_timestamp AS model_date,
-            mbsm.adopted AS model_adopted,
-            cbs.max_observables,
-            cbs.mode,
-            cbs.observables,
-            cbs.ya_prob,
-            cbs.list_prob_yas,
-            cbs.list_prob_yas AS all_prob_yas,
-            cbs.best_hyp,
-            cbs.best_ya,
-            cbs.d_opt,
-            cbs.ed_opt,
-            cbs.rv_opt,
-            cbs.erv_opt,
-            cbs.xyz_sep,
-            cbs.xyz_sig,
-            cbs.uvw_sep,
-            cbs.uvw_sig,
-            cbs.x_opt,
-            cbs.y_opt,
-            cbs.z_opt,
-            cbs.u_opt,
-            cbs.v_opt,
-            cbs.w_opt,
-            cbs.mahalanobis,
-            cbs.nobs,
-            cbs.origin,
-            {is_public_select},
-            cbs.modified_timestamp
-        FROM calc_banyan_sigma cbs
-        LEFT JOIN moca_banyan_sigma_models mbsm
-            ON mbsm.moca_bsmdid = cbs.moca_bsmdid
-        WHERE cbs.moca_oid = :moca_oid
-            AND cbs.max_observables = 1
-            {is_public_filter}
-            AND {model_adopt_filter}
+            s.cbs_id AS summary__cbs_id,
+            s.moca_oid AS summary__moca_oid,
+            s.moca_aid AS summary__moca_aid,
+            s.moca_bsmdid AS summary__moca_bsmdid,
+            s.model_name AS summary__model_name,
+            s.model_date AS summary__model_date,
+            s.model_adopted AS summary__model_adopted,
+            s.max_observables AS summary__max_observables,
+            s.mode AS summary__mode,
+            s.observables AS summary__observables,
+            s.ya_prob AS summary__ya_prob,
+            s.list_prob_yas AS summary__list_prob_yas,
+            s.all_prob_yas AS summary__all_prob_yas,
+            s.best_hyp AS summary__best_hyp,
+            s.best_ya AS summary__best_ya,
+            s.d_opt AS summary__d_opt,
+            s.ed_opt AS summary__ed_opt,
+            s.rv_opt AS summary__rv_opt,
+            s.erv_opt AS summary__erv_opt,
+            s.xyz_sep AS summary__xyz_sep,
+            s.xyz_sig AS summary__xyz_sig,
+            s.uvw_sep AS summary__uvw_sep,
+            s.uvw_sig AS summary__uvw_sig,
+            s.x_opt AS summary__x_opt,
+            s.y_opt AS summary__y_opt,
+            s.z_opt AS summary__z_opt,
+            s.u_opt AS summary__u_opt,
+            s.v_opt AS summary__v_opt,
+            s.w_opt AS summary__w_opt,
+            s.mahalanobis AS summary__mahalanobis,
+            s.nobs AS summary__nobs,
+            s.origin AS summary__origin,
+            s.is_public AS summary__is_public,
+            s.modified_timestamp AS summary__modified_timestamp,
+            cbsd.cbs_id AS detail__cbs_id,
+            cbsd.moca_aid AS detail__moca_aid,
+            cbsd.prob AS detail__prob,
+            cbsd.d_opt AS detail__d_opt,
+            cbsd.ed_opt AS detail__ed_opt,
+            cbsd.rv_opt AS detail__rv_opt,
+            cbsd.erv_opt AS detail__erv_opt,
+            cbsd.xyz_sep AS detail__xyz_sep,
+            cbsd.xyz_sig AS detail__xyz_sig,
+            cbsd.uvw_sep AS detail__uvw_sep,
+            cbsd.uvw_sig AS detail__uvw_sig,
+            cbsd.x_opt AS detail__x_opt,
+            cbsd.y_opt AS detail__y_opt,
+            cbsd.z_opt AS detail__z_opt,
+            cbsd.u_opt AS detail__u_opt,
+            cbsd.v_opt AS detail__v_opt,
+            cbsd.w_opt AS detail__w_opt,
+            cbsd.mahalanobis AS detail__mahalanobis
+        FROM summaries s
+        LEFT JOIN calc_banyan_sigma_details cbsd
+            ON cbsd.cbs_id = s.cbs_id
         ORDER BY
-            COALESCE(mbsm.adopted, 0) DESC,
-            {model_public_order}
-            cbs.nobs DESC,
-            cbs.ya_prob DESC,
-            cbs.id DESC
-        LIMIT 8
+            s.model_adopted_sort DESC,
+            s.model_public_adopted_sort DESC,
+            s.nobs DESC,
+            s.ya_prob DESC,
+            s.cbs_id DESC,
+            cbsd.cbs_id,
+            cbsd.prob DESC
     """.format(
         is_public_select=is_public_select,
         is_public_filter=is_public_filter,
         model_adopt_filter=model_adopt_filter,
-        model_public_order=model_public_order,
-    ), params)
-    summaries = _records(summary_df)
-    cbs_ids = [int(row["cbs_id"]) for row in summaries if row.get("cbs_id") is not None]
+        model_public_sort_expr=model_public_sort_expr,
+    ), params))
+
+    summaries: list[dict[str, Any]] = []
+    summary_ids: set[Any] = set()
     details: list[dict[str, Any]] = []
-    if cbs_ids:
-        cbs_clause, cbs_params = _sql_in_clause("bsig_cbs", cbs_ids)
-        details_df = _read_sql(conn, f"""
-            SELECT
-                cbsd.cbs_id,
-                cbsd.moca_aid,
-                cbsd.prob,
-                cbsd.d_opt,
-                cbsd.ed_opt,
-                cbsd.rv_opt,
-                cbsd.erv_opt,
-                cbsd.xyz_sep,
-                cbsd.xyz_sig,
-                cbsd.uvw_sep,
-                cbsd.uvw_sig,
-                cbsd.x_opt,
-                cbsd.y_opt,
-                cbsd.z_opt,
-                cbsd.u_opt,
-                cbsd.v_opt,
-                cbsd.w_opt,
-                cbsd.mahalanobis
-            FROM calc_banyan_sigma_details cbsd
-            WHERE cbsd.cbs_id IN ({cbs_clause})
-            ORDER BY cbsd.cbs_id, cbsd.prob DESC
-            LIMIT 200
-        """, cbs_params)
-        details = _records(details_df)
+    for row in stored_rows:
+        summary = {
+            key.removeprefix("summary__"): value
+            for key, value in row.items()
+            if key.startswith("summary__")
+        }
+        cbs_id = summary.get("cbs_id")
+        if cbs_id is not None and cbs_id not in summary_ids:
+            summaries.append(summary)
+            summary_ids.add(cbs_id)
+        if len(details) < 200 and row.get("detail__cbs_id") is not None:
+            details.append({
+                key.removeprefix("detail__"): value
+                for key, value in row.items()
+                if key.startswith("detail__")
+            })
     return {
         "summaries": summaries,
         "details": details,
