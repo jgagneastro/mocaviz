@@ -22113,11 +22113,13 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
     summaries: list[dict[str, Any]] = []
     summary_ids: set[Any] = set()
     details: list[dict[str, Any]] = []
+    summary_prefix = "summary__"
+    detail_prefix = "detail__"
     for row in stored_rows:
         summary = {
-            key.removeprefix("summary__"): value
+            key[len(summary_prefix):]: value
             for key, value in row.items()
-            if key.startswith("summary__")
+            if key.startswith(summary_prefix)
         }
         cbs_id = summary.get("cbs_id")
         if cbs_id is not None and cbs_id not in summary_ids:
@@ -22125,9 +22127,9 @@ def _load_banyan_sigma_stored_from_db(conn, args: Mapping[str, Any], moca_oid: i
             summary_ids.add(cbs_id)
         if len(details) < 200 and row.get("detail__cbs_id") is not None:
             details.append({
-                key.removeprefix("detail__"): value
+                key[len(detail_prefix):]: value
                 for key, value in row.items()
-                if key.startswith("detail__")
+                if key.startswith(detail_prefix)
             })
     return {
         "summaries": summaries,
