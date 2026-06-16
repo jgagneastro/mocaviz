@@ -351,7 +351,7 @@ async function loadBdEvolutionData() {
     bdeState.payload = payload;
     bdeState.axes = payload.axes || { ...bdeFallbackAxes };
     bdeState.sptAxis = payload.sptAxis?.length ? payload.sptAxis : [...bdeDefaultSptAxis];
-    bdeState.rows = (payload.rows || []).map(enrichBdEvolutionRow);
+    bdeState.rows = (payload.rows || []).map(enrichBdEvolutionRow).sort(compareBdEvolutionRows);
     bdeState.tracks = (payload.tracks || []).map(enrichBdEvolutionTrackRow);
     populateBdEvolutionAxisSelects();
     populateBdEvolutionTrackSelect();
@@ -393,7 +393,7 @@ function dataParams() {
   params.set("ya_prob_min", String(bdEvolutionYaProbMin()));
   const highlightOids = bdEvolutionHighlightedOids();
   if (highlightOids.length) params.set("moca_oid", highlightOids.join(","));
-  params.set("ignore_aids", "");
+  params.set("ignore_aids", bdEvolutionIgnoredMembershipAidsText());
   return params;
 }
 
@@ -490,6 +490,15 @@ function enrichBdEvolutionRow(row) {
     _age_jitter_normal: deterministicNormal(jitterSeed),
     _reportUrl: row.report_url || (oid !== null ? `https://mocadb.ca/search/results?search-query=oid%28${oid}%29&search-type=star` : null),
   };
+}
+
+function compareBdEvolutionRows(a, b) {
+  const oidA = coerceMocaOid(a?._oid ?? a?.moca_oid);
+  const oidB = coerceMocaOid(b?._oid ?? b?.moca_oid);
+  if (oidA !== null && oidB !== null && oidA !== oidB) return oidA - oidB;
+  if (oidA !== null && oidB === null) return -1;
+  if (oidA === null && oidB !== null) return 1;
+  return String(a?.designation || "").localeCompare(String(b?.designation || ""));
 }
 
 function enrichBdEvolutionTrackRow(row) {

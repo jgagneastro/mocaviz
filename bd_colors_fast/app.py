@@ -7552,10 +7552,8 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             params.update(highlight_oid_params)
             target_oid_predicate = f"mo.moca_oid IN ({highlight_oid_clause})"
             spt_clause = f"({spt_clause} OR {target_oid_predicate})"
-            highlight_order = f"CASE WHEN {target_oid_predicate} THEN 0 ELSE 1 END, mo.moca_oid"
         else:
             target_oid_predicate = "0 = 1"
-            highlight_order = "mo.moca_oid"
         if private_db and cbs_has_is_public:
             params["cbs_is_public"] = 0
         active_model_rows = _records(_read_sql(conn, f"""
@@ -7602,7 +7600,7 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 )
             """
         rows_df = _read_sql(conn, f"""
-            SELECT
+            SELECT STRAIGHT_JOIN
                 mo.designation,
                 mo.moca_oid,
                 spt.spectral_type AS spt,
@@ -7683,7 +7681,6 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 AND COALESCE(obj_age.age_myr, assoc_age.age_myr) IS NOT NULL
                 {ignored_membership_filter}
                 {companion_filter}
-            ORDER BY {highlight_order}
             LIMIT {max_objects}
         """, params)
         tracks, track_meta = _bd_evolution_load_tracks(conn)
