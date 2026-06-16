@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb JavaScript Visualizations</title>
   <link rel="stylesheet" href="/js/static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="/js/static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <script src="/js/static/auth_theme.js?v=auth-context-20260615b"></script>
 </head>
 <body class="js-landing-page">
   <div class="js-landing-shell">
@@ -43,7 +43,7 @@
           <p class="js-tool-description">Browse the parent-child structure of MOCAdb associations and jump from selected branches into reports, member queries, and JS XYZ maps.</p>
         </li>
         <li>
-          <a data-js-page href="/js/spectral-typing">MOCAdb Spectral Typing</a>
+          <a data-js-page href="/js/spectral-typing">Spectral Typing</a>
           <p class="js-tool-description">Fit and compare near-infrared spectra against standards, with optional dereddening or slope corrections.</p>
         </li>
         <li>
@@ -57,6 +57,10 @@
         <li>
           <a data-js-page href="/js/sed">SED Explorer</a>
           <p class="js-tool-description">Inspect object-level photometry, spectra, bandpass responses, scaled templates, and empirical bolometric SED integrations.</p>
+        </li>
+        <li data-private-auth-only hidden>
+          <a data-js-page href="/js/retrieval-explorer">Atmospheric Retrieval Explorer</a>
+          <p class="js-tool-description">Explore MOCAdb retrieval T/P profiles, cloud parameters, chemical abundances, contribution functions, and retrieval diagnostics.</p>
         </li>
         <li>
           <a data-js-page href="/js/astrometry">Astrometric Explorer</a>
@@ -120,7 +124,18 @@
           item.hidden = !activePrivateSchema;
         });
       };
+      const setPrivateAuthVisibility = (activePrivateSchema, authenticated) => {
+        document.querySelectorAll("[data-private-auth-only]").forEach((item) => {
+          item.hidden = !(activePrivateSchema && authenticated);
+        });
+      };
+      let privateAuthSchema = isPrivateSchema;
+      let privateAuthAuthenticated = false;
+      const updatePrivateAuthVisibility = () => {
+        setPrivateAuthVisibility(privateAuthSchema, privateAuthAuthenticated);
+      };
       setPrivateVisibility(isPrivateSchema);
+      updatePrivateAuthVisibility();
 
       const connectionParams = new URLSearchParams();
       const carryParam = (targetKey, ...sourceKeys) => {
@@ -156,9 +171,25 @@
         .then((response) => response.ok ? response.json() : null)
         .then((payload) => {
           if (!payload || !payload.ok) return;
-          setPrivateVisibility(Boolean(payload.meta && payload.meta.private_db));
+          privateAuthSchema = Boolean(payload.meta && payload.meta.private_db);
+          setPrivateVisibility(privateAuthSchema);
+          updatePrivateAuthVisibility();
         })
         .catch(() => {});
+
+      const applyAuthVisibility = (auth) => {
+        if (auth && typeof auth.private_db === "boolean") {
+          privateAuthSchema = Boolean(auth.private_db);
+        }
+        privateAuthAuthenticated = Boolean(auth && auth.role && auth.hasCredentials);
+        updatePrivateAuthVisibility();
+      };
+      if (window.MocaAuthContext?.ready) {
+        window.MocaAuthContext.ready.then(applyAuthVisibility).catch(() => setPrivateAuthVisibility(false, false));
+      }
+      window.addEventListener("mocaviz-auth-context", (event) => {
+        applyAuthVisibility(event.detail || {});
+      });
     })();
   </script>
 </body>

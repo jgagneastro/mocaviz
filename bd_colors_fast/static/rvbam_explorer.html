@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RVBAM Explorer</title>
   <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -51,6 +51,10 @@
           <label class="checkline">
             <input id="rvb-has-literature-rv" type="checkbox">
             <span>Only runs with literature RV</span>
+          </label>
+          <label title="Maximum uncertainty on the resolved MOCAdb/literature RV, including host RVs and raw-RV fallbacks when those are the selected RV source.">
+            Max literature RV error (km/s)
+            <input id="rvb-max-literature-rv-unc" type="number" min="0" step="0.1" placeholder="No limit">
           </label>
           <label>
             Wavelength coverage (microns)
@@ -117,6 +121,10 @@
           <label class="checkline">
             <input id="rvb-show-errors" type="checkbox" checked>
             <span>Show uncertainties when available</span>
+          </label>
+          <label class="checkline">
+            <input id="rvb-show-hover" type="checkbox">
+            <span>Show plot hover text</span>
           </label>
           <label class="checkline is-disabled" id="rvb-use-online-figures-row">
             <input id="rvb-use-online-figures" type="checkbox" disabled>
@@ -262,6 +270,7 @@
               </div>
               <div id="rvb-lit-rv-plot"></div>
               <div id="rvb-lit-rv-bias-plot"></div>
+              <div id="rvb-lit-rv-bias-summary" class="rvb-lit-rv-summary"></div>
             </div>
 
             <div id="rvb-tab-posterior" class="rvb-tab-panel rvb-posterior-panel is-active">
@@ -327,10 +336,11 @@
           <tr><td><code>segment_id</code></td><td>RVBAM segment primary key</td><td>Loads one selected segment.</td></tr>
           <tr><td><code>tab</code></td><td><code>fit</code>, <code>literature</code>, <code>posterior</code>, ...</td><td>Opens a specific RVBAM diagnostics tab.</td></tr>
           <tr><td><code>scatter_y</code></td><td>Segment field name</td><td>Sets the left scatter plot y-axis.</td></tr>
-          <tr><td><code>min_data_contrast</code>, <code>min_model_contrast</code>, <code>min_model_10p</code>, <code>max_masked_outliers</code>, <code>segment_wavelength</code></td><td>Average filters</td><td>Filters segments by wavelength or legacy RV-content diagnostics before computing the plotted average.</td></tr>
+          <tr><td><code>hover_text</code></td><td><code>0</code> or <code>1</code></td><td>Shows or hides hover labels on RVBAM plots.</td></tr>
+          <tr><td><code>min_data_contrast</code>, <code>min_model_contrast</code>, <code>min_model_10p</code>, <code>max_masked_outliers</code>, <code>segment_wavelength</code></td><td>Average filters</td><td>Filters segments by wavelength or legacy RV-content diagnostics before computing the plotted average; matching y-axis thresholds are drawn on the left scatter plot.</td></tr>
           <tr><td><code>min_snr</code></td><td>Average filter</td><td>Filters by median segment S/N; this is spectrum quality, not one of the legacy RV-content contrast diagnostics.</td></tr>
           <tr><td><code>q</code>, <code>moca_oid</code>, <code>moca_specid</code>, <code>moca_instid</code>, <code>moca_mgridid</code></td><td>Run filters</td><td>Filters the run selector.</td></tr>
-          <tr><td><code>has_literature_rv</code>, <code>wavelength_coverage</code>, <code>min_segments</code>, <code>max_segments</code>, <code>min_run_snr</code>, <code>max_resulting_rv_unc</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets, requested wavelength coverage, filtered available segment count, spectrum median S/N, or resulting RV uncertainty.</td></tr>
+          <tr><td><code>has_literature_rv</code>, <code>max_literature_rv_unc</code>, <code>wavelength_coverage</code>, <code>min_segments</code>, <code>max_segments</code>, <code>min_run_snr</code>, <code>max_resulting_rv_unc</code></td><td>Run filters</td><td>Restricts the run selector to literature-RV targets, maximum literature-RV uncertainty, requested wavelength coverage, filtered available segment count, spectrum median S/N, or resulting RV uncertainty.</td></tr>
           <tr><td><code>user</code>, <code>pwd</code>, <code>dbase</code>, <code>host</code></td><td>MOCAdb connection values</td><td>Overrides the default connection.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses local synthetic RVBAM payloads.</td></tr>
         </tbody>
@@ -355,6 +365,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/rvbam_explorer.js?v=rvbam-20260611-rv-weight-ceiling"></script>
+  <script src="static/rvbam_explorer.js?v=rvbam-20260615-literature-year-ticks"></script>
 </body>
 </html>

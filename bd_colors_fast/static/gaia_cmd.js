@@ -104,6 +104,8 @@ const gcmdDefaultXRangeByColor = {
   bprp: [0, 4.5],
   grp: [-0.05, 1.8],
 };
+const gcmdMembershipDownloadFloor = 10;
+const gcmdDefaultMembershipProbMin = 90;
 
 const gcmdState = {
   options: { simple: [], advanced: [] },
@@ -150,6 +152,8 @@ function collectGaiaCmdElements() {
     "gcmd-x2",
     "gcmd-y",
     "gcmd-ruwe",
+    "gcmd-membership-prob-min",
+    "gcmd-membership-prob-min-value",
     "gcmd-aids-clear",
     "gcmd-aid-search",
     "gcmd-aid-results",
@@ -191,6 +195,13 @@ function bindGaiaCmdControls() {
   for (const id of ["gcmd-x1", "gcmd-x2", "gcmd-y", "gcmd-color-age", "gcmd-raw-gaia", "gcmd-extcorr-only", "gcmd-extcorr-vectors", "gcmd-show-sequences"]) {
     gcmdEl[id].addEventListener("change", () => loadGaiaCmdData());
   }
+  gcmdEl["gcmd-membership-prob-min"].addEventListener("input", () => {
+    updateGaiaCmdMembershipProbReadout();
+  });
+  gcmdEl["gcmd-membership-prob-min"].addEventListener("change", () => {
+    updateGaiaCmdMembershipProbReadout();
+    applyGaiaCmdClientFilters();
+  });
   gcmdEl["gcmd-highlight-binaries"].addEventListener("change", () => {
     renderGaiaCmdPlot();
     updateGaiaCmdUrl();
@@ -296,6 +307,9 @@ function readGaiaCmdUrlState() {
     y: normalizeGaiaCmdBand(params.get("y") || params.get("yaxis_value_1") || "gaiadr3_gmag"),
   });
   if (params.has("ruwe") || params.has("ruwe_max")) gcmdEl["gcmd-ruwe"].value = params.get("ruwe") || params.get("ruwe_max") || "";
+  const membershipProbMin = firstPresentParam(params, ["membership_prob_min", "ya_prob_min", "min_ya_prob", "min_membership_probability"]);
+  gcmdEl["gcmd-membership-prob-min"].value = String(clampGaiaCmdMembershipProb(membershipProbMin ?? gcmdDefaultMembershipProbMin));
+  updateGaiaCmdMembershipProbReadout();
   const oidValue = params.get("oid") || params.get("oids") || params.get("moca_oid") || params.get("moca_oids") || "";
   gcmdEl["gcmd-highlight-oids"].value = oidValue;
   gcmdEl["gcmd-color-age"].checked = truthyParam(params.get("color_age") || params.get("color_by_age") || params.get("age"));
@@ -370,12 +384,10 @@ async function loadGaiaCmdData() {
     renderGaiaCmdPlot();
     renderGaiaCmdDefaultTable();
     const cacheText = payload.cache?.hit ? " from cache" : "";
-    const trunc = payload.meta?.truncated ? `, capped at ${Number(payload.meta.max_objects || 0).toLocaleString()} per source` : "";
-    const deemphCount = gcmdState.rows.filter((row) => row._deemphasized).length;
-    setGaiaCmdStatus(`${gcmdState.rows.length.toLocaleString()} Gaia CMD objects${cacheText}`, "");
-    gcmdEl["gcmd-summary"].textContent = `${gcmdState.rows.length.toLocaleString()} objects plotted${trunc}; ${deemphCount.toLocaleString()} de-emphasized by RUWE; ${Number(payload.sequences?.length || 0).toLocaleString()} sequence overlays`;
+    setGaiaCmdStatus(`${gcmdState.rows.length.toLocaleString()} Gaia CMD objects loaded${cacheText}`, "");
+    updateGaiaCmdSummary();
     gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(payload.selection);
-    setGaiaCmdExportDisabled(gcmdState.rows.length === 0);
+    setGaiaCmdExportDisabled(gaiaCmdDisplayRows().length === 0);
   } catch (error) {
     if (token !== gcmdState.loadToken) return;
     setGaiaCmdStatus(error.message || String(error), "error");
@@ -394,6 +406,7 @@ function gaiaCmdApiParams() {
   params.set("x2", gcmdEl["gcmd-x2"].value);
   params.set("y", gcmdEl["gcmd-y"].value);
   if (gcmdEl["gcmd-ruwe"].value !== "") params.set("ruwe", gcmdEl["gcmd-ruwe"].value);
+  params.set("membership_download_floor", String(gcmdMembershipDownloadFloor));
   const oids = combinedHighlightOids();
   if (oids.length) params.set("oid", oids.join(","));
   if (gcmdState.selectedAids.length) params.set("asso", gcmdState.selectedAids.join(","));
@@ -412,6 +425,11 @@ function updateGaiaCmdUrl() {
   params.delete("moca_oid");
   params.delete("oids");
   params.delete("moca_oids");
+  params.delete("membership_download_floor");
+  params.delete("ya_prob_min");
+  params.delete("min_ya_prob");
+  params.delete("min_membership_probability");
+  params.set("membership_prob_min", String(gaiaCmdMembershipProbMin()));
   params.set("binaries", gcmdEl["gcmd-highlight-binaries"].checked ? "1" : "0");
   params.set("field_hover", gcmdEl["gcmd-field-hover"].checked ? "1" : "0");
   if (!gcmdEl["gcmd-color-age"].checked) {
@@ -444,6 +462,67 @@ function updateGaiaCmdUrl() {
   }
   const query = params.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+}
+
+function applyGaiaCmdClientFilters() {
+  updateGaiaCmdUrl();
+  const displayedKeys = new Set(gaiaCmdDisplayRows().map(rowKey));
+  gcmdState.selectedRows = gcmdState.selectedRows.filter((row) => displayedKeys.has(rowKey(row)));
+  renderGaiaCmdPlot();
+  if (gcmdState.selectedRows.length) {
+    renderGaiaCmdSelection();
+  } else {
+    renderGaiaCmdDefaultTable();
+  }
+  updateGaiaCmdSummary();
+  if (gcmdState.payload?.selection) {
+    gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(gcmdState.payload.selection);
+  }
+  setGaiaCmdExportDisabled(gaiaCmdDisplayRows().length === 0);
+}
+
+function gaiaCmdDisplayRows() {
+  return gcmdState.rows.filter(gaiaCmdRowPassesMembership);
+}
+
+function gaiaCmdRowPassesMembership(row) {
+  if (!row?.moca_aid || row._highlighted) return true;
+  return finite(row.ya_prob) && Number(row.ya_prob) >= gaiaCmdMembershipProbMin();
+}
+
+function gaiaCmdMembershipProbMin() {
+  return clampGaiaCmdMembershipProb(gcmdEl["gcmd-membership-prob-min"]?.value);
+}
+
+function clampGaiaCmdMembershipProb(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return gcmdDefaultMembershipProbMin;
+  return Math.max(gcmdMembershipDownloadFloor, Math.min(100, Math.round(number)));
+}
+
+function updateGaiaCmdMembershipProbReadout() {
+  if (!gcmdEl["gcmd-membership-prob-min-value"]) return;
+  const value = gaiaCmdMembershipProbMin();
+  gcmdEl["gcmd-membership-prob-min"].value = String(value);
+  gcmdEl["gcmd-membership-prob-min-value"].textContent = `${value}%`;
+}
+
+function updateGaiaCmdSummary() {
+  const payload = gcmdState.payload;
+  if (!payload) {
+    gcmdEl["gcmd-summary"].textContent = "No data loaded";
+    return;
+  }
+  const displayRows = gaiaCmdDisplayRows();
+  const loadedRows = gcmdState.rows.length;
+  const trunc = payload.meta?.truncated ? `, capped at ${Number(payload.meta.max_objects || 0).toLocaleString()} per source` : "";
+  const deemphCount = displayRows.filter((row) => row._deemphasized).length;
+  const hiddenMembership = gcmdState.rows.filter((row) => row?.moca_aid && !row._highlighted && !gaiaCmdRowPassesMembership(row)).length;
+  const loadedText = loadedRows === displayRows.length ? "" : ` (${loadedRows.toLocaleString()} loaded)`;
+  const membershipText = payload.selection?.associations?.length
+    ? `; ${hiddenMembership.toLocaleString()} hidden below ${gaiaCmdMembershipProbMin()}% membership probability; downloaded p >= ${formatNumber(payload.selection.membership_download_floor ?? gcmdMembershipDownloadFloor, 0)}%`
+    : "";
+  gcmdEl["gcmd-summary"].textContent = `${displayRows.length.toLocaleString()} objects plotted${loadedText}${trunc}; ${deemphCount.toLocaleString()} de-emphasized by RUWE${membershipText}; ${Number(payload.sequences?.length || 0).toLocaleString()} sequence overlays`;
 }
 
 function combinedHighlightOids() {
@@ -690,8 +769,9 @@ function renderGaiaCmdPlot() {
   const payload = gcmdState.payload || {};
   const traces = [];
   const colorByAge = Boolean(payload.selection?.color_by_age);
-  const nonHighlightRows = gcmdState.rows.filter((row) => !row._highlighted);
-  const highlightRows = gcmdState.rows.filter((row) => row._highlighted);
+  const displayRows = gaiaCmdDisplayRows();
+  const nonHighlightRows = displayRows.filter((row) => !row._highlighted);
+  const highlightRows = displayRows.filter((row) => row._highlighted);
 
   if (colorByAge) {
     addAgeTraces(traces, nonHighlightRows, "Gaia CMD");
@@ -708,14 +788,14 @@ function renderGaiaCmdPlot() {
       });
     }
   }
-  addBinaryOverlayTrace(traces, gcmdState.rows);
+  addBinaryOverlayTrace(traces, displayRows);
   addHighlightTrace(traces, highlightRows);
   addSequenceTraces(traces, payload.sequences || []);
-  addSptAxisReferenceTrace(traces, payload.spt_axis || null, gcmdState.rows);
+  addSptAxisReferenceTrace(traces, payload.spt_axis || null, displayRows);
 
-  const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, gcmdState.rows);
+  const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, displayRows);
   if (payload.selection?.show_extinction_vectors) {
-    layout.annotations = extinctionVectorAnnotations(gcmdState.rows);
+    layout.annotations = extinctionVectorAnnotations(displayRows);
   }
   Plotly.react(gcmdEl["gcmd-plot"], traces, layout, plotConfig("mocadb_gaia_cmd"));
   bindPlotEventsOnce();
@@ -1379,7 +1459,7 @@ function renderGaiaCmdSelection() {
 }
 
 function renderGaiaCmdDefaultTable() {
-  const rows = listedGaiaCmdTableRows(gcmdState.rows);
+  const rows = listedGaiaCmdTableRows(gaiaCmdDisplayRows());
   renderGaiaCmdTable(rows.slice(0, 100), "Displayed listed objects", `Showing the first ${Math.min(rows.length, 100).toLocaleString()} association or highlighted rows; field-sample objects are omitted.`);
 }
 
@@ -1492,9 +1572,10 @@ const gaiaCmdExportColumns = ["sample", "moca_aid", "moca_oid", "designation", "
 const gaiaCmdNumericExportColumns = new Set(["moca_oid", "is_binary", "x", "y", "x_original", "y_original", "x1_mag", "x1_extinction_a", "x2_mag", "x2_extinction_a", "y_mag", "y_extinction_a", "distance_pc", "distance_pc_unc", "ruwe", "ya_prob", "age_myr"]);
 
 function exportGaiaCmd(format) {
-  if (!gcmdState.rows.length) return;
+  const rows = gaiaCmdDisplayRows();
+  if (!rows.length) return;
   MocaExport.saveTable(format, {
-    rows: gcmdState.rows,
+    rows,
     columns: gaiaCmdExportColumns,
     numericColumns: gaiaCmdNumericExportColumns,
     filenameBase: "mocadb_gaia_cmd",
@@ -1526,6 +1607,7 @@ async function clearGaiaCmdCache() {
 function axisSummaryHtml(selection) {
   if (!selection) return "Click or box-select points to inspect objects.<br>Double-click an empty region of the plot to reset Plotly selection";
   const ruwe = selection.ruwe_max === null || selection.ruwe_max === undefined ? "no RUWE de-emphasis" : `RUWE > ${selection.ruwe_max} de-emphasized`;
+  const membership = selection.associations?.length ? `; membership p >= ${gaiaCmdMembershipProbMin()}% shown` : "";
   const phot = selection.raw_gaia ? "raw Gaia photometry for associations" : "adopted MOCAdb photometry for associations";
   const extcorr = !selection.raw_gaia && selection.extinction_corrected_only ? "; extinction-corrected MOCAdb photometry only" : "";
   const vectors = selection.show_extinction_vectors ? "; extinction vectors shown when available" : "";
@@ -1533,7 +1615,7 @@ function axisSummaryHtml(selection) {
   const binaries = gcmdEl["gcmd-highlight-binaries"]?.checked ? "; binaries highlighted" : "";
   const sequences = selection.show_sequences === false ? "; empirical age sequences hidden" : "";
   const aids = selection.associations?.length ? `${selection.associations.length} association${selection.associations.length === 1 ? "" : "s"} added` : "field stars only";
-  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${errors}${binaries}${sequences}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
+  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${errors}${binaries}${sequences}${membership}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function bandLabel(psid) {

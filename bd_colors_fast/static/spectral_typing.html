@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Spectral Typing</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <link rel="stylesheet" href="static/styles.css?v=spt-management-push-20260615a">
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -94,6 +94,21 @@
             <input id="spt-disable-lowres" type="checkbox">
             <span>Deactivate low-resolution display mode</span>
           </label>
+        </section>
+
+        <section id="spt-management-tools" class="control-section spectral-management-section" hidden>
+          <h2>Management</h2>
+          <div id="spt-management-proposal" class="plot-hint spectral-management-proposal">No comparison displayed</div>
+          <label>
+            RLS
+            <input id="spt-management-rls" type="text" value="gagne" maxlength="20" autocomplete="off">
+          </label>
+          <label>
+            Author
+            <input id="spt-management-author" type="text" value="gagne" maxlength="50" autocomplete="off">
+          </label>
+          <button id="spt-push-spectral-type" type="button" disabled>Push displayed spectral type</button>
+          <div id="spt-management-status" class="cache-status spectral-management-status"></div>
         </section>
       </aside>
 
@@ -215,6 +230,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=best-initial-20260611a"></script>
+  <script src="static/spectral_typing.js?v=spt-lowres-cosmetics-20260616b"></script>
 </body>
 </html>

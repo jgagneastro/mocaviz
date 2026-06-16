@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Atmospheric Retrieval Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=retrieval-explorer-20260616a">
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="retrieval-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">Atmospheric Retrieval Explorer</div>
+      <div id="rex-status" class="status loading">Loading retrievals</div>
+    </header>
+
+    <main class="workspace retrieval-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Retrieval</h2>
+          <div class="designation-picker">
+            <label for="rex-search">Object or retrieval</label>
+            <input id="rex-search" type="text" autocomplete="off" placeholder="designation, oid, bibcode, model">
+            <div id="rex-search-results" class="designation-results" hidden></div>
+          </div>
+          <label>
+            MOCAdb OID
+            <input id="rex-oid" type="number" min="1" step="1" placeholder="Any">
+          </label>
+          <label>
+            Retrieval
+            <select id="rex-atmosphere"></select>
+          </label>
+          <div class="button-grid">
+            <button id="rex-find" type="button">Find</button>
+            <button id="rex-load" type="button">Load</button>
+          </div>
+          <label class="checkline">
+            <input id="rex-include-ignored" type="checkbox">
+            <span>Include ignored rows</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="rex-show-envelope" type="checkbox" checked>
+            <span>Show T/P uncertainty envelope</span>
+          </label>
+          <label class="checkline">
+            <input id="rex-show-clouds" type="checkbox" checked>
+            <span>Show cloud pressure markers</span>
+          </label>
+          <label>
+            Abundance comparison
+            <select id="rex-abundance-mode">
+              <option value="object">Selected object and retrievals</option>
+              <option value="population">Population context</option>
+            </select>
+          </label>
+          <label>
+            Corner parameters
+            <select id="rex-corner-size">
+              <option value="4">4 parameters</option>
+              <option value="6">6 parameters</option>
+              <option value="8">8 parameters</option>
+            </select>
+          </label>
+          <button id="rex-clear-cache" type="button">Clear cache</button>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Loaded Row</h2>
+          <div id="rex-selection-card" class="retrieval-selection-card">No retrieval loaded</div>
+        </section>
+      </aside>
+
+      <section class="visual-area retrieval-visual-area">
+        <div class="retrieval-top-grid">
+          <div class="plot-frame retrieval-tp-frame">
+            <div id="rex-tp-plot"></div>
+            <div id="rex-tp-loader" class="plot-loader is-visible" aria-label="Loading retrieval profile">
+              <div class="plot-loader-ring"></div>
+            </div>
+          </div>
+          <div class="plot-frame retrieval-contribution-frame">
+            <div id="rex-contribution-plot"></div>
+          </div>
+        </div>
+
+        <div class="retrieval-toolbar">
+          <div class="retrieval-summary">
+            <div id="rex-summary">No retrieval loaded</div>
+            <div id="rex-hint" class="plot-hint">T/P profiles are read from data_atmosphere_structure_layers.</div>
+          </div>
+        </div>
+
+        <section class="selection-area retrieval-detail-area">
+          <div class="rvb-tabbar retrieval-tabbar">
+            <button type="button" data-rex-tab="abundances">Abundances</button>
+            <button type="button" data-rex-tab="parameters">Parameters</button>
+            <button type="button" data-rex-tab="spectrum">Spectrum</button>
+            <button type="button" data-rex-tab="corner">Corner</button>
+          </div>
+
+          <div id="rex-tab-abundances" class="retrieval-tab-panel">
+            <div class="plot-frame retrieval-abundance-frame">
+              <div id="rex-abundance-plot"></div>
+            </div>
+          </div>
+
+          <div id="rex-tab-parameters" class="retrieval-tab-panel" hidden>
+            <div class="retrieval-detail-grid">
+              <div>
+                <strong>Scalar parameters</strong>
+                <div id="rex-parameter-table" class="table-scroll"></div>
+              </div>
+              <div>
+                <strong>Cloud parameters</strong>
+                <div id="rex-cloud-table" class="table-scroll"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="rex-tab-spectrum" class="retrieval-tab-panel" hidden>
+            <div class="plot-frame retrieval-spectrum-frame">
+              <div id="rex-spectrum-plot"></div>
+            </div>
+          </div>
+
+          <div id="rex-tab-corner" class="retrieval-tab-panel" hidden>
+            <div class="plot-frame retrieval-corner-frame">
+              <div id="rex-corner-plot"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script src="static/retrieval_explorer.js?v=retrieval-explorer-20260616a"></script>
+</body>
+</html>

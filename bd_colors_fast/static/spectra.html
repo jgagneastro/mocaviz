@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Spectral Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <link rel="stylesheet" href="static/styles.css?v=spectral-explorer-ignore-region-20260615b">
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -70,6 +70,14 @@
             <input id="spe-disable-lowres" type="checkbox" disabled>
             <span>Deactivate low-resolution display mode</span>
           </label>
+          <label class="checkline">
+            <input id="spe-decrease-resolution" type="checkbox">
+            <span>Decrease displayed resolving power</span>
+          </label>
+          <label id="spe-display-bins-wrap" class="disabled-field">
+            Bins per micron
+            <input id="spe-display-bins" type="number" value="200" min="1" max="2000" step="1" disabled>
+          </label>
         </section>
 
         <section class="control-section filters-section">
@@ -83,6 +91,23 @@
             <input id="spe-normrange" type="text" value="0.95-1.35" placeholder="0.95-1.35">
           </label>
           <button id="spe-reset-norm" type="button">Reset Norm</button>
+        </section>
+
+        <section id="spe-management-tools" class="control-section spectra-management-section" hidden>
+          <h2>Management</h2>
+          <div class="spectra-ignore-traces">
+            <div class="range-heading">
+              <span>Apply to spectra</span>
+            </div>
+            <div id="spe-ignore-spectrum-list" class="spectra-ignore-spectrum-list"></div>
+            <div class="button-grid spectra-ignore-trace-actions">
+              <button id="spe-ignore-all-spectra" type="button">All spectra</button>
+              <button id="spe-ignore-no-spectra" type="button">No spectra</button>
+            </div>
+          </div>
+          <div id="spe-ignore-summary" class="plot-hint spectra-ignore-summary">No spectral rows selected</div>
+          <button id="spe-ignore-selected" type="button" disabled>Set selected rows ignored</button>
+          <div id="spe-ignore-status" class="cache-status spectra-ignore-status"></div>
         </section>
       </aside>
 
@@ -138,7 +163,8 @@
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
           <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>
           <tr><td><code>hide_ignored</code></td><td><code>0</code> shows ignored spectral rows</td><td>Hides <code>data_spectra.ignored = 1</code> rows by default.</td></tr>
-          <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for display binning</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
+          <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for bins per μm</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
+          <tr><td><code>decrease_resolution</code>, <code>display_bins</code></td><td><code>1</code> plus a positive integer</td><td>Bins plotted spectra in the browser. Uses <code>display_bins=200</code> by default and averages in log space for enabled log axes.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows common chemical and atomic feature bands by default.</td></tr>
           <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
@@ -158,6 +184,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectra.js?v=spectral-explorer-ignored-markers-20260609a"></script>
+  <script src="static/spectra.js?v=spectral-explorer-display-bins-20260616a"></script>
 </body>
 </html>

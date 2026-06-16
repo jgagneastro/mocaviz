@@ -63,6 +63,7 @@ DEFAULT_HOST = "104.248.106.21"
 DEFAULT_USERNAME = "public"
 DEFAULT_PASSWORD = "z@nUg_2h7_%?31y88"
 DEFAULT_DBNAME = "mocadb"
+MOCA_TEAM_USERS = {"collaborators", "management"}
 
 CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_CACHE_SECONDS", "900"))
 BROAD_QUERY_MAX_OBJECTS = 1000000
@@ -104,6 +105,7 @@ _LEGACY_RV_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MORANTA26_ROTATION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RVBAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RVBAM_ARRAY_CACHE: dict[str, tuple[float, np.ndarray]] = {}
+_RETRIEVAL_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BANYAN_SIGMA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BD_EVOLUTION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BANYAN_HYPOTHESES_CACHE: dict[str, Any] | None = None
@@ -118,11 +120,13 @@ SPT_MASKED_REGIONS = ((1.367, 1.424), (1.86, 2.0))
 SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
+SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
 SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
 SPECTRA_EXPLORER_DEFAULT_SPECIDS = (13510,)
 SPECTRA_EXPLORER_MAX_SELECTED = int(os.environ.get("SPECTRA_EXPLORER_MAX_SELECTED", "30"))
 SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "0"))
+SPECTRA_EXPLORER_MAX_IGNORE_ROWS = int(os.environ.get("SPECTRA_EXPLORER_MAX_IGNORE_ROWS", "50000"))
 SPECTRAL_INDEX_EXPLORER_DEFAULT_SPECID = int(os.environ.get("SPECTRAL_INDEX_EXPLORER_DEFAULT_SPECID", "758"))
 SPECTRAL_INDEX_EXPLORER_PUBLIC_DEFAULT_SPECID = int(os.environ.get("SPECTRAL_INDEX_EXPLORER_PUBLIC_DEFAULT_SPECID", "758"))
 SPECTRAL_INDEX_EXPLORER_DEFAULT_DEFINITION_UID = os.environ.get(
@@ -257,9 +261,10 @@ XYZUVW_MODEL_CONTOURS = (
     ("68%", 0.68, 0.30),
 )
 TRUEFLOW_AGE_DEFAULT_OID = int(os.environ.get("TRUEFLOW_AGE_DEFAULT_OID", "11266"))
-TRUEFLOW_AGE_CACHE_SCHEMA = "target-title-v3"
+TRUEFLOW_AGE_CACHE_SCHEMA = "object-fallback-v1"
 GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
+GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 10.0
 GAIA_CMD_SIMPLE_BANDS = {
     "G": {"label": "G", "psid": "gaiadr3_gmag", "simple_band": "g"},
     "GBP": {"label": "G_BP", "psid": "gaiadr3_bpmag", "simple_band": "b"},
@@ -294,15 +299,21 @@ GAIA_CMD_SPT_AXIS_SEQUENCE_IDS = {
 
 
 def _db_config(args: dict[str, Any]) -> dict[str, str]:
-    username = args.get("user") or os.environ.get("MOCA_USERNAME", DEFAULT_USERNAME)
-    dbname = args.get("dbase") or os.environ.get("MOCA_DBNAME", DEFAULT_DBNAME)
+    username = args.get("user") or args.get("username") or os.environ.get("MOCA_USERNAME", DEFAULT_USERNAME)
+    dbname = (
+        args.get("dbase")
+        or args.get("db")
+        or args.get("database")
+        or os.environ.get("MOCA_DBNAME", DEFAULT_DBNAME)
+    )
     if str(username).strip().lower() == "public":
         dbname = "mocadb"
     return {
         "host": args.get("host") or os.environ.get("MOCA_HOST", DEFAULT_HOST),
         "username": username,
-        "password": args.get("pwd") or os.environ.get("MOCA_PASSWORD", DEFAULT_PASSWORD),
+        "password": args.get("pwd") or args.get("password") or os.environ.get("MOCA_PASSWORD", DEFAULT_PASSWORD),
         "dbname": dbname,
+        "port": args.get("port") or os.environ.get("MOCA_PORT", "3306"),
     }
 
 
@@ -320,7 +331,29 @@ def _db_schema_identifier(args: dict[str, Any]) -> str:
 def _connection_string(args: dict[str, Any]) -> str:
     cfg = _db_config(args)
     password = quote_plus(cfg["password"])
-    return f"mysql+pymysql://{cfg['username']}:{password}@{cfg['host']}/{cfg['dbname']}"
+    return f"mysql+pymysql://{cfg['username']}:{password}@{cfg['host']}:{cfg['port']}/{cfg['dbname']}"
+
+
+def _provided_db_password(args: dict[str, Any]) -> str:
+    return str(
+        args.get("pwd")
+        or args.get("password")
+        or os.environ.get("MOCA_PASSWORD")
+        or ""
+    )
+
+
+def _auth_context(args: dict[str, Any]) -> dict[str, Any]:
+    cfg = _db_config(args)
+    username = str(cfg.get("username") or "").strip().lower()
+    has_credentials = username in MOCA_TEAM_USERS and bool(_provided_db_password(args))
+    private_db = _is_private_db(args)
+    return {
+        "role": username if has_credentials and private_db else "",
+        "has_credentials": has_credentials,
+        "private_db": private_db,
+        "source": "url" if (args.get("user") or args.get("username")) else "environment",
+    }
 
 
 @lru_cache(maxsize=8)
@@ -1652,7 +1685,7 @@ def _mock_payload() -> dict[str, Any]:
 
 def _spt_db_cache_key(args: dict[str, Any]) -> str:
     cfg = _db_config(args)
-    return "|".join([cfg["host"], cfg["username"], cfg["dbname"]])
+    return "|".join([cfg["host"], cfg["port"], cfg["username"], cfg["dbname"]])
 
 
 def _spt_parse_norm_regions(raw: str | None) -> list[tuple[float, float]]:
@@ -3106,6 +3139,10 @@ def _precompute_spt_comparison(
         raise ValueError("Selected comparison spectrum has no usable data in the normalization regions")
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
+    lowres_comparison = (
+        _spt_float(spectrum_payload.get("meta", {}).get("average_resolving_power")) is not None
+        and float(spectrum_payload.get("meta", {}).get("average_resolving_power")) < 100
+    )
 
     comparison_regions = _spt_comparison_regions(comparison_df, norm_regions_param, cloud_lambda0)
     grid_raw_by_specid: dict[int, pd.DataFrame] = {}
@@ -3138,12 +3175,24 @@ def _precompute_spt_comparison(
         if std_df.empty:
             continue
         std_df = _spt_rescale_standard_to_comparison(std_df.copy(deep=True), comparison_df, norm_regions_param)
+        spectrum_display = None
+        if lowres_comparison:
+            std_display_df = _spt_process_spectrum(
+                std_raw,
+                bins_per_micron=SPT_LOWRES_DISPLAY_BINS_PER_MICRON,
+                norm_regions_param=norm_regions_param,
+            )
+            if not std_display_df.empty:
+                std_display_df["esp_calc"] = _spt_prepare_errors(std_display_df["spn"], std_display_df.get("espn"))
+                std_display_df = _spt_rescale_standard_to_comparison(std_display_df, comparison_df, norm_regions_param)
+                spectrum_display = _spt_spectrum_records(std_display_df)
         standard_items.append({
             "row": row,
             "std_specid": std_specid,
             "std_df": std_df,
             "segments": _spt_standard_segments(std_df, comparison_regions, cloud_lambda0),
             "spectrum_original": _spt_spectrum_records(std_df),
+            "spectrum_display": spectrum_display,
             "av_list": [None] * len(norm_regions_param),
             "rv_list": [None] * len(norm_regions_param),
             "cloud_tau_list": [None] * len(norm_regions_param),
@@ -3199,6 +3248,7 @@ def _precompute_spt_comparison(
         std_specid = int(item["std_specid"])
         std_df = item["std_df"]
         spectrum_original = item["spectrum_original"]
+        spectrum_display = item.get("spectrum_display")
         spectrum_dereddened: list[dict[str, Any]] | None = None
         spectrum_cloud: list[dict[str, Any]] | None = None
         av_list = list(item["av_list"])
@@ -3346,6 +3396,7 @@ def _precompute_spt_comparison(
             "bibcode": row.get("bibcode"),
             "gravity_class": row.get("gravity_class"),
             "spectrum": spectrum_original,
+            "spectrum_display": spectrum_display,
             "spectrum_dered": spectrum_dereddened,
             "spectrum_cloud": spectrum_cloud,
             "A_V": [_pythonize(value) for value in av_list],
@@ -3504,6 +3555,10 @@ def _mock_spt_compare(
     comparison_df = _spt_process_spectrum(comparison_raw, bins_per_micron=bins, norm_regions_param=norm_regions_param)
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
+    lowres_comparison = (
+        _spt_float(spectrum_payload.get("meta", {}).get("average_resolving_power")) is not None
+        and float(spectrum_payload.get("meta", {}).get("average_resolving_power")) < 100
+    )
     results = []
     if only_standard_specid is not None:
         grid_data = grid_data[pd.to_numeric(grid_data["moca_specid"], errors="coerce") == int(only_standard_specid)].copy()
@@ -3520,6 +3575,18 @@ def _mock_spt_compare(
         if std_df.empty:
             continue
         std_df["esp_calc"] = _spt_prepare_errors(std_df["spn"], std_df.get("espn"))
+        _spt_rescale_standard_to_comparison(std_df, comparison_df, norm_regions_param)
+        spectrum_display = None
+        if lowres_comparison:
+            std_display_df = _spt_process_spectrum(
+                std_raw,
+                bins_per_micron=SPT_LOWRES_DISPLAY_BINS_PER_MICRON,
+                norm_regions_param=norm_regions_param,
+            )
+            if not std_display_df.empty:
+                std_display_df["esp_calc"] = _spt_prepare_errors(std_display_df["spn"], std_display_df.get("espn"))
+                std_display_df = _spt_rescale_standard_to_comparison(std_display_df, comparison_df, norm_regions_param)
+                spectrum_display = _spt_spectrum_records(std_display_df)
         spectrum_original = _spt_spectrum_records(std_df)
         spectrum_cloud = None
         cloud_tau = [None] * len(norm_regions_param)
@@ -3569,6 +3636,7 @@ def _mock_spt_compare(
         results.append({
             **row.to_dict(),
             "spectrum": spectrum_original,
+            "spectrum_display": spectrum_display,
             "spectrum_dered": None,
             "spectrum_cloud": _spt_spectrum_records(metric_df) if cloud_correction else spectrum_cloud,
             "A_V": [None] * len(norm_regions_param),
@@ -3615,6 +3683,308 @@ def _spt_grid_response_payload(payload: dict[str, Any], include_spectra: bool) -
     if not include_spectra:
         out["gridSpectra"] = []
     return out
+
+
+def _spectral_typing_management_allowed(args: dict[str, Any]) -> tuple[bool, str]:
+    auth = _auth_context(args)
+    if auth.get("has_credentials") and not auth.get("private_db"):
+        return False, "Spectral type pushes require the private MOCAdb schema."
+    if auth.get("role") != "management":
+        return False, "Management credentials are required."
+    if args.get("mock") in {"1", "true", "yes"}:
+        return False, "Mock spectral type comparisons cannot be written to MOCAdb."
+    if not _is_private_db(args):
+        return False, "Spectral type pushes require the private MOCAdb schema."
+    return True, ""
+
+
+def _spt_int_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _spt_clean_text(value: Any, max_length: int | None = None) -> str | None:
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    return text_value[:max_length] if max_length is not None else text_value
+
+
+def _spt_parse_spectral_class_and_suffix(spectral_type: str | None) -> tuple[str | None, str | None]:
+    if not spectral_type:
+        return None, None
+    text_value = str(spectral_type).strip()
+    for prefix in ("esd", "d/sd", "sd"):
+        if text_value.lower().startswith(prefix):
+            rest = text_value[len(prefix):].lstrip()
+            match = re.search(r"[OBAFGKMLTY]", rest, re.IGNORECASE)
+            return (match.group(0).upper() if match else None), ("d/sd" if prefix == "d/sd" else prefix)
+    match = re.search(r"[OBAFGKMLTY]", text_value, re.IGNORECASE)
+    return (match.group(0).upper() if match else None), None
+
+
+def _spt_normalize_gravity_class(value: Any) -> str | None:
+    text_value = str(value or "").strip().lower()
+    if not text_value or text_value in {"alpha", "field", "fld-g", "null", "none"}:
+        return None
+    if text_value in {"β", "beta"} or "intermediate" in text_value or "int-g" in text_value:
+        return "β"
+    if text_value in {"γ", "gamma"} or "very low" in text_value or "vl-g" in text_value:
+        return "γ"
+    if text_value in {"δ", "delta"} or "extremely low" in text_value:
+        return "δ"
+    return _spt_clean_text(value, 20)
+
+
+def _spt_infer_object_type(spectral_type_number: float | None, gravity_class: str | None) -> str | None:
+    if spectral_type_number is None or not math.isfinite(float(spectral_type_number)):
+        return None
+    sptn = float(spectral_type_number)
+    if sptn >= 10 or (sptn >= 6 and gravity_class in {"β", "γ", "δ"}):
+        return "brown dwarf"
+    return None
+
+
+def _spt_push_comments(body: Mapping[str, Any], standard_row: Mapping[str, Any]) -> str:
+    standard_label = (
+        body.get("standard_label")
+        or body.get("standard_designation")
+        or standard_row.get("object_designation")
+        or standard_row.get("designation")
+        or f"specid{standard_row.get('moca_specid')}"
+    )
+    parts = [
+        f"Standard: {standard_label}",
+        f"standard_moca_specid={standard_row.get('moca_specid')}",
+        f"grid={standard_row.get('grid')}",
+        f"moca_sptgridhid={standard_row.get('moca_sptgridhid')}",
+    ]
+    red_chi2 = _spt_float(body.get("reduced_chi2"))
+    if red_chi2 is not None:
+        parts.append(f"chi2={red_chi2:.3f}")
+    correction = _spt_clean_text(body.get("correction"), 40) or "none"
+    parts.append(f"correction={correction}")
+    bins = _spt_int_value(body.get("bins_per_micron"))
+    if bins is not None:
+        parts.append(f"bins_per_micron={bins}")
+    norm_text = _spt_clean_text(body.get("norm_regions_text"), 255)
+    if norm_text:
+        parts.append(f"norm_regions={norm_text}")
+    best_parameters = _spt_clean_text(body.get("best_parameters"))
+    if best_parameters:
+        parts.append(f"best_parameters={best_parameters}")
+    return "; ".join(parts)
+
+
+def _clear_spectral_type_write_caches() -> dict[str, int]:
+    counts = {
+        "bootstrap": len(_BOOTSTRAP_CACHE),
+        "features": len(_FEATURE_CACHE),
+        "spectralTypingGrid": len(_SPT_GRID_CACHE),
+        "spectralTypingSpectra": len(_SPT_SPECTRUM_CACHE),
+        "spectralTypingComparisons": len(_SPT_COMPARE_CACHE),
+        "spectralTypingProcessedStandards": len(_SPT_STANDARD_PROCESS_CACHE),
+        "spectraExplorer": len(_SPECTRA_EXPLORER_CACHE),
+        "spectralIndexExplorer": len(_SPECTRAL_INDEX_EXPLORER_CACHE),
+        "gaiaCmd": len(_GAIA_CMD_CACHE),
+        "mocaExplorer": len(_MOCA_EXPLORER_CACHE),
+        "bdEvolution": len(_BD_EVOLUTION_CACHE),
+    }
+    _BOOTSTRAP_CACHE.clear()
+    _FEATURE_CACHE.clear()
+    _SPT_GRID_CACHE.clear()
+    _SPT_SPECTRUM_CACHE.clear()
+    _SPT_COMPARE_CACHE.clear()
+    _SPT_STANDARD_PROCESS_CACHE.clear()
+    _SPECTRA_EXPLORER_CACHE.clear()
+    _SPECTRAL_INDEX_EXPLORER_CACHE.clear()
+    _GAIA_CMD_CACHE.clear()
+    _MOCA_EXPLORER_CACHE.clear()
+    _BD_EVOLUTION_CACHE.clear()
+    return counts
+
+
+def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
+    comparison_specid = _spt_int_value(body.get("moca_specid") or body.get("specid"))
+    standard_specid = _spt_int_value(
+        body.get("spectral_standard_moca_specid")
+        or body.get("standard_specid")
+        or body.get("moca_standard_specid")
+    )
+    grid_history_id = _spt_int_value(body.get("moca_sptgridhid") or body.get("grid_history_id"))
+    if comparison_specid is None:
+        raise ValueError("A numeric comparison moca_specid is required.")
+    if standard_specid is None:
+        raise ValueError("A numeric standard moca_specid is required.")
+    if grid_history_id is None:
+        raise ValueError("A numeric moca_sptgridhid is required.")
+
+    rls = _spt_clean_text(body.get("rls"), 20) or "gagne"
+    if not SAFE_ID_RE.fullmatch(rls):
+        raise ValueError("RLS must contain only letters, numbers, underscore, dash, period, plus, or colon.")
+    author = _spt_clean_text(body.get("author"), 50) or "gagne"
+
+    engine = _engine(_connection_string(args))
+    with engine.begin() as conn:
+        if not _db_table_exists(conn, "data_spectral_types"):
+            raise RuntimeError("The data_spectral_types table is not available.")
+        columns = _db_table_columns(conn, "data_spectral_types")
+        required_columns = {"moca_oid", "moca_specid", "spectral_type", "spectral_type_number", "moca_sptgridhid", "spectral_standard_moca_specid"}
+        missing = required_columns - columns
+        if missing:
+            raise RuntimeError(f"data_spectral_types is missing required columns: {', '.join(sorted(missing))}")
+
+        comparison_row = conn.execute(text("""
+            SELECT
+                ms.moca_specid,
+                ms.moca_oid,
+                ms.moca_instid,
+                ms.spectrum_name,
+                mo.designation
+            FROM moca_spectra ms
+            LEFT JOIN moca_objects mo USING(moca_oid)
+            WHERE ms.moca_specid = :comparison_specid
+                AND COALESCE(ms.ignored, 0) = 0
+            LIMIT 1
+        """), {"comparison_specid": comparison_specid}).mappings().first()
+        if not comparison_row:
+            raise ValueError(f"No active comparison spectrum found for moca_specid={comparison_specid}.")
+        comparison_row = dict(comparison_row)
+        if comparison_row.get("moca_oid") is None:
+            raise ValueError("The comparison spectrum is not linked to a moca_oid.")
+
+        standard_row = conn.execute(text("""
+            SELECT
+                dstg.moca_sptgridid AS grid,
+                dstg.moca_sptgridhid,
+                dstg.moca_specid,
+                dstg.moca_oid,
+                dstg.object_designation,
+                dstg.short_object_designation AS designation,
+                dstg.spectral_type,
+                dstg.spectral_type_number,
+                CASE WHEN mstg.moca_sptgridid = 'extremely low gravity' THEN 'delta'
+                     WHEN mstg.moca_sptgridid = 'very low gravity' THEN 'gamma'
+                     WHEN mstg.moca_sptgridid = 'intermediate gravity' THEN 'beta'
+                     WHEN mstg.moca_sptgridid = 'field' THEN 'alpha'
+                     ELSE NULL
+                END AS gravity_class
+            FROM data_spectral_typing_grids dstg
+            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+            WHERE dstg.moca_specid = :standard_specid
+                AND dstg.moca_sptgridhid = :grid_history_id
+                AND COALESCE(dstg.ignored, 0) = 0
+                AND COALESCE(mstg.ignored, 0) = 0
+            LIMIT 1
+        """), {
+            "standard_specid": standard_specid,
+            "grid_history_id": grid_history_id,
+        }).mappings().first()
+        if not standard_row:
+            raise ValueError(
+                f"No active spectral typing grid row found for standard moca_specid={standard_specid} "
+                f"and moca_sptgridhid={grid_history_id}."
+            )
+        standard_row = dict(standard_row)
+
+        requested_grid = _spt_clean_text(body.get("grid"), 100)
+        if requested_grid and str(standard_row.get("grid") or "") != requested_grid:
+            raise ValueError("The submitted grid does not match the selected standard grid row.")
+        requested_spt = _spt_clean_text(body.get("spectral_type"), 100)
+        standard_spt = _spt_clean_text(standard_row.get("spectral_type"), 100)
+        if requested_spt and standard_spt and requested_spt != standard_spt:
+            raise ValueError("The submitted spectral type does not match the selected standard grid row.")
+        standard_sptn = _spt_float(standard_row.get("spectral_type_number"))
+        requested_sptn = _spt_float(body.get("spectral_type_number"))
+        if standard_sptn is None:
+            raise ValueError("The selected standard has no spectral_type_number.")
+        if requested_sptn is not None and abs(float(requested_sptn) - float(standard_sptn)) > 0.05:
+            raise ValueError("The submitted spectral_type_number does not match the selected standard grid row.")
+
+        gravity_class = _spt_normalize_gravity_class(body.get("gravity_class") or standard_row.get("gravity_class"))
+        spectral_class, suffix = _spt_parse_spectral_class_and_suffix(standard_spt)
+        wavelength_regime = _spt_clean_text(body.get("wavelength_regime"), 20)
+        if wavelength_regime not in {"visible", "near_infrared"}:
+            max_wv = _spt_float(body.get("comparison_wavelength_max_um"))
+            wavelength_regime = "visible" if max_wv is not None and max_wv < 0.8 else "near_infrared"
+        object_type = _spt_infer_object_type(standard_sptn, gravity_class)
+        if object_type and _db_table_exists(conn, "moca_object_types"):
+            object_type_exists = int(conn.execute(text("""
+                SELECT COUNT(*) AS n
+                FROM moca_object_types
+                WHERE object_type = :object_type
+            """), {"object_type": object_type}).scalar() or 0)
+            if object_type_exists <= 0:
+                object_type = None
+
+        row = {
+            "moca_oid": int(comparison_row["moca_oid"]),
+            "moca_specid": comparison_specid,
+            "moca_instid": _spt_clean_text(comparison_row.get("moca_instid"), 255),
+            "spectral_type": standard_spt,
+            "moca_sptgridhid": grid_history_id,
+            "spectral_standard_moca_specid": standard_specid,
+            "spectral_type_number": float(standard_sptn),
+            "spectral_type_unc": _spt_float(body.get("spectral_type_unc")) or 0.5,
+            "quality_flag": _spt_clean_text(body.get("quality_flag"), 6) or "B",
+            "photometric_estimate": 0,
+            "spectral_class": spectral_class,
+            "gravity_class": gravity_class,
+            "suffix": suffix,
+            "simple_spectral_type": standard_spt,
+            "complete_spectral_type": standard_spt,
+            "wavelength_regime": wavelength_regime,
+            "origin": "mocaviz_spectral_typing",
+            "author": author,
+            "object_designation": _spt_clean_text(
+                comparison_row.get("designation")
+                or body.get("object_designation")
+                or comparison_row.get("spectrum_name"),
+                60,
+            ),
+            "object_type": object_type,
+            "comments": _spt_push_comments(body, standard_row),
+            "is_public": 0,
+            "rls": rls,
+        }
+
+        duplicate = conn.execute(text("""
+            SELECT id
+            FROM data_spectral_types
+            WHERE COALESCE(ignored, 0) = 0
+                AND moca_oid <=> :moca_oid
+                AND moca_specid <=> :moca_specid
+                AND moca_sptgridhid <=> :moca_sptgridhid
+                AND spectral_standard_moca_specid <=> :spectral_standard_moca_specid
+                AND spectral_type <=> :spectral_type
+                AND ABS(COALESCE(spectral_type_number, -99999) - :spectral_type_number) < 0.00001
+            LIMIT 1
+        """), row).mappings().first()
+        if duplicate:
+            raise FileExistsError(f"An active matching spectral type already exists (data_spectral_types.id={duplicate['id']}).")
+
+        insert_row = {key: value for key, value in row.items() if key in columns and value is not None}
+        column_sql = ", ".join(f"`{key}`" for key in insert_row)
+        value_sql = ", ".join(f":{key}" for key in insert_row)
+        result = conn.execute(text(f"INSERT INTO data_spectral_types ({column_sql}) VALUES ({value_sql})"), insert_row)
+        inserted_id = getattr(result, "lastrowid", None) or conn.execute(text("SELECT LAST_INSERT_ID() FROM DUAL")).scalar()
+
+    return {
+        "inserted_id": _pythonize(inserted_id),
+        "row": _json_clean(row),
+        "cleared": _clear_spectral_type_write_caches(),
+    }
 
 
 def _parse_spectra_explorer_specids(args: dict[str, Any]) -> list[int]:
@@ -3811,6 +4181,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             bin_factor = bins_per_micron / 10000.0
             rows_df = _read_sql(conn, f"""
                 SELECT
+                    NULL AS data_spectra_id,
                     ds.moca_specid,
                     AVG(ds.wavelength_angstrom) * 1e-4 AS lam,
                     AVG(ds.flux_flambda) AS sp,
@@ -3827,6 +4198,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
         else:
             rows_df = _read_sql(conn, f"""
                 SELECT
+                    ds.id AS data_spectra_id,
                     ds.moca_specid,
                     ds.wavelength_angstrom * 1e-4 AS lam,
                     ds.flux_flambda AS sp,
@@ -3886,6 +4258,111 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
     return payload
 
 
+def _spectra_explorer_management_allowed(args: dict[str, Any]) -> tuple[bool, str]:
+    auth = _auth_context(args)
+    if auth.get("has_credentials") and not auth.get("private_db"):
+        return False, "Spectrum ignore updates require the private MOCAdb schema."
+    if auth.get("role") != "management":
+        return False, "Management credentials are required."
+    if args.get("mock") in {"1", "true", "yes"}:
+        return False, "Mock spectra cannot be written to MOCAdb."
+    if not _is_private_db(args):
+        return False, "Spectrum ignore updates require the private MOCAdb schema."
+    return True, ""
+
+
+def _parse_spectra_ignore_request(body: Mapping[str, Any]) -> tuple[list[int], list[int]]:
+    raw_ids = body.get("data_spectra_ids") or body.get("row_ids") or body.get("ids") or []
+    raw_specids = body.get("moca_specids") or body.get("specids") or body.get("moca_specid") or []
+    if isinstance(raw_ids, (str, int, float)):
+        raw_ids = str(raw_ids).replace(";", ",").split(",")
+    if isinstance(raw_specids, (str, int, float)):
+        raw_specids = str(raw_specids).replace(";", ",").split(",")
+    row_ids: list[int] = []
+    specids: list[int] = []
+    seen_row_ids: set[int] = set()
+    seen_specids: set[int] = set()
+    for value in raw_ids:
+        try:
+            row_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if row_id > 0 and row_id not in seen_row_ids:
+            seen_row_ids.add(row_id)
+            row_ids.append(row_id)
+    for value in raw_specids:
+        try:
+            specid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if specid > 0 and specid not in seen_specids:
+            seen_specids.add(specid)
+            specids.append(specid)
+    if not row_ids:
+        raise ValueError("No data_spectra row IDs were supplied.")
+    if not specids:
+        raise ValueError("No moca_specid values were supplied.")
+    if len(row_ids) > SPECTRA_EXPLORER_MAX_IGNORE_ROWS:
+        raise ValueError(f"Too many selected rows; limit is {SPECTRA_EXPLORER_MAX_IGNORE_ROWS}.")
+    return row_ids, specids
+
+
+def _clear_spectra_write_caches() -> dict[str, int]:
+    counts = {
+        "spectraExplorer": len(_SPECTRA_EXPLORER_CACHE),
+        "spectralIndexExplorer": len(_SPECTRAL_INDEX_EXPLORER_CACHE),
+        "spectralTypingSpectra": len(_SPT_SPECTRUM_CACHE),
+        "spectralTypingComparisons": len(_SPT_COMPARE_CACHE),
+        "spectralTypingProcessedStandards": len(_SPT_STANDARD_PROCESS_CACHE),
+    }
+    _SPECTRA_EXPLORER_CACHE.clear()
+    _SPECTRAL_INDEX_EXPLORER_CACHE.clear()
+    _SPT_SPECTRUM_CACHE.clear()
+    _SPT_COMPARE_CACHE.clear()
+    _SPT_STANDARD_PROCESS_CACHE.clear()
+    return counts
+
+
+def _set_spectra_rows_ignored(args: dict[str, Any], row_ids: list[int], specids: list[int]) -> dict[str, Any]:
+    engine = _engine(_connection_string(args))
+    select_query = text("""
+        SELECT
+            COUNT(*) AS selected_count,
+            COUNT(DISTINCT moca_specid) AS specid_count,
+            MIN(wavelength_angstrom) * 1e-4 AS wavelength_min_um,
+            MAX(wavelength_angstrom) * 1e-4 AS wavelength_max_um
+        FROM data_spectra
+        WHERE id IN :row_ids
+            AND moca_specid IN :specids
+    """).bindparams(bindparam("row_ids", expanding=True), bindparam("specids", expanding=True))
+    update_query = text("""
+        UPDATE data_spectra
+        SET ignored = 1
+        WHERE id IN :row_ids
+            AND moca_specid IN :specids
+            AND COALESCE(ignored, 0) = 0
+    """).bindparams(bindparam("row_ids", expanding=True), bindparam("specids", expanding=True))
+    with engine.begin() as conn:
+        if not _db_table_exists(conn, "data_spectra"):
+            raise RuntimeError("The data_spectra table is not available.")
+        columns = _db_table_columns(conn, "data_spectra")
+        missing = {"id", "moca_specid", "ignored"} - columns
+        if missing:
+            raise RuntimeError(f"data_spectra is missing required columns: {', '.join(sorted(missing))}")
+        selected = dict(conn.execute(select_query, {"row_ids": row_ids, "specids": specids}).mappings().one())
+        if int(selected.get("selected_count") or 0) == 0:
+            raise ValueError("No matching data_spectra rows were found for this selection.")
+        result = conn.execute(update_query, {"row_ids": row_ids, "specids": specids})
+    return {
+        "selected_count": int(selected.get("selected_count") or 0),
+        "updated_count": int(result.rowcount or 0),
+        "specid_count": int(selected.get("specid_count") or 0),
+        "wavelength_min_um": _pythonize(selected.get("wavelength_min_um")),
+        "wavelength_max_um": _pythonize(selected.get("wavelength_max_um")),
+        "cleared": _clear_spectra_write_caches(),
+    }
+
+
 def _mock_spectra_explorer_search(query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
     selected_specids = selected_specids or []
     rows = [
@@ -3937,6 +4414,7 @@ def _mock_spectra_explorer_payload(specids: list[int], args: dict[str, Any] | No
             if hide_ignored and ignored:
                 continue
             rows.append({
+                "data_spectra_id": specid * 1000000 + row_index,
                 "moca_specid": specid,
                 "lam": round(float(x), 6),
                 "sp": float(y + dy),
@@ -5507,6 +5985,18 @@ def _gaia_cmd_parse_max_objects(raw: Any) -> int:
     return max(1, min(value, GAIA_CMD_HARD_MAX_OBJECTS))
 
 
+def _gaia_cmd_membership_download_floor(args: dict[str, Any]) -> float:
+    raw = (
+        args.get("membership_download_floor")
+        or args.get("download_membership_prob_min")
+        or args.get("download_ya_prob_min")
+    )
+    value = _safe_float(raw)
+    if value is None:
+        value = GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR
+    return max(GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR, min(100.0, float(value)))
+
+
 def _gaia_cmd_parse_aids(args: dict[str, Any]) -> list[str]:
     raw = (
         args.get("asso")
@@ -5587,6 +6077,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
         "extinction_corrected_only": extinction_corrected_only,
         "show_extinction_vectors": show_extinction_vectors,
         "show_sequences": show_sequences,
+        "membership_download_floor": _gaia_cmd_membership_download_floor(args),
         "associations": _gaia_cmd_parse_aids(args),
         "highlight_oids": _gaia_cmd_parse_oids(args),
     }
@@ -5608,6 +6099,7 @@ def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
         str(int(selection["extinction_corrected_only"])),
         str(int(selection["show_extinction_vectors"])),
         str(int(selection["show_sequences"])),
+        f"{selection['membership_download_floor']:.3f}",
         ",".join(selection["associations"]),
         ",".join(str(oid) for oid in selection["highlight_oids"]),
     ])
@@ -5690,6 +6182,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "x1_psid": selection["x1"],
         "x2_psid": selection["x2"],
         "y_psid": selection["y"],
+        "membership_download_floor": selection["membership_download_floor"],
     }
     x1_raw_col = _gaia_cmd_raw_column(selection["x1"])
     x2_raw_col = _gaia_cmd_raw_column(selection["x2"])
@@ -5829,7 +6322,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     LEFT JOIN mechanics_object_properties_combined mopc
                         ON mopc.moca_oid = cbs.moca_oid
                     WHERE cbs.moca_aid IN ({aid_clause})
-                        AND cbs.ya_prob >= 90
+                        AND cbs.ya_prob >= :membership_download_floor
                         AND cbs.max_observables = 1
                         AND cbs.moca_bsmdid = (
                             SELECT moca_bsmdid
@@ -5936,7 +6429,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     LEFT JOIN mechanics_object_properties_combined mopc
                         ON mopc.moca_oid = cbs.moca_oid
                     WHERE cbs.moca_aid IN ({aid_clause})
-                        AND cbs.ya_prob >= 90
+                        AND cbs.ya_prob >= :membership_download_floor
                         AND cbs.max_observables = 1
                         AND cbs.moca_bsmdid = (
                             SELECT moca_bsmdid
@@ -6248,6 +6741,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
         aid = selected_aids[index % len(selected_aids)] if selected_aids and index % 12 == 0 else None
         age = 10 ** rng.uniform(1.0, 3.1) if aid else None
         moca_oid = 800000 + index if aid or index % 21 == 0 else None
+        ya_prob = round(float(rng.uniform(selection["membership_download_floor"], 100)), 2) if aid else None
         x1_mag = gmag + bp_rp * 0.55
         x2_mag = gmag - bp_rp * 0.45
         y_mag = gmag
@@ -6263,7 +6757,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "source_id": str(6000000000000000000 + index),
             "sample": aid or "Field",
             "moca_aid": aid,
-            "ya_prob": round(float(rng.uniform(90, 100)), 2) if aid else None,
+            "ya_prob": ya_prob,
             "highlighted": 1 if moca_oid in selection["highlight_oids"] else 0,
             "is_binary": 1 if index % 17 == 0 else 0,
             "photometry_source": "data_photometry" if aid and not selection["raw_gaia"] else "pcat_gaiadr3_100pc_field",
@@ -9266,6 +9760,318 @@ def _tfage_scalar_age_summary(row: dict[str, Any]) -> tuple[float, float, float,
     return float(center), float(abs(lo_unc)), float(abs(hi_unc)), note
 
 
+def _tfage_first_text(row: dict[str, Any], names: tuple[str, ...]) -> str:
+    for name in names:
+        if name not in row:
+            continue
+        value = row.get(name)
+        if value is None:
+            continue
+        text_value = str(value).strip()
+        if text_value and text_value.lower() not in {"nan", "none", "null"}:
+            return text_value
+    return ""
+
+
+def _tfage_ads_url(bibcode: str = "", query: str = "") -> str:
+    bibcode = str(bibcode or "").strip()
+    if bibcode:
+        return f"https://ui.adsabs.harvard.edu/abs/{quote_plus(bibcode)}/abstract"
+    query = str(query or "").strip()
+    return f"https://ui.adsabs.harvard.edu/search/q={quote_plus(query)}" if query else ""
+
+
+def _tfage_publication_info(engine, row: dict[str, Any]) -> dict[str, str]:
+    info = {
+        "publication_name": _tfage_first_text(row, ("publication_name", "reference_name", "reference")),
+        "publication_bibcode": _tfage_first_text(row, ("publication_bibcode", "bibcode")),
+    }
+    moca_pid = _tfage_first_text(row, ("moca_pid",))
+    if not moca_pid or not _tfage_table_exists(engine, "moca_publications"):
+        return info
+
+    cols = _tfage_columns(engine, "moca_publications")
+    if "moca_pid" not in cols:
+        return info
+    select_terms = ["moca_pid"]
+    if "name" in cols:
+        select_terms.append("name AS publication_name")
+    if "bibcode" in cols:
+        select_terms.append("bibcode AS publication_bibcode")
+    if len(select_terms) == 1:
+        return info
+
+    query = text(f"""
+        SELECT {", ".join(select_terms)}
+        FROM moca_publications
+        WHERE moca_pid = :moca_pid
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        pub = conn.execute(query, {"moca_pid": moca_pid}).mappings().first()
+    if pub:
+        for key in ("publication_name", "publication_bibcode"):
+            text_value = _tfage_first_text(dict(pub), (key,))
+            if text_value:
+                info[key] = text_value
+    return info
+
+
+def _tfage_adopted_age_row(age_rows: pd.DataFrame) -> tuple[dict[str, Any], str] | None:
+    if age_rows.empty:
+        return None
+    rows = age_rows.to_dict(orient="records")
+    for flag, label in (
+        ("adopted", "adopted"),
+        ("public_adopted", "public adopted"),
+        ("adopt_asis", "adopted as-is"),
+        ("public_adopt_asis", "public adopted as-is"),
+    ):
+        for row in rows:
+            if flag in row and _as_bool(row.get(flag)):
+                return row, label
+    return None
+
+
+def _tfage_age_marker_payload(
+    engine,
+    row: dict[str, Any],
+    *,
+    adoption_flag: str,
+    method: str | None = None,
+    kind: str = "adopted",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    summary = _tfage_scalar_age_summary(row)
+    if not summary:
+        return None
+    center, lo_unc, hi_unc, note = summary
+    method = method or _tfage_first_text(row, ("calculation_method", "method", "method_detailed")) or "adopted age"
+    moca_pid = _tfage_first_text(row, ("moca_pid",))
+    publication = _tfage_publication_info(engine, row)
+    publication_name = publication.get("publication_name") or _tfage_first_text(row, ("origin",)) or moca_pid
+    publication_bibcode = publication.get("publication_bibcode") or ""
+    reference_query = publication_name or moca_pid or publication_bibcode
+    return {
+        "age_id": _pythonize(row.get("id")),
+        "value_myr": float(center),
+        "uncertainty_minus_myr": float(lo_unc),
+        "uncertainty_plus_myr": float(hi_unc),
+        "lower_myr": max(float(center - lo_unc), 1e-6),
+        "upper_myr": float(center + hi_unc),
+        "uncertainty_note": note,
+        "adoption_flag": adoption_flag,
+        "kind": kind,
+        "method": method,
+        "moca_pid": moca_pid,
+        "reference_name": publication_name or publication_bibcode or moca_pid or "ADS reference",
+        "reference_bibcode": publication_bibcode,
+        "reference_query": reference_query,
+        "ads_url": _tfage_ads_url(publication_bibcode, reference_query),
+        "comments": _tfage_first_text(row, ("comments",)),
+        **(extra or {}),
+    }
+
+
+def _tfage_adopted_age_payload(engine, age_rows: pd.DataFrame) -> dict[str, Any] | None:
+    selected = _tfage_adopted_age_row(age_rows)
+    if not selected:
+        return None
+    row, adoption_flag = selected
+    return _tfage_age_marker_payload(engine, row, adoption_flag=adoption_flag, kind="adopted")
+
+
+def _tfage_private_schema(args: dict[str, Any], scope: str) -> bool:
+    return str(_tfage_db_config(args, scope)["dbname"]).strip("`").lower() == "mocadb_private_tables"
+
+
+def _tfage_membership_tables_available(engine) -> bool:
+    required_tables = {"calc_banyan_sigma", "moca_banyan_sigma_models", "data_association_ages"}
+    return all(_tfage_table_exists(engine, table_name) for table_name in required_tables)
+
+
+def _tfage_membership_age_payload_from_engine(
+    engine,
+    target: int | str | None,
+    *,
+    private_schema: bool,
+) -> dict[str, Any] | None:
+    if target in (None, "") or not _tfage_membership_tables_available(engine):
+        return None
+    cbs_cols = _tfage_columns(engine, "calc_banyan_sigma")
+    model_cols = _tfage_columns(engine, "moca_banyan_sigma_models")
+    age_cols = _tfage_columns(engine, "data_association_ages")
+    if not {"moca_oid", "moca_aid", "moca_bsmdid", "max_observables", "ya_prob"}.issubset(cbs_cols):
+        return None
+    if not {"moca_bsmdid", "adopted"}.issubset(model_cols):
+        return None
+    if not {"moca_aid", "age_myr", "adopted"}.issubset(age_cols):
+        return None
+
+    wanted_age_cols = [
+        "id",
+        "moca_aid",
+        "age_myr",
+        "age",
+        "age_value_myr",
+        "best_age_myr",
+        "log_age_yr",
+        "log10_age_yr",
+        "age_myr_unc_neg",
+        "age_myr_err_neg",
+        "age_myr_minus",
+        "age_unc_neg",
+        "age_err_neg",
+        "age_myr_unc_pos",
+        "age_myr_err_pos",
+        "age_myr_plus",
+        "age_unc_pos",
+        "age_err_pos",
+        "age_myr_unc",
+        "age_unc",
+        "age_err",
+        "uncertainty_myr",
+        "log_age_unc_neg",
+        "log_age_yr_unc_neg",
+        "log10_age_yr_unc_neg",
+        "log_age_unc_pos",
+        "log_age_yr_unc_pos",
+        "log10_age_yr_unc_pos",
+        "log_age_unc",
+        "log_age_yr_unc",
+        "log10_age_yr_unc",
+        "calculation_method",
+        "method",
+        "method_detailed",
+        "moca_pid",
+        "origin",
+        "comments",
+        "bibcode",
+        "adopted",
+        "public_adopted",
+        "adopt_asis",
+        "public_adopt_asis",
+    ]
+    age_select = ",\n               ".join(
+        f"daa.{_tfage_qid(col)} AS {_tfage_qid(col)}" for col in wanted_age_cols if col in age_cols
+    )
+    if not age_select:
+        return None
+
+    cbs_public_filter = (
+        "AND cbs.is_public = 1"
+        if private_schema and "is_public" in cbs_cols
+        else ""
+    )
+    cbs_id_select = "cbs.id AS membership_banyan_id," if "id" in cbs_cols else "NULL AS membership_banyan_id,"
+    cbs_observables_select = "cbs.observables AS membership_observables," if "observables" in cbs_cols else "NULL AS membership_observables,"
+    cbs_best_hyp_select = "cbs.best_hyp AS membership_best_hyp," if "best_hyp" in cbs_cols else "NULL AS membership_best_hyp,"
+    cbs_best_ya_select = "cbs.best_ya AS membership_best_ya" if "best_ya" in cbs_cols else "NULL AS membership_best_ya"
+    cbs_id_order = "cbs.id DESC," if "id" in cbs_cols else ""
+    age_id_order = "daa.id DESC" if "id" in age_cols else "daa.age_myr DESC"
+    age_ignore_filter = "AND COALESCE(daa.ignored, 0) = 0" if "ignored" in age_cols else ""
+    assoc_name_join = ""
+    assoc_name_select = "NULL AS membership_name,"
+    if _tfage_table_exists(engine, "moca_associations"):
+        assoc_cols = _tfage_columns(engine, "moca_associations")
+        if {"moca_aid", "name"}.issubset(assoc_cols):
+            assoc_name_join = "LEFT JOIN moca_associations ma ON ma.moca_aid = cbs.moca_aid"
+            assoc_name_select = "ma.name AS membership_name,"
+
+    query = text(f"""
+        SELECT
+               {age_select},
+               {cbs_id_select}
+               cbs.moca_aid AS membership_moca_aid,
+               cbs.moca_bsmdid AS membership_moca_bsmdid,
+               cbs.ya_prob AS membership_ya_prob,
+               {cbs_observables_select}
+               {assoc_name_select}
+               {cbs_best_hyp_select}
+               {cbs_best_ya_select}
+        FROM calc_banyan_sigma cbs
+        JOIN data_association_ages daa
+            ON daa.moca_aid = cbs.moca_aid
+        {assoc_name_join}
+        WHERE cbs.moca_oid = :moca_oid
+            AND cbs.max_observables = 1
+            AND cbs.moca_aid IS NOT NULL
+            AND cbs.moca_aid <> ''
+            AND UPPER(cbs.moca_aid) <> 'FIELD'
+            AND cbs.ya_prob >= 80
+            AND cbs.moca_bsmdid = (
+                SELECT moca_bsmdid
+                FROM moca_banyan_sigma_models
+                WHERE adopted = 1
+                ORDER BY moca_bsmdid DESC
+                LIMIT 1
+            )
+            {cbs_public_filter}
+            AND daa.age_myr IS NOT NULL
+            AND daa.age_myr > 0
+            AND daa.adopted = 1
+            {age_ignore_filter}
+        ORDER BY cbs.ya_prob DESC, {cbs_id_order} {age_id_order}
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        row = conn.execute(query, {"moca_oid": int(target)}).mappings().first()
+    if not row:
+        return None
+
+    data = dict(row)
+    moca_aid = _tfage_first_text(data, ("membership_moca_aid", "moca_aid"))
+    membership_name = _tfage_first_text(data, ("membership_name",))
+    ya_prob = _safe_float(data.get("membership_ya_prob"))
+    membership_label = f"{moca_aid}; {membership_name}" if moca_aid and membership_name else (moca_aid or membership_name)
+    if ya_prob is not None and membership_label:
+        method = f"BANYAN Sigma membership age from {membership_label} (YA={ya_prob:.1f}%)"
+    elif membership_label:
+        method = f"BANYAN Sigma membership age from {membership_label}"
+    else:
+        method = "BANYAN Sigma membership age"
+    return _tfage_age_marker_payload(
+        engine,
+        data,
+        adoption_flag="membership adopted association age",
+        method=method,
+        kind="membership",
+        extra={
+            "membership_moca_aid": moca_aid,
+            "membership_name": membership_name,
+            "membership_ya_prob": ya_prob,
+            "membership_moca_bsmdid": _pythonize(data.get("membership_moca_bsmdid")),
+            "membership_banyan_id": _pythonize(data.get("membership_banyan_id")),
+            "membership_observables": _pythonize(data.get("membership_observables")),
+            "membership_best_hyp": _pythonize(data.get("membership_best_hyp")),
+            "membership_best_ya": _pythonize(data.get("membership_best_ya")),
+        },
+    )
+
+
+def _tfage_membership_age_payload(engine, args: dict[str, Any], target: int | str | None) -> dict[str, Any] | None:
+    if target in (None, ""):
+        return None
+    if _tfage_membership_tables_available(engine):
+        return _tfage_membership_age_payload_from_engine(
+            engine,
+            target,
+            private_schema=_tfage_private_schema(args, "object"),
+        )
+
+    try:
+        metadata_engine = _engine(_connection_string(args))
+    except Exception:
+        return None
+    if not _tfage_membership_tables_available(metadata_engine):
+        return None
+    return _tfage_membership_age_payload_from_engine(
+        metadata_engine,
+        target,
+        private_schema=_is_private_db(args),
+    )
+
+
 def _tfage_gaussian_grid(age_rows: pd.DataFrame, stored_curves: list[_TfAgeCurve]) -> np.ndarray:
     candidates: list[float] = []
     for curve in stored_curves:
@@ -9417,6 +10223,25 @@ def _tfage_load_curves(
     return age_rows, blob_curves + legacy_curves + scalar_curves
 
 
+def _tfage_displayable_curves(curves: list[_TfAgeCurve]) -> list[_TfAgeCurve]:
+    return [
+        curve for curve in curves
+        if curve.source != "MOCAFlows error" and curve.age_myr.size > 1 and np.any(curve.pdf_age > 0)
+    ]
+
+
+def _tfage_object_fallback_engine(args: dict[str, Any]):
+    primary_cfg = _tfage_db_config(args, "object")
+    fallback_cfg = _db_config(args)
+    comparable_keys = ("host", "username", "dbname", "port")
+    if all(str(primary_cfg.get(key) or "") == str(fallback_cfg.get(key) or "") for key in comparable_keys):
+        return None
+    try:
+        return _engine(_connection_string(args))
+    except Exception:
+        return None
+
+
 def _tfage_curve_summary_row(curve: _TfAgeCurve) -> dict[str, Any]:
     pct = _tfage_percentiles(curve.age_myr, curve.pdf_age)
     meta = curve.metadata or {}
@@ -9470,14 +10295,18 @@ def _tfage_object_info_from_engine(engine, target: int) -> dict[str, Any]:
     info: dict[str, Any] = {"moca_oid": int(target)}
     has_objects = _tfage_table_exists(engine, "moca_objects")
     has_designations = _tfage_table_exists(engine, "mechanics_all_designations")
-    if not has_objects and not has_designations:
+    has_spectral_types = _tfage_table_exists(engine, "data_spectral_types")
+    if not has_objects and not has_designations and not has_spectral_types:
         return info
     with engine.connect() as conn:
+        object_columns = _db_table_columns(conn, "moca_objects") if has_objects else set()
+        moca_designation_sql = "mo.moca_designation" if "moca_designation" in object_columns else "NULL"
         if has_objects and has_designations:
             rows = _records(_read_sql(conn, """
                 SELECT
                     mo.moca_oid,
-                    COALESCE(NULLIF(mo.designation, ''), mad.designation) AS designation
+                    COALESCE(NULLIF(mo.designation, ''), mad.designation) AS designation,
+                    {moca_designation_sql} AS full_designation
                 FROM moca_objects mo
                 LEFT JOIN (
                     SELECT moca_oid, MIN(designation) AS designation
@@ -9490,10 +10319,10 @@ def _tfage_object_info_from_engine(engine, target: int) -> dict[str, Any]:
                     ON mad.moca_oid = mo.moca_oid
                 WHERE mo.moca_oid = :target
                 LIMIT 1
-            """, {"target": int(target)}))
+            """.format(moca_designation_sql=moca_designation_sql), {"target": int(target)}))
         elif has_objects:
-            rows = _records(_read_sql(conn, """
-                SELECT mo.moca_oid, mo.designation
+            rows = _records(_read_sql(conn, f"""
+                SELECT mo.moca_oid, mo.designation, {moca_designation_sql} AS full_designation
                 FROM moca_objects mo
                 WHERE mo.moca_oid = :target
                 LIMIT 1
@@ -9510,10 +10339,98 @@ def _tfage_object_info_from_engine(engine, target: int) -> dict[str, Any]:
                 GROUP BY mad.moca_oid
                 LIMIT 1
             """, {"target": int(target)}))
+        designation_rows = []
+        if has_designations:
+            designation_rows = _records(_read_sql(conn, """
+                SELECT DISTINCT mad.designation
+                FROM mechanics_all_designations mad
+                WHERE mad.moca_oid = :target
+                    AND mad.designation IS NOT NULL
+                    AND mad.designation <> ''
+                ORDER BY mad.designation
+                LIMIT 120
+            """, {"target": int(target)}))
+        adopted_spectral_type = _tfage_adopted_spectral_type_from_conn(conn, int(target)) if has_spectral_types else None
     if rows:
         info.update(rows[0])
         info["moca_oid"] = int(info.get("moca_oid") or target)
+    designations = []
+    for value in [info.get("full_designation"), info.get("designation")]:
+        if value is not None and str(value).strip() and str(value).strip() not in designations:
+            designations.append(str(value).strip())
+    for row in designation_rows:
+        value = str(row.get("designation") or "").strip()
+        if value and value not in designations:
+            designations.append(value)
+    if designations:
+        info["designations"] = designations
+        if not str(info.get("full_designation") or "").strip():
+            info["full_designation"] = designations[0]
+        if not str(info.get("designation") or "").strip():
+            info["designation"] = designations[0]
+    if adopted_spectral_type:
+        info["adopted_spectral_type"] = adopted_spectral_type
     return info
+
+
+def _tfage_adopted_spectral_type_from_conn(conn, target: int) -> dict[str, Any] | None:
+    if not _db_table_exists(conn, "data_spectral_types"):
+        return None
+    columns = _db_table_columns(conn, "data_spectral_types")
+    type_columns = [
+        column
+        for column in ("complete_spectral_type", "spectral_type", "simple_spectral_type")
+        if column in columns
+    ]
+    if not type_columns:
+        return None
+    type_expr = "COALESCE(" + ", ".join(f"NULLIF(dst.{column}, '')" for column in type_columns) + ")"
+    select_parts = [
+        f"{type_expr} AS spectral_type",
+        "dst.spectral_type_number" if "spectral_type_number" in columns else "NULL AS spectral_type_number",
+        "dst.spectral_type_unc" if "spectral_type_unc" in columns else "NULL AS spectral_type_unc",
+        "dst.photometric_estimate" if "photometric_estimate" in columns else "0 AS photometric_estimate",
+        "dst.public_adopted" if "public_adopted" in columns else "0 AS public_adopted",
+        "dst.adopted" if "adopted" in columns else "0 AS adopted",
+        "dst.moca_pid" if "moca_pid" in columns else "NULL AS moca_pid",
+    ]
+    publication_join = ""
+    if "moca_pid" in columns and _db_table_exists(conn, "moca_publications"):
+        publication_columns = _db_table_columns(conn, "moca_publications")
+        if "name" in publication_columns:
+            select_parts.append("mp.name AS reference_name")
+        if "bibcode" in publication_columns:
+            select_parts.append("mp.bibcode AS reference_bibcode")
+        publication_join = "LEFT JOIN moca_publications mp ON mp.moca_pid = dst.moca_pid"
+    ignored_clause = "AND COALESCE(dst.ignored, 0) = 0" if "ignored" in columns else ""
+    adoption_terms = []
+    if "adopted" in columns:
+        adoption_terms.append("COALESCE(dst.adopted, 0) = 1")
+    if "public_adopted" in columns:
+        adoption_terms.append("COALESCE(dst.public_adopted, 0) = 1")
+    adoption_clause = f"AND ({' OR '.join(adoption_terms)})" if adoption_terms else ""
+    order_parts = []
+    if "adopted" in columns:
+        order_parts.append("COALESCE(dst.adopted, 0) DESC")
+    if "photometric_estimate" in columns:
+        order_parts.append("COALESCE(dst.photometric_estimate, 0) ASC")
+    if "public_adopted" in columns:
+        order_parts.append("COALESCE(dst.public_adopted, 0) DESC")
+    if "id" in columns:
+        order_parts.append("dst.id DESC")
+    order_sql = ", ".join(order_parts) or "spectral_type"
+    rows = _records(_read_sql(conn, f"""
+        SELECT {", ".join(select_parts)}
+        FROM data_spectral_types dst
+        {publication_join}
+        WHERE dst.moca_oid = :target
+            AND {type_expr} IS NOT NULL
+            {ignored_clause}
+            {adoption_clause}
+        ORDER BY {order_sql}
+        LIMIT 1
+    """, {"target": int(target)}))
+    return rows[0] if rows else None
 
 
 def _tfage_metadata_object_info(args: dict[str, Any], target: int) -> dict[str, Any]:
@@ -9691,6 +10608,8 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "target": {},
             "curves": [],
             "tableRows": [],
+            "adoptedAge": None,
+            "membershipAge": None,
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "age_row_count": 0,
@@ -9704,12 +10623,28 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     started = time.time()
     engine = _engine(_tfage_connection_string(args, scope))
     age_rows, curves = _tfage_load_curves(engine, scope, target, load_blob_posteriors=load_posteriors)
-    displayable = [
-        curve for curve in curves
-        if curve.source != "MOCAFlows error" and curve.age_myr.size > 1 and np.any(curve.pdf_age > 0)
-    ]
+    displayable = _tfage_displayable_curves(curves)
+    fallback_used = False
+    if scope == "object" and not displayable:
+        fallback_engine = _tfage_object_fallback_engine(args)
+        if fallback_engine is not None:
+            fallback_age_rows, fallback_curves = _tfage_load_curves(
+                fallback_engine,
+                scope,
+                target,
+                load_blob_posteriors=load_posteriors,
+            )
+            fallback_displayable = _tfage_displayable_curves(fallback_curves)
+            if fallback_displayable:
+                engine = fallback_engine
+                age_rows = fallback_age_rows
+                curves = fallback_curves
+                displayable = fallback_displayable
+                fallback_used = True
     curve_payloads = [_tfage_curve_payload(curve) for curve in displayable]
     target_info = _tfage_target_info(engine, scope, target, args)
+    adopted_age = _tfage_adopted_age_payload(engine, age_rows)
+    membership_age = _tfage_membership_age_payload(engine, args, target) if scope == "object" else None
     payload = {
         "selection": {
             "scope": scope,
@@ -9721,12 +10656,15 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "target": target_info,
         "curves": curve_payloads,
         "tableRows": [row["summary"] for row in curve_payloads],
+        "adoptedAge": adopted_age,
+        "membershipAge": membership_age,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "age_row_count": int(len(age_rows)),
             "curve_count": int(len(curves)),
             "displayable_curve_count": int(len(curve_payloads)),
             "load_posteriors": load_posteriors,
+            "object_age_fallback": fallback_used,
             "source_counts": {
                 source: sum(1 for curve in curve_payloads if curve["source"] == source)
                 for source in sorted({curve["source"] for curve in curve_payloads})
@@ -9793,7 +10731,64 @@ def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
     if scope == "association":
         target_info = {"moca_aid": target or "TWA", "name": "Mock association"}
     else:
-        target_info = {"moca_oid": int(target or TRUEFLOW_AGE_DEFAULT_OID), "designation": "Mock age-PDF target"}
+        target_info = {
+            "moca_oid": int(target or TRUEFLOW_AGE_DEFAULT_OID),
+            "designation": "Mock age-PDF target",
+            "full_designation": "Mock age-PDF target full designation",
+            "designations": ["Mock age-PDF target full designation", "Mock age-PDF target"],
+            "adopted_spectral_type": {
+                "spectral_type": "L5 gamma",
+                "spectral_type_number": 15.0,
+                "spectral_type_unc": 0.5,
+                "photometric_estimate": 0,
+                "adopted": 1,
+                "public_adopted": 1,
+                "moca_pid": "mock",
+                "reference_name": "Mock Spectral Type Reference et al. (2026)",
+                "reference_bibcode": "2026Mock....6F",
+            },
+        }
+    adopted_age = {
+        "age_id": 77,
+        "value_myr": 45.0,
+        "uncertainty_minus_myr": 8.0,
+        "uncertainty_plus_myr": 10.0,
+        "lower_myr": 37.0,
+        "upper_myr": 55.0,
+        "uncertainty_note": "stored uncertainty",
+        "adoption_flag": "adopted",
+        "method": "Mock adopted age",
+        "moca_pid": "mock",
+        "reference_name": "Mock Age Reference et al. (2026)",
+        "reference_bibcode": "2026Mock....4D",
+        "reference_query": "Mock Age Reference et al. (2026)",
+        "ads_url": _tfage_ads_url("2026Mock....4D"),
+        "comments": "Synthetic adopted age for local smoke testing",
+    }
+    membership_age = {
+        "age_id": 88,
+        "value_myr": 130.0,
+        "uncertainty_minus_myr": 30.0,
+        "uncertainty_plus_myr": 45.0,
+        "lower_myr": 100.0,
+        "upper_myr": 175.0,
+        "uncertainty_note": "stored uncertainty",
+        "adoption_flag": "membership adopted association age",
+        "kind": "membership",
+        "method": "BANYAN Sigma membership age from MOCKMG; Mock moving group (YA=94.0%)",
+        "moca_pid": "mock",
+        "reference_name": "Mock Association Age Reference et al. (2026)",
+        "reference_bibcode": "2026Mock....5E",
+        "reference_query": "Mock Association Age Reference et al. (2026)",
+        "ads_url": _tfage_ads_url("2026Mock....5E"),
+        "comments": "Synthetic membership age for local smoke testing",
+        "membership_moca_aid": "MOCKMG",
+        "membership_name": "Mock moving group",
+        "membership_ya_prob": 94.0,
+        "membership_moca_bsmdid": 23,
+        "membership_banyan_id": 501,
+        "membership_observables": "XYZUVW",
+    }
     return {
         "selection": {
             "scope": scope,
@@ -9805,6 +10800,8 @@ def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
         "target": target_info,
         "curves": curves,
         "tableRows": [curve["summary"] for curve in curves],
+        "adoptedAge": adopted_age,
+        "membershipAge": membership_age if scope == "object" else None,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "age_row_count": 4,
@@ -9821,6 +10818,7 @@ def _mock_tfage_payload(args: dict[str, Any]) -> dict[str, Any]:
 def _astrometry_db_cache_key(args: dict[str, Any], oid: int) -> str:
     cfg = _db_config(args)
     return "|".join([
+        "refunc-pubrefs-v1",
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
@@ -9833,6 +10831,1215 @@ def _include_merged_astrometry(args: dict[str, Any]) -> bool:
     return any(_as_bool(args.get(key)) for key in ("display_merged", "include_merged", "merged"))
 
 
+def _astrometry_ultranest_available() -> bool:
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("ultranest") is not None
+    except Exception:
+        return False
+
+
+def _astrometry_ultranest_requires_management() -> bool:
+    return not _as_false(os.environ.get("ASTROMETRY_ULTRANEST_REQUIRES_MANAGEMENT", "1"))
+
+
+def _astrometry_fit_capabilities(args: dict[str, Any]) -> dict[str, Any]:
+    auth = _auth_context(args)
+    ultranest_available = _astrometry_ultranest_available()
+    requires_management = _astrometry_ultranest_requires_management()
+    management_allowed = auth.get("role") == "management"
+    return {
+        "auth": auth,
+        "fitters": {
+            "scipy": {
+                "available": True,
+                "label": "SciPy",
+                "requires_management": False,
+                "enabled": True,
+                "message": "",
+            },
+            "ultranest": {
+                "available": ultranest_available,
+                "label": "UltraNest",
+                "requires_management": requires_management,
+                "enabled": bool(ultranest_available and (management_allowed or not requires_management)),
+                "message": (
+                    "UltraNest is not installed in this Python environment."
+                    if not ultranest_available
+                    else (
+                        "UltraNest fits require management credentials."
+                        if requires_management and not management_allowed
+                        else ""
+                    )
+                ),
+            },
+        },
+        "defaults": {
+            "fitter": "scipy",
+            "outlier_mixture": True,
+        },
+    }
+
+
+def _astrometry_first_float(row: Mapping[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key in row:
+            value = _safe_float(row.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _astrometry_parallax_factors(ra_deg: float, dec_deg: float, epochs: Any) -> tuple[np.ndarray, np.ndarray]:
+    epoch_arr = np.asarray(epochs, dtype=float)
+    ra = np.radians(float(ra_deg))
+    dec = np.radians(float(dec_deg))
+    n = (epoch_arr - 2000.0) * 365.25
+    mean_long = np.radians(np.mod(280.460 + 0.9856474 * n, 360.0))
+    anomaly = np.radians(np.mod(357.528 + 0.9856003 * n, 360.0))
+    sun_long = mean_long + np.radians(1.915) * np.sin(anomaly) + np.radians(0.020) * np.sin(2.0 * anomaly)
+    obliquity = np.radians(23.439 - 0.0000004 * n)
+
+    cos_ra = math.cos(ra)
+    sin_ra = math.sin(ra)
+    cos_dec = math.cos(dec)
+    sin_dec = math.sin(dec)
+    cos_obl = np.cos(obliquity)
+    sin_obl = np.sin(obliquity)
+    cos_sun = np.cos(sun_long)
+    sin_sun = np.sin(sun_long)
+
+    pra = (cos_ra * cos_obl * sin_sun - sin_ra * cos_sun) * cos_dec
+    pdec = cos_dec * sin_obl * sin_sun - cos_ra * sin_dec * cos_sun - sin_ra * sin_dec * cos_obl * sin_sun
+    return np.asarray(pra, dtype=float), np.asarray(pdec, dtype=float)
+
+
+def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
+    rows_in = body.get("rows") or []
+    if not isinstance(rows_in, Sequence) or isinstance(rows_in, (str, bytes)):
+        raise ValueError("Fit rows must be supplied as a list.")
+
+    mode = str(body.get("mode") or "pm").strip().lower()
+    if mode not in {"pm", "pm_plx"}:
+        raise ValueError("Fit mode must be 'pm' or 'pm_plx'.")
+    is_parallax = mode == "pm_plx"
+
+    reference = body.get("reference") if isinstance(body.get("reference"), Mapping) else {}
+    ref_ra = _safe_float(reference.get("ra"))
+    ref_dec = _safe_float(reference.get("dec"))
+    if ref_ra is None or ref_dec is None:
+        raise ValueError("A finite reference R.A. and Decl. are required for fitting.")
+    ref_epoch = _safe_float(reference.get("epoch"))
+
+    parallax = body.get("parallax") if isinstance(body.get("parallax"), Mapping) else {}
+    fixed_plx = _safe_float(body.get("fixedPlx"))
+    if fixed_plx is None:
+        fixed_plx = _safe_float(parallax.get("value"))
+    if fixed_plx is None:
+        fixed_plx = 0.0
+
+    ids: list[str] = []
+    missions: list[str] = []
+    epochs: list[float] = []
+    rel_ra: list[float] = []
+    rel_dec: list[float] = []
+    sig_ra: list[float] = []
+    sig_dec: list[float] = []
+
+    for index, raw_row in enumerate(rows_in):
+        if not isinstance(raw_row, Mapping):
+            continue
+        epoch = _astrometry_first_float(raw_row, "plot_epoch_abs", "measurement_epoch_yr", "epoch")
+        y_ra = _astrometry_first_float(raw_row, "base_rel_ra", "rel_ra", "ra_offset_mas")
+        y_dec = _astrometry_first_float(raw_row, "base_rel_dec", "rel_dec", "dec_offset_mas")
+        e_ra = _astrometry_first_float(raw_row, "ra_unc_mas", "era_mas", "ra_unc")
+        e_dec = _astrometry_first_float(raw_row, "dec_unc_mas", "edec_mas", "dec_unc")
+        if epoch is None or y_ra is None or y_dec is None:
+            continue
+        e_ra = max(float(e_ra if e_ra is not None else 1.0), 1e-3)
+        e_dec = max(float(e_dec if e_dec is not None else 1.0), 1e-3)
+        ids.append(str(raw_row.get("id") if raw_row.get("id") is not None else index))
+        missions.append(str(raw_row.get("mission") or "No mission"))
+        epochs.append(float(epoch))
+        rel_ra.append(float(y_ra))
+        rel_dec.append(float(y_dec))
+        sig_ra.append(e_ra)
+        sig_dec.append(e_dec)
+
+    if not epochs:
+        raise ValueError("No usable astrometry rows were supplied for fitting.")
+
+    t = np.asarray(epochs, dtype=float)
+    y_ra_arr = np.asarray(rel_ra, dtype=float)
+    y_dec_arr = np.asarray(rel_dec, dtype=float)
+    s_ra_arr = np.asarray(sig_ra, dtype=float)
+    s_dec_arr = np.asarray(sig_dec, dtype=float)
+    valid = (
+        np.isfinite(t)
+        & np.isfinite(y_ra_arr)
+        & np.isfinite(y_dec_arr)
+        & np.isfinite(s_ra_arr)
+        & np.isfinite(s_dec_arr)
+        & (s_ra_arr > 0)
+        & (s_dec_arr > 0)
+    )
+    if not np.any(valid):
+        raise ValueError("No finite astrometry rows were supplied for fitting.")
+
+    ids_arr = np.asarray(ids, dtype=object)[valid]
+    missions_arr = np.asarray(missions, dtype=object)[valid]
+    t = t[valid]
+    y_ra_arr = y_ra_arr[valid]
+    y_dec_arr = y_dec_arr[valid]
+    s_ra_arr = s_ra_arr[valid]
+    s_dec_arr = s_dec_arr[valid]
+    t0 = float(ref_epoch if ref_epoch is not None else np.nanmedian(t))
+    pra, pdec = _astrometry_parallax_factors(ref_ra, ref_dec, t)
+
+    min_rows = 3 if is_parallax else 2
+    if t.size < min_rows:
+        raise ValueError(f"Need at least {min_rows} usable measurements for this fit.")
+
+    return {
+        "mode": mode,
+        "is_parallax": is_parallax,
+        "ids": ids_arr,
+        "missions": missions_arr,
+        "t": t,
+        "dt": t - t0,
+        "y_ra": y_ra_arr,
+        "y_dec": y_dec_arr,
+        "s_ra": s_ra_arr,
+        "s_dec": s_dec_arr,
+        "pra": pra,
+        "pdec": pdec,
+        "t0": t0,
+        "ref_ra": float(ref_ra),
+        "ref_dec": float(ref_dec),
+        "fixed_plx": float(fixed_plx),
+        "n_params": 5 if is_parallax else 4,
+        "min_rows": min_rows,
+    }
+
+
+def _astrometry_design_matrix(arrays: Mapping[str, Any], sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dt = np.asarray(arrays["dt"], dtype=float)
+    pra = np.asarray(arrays["pra"], dtype=float)
+    pdec = np.asarray(arrays["pdec"], dtype=float)
+    n = dt.size
+    is_parallax = bool(arrays["is_parallax"])
+    n_params = int(arrays["n_params"])
+    design = np.zeros((2 * n, n_params), dtype=float)
+    design[:n, 0] = 1.0
+    design[:n, 1] = dt
+    design[n:, 2] = 1.0
+    design[n:, 3] = dt
+    if is_parallax:
+        design[:n, 4] = pra
+        design[n:, 4] = pdec
+
+    y_ra = np.asarray(arrays["y_ra"], dtype=float).copy()
+    y_dec = np.asarray(arrays["y_dec"], dtype=float).copy()
+    if not is_parallax:
+        fixed_plx = float(arrays.get("fixed_plx") or 0.0)
+        y_ra -= fixed_plx * pra
+        y_dec -= fixed_plx * pdec
+    y = np.concatenate([y_ra, y_dec])
+
+    sigma = np.concatenate([
+        np.asarray(arrays["s_ra"], dtype=float),
+        np.asarray(arrays["s_dec"], dtype=float),
+    ])
+    if sigma_scale is not None:
+        scale = np.asarray(sigma_scale, dtype=float)
+        if scale.size == n:
+            scale = np.concatenate([scale, scale])
+        sigma = sigma / np.sqrt(np.clip(scale, 1e-6, None))
+    sigma = np.clip(sigma, 1e-3, np.inf)
+    return design, y, sigma
+
+
+def _astrometry_linear_fit(arrays: Mapping[str, Any], sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray]:
+    design, y, sigma = _astrometry_design_matrix(arrays, sigma_scale=sigma_scale)
+    aw = design / sigma[:, np.newaxis]
+    yw = y / sigma
+    normal = aw.T @ aw
+    rhs = aw.T @ yw
+    try:
+        covariance = np.linalg.inv(normal)
+        params = covariance @ rhs
+    except np.linalg.LinAlgError:
+        covariance = np.linalg.pinv(normal)
+        params = covariance @ rhs
+    return np.asarray(params, dtype=float), np.asarray(covariance, dtype=float)
+
+
+def _astrometry_model_from_params(arrays: Mapping[str, Any], params: Any) -> tuple[np.ndarray, np.ndarray]:
+    p = np.asarray(params, dtype=float)
+    dt = np.asarray(arrays["dt"], dtype=float)
+    pra = np.asarray(arrays["pra"], dtype=float)
+    pdec = np.asarray(arrays["pdec"], dtype=float)
+    plx = float(p[4]) if bool(arrays["is_parallax"]) else float(arrays.get("fixed_plx") or 0.0)
+    ra_model = p[0] + p[1] * dt + plx * pra
+    dec_model = p[2] + p[3] * dt + plx * pdec
+    return np.asarray(ra_model, dtype=float), np.asarray(dec_model, dtype=float)
+
+
+def _astrometry_curve_fit(arrays: Mapping[str, Any], p0: Any | None = None, sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        from scipy.optimize import curve_fit
+    except Exception:
+        return _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
+
+    if p0 is None:
+        p0, _ = _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
+    xdata = np.vstack([
+        np.asarray(arrays["dt"], dtype=float),
+        np.asarray(arrays["pra"], dtype=float),
+        np.asarray(arrays["pdec"], dtype=float),
+    ])
+    ydata = np.concatenate([
+        np.asarray(arrays["y_ra"], dtype=float),
+        np.asarray(arrays["y_dec"], dtype=float),
+    ])
+    sigma = np.concatenate([
+        np.asarray(arrays["s_ra"], dtype=float),
+        np.asarray(arrays["s_dec"], dtype=float),
+    ])
+    if sigma_scale is not None:
+        scale = np.asarray(sigma_scale, dtype=float)
+        if scale.size == np.asarray(arrays["dt"]).size:
+            scale = np.concatenate([scale, scale])
+        sigma = sigma / np.sqrt(np.clip(scale, 1e-6, None))
+    sigma = np.clip(sigma, 1e-3, np.inf)
+
+    def model(xvals: Any, *theta: float) -> np.ndarray:
+        local = dict(arrays)
+        local["dt"] = np.asarray(xvals[0], dtype=float)
+        local["pra"] = np.asarray(xvals[1], dtype=float)
+        local["pdec"] = np.asarray(xvals[2], dtype=float)
+        ra_model, dec_model = _astrometry_model_from_params(local, theta)
+        return np.concatenate([ra_model, dec_model])
+
+    try:
+        popt, pcov = curve_fit(
+            model,
+            xdata,
+            ydata,
+            p0=np.asarray(p0, dtype=float),
+            sigma=sigma,
+            absolute_sigma=True,
+            maxfev=20000,
+        )
+        return np.asarray(popt, dtype=float), np.asarray(pcov, dtype=float)
+    except Exception:
+        return _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
+
+
+def _astrometry_outlier_scales(arrays: Mapping[str, Any]) -> tuple[float, float]:
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    s_ra = np.asarray(arrays["s_ra"], dtype=float)
+    s_dec = np.asarray(arrays["s_dec"], dtype=float)
+    mad_ra = np.nanmedian(np.abs(y_ra - np.nanmedian(y_ra)))
+    mad_dec = np.nanmedian(np.abs(y_dec - np.nanmedian(y_dec)))
+    scale_ra = max(float(1.4826 * mad_ra) if np.isfinite(mad_ra) else 0.0, 4.0 * float(np.nanmedian(s_ra)), 1.0)
+    scale_dec = max(float(1.4826 * mad_dec) if np.isfinite(mad_dec) else 0.0, 4.0 * float(np.nanmedian(s_dec)), 1.0)
+    return scale_ra, scale_dec
+
+
+def _astrometry_mixture_responsibilities(
+    arrays: Mapping[str, Any],
+    params: Any,
+    stationary_ra: float,
+    stationary_dec: float,
+    mixture_weight: float,
+    outlier_scale_ra: float,
+    outlier_scale_dec: float,
+) -> np.ndarray:
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    s_ra = np.asarray(arrays["s_ra"], dtype=float)
+    s_dec = np.asarray(arrays["s_dec"], dtype=float)
+    ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+    sig_ra_out = np.sqrt(s_ra**2 + float(outlier_scale_ra) ** 2)
+    sig_dec_out = np.sqrt(s_dec**2 + float(outlier_scale_dec) ** 2)
+    w = float(np.clip(mixture_weight, 1e-4, 1.0 - 1e-4))
+    log_mov = (
+        math.log(w)
+        - 0.5 * (((y_ra - ra_model) / s_ra) ** 2 + ((y_dec - dec_model) / s_dec) ** 2)
+        - np.log(2.0 * math.pi * s_ra * s_dec)
+    )
+    log_out = (
+        math.log(1.0 - w)
+        - 0.5 * (((y_ra - stationary_ra) / sig_ra_out) ** 2 + ((y_dec - stationary_dec) / sig_dec_out) ** 2)
+        - np.log(2.0 * math.pi * sig_ra_out * sig_dec_out)
+    )
+    delta = np.clip(log_out - log_mov, -700.0, 700.0)
+    return 1.0 / (1.0 + np.exp(delta))
+
+
+def _astrometry_stationary_offsets(
+    arrays: Mapping[str, Any],
+    responsibilities: Any,
+    outlier_scale_ra: float,
+    outlier_scale_dec: float,
+) -> tuple[float, float]:
+    r = np.asarray(responsibilities, dtype=float)
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    sig_ra_out = np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + float(outlier_scale_ra) ** 2)
+    sig_dec_out = np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + float(outlier_scale_dec) ** 2)
+    w_ra = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_ra_out, 1e-3, np.inf) ** 2
+    w_dec = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_dec_out, 1e-3, np.inf) ** 2
+    stationary_ra = float(np.sum(w_ra * y_ra) / np.sum(w_ra)) if np.sum(w_ra) > 0 else float(np.nanmedian(y_ra))
+    stationary_dec = float(np.sum(w_dec * y_dec) / np.sum(w_dec)) if np.sum(w_dec) > 0 else float(np.nanmedian(y_dec))
+    return stationary_ra, stationary_dec
+
+
+def _astrometry_raw_fit_result(
+    arrays: Mapping[str, Any],
+    params: Any,
+    covariance: Any,
+    responsibilities: Any | None,
+    *,
+    fitter: str,
+    outlier_mixture: bool,
+    stationary_ra: float | None = None,
+    stationary_dec: float | None = None,
+    mixture_weight: float | None = None,
+    outlier_scale_ra: float | None = None,
+    outlier_scale_dec: float | None = None,
+) -> dict[str, Any]:
+    p = np.asarray(params, dtype=float)
+    cov = np.asarray(covariance, dtype=float)
+    n = np.asarray(arrays["t"]).size
+    if responsibilities is None:
+        r = np.ones(n, dtype=float)
+    else:
+        r = np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+    inlier_mask = r >= 0.5 if outlier_mixture else np.ones(n, dtype=bool)
+    if int(np.sum(inlier_mask)) < int(arrays["min_rows"]):
+        order = np.argsort(r)[::-1]
+        inlier_mask = np.zeros(n, dtype=bool)
+        inlier_mask[order[: int(arrays["min_rows"])]] = True
+
+    ra_model, dec_model = _astrometry_model_from_params(arrays, p)
+    chi2_per_row = (
+        ((np.asarray(arrays["y_ra"]) - ra_model) / np.asarray(arrays["s_ra"])) ** 2
+        + ((np.asarray(arrays["y_dec"]) - dec_model) / np.asarray(arrays["s_dec"])) ** 2
+    )
+    chi2 = float(np.nansum(chi2_per_row[inlier_mask]))
+    dof = max(2 * int(np.sum(inlier_mask)) - int(arrays["n_params"]), 1)
+    reduced_chi2 = chi2 / dof
+    variance_scale = max(reduced_chi2, 1.0)
+    diag = np.diag(cov) if cov.ndim == 2 and cov.shape[0] >= p.size else np.full(p.size, np.nan)
+    unc = np.sqrt(np.maximum(diag * variance_scale, 0.0))
+    ids = np.asarray(arrays["ids"], dtype=object)
+    return {
+        "mode": arrays["mode"],
+        "label": (
+            f"{'UltraNest' if fitter == 'ultranest' else 'SciPy'} "
+            f"{'PM + parallax' if arrays['is_parallax'] else 'PM'}"
+        ),
+        "fitter": fitter,
+        "fitterLabel": "UltraNest" if fitter == "ultranest" else "SciPy",
+        "outlierMixture": bool(outlier_mixture),
+        "nRows": int(n),
+        "nInliers": int(np.sum(inlier_mask)),
+        "nOutliers": int(n - np.sum(inlier_mask)),
+        "inlierIds": [str(value) for value in ids[inlier_mask]],
+        "outlierIds": [str(value) for value in ids[~inlier_mask]],
+        "responsibilities": [
+            {"id": str(row_id), "inlierProbability": float(prob), "inlier": bool(mask)}
+            for row_id, prob, mask in zip(ids, r, inlier_mask)
+        ],
+        "t0": float(arrays["t0"]),
+        "posRa": float(p[0]),
+        "pmra": float(p[1]),
+        "posDec": float(p[2]),
+        "pmdec": float(p[3]),
+        "plx": float(p[4]) if arrays["is_parallax"] else None,
+        "fixedPlx": None if arrays["is_parallax"] else float(arrays.get("fixed_plx") or 0.0),
+        "posRaUnc": float(unc[0]) if unc.size > 0 and np.isfinite(unc[0]) else None,
+        "pmraUnc": float(unc[1]) if unc.size > 1 and np.isfinite(unc[1]) else None,
+        "posDecUnc": float(unc[2]) if unc.size > 2 and np.isfinite(unc[2]) else None,
+        "pmdecUnc": float(unc[3]) if unc.size > 3 and np.isfinite(unc[3]) else None,
+        "plxUnc": float(unc[4]) if arrays["is_parallax"] and unc.size > 4 and np.isfinite(unc[4]) else None,
+        "chi2": chi2,
+        "dof": int(dof),
+        "reducedChi2": float(reduced_chi2),
+        "stationaryRa": float(stationary_ra) if stationary_ra is not None and np.isfinite(stationary_ra) else None,
+        "stationaryDec": float(stationary_dec) if stationary_dec is not None and np.isfinite(stationary_dec) else None,
+        "mixtureWeight": float(mixture_weight) if mixture_weight is not None and np.isfinite(mixture_weight) else None,
+        "outlierScaleRa": float(outlier_scale_ra) if outlier_scale_ra is not None and np.isfinite(outlier_scale_ra) else None,
+        "outlierScaleDec": float(outlier_scale_dec) if outlier_scale_dec is not None and np.isfinite(outlier_scale_dec) else None,
+    }
+
+
+def _astrometry_scipy_fit(arrays: Mapping[str, Any], outlier_mixture: bool) -> dict[str, Any]:
+    params, covariance = _astrometry_curve_fit(arrays)
+    stationary_ra = float(np.nanmedian(np.asarray(arrays["y_ra"], dtype=float)))
+    stationary_dec = float(np.nanmedian(np.asarray(arrays["y_dec"], dtype=float)))
+    mixture_weight = 1.0
+    outlier_scale_ra, outlier_scale_dec = _astrometry_outlier_scales(arrays)
+    responsibilities = np.ones(np.asarray(arrays["t"]).size, dtype=float)
+
+    if outlier_mixture:
+        mixture_weight = 0.8
+        for _ in range(18):
+            responsibilities = _astrometry_mixture_responsibilities(
+                arrays,
+                params,
+                stationary_ra,
+                stationary_dec,
+                mixture_weight,
+                outlier_scale_ra,
+                outlier_scale_dec,
+            )
+            params, covariance = _astrometry_curve_fit(arrays, p0=params, sigma_scale=responsibilities)
+            stationary_ra, stationary_dec = _astrometry_stationary_offsets(
+                arrays,
+                responsibilities,
+                outlier_scale_ra,
+                outlier_scale_dec,
+            )
+            mixture_weight = float(np.clip(np.nanmean(responsibilities), 0.05, 0.98))
+        responsibilities = _astrometry_mixture_responsibilities(
+            arrays,
+            params,
+            stationary_ra,
+            stationary_dec,
+            mixture_weight,
+            outlier_scale_ra,
+            outlier_scale_dec,
+        )
+
+    return {
+        "params": params,
+        "covariance": covariance,
+        "responsibilities": responsibilities,
+        "stationary_ra": stationary_ra,
+        "stationary_dec": stationary_dec,
+        "mixture_weight": mixture_weight,
+        "outlier_scale_ra": outlier_scale_ra,
+        "outlier_scale_dec": outlier_scale_dec,
+    }
+
+
+def _astrometry_ultranest_bounds(arrays: Mapping[str, Any], seed_params: Any) -> list[tuple[float, float]]:
+    seed = np.asarray(seed_params, dtype=float)
+    ra_model, dec_model = _astrometry_model_from_params(arrays, seed)
+    ra_resid = np.asarray(arrays["y_ra"], dtype=float) - ra_model
+    dec_resid = np.asarray(arrays["y_dec"], dtype=float) - dec_model
+    mad_ra = np.nanmedian(np.abs(ra_resid - np.nanmedian(ra_resid)))
+    mad_dec = np.nanmedian(np.abs(dec_resid - np.nanmedian(dec_resid)))
+    pos_scale = max(float(1.4826 * max(mad_ra, mad_dec)) if np.isfinite(max(mad_ra, mad_dec)) else 0.0, 1.0)
+    baseline = max(float(np.nanmax(arrays["dt"]) - np.nanmin(arrays["dt"])), 1e-3)
+    pm_scale = max(pos_scale / baseline, 0.05)
+    pra = np.asarray(arrays["pra"], dtype=float)
+    pdec = np.asarray(arrays["pdec"], dtype=float)
+    proj_amp = max(float(np.nanmax(np.abs(np.concatenate([pra, pdec])))), 1e-2)
+    plx_scale = max(pos_scale / proj_amp, 0.02)
+    bounds = [
+        (float(seed[0] - 8.0 * pos_scale), float(seed[0] + 8.0 * pos_scale)),
+        (float(seed[1] - 8.0 * pm_scale), float(seed[1] + 8.0 * pm_scale)),
+        (float(seed[2] - 8.0 * pos_scale), float(seed[2] + 8.0 * pos_scale)),
+        (float(seed[3] - 8.0 * pm_scale), float(seed[3] + 8.0 * pm_scale)),
+    ]
+    if bool(arrays["is_parallax"]):
+        bounds.append((float(seed[4] - 8.0 * plx_scale), float(seed[4] + 8.0 * plx_scale)))
+    min_widths = [2.0, 0.2, 2.0, 0.2, 0.1]
+    widened: list[tuple[float, float]] = []
+    for index, (lo, hi) in enumerate(bounds):
+        width = hi - lo
+        min_width = min_widths[index]
+        if width < min_width:
+            mid = 0.5 * (lo + hi)
+            lo = mid - 0.5 * min_width
+            hi = mid + 0.5 * min_width
+        widened.append((lo, hi))
+    return widened
+
+
+def _astrometry_ultranest_fit(
+    arrays: Mapping[str, Any],
+    seed_fit: Mapping[str, Any],
+    outlier_mixture: bool,
+) -> dict[str, Any]:
+    if not _astrometry_ultranest_available():
+        raise RuntimeError("UltraNest is not installed in this Python environment.")
+    import ultranest
+    import ultranest.stepsampler
+
+    seed_params = np.asarray(seed_fit["params"], dtype=float)
+    bounds = _astrometry_ultranest_bounds(arrays, seed_params)
+    param_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (["plx"] if arrays["is_parallax"] else [])
+    stationary_ra = float(seed_fit.get("stationary_ra") if seed_fit.get("stationary_ra") is not None else np.nanmedian(arrays["y_ra"]))
+    stationary_dec = float(seed_fit.get("stationary_dec") if seed_fit.get("stationary_dec") is not None else np.nanmedian(arrays["y_dec"]))
+    mixture_weight = float(seed_fit.get("mixture_weight") if seed_fit.get("mixture_weight") is not None else 0.8)
+    outlier_scale_ra = float(seed_fit.get("outlier_scale_ra") if seed_fit.get("outlier_scale_ra") is not None else _astrometry_outlier_scales(arrays)[0])
+    outlier_scale_dec = float(seed_fit.get("outlier_scale_dec") if seed_fit.get("outlier_scale_dec") is not None else _astrometry_outlier_scales(arrays)[1])
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    s_ra = np.asarray(arrays["s_ra"], dtype=float)
+    s_dec = np.asarray(arrays["s_dec"], dtype=float)
+    sig_ra_out = np.sqrt(s_ra**2 + outlier_scale_ra**2)
+    sig_dec_out = np.sqrt(s_dec**2 + outlier_scale_dec**2)
+
+    def transform(unit_cube: Any) -> list[float]:
+        u = np.asarray(unit_cube, dtype=float)
+        return [lo + u[index] * (hi - lo) for index, (lo, hi) in enumerate(bounds)]
+
+    def loglike(theta: Any) -> float:
+        ra_model, dec_model = _astrometry_model_from_params(arrays, theta)
+        mov = (
+            -0.5 * (((y_ra - ra_model) / s_ra) ** 2 + ((y_dec - dec_model) / s_dec) ** 2)
+            - np.log(2.0 * math.pi * s_ra * s_dec)
+        )
+        if not outlier_mixture:
+            return float(np.nansum(mov))
+        w = float(np.clip(mixture_weight, 1e-4, 1.0 - 1e-4))
+        out = (
+            -0.5 * (((y_ra - stationary_ra) / sig_ra_out) ** 2 + ((y_dec - stationary_dec) / sig_dec_out) ** 2)
+            - np.log(2.0 * math.pi * sig_ra_out * sig_dec_out)
+        )
+        return float(np.nansum(np.logaddexp(math.log(w) + mov, math.log(1.0 - w) + out)))
+
+    log_dir = Path(tempfile.gettempdir()) / "mocaviz_astrometry_ultranest"
+    sampler = ultranest.ReactiveNestedSampler(
+        param_names=param_names,
+        loglike=loglike,
+        transform=transform,
+        resume="overwrite",
+        log_dir=str(log_dir),
+    )
+    sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
+    result = sampler.run(
+        min_num_live_points=int(os.environ.get("ASTROMETRY_ULTRANEST_LIVE_POINTS", "300")),
+        dlogz=float(os.environ.get("ASTROMETRY_ULTRANEST_DLOGZ", "0.5")),
+    )
+    posterior = result.get("posterior") if isinstance(result, Mapping) else None
+    if not posterior:
+        posterior = sampler.results.get("posterior")
+    mean = np.asarray(posterior["mean"], dtype=float)
+    stdev = np.asarray(posterior["stdev"], dtype=float)
+    covariance = np.diag(stdev**2)
+    responsibilities = (
+        _astrometry_mixture_responsibilities(
+            arrays,
+            mean,
+            stationary_ra,
+            stationary_dec,
+            mixture_weight,
+            outlier_scale_ra,
+            outlier_scale_dec,
+        )
+        if outlier_mixture
+        else np.ones(np.asarray(arrays["t"]).size, dtype=float)
+    )
+    return {
+        "params": mean,
+        "covariance": covariance,
+        "responsibilities": responsibilities,
+        "stationary_ra": stationary_ra,
+        "stationary_dec": stationary_dec,
+        "mixture_weight": mixture_weight,
+        "outlier_scale_ra": outlier_scale_ra,
+        "outlier_scale_dec": outlier_scale_dec,
+    }
+
+
+def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    arrays = _astrometry_fit_arrays(body)
+    fitter = str(body.get("fitter") or body.get("method") or "scipy").strip().lower()
+    if fitter not in {"scipy", "ultranest"}:
+        raise ValueError("Fit method must be 'scipy' or 'ultranest'.")
+    outlier_mixture = not _as_false(body.get("outlierMixture", body.get("outlier_mixture", True)))
+
+    scipy_fit = _astrometry_scipy_fit(arrays, outlier_mixture=outlier_mixture)
+    if fitter == "ultranest":
+        capabilities = _astrometry_fit_capabilities(args)
+        ultranest_capability = capabilities["fitters"]["ultranest"]
+        if not ultranest_capability["enabled"]:
+            raise RuntimeError(ultranest_capability["message"] or "UltraNest fitting is not available.")
+        raw_fit = _astrometry_ultranest_fit(arrays, scipy_fit, outlier_mixture=outlier_mixture)
+    else:
+        raw_fit = scipy_fit
+
+    fit = _astrometry_raw_fit_result(
+        arrays,
+        raw_fit["params"],
+        raw_fit["covariance"],
+        raw_fit["responsibilities"],
+        fitter=fitter,
+        outlier_mixture=outlier_mixture,
+        stationary_ra=raw_fit.get("stationary_ra"),
+        stationary_dec=raw_fit.get("stationary_dec"),
+        mixture_weight=raw_fit.get("mixture_weight"),
+        outlier_scale_ra=raw_fit.get("outlier_scale_ra"),
+        outlier_scale_dec=raw_fit.get("outlier_scale_dec"),
+    )
+    return {"fit": _pythonize(fit), "capabilities": _astrometry_fit_capabilities(args)}
+
+
+def _astrometry_management_allowed(args: dict[str, Any]) -> tuple[bool, str]:
+    auth = _auth_context(args)
+    if auth.get("has_credentials") and not auth.get("private_db"):
+        return False, "Astrometry fit pushes require the private MOCAdb schema."
+    if auth.get("role") != "management":
+        return False, "Management credentials are required."
+    if args.get("mock") in {"1", "true", "yes"}:
+        return False, "Mock astrometry cannot be written to MOCAdb."
+    if not _is_private_db(args):
+        return False, "Astrometry fit pushes require the private MOCAdb schema."
+    return True, ""
+
+
+def _astrometry_push_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _as_bool(value)
+
+
+def _astrometry_push_float(value: Any, label: str, *, positive: bool = False) -> float:
+    number = _safe_float(value)
+    if number is None or (positive and number <= 0):
+        suffix = " positive" if positive else " finite"
+        raise ValueError(f"A{suffix} {label} is required.")
+    return float(number)
+
+
+def _astrometry_push_optional_float(value: Any) -> float | None:
+    number = _safe_float(value)
+    return float(number) if number is not None else None
+
+
+def _astrometry_push_selected_tables(body: Mapping[str, Any]) -> list[str]:
+    push = body.get("push") if isinstance(body.get("push"), Mapping) else {}
+    selected: list[str] = []
+    if _astrometry_push_bool(push.get("coordinate", push.get("coordinates", push.get("refCoord", False)))):
+        selected.append("coordinate")
+    if _astrometry_push_bool(push.get("pm", push.get("properMotion", False))):
+        selected.append("pm")
+    if _astrometry_push_bool(push.get("parallax", push.get("plx", False))):
+        selected.append("parallax")
+    if not selected:
+        raise ValueError("Select at least one fitted quantity to push.")
+    return selected
+
+
+def _astrometry_push_visibility(body: Mapping[str, Any]) -> tuple[int, str]:
+    visibility = body.get("visibility") if isinstance(body.get("visibility"), Mapping) else {}
+    is_public = 1 if _astrometry_push_bool(visibility.get("isPublic", body.get("is_public", False))) else 0
+    rls = str(visibility.get("rls", body.get("rls", "gagne")) or "").strip().lower()
+    if is_public:
+        return 1, "public"
+    if not rls:
+        raise ValueError("A non-public RLS value is required for private rows.")
+    if len(rls) > 20:
+        raise ValueError("RLS must be 20 characters or fewer.")
+    return 0, rls
+
+
+def _astrometry_push_text(value: Any, *, default: str = "", max_length: int | None = None) -> str:
+    text_value = str(value if value is not None else default).strip()
+    if not text_value:
+        text_value = default
+    if max_length is not None and len(text_value) > max_length:
+        text_value = text_value[:max_length]
+    return text_value
+
+
+def _astrometry_push_moca_pid(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    if len(text_value) > 20:
+        raise ValueError("moca_pid must be 20 characters or fewer.")
+    return text_value
+
+
+def _astrometry_parse_mission_label(label: Any) -> tuple[str | None, str]:
+    text_value = str(label or "").strip()
+    if not text_value or text_value.lower() == "no mission":
+        return None, ""
+    parts = text_value.split()
+    if len(parts) >= 2:
+        return " ".join(parts[:-1]), parts[-1]
+    return parts[0], ""
+
+
+def _astrometry_push_mission_parts(body: Mapping[str, Any]) -> tuple[str | None, str]:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), Mapping) else {}
+    raw = metadata.get("selectedMissions", metadata.get("selected_missions", []))
+    if isinstance(raw, str):
+        missions = [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+    elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+        missions = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        missions = []
+    unique = list(dict.fromkeys(missions))
+    if len(unique) == 1:
+        return _astrometry_parse_mission_label(unique[0])
+    return None, ""
+
+
+def _astrometry_push_nonnegative_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(round(number))
+
+
+def _astrometry_push_count_from_ids(value: Any) -> int:
+    if isinstance(value, str):
+        items = [item.strip() for item in value.replace(";", ",").split(",") if item.strip()]
+        return len(items)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return len([item for item in value if item is not None and str(item).strip()])
+    return 0
+
+
+def _astrometry_push_manual_rejected_count(metadata: Mapping[str, Any]) -> int:
+    explicit = _astrometry_push_nonnegative_int(
+        metadata.get("manualRejectedCount", metadata.get("manual_rejected_count"))
+    )
+    if explicit is not None:
+        return explicit
+    return _astrometry_push_count_from_ids(metadata.get("manualRejectedIds", metadata.get("manual_rejected_ids", [])))
+
+
+def _astrometry_push_automatic_rejected_count(metadata: Mapping[str, Any], fit: Mapping[str, Any]) -> int:
+    explicit = _astrometry_push_nonnegative_int(
+        metadata.get("automaticRejectedCount", metadata.get("automatic_rejected_count"))
+    )
+    if explicit is not None:
+        return explicit
+    if _as_false(fit.get("outlierMixture", fit.get("outlier_mixture", True))):
+        return 0
+    n_outliers = _astrometry_push_nonnegative_int(fit.get("nOutliers", fit.get("n_outliers")))
+    if n_outliers is not None:
+        return n_outliers
+    return _astrometry_push_count_from_ids(fit.get("outlierIds", fit.get("outlier_ids", [])))
+
+
+def _astrometry_push_mission_counts(metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("missionCounts", metadata.get("mission_counts", []))
+    if isinstance(raw, str):
+        parts = [item.strip() for item in raw.replace("|", ";").split(";") if item.strip()]
+        rows = []
+        for item in parts:
+            if "=" in item:
+                mission, count = item.rsplit("=", 1)
+            elif ":" in item:
+                mission, count = item.rsplit(":", 1)
+            else:
+                continue
+            n_data = _astrometry_push_nonnegative_int(count.strip())
+            if n_data is not None:
+                rows.append({"mission": mission.strip() or "No mission", "n_data": n_data})
+        return rows
+    if not isinstance(raw, Sequence) or isinstance(raw, (bytes, bytearray)):
+        return []
+    rows = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            mission = str(item.get("mission", item.get("label", item.get("name", "No mission"))) or "No mission").strip()
+            n_data = _astrometry_push_nonnegative_int(item.get("nData", item.get("n_data", item.get("count"))))
+        elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)) and len(item) >= 2:
+            mission = str(item[0] or "No mission").strip()
+            n_data = _astrometry_push_nonnegative_int(item[1])
+        else:
+            continue
+        if n_data is None:
+            continue
+        rows.append({"mission": mission or "No mission", "n_data": n_data})
+    return rows
+
+
+def _astrometry_push_mission_counts_text(mission_counts: Sequence[Mapping[str, Any]]) -> str:
+    parts = []
+    for item in mission_counts:
+        mission = str(item.get("mission") or "No mission").strip() or "No mission"
+        n_data = _astrometry_push_nonnegative_int(item.get("n_data", item.get("nData")))
+        if n_data is None:
+            continue
+        parts.append(f"{mission}:{n_data}")
+    return "[" + ", ".join(parts) + "]" if parts else ""
+
+
+def _astrometry_push_fit_provenance(fit: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
+    method = str(fit.get("fitter") or fit.get("method") or fit.get("fitterLabel") or "scipy").strip().lower()
+    if method not in {"scipy", "ultranest"}:
+        method = "ultranest" if "ultra" in method else "scipy"
+    mode = str(fit.get("mode") or "pm").strip().lower()
+    n_rows = _astrometry_push_nonnegative_int(fit.get("nRows", fit.get("n_rows")))
+    n_inliers = _astrometry_push_nonnegative_int(fit.get("nInliers", fit.get("n_inliers")))
+    manual_rejected = _astrometry_push_manual_rejected_count(metadata)
+    automatic_rejected = _astrometry_push_automatic_rejected_count(metadata, fit)
+    mission_counts = _astrometry_push_mission_counts(metadata)
+    mission_counts_text = _astrometry_push_mission_counts_text(mission_counts)
+    outlier_mixture = not _as_false(fit.get("outlierMixture", fit.get("outlier_mixture", True)))
+    parts = [
+        f"fit_method={method}",
+        f"fit_mode={mode}",
+        f"fit_outlier_mixture={1 if outlier_mixture else 0}",
+        f"n_fit_data={n_rows}" if n_rows is not None else "",
+        f"n_fit_inliers={n_inliers}" if n_inliers is not None else "",
+        f"n_manual_rejected={manual_rejected}",
+        f"n_fit_rejected={automatic_rejected}",
+        f"fit_missions={mission_counts_text}" if mission_counts_text else "",
+    ]
+    return {
+        "method": method,
+        "mode": mode,
+        "n_rows": n_rows,
+        "n_inliers": n_inliers,
+        "manual_rejected": manual_rejected,
+        "automatic_rejected": automatic_rejected,
+        "mission_counts": mission_counts,
+        "text": "; ".join(part for part in parts if part),
+    }
+
+
+def _astrometry_push_comments_with_provenance(base_comments: str, provenance: Mapping[str, Any]) -> str:
+    text_value = str(base_comments or "").strip()
+    provenance_text = str(provenance.get("text") or "").strip()
+    if not provenance_text:
+        return text_value
+    if not text_value:
+        return provenance_text
+    if provenance_text in text_value:
+        return text_value
+    return f"{text_value}; {provenance_text}"
+
+
+def _astrometry_push_default_origin(fit: Mapping[str, Any]) -> str:
+    mode = "pm_plx" if str(fit.get("mode") or "").strip().lower() == "pm_plx" else "pm"
+    origin = f"mocaviz_astrometry_{mode}_fit"
+    if str(fit.get("fitter") or "").strip().lower() == "ultranest":
+        origin += "_ultranest"
+    return origin
+
+
+def _astrometry_push_calculation_method(fit: Mapping[str, Any]) -> str:
+    mode = "pmplx" if str(fit.get("mode") or "").strip().lower() == "pm_plx" else "pm"
+    if str(fit.get("fitter") or "").strip().lower() == "ultranest":
+        return f"mocaviz_{mode}_ultra"
+    return f"mocaviz_{mode}_fit"
+
+
+def _astrometry_mysql_identifier(name: str) -> str:
+    if not SAFE_SCHEMA_RE.fullmatch(str(name)):
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+    return f"`{name}`"
+
+
+def _astrometry_insert_row(conn, table_name: str, row: Mapping[str, Any]) -> int | None:
+    columns = _db_table_columns(conn, table_name)
+    insert_keys = [
+        key
+        for key, value in row.items()
+        if key in columns and value is not None
+    ]
+    if not insert_keys:
+        raise RuntimeError(f"No insertable columns were prepared for {table_name}.")
+    column_sql = ", ".join(_astrometry_mysql_identifier(key) for key in insert_keys)
+    value_sql = ", ".join(f":{key}" for key in insert_keys)
+    result = conn.execute(
+        text(f"INSERT INTO {_astrometry_mysql_identifier(table_name)} ({column_sql}) VALUES ({value_sql})"),
+        {key: row[key] for key in insert_keys},
+    )
+    inserted_id = getattr(result, "lastrowid", None)
+    try:
+        return int(inserted_id) if inserted_id else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _astrometry_duplicate_count(conn, table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    columns = _db_table_columns(conn, table_name)
+    if "moca_oid" not in columns:
+        return {"count": 0, "basis": "none"}
+    conditions = ["moca_oid = :moca_oid"]
+    params: dict[str, Any] = {"moca_oid": row.get("moca_oid")}
+    basis = "moca_oid"
+    if row.get("moca_pid") and "moca_pid" in columns:
+        conditions.append("moca_pid = :moca_pid")
+        params["moca_pid"] = row.get("moca_pid")
+        basis = "moca_pid"
+    elif row.get("origin") and "origin" in columns:
+        conditions.append("origin = :origin")
+        params["origin"] = row.get("origin")
+        basis = "origin"
+    if "ignored" in columns:
+        conditions.append("COALESCE(ignored, 0) = 0")
+    query = text(
+        f"SELECT COUNT(*) FROM {_astrometry_mysql_identifier(table_name)} "
+        f"WHERE {' AND '.join(conditions)}"
+    )
+    count = int(conn.execute(query, params).scalar() or 0)
+    return {"count": count, "basis": basis}
+
+
+def _astrometry_validate_moca_pid(conn, moca_pid: str | None) -> None:
+    if not moca_pid or not _db_table_exists(conn, "moca_publications"):
+        return
+    count = int(conn.execute(
+        text("SELECT COUNT(*) FROM moca_publications WHERE moca_pid = :moca_pid"),
+        {"moca_pid": moca_pid},
+    ).scalar() or 0)
+    if count < 1:
+        raise ValueError(f"moca_pid {moca_pid!r} does not exist in moca_publications.")
+
+
+def _astrometry_push_rows(body: Mapping[str, Any]) -> dict[str, Any]:
+    selected = _astrometry_push_selected_tables(body)
+    fit = body.get("fit") if isinstance(body.get("fit"), Mapping) else {}
+    fitted_coordinate = body.get("fittedCoordinate") if isinstance(body.get("fittedCoordinate"), Mapping) else {}
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), Mapping) else {}
+    target = body.get("target") if isinstance(body.get("target"), Mapping) else {}
+    moca_oid_raw = target.get("moca_oid", body.get("moca_oid", fit.get("moca_oid")))
+    try:
+        moca_oid = int(moca_oid_raw)
+    except (TypeError, ValueError):
+        raise ValueError("A numeric moca_oid is required for astrometry pushes.") from None
+    if moca_oid <= 0:
+        raise ValueError("A positive moca_oid is required for astrometry pushes.")
+
+    mode = str(fit.get("mode") or "").strip().lower()
+    if mode not in {"pm", "pm_plx"}:
+        raise ValueError("Run a PM or PM+PLX fit before pushing values.")
+
+    is_public, rls = _astrometry_push_visibility(body)
+    moca_pid = _astrometry_push_moca_pid(metadata.get("mocaPid", metadata.get("moca_pid")))
+    origin = _astrometry_push_text(
+        metadata.get("origin"),
+        default=_astrometry_push_default_origin(fit),
+        max_length=255,
+    )
+    comments = _astrometry_push_text(
+        metadata.get("comments"),
+        default=f"{origin} (management push from JS astrometric explorer)",
+    )
+    provenance = _astrometry_push_fit_provenance(fit, metadata)
+    comments = _astrometry_push_comments_with_provenance(comments, provenance)
+    mission_name, data_release = _astrometry_push_mission_parts(body)
+    common = {
+        "moca_oid": moca_oid,
+        "moca_pid": moca_pid,
+        "mission_name": mission_name,
+        "data_release": data_release,
+        "origin": origin,
+        "ignored": 0,
+        "is_public": is_public,
+        "comments": comments,
+        "rls": rls,
+    }
+
+    rows: list[dict[str, Any]] = []
+    if "pm" in selected:
+        rows.append({
+            "kind": "pm",
+            "label": "Fitted proper motion",
+            "table": "data_proper_motions",
+            "values": {
+                **common,
+                "pmra_masyr": _astrometry_push_float(fit.get("pmra"), "fitted pmra"),
+                "pmdec_masyr": _astrometry_push_float(fit.get("pmdec"), "fitted pmdec"),
+                "pmra_masyr_unc": _astrometry_push_float(fit.get("pmraUnc"), "fitted pmra uncertainty", positive=True),
+                "pmdec_masyr_unc": _astrometry_push_float(fit.get("pmdecUnc"), "fitted pmdec uncertainty", positive=True),
+                "calculation_method": _astrometry_push_calculation_method(fit),
+            },
+        })
+    if "parallax" in selected:
+        if mode != "pm_plx":
+            raise ValueError("A PM+PLX fit is required before pushing a fitted parallax.")
+        rows.append({
+            "kind": "parallax",
+            "label": "Fitted parallax",
+            "table": "data_parallaxes",
+            "values": {
+                **common,
+                "parallax_mas": _astrometry_push_float(fit.get("plx"), "fitted parallax"),
+                "parallax_mas_unc": _astrometry_push_float(fit.get("plxUnc"), "fitted parallax uncertainty", positive=True),
+            },
+        })
+    if "coordinate" in selected:
+        rows.append({
+            "kind": "coordinate",
+            "label": "Fitted reference coordinate",
+            "table": "data_equatorial_coordinates",
+            "values": {
+                **common,
+                "ra": _astrometry_push_float(fitted_coordinate.get("ra"), "fitted R.A."),
+                "dec": _astrometry_push_float(fitted_coordinate.get("dec"), "fitted Decl."),
+                "ra_unc_mas": _astrometry_push_float(
+                    fitted_coordinate.get("raUncMas", fitted_coordinate.get("ra_unc_mas")),
+                    "fitted R.A. uncertainty",
+                    positive=True,
+                ),
+                "dec_unc_mas": _astrometry_push_float(
+                    fitted_coordinate.get("decUncMas", fitted_coordinate.get("dec_unc_mas")),
+                    "fitted Decl. uncertainty",
+                    positive=True,
+                ),
+                "measurement_epoch_yr": _astrometry_push_float(
+                    fitted_coordinate.get("epoch", fit.get("t0")),
+                    "fitted coordinate epoch",
+                ),
+                "measurement_epoch_yr_unc": _astrometry_push_optional_float(fitted_coordinate.get("epochUnc")) or 0.0,
+                "frame_equinox": "J2000",
+                "coord_frame": "ICRS",
+                "single_epoch": 0,
+                "pm_corrected": 1,
+                "plx_corrected": 1 if mode == "pm_plx" else 0,
+                "point_of_view": "earth",
+            },
+        })
+
+    return {
+        "moca_oid": moca_oid,
+        "moca_pid": moca_pid,
+        "origin": origin,
+        "comments": comments,
+        "is_public": is_public,
+        "rls": rls,
+        "fit_provenance": provenance,
+        "rows": rows,
+        "fit": {
+            "mode": mode,
+            "fitter": provenance.get("method") or fit.get("fitter") or "scipy",
+            "n_rows": provenance.get("n_rows"),
+            "n_inliers": provenance.get("n_inliers"),
+            "manual_rejected": provenance.get("manual_rejected"),
+            "automatic_rejected": provenance.get("automatic_rejected"),
+            "mission_counts": provenance.get("mission_counts"),
+            "reduced_chi2": fit.get("reducedChi2"),
+        },
+    }
+
+
+def _astrometry_push_changelog_row(
+    conn,
+    *,
+    args: dict[str, Any],
+    prepared: Mapping[str, Any],
+    inserted_rows: Sequence[Mapping[str, Any]],
+) -> int | None:
+    if not inserted_rows or not _db_table_exists(conn, "moca_changelog"):
+        return None
+    cfg = _db_config(args)
+    tables = ", ".join(sorted({str(row.get("table")) for row in inserted_rows}))
+    labels = ", ".join(str(row.get("label") or row.get("kind")) for row in inserted_rows)
+    fit = prepared.get("fit") if isinstance(prepared.get("fit"), Mapping) else {}
+    description = (
+        "MOCAViz astrometric explorer pushed "
+        f"{labels} for moca_oid={prepared.get('moca_oid')} "
+        f"from a {fit.get('fitter') or 'scipy'} {fit.get('mode') or 'pm'} fit."
+    )
+    provenance = prepared.get("fit_provenance") if isinstance(prepared.get("fit_provenance"), Mapping) else {}
+    if provenance.get("text"):
+        description = f"{description} {provenance['text']}"
+    machine_name = ""
+    try:
+        machine_name = os.uname().nodename
+    except Exception:
+        machine_name = _request_host_name()
+    row = {
+        "user": _astrometry_push_text(cfg.get("username"), max_length=50),
+        "machine_name": _astrometry_push_text(machine_name, max_length=50),
+        "modified_tables": tables,
+        "nrows_modified": len(inserted_rows),
+        "user_description": description,
+        "rls": prepared.get("rls"),
+        "is_public": prepared.get("is_public"),
+    }
+    return _astrometry_insert_row(conn, "moca_changelog", row)
+
+
+def _push_astrometry_fit_to_mocadb(args: dict[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
+    dry_run = not _as_false(body.get("dryRun", body.get("dry_run", True)))
+    allow_duplicate = _astrometry_push_bool(body.get("allowDuplicate", body.get("allow_duplicate", False)))
+    prepared = _astrometry_push_rows(body)
+    engine = _engine(_connection_string(args))
+    inserted: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
+    required_tables = {str(row["table"]) for row in prepared["rows"]}
+
+    with engine.begin() as conn:
+        for table_name in required_tables:
+            if not _db_table_exists(conn, table_name):
+                raise RuntimeError(f"The {table_name} table is not available.")
+        _astrometry_validate_moca_pid(conn, prepared.get("moca_pid"))
+
+        for row in prepared["rows"]:
+            duplicate = _astrometry_duplicate_count(conn, str(row["table"]), row["values"])
+            row["duplicate_count"] = duplicate["count"]
+            row["duplicate_basis"] = duplicate["basis"]
+            if duplicate["count"] > 0:
+                duplicates.append({
+                    "kind": row["kind"],
+                    "label": row["label"],
+                    "table": row["table"],
+                    "count": duplicate["count"],
+                    "basis": duplicate["basis"],
+                })
+
+        if duplicates and not dry_run and not allow_duplicate:
+            return {
+                "dryRun": dry_run,
+                "blocked": True,
+                "requiresConfirmation": True,
+                "error": "Existing active rows match this push. Enable duplicate pushes to insert anyway.",
+                "preparedRows": prepared["rows"],
+                "duplicates": duplicates,
+                "fitProvenance": (prepared.get("fit_provenance") or {}).get("text") if isinstance(prepared.get("fit_provenance"), Mapping) else "",
+            }
+
+        if not dry_run:
+            for row in prepared["rows"]:
+                inserted_id = _astrometry_insert_row(conn, str(row["table"]), row["values"])
+                inserted.append({
+                    "kind": row["kind"],
+                    "label": row["label"],
+                    "table": row["table"],
+                    "id": inserted_id,
+                })
+            changelog_id = _astrometry_push_changelog_row(conn, args=args, prepared=prepared, inserted_rows=inserted)
+        else:
+            changelog_id = None
+
+    cleared = {}
+    if not dry_run:
+        cleared = {"astrometryObjects": len(_ASTROMETRY_OBJECT_CACHE)}
+        _ASTROMETRY_OBJECT_CACHE.clear()
+    return {
+        "dryRun": dry_run,
+        "blocked": False,
+        "requiresConfirmation": bool(duplicates and dry_run),
+        "preparedRows": prepared["rows"],
+        "duplicates": duplicates,
+        "inserted": inserted,
+        "insertedCount": len(inserted),
+        "changelogId": changelog_id,
+        "moca_oid": prepared.get("moca_oid"),
+        "origin": prepared.get("origin"),
+        "moca_pid": prepared.get("moca_pid"),
+        "is_public": prepared.get("is_public"),
+        "rls": prepared.get("rls"),
+        "fitProvenance": (prepared.get("fit_provenance") or {}).get("text") if isinstance(prepared.get("fit_provenance"), Mapping) else "",
+        "cleared": cleared,
+    }
+
+
 def _format_astrometry_reference(row: dict[str, Any] | None, prefix: str) -> str:
     if not row:
         return f"No adopted {prefix}"
@@ -9843,6 +12050,19 @@ def _format_astrometry_reference(row: dict[str, Any] | None, prefix: str) -> str
         if part is not None and str(part).strip()
     )
     return f"{source}, {mission}" if mission else str(source)
+
+
+def _astrometry_bibcode_sql(alias: str, table_columns: set[str], publication_columns: set[str]) -> str:
+    parts = []
+    if "bibcode" in table_columns:
+        parts.append(f"{alias}.bibcode")
+    if "bibcode" in publication_columns:
+        parts.append("mp.bibcode")
+    if not parts:
+        return "NULL"
+    if len(parts) == 1:
+        return parts[0]
+    return "COALESCE(" + ", ".join(parts) + ")"
 
 
 def _search_astrometry_objects_from_db(args: dict[str, Any], query: str, selected_oid: int | None) -> dict[str, Any]:
@@ -9933,11 +12153,22 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
             ORDER BY mad.designation
             LIMIT 80
         """, {"oid": oid}))
-        reference_rows = _records(_read_sql(conn, """
+        publication_columns = _db_table_columns(conn, "moca_publications") if _db_table_exists(conn, "moca_publications") else set()
+        coordinate_columns = _db_table_columns(conn, "data_equatorial_coordinates")
+        pm_columns = _db_table_columns(conn, "data_proper_motions")
+        plx_columns = _db_table_columns(conn, "data_parallaxes")
+        reference_bibcode_sql = _astrometry_bibcode_sql("deq", coordinate_columns, publication_columns)
+        pm_bibcode_sql = _astrometry_bibcode_sql("dpm", pm_columns, publication_columns)
+        plx_bibcode_sql = _astrometry_bibcode_sql("dplx", plx_columns, publication_columns)
+        reference_ra_unc_sql = "deq.ra_unc_mas" if "ra_unc_mas" in coordinate_columns else "NULL"
+        reference_dec_unc_sql = "deq.dec_unc_mas" if "dec_unc_mas" in coordinate_columns else "NULL"
+        reference_rows = _records(_read_sql(conn, f"""
             SELECT
                 deq.id,
                 deq.ra,
                 deq.`dec`,
+                {reference_ra_unc_sql} AS ra_unc_mas,
+                {reference_dec_unc_sql} AS dec_unc_mas,
                 deq.ra - IFNULL(
                     deq.calibration_delta_ra_mas / (3600 * 1000 * COS(deq.`dec` * PI() / 180)),
                     0
@@ -9946,7 +12177,9 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 deq.measurement_epoch_yr,
                 deq.adopt_as_reference,
                 deq.bibcode,
+                {reference_bibcode_sql} AS publication_bibcode,
                 deq.moca_pid,
+                mp.name AS publication_name,
                 deq.mission_name,
                 deq.data_release,
                 deq.origin,
@@ -9954,19 +12187,21 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 deq.pm_corrected,
                 deq.plx_corrected
             FROM data_equatorial_coordinates deq
+            LEFT JOIN moca_publications mp ON mp.moca_pid = deq.moca_pid
             WHERE deq.moca_oid = :oid
                 AND deq.ignored = 0
                 AND deq.adopt_as_reference = 1
             ORDER BY deq.measurement_epoch_yr DESC, deq.id DESC
             LIMIT 1
         """, {"oid": oid}))
-        pm_rows = _records(_read_sql(conn, """
+        pm_rows = _records(_read_sql(conn, f"""
             SELECT
                 dpm.pmra_masyr,
                 dpm.pmdec_masyr,
                 dpm.pmra_masyr_unc,
                 dpm.pmdec_masyr_unc,
                 dpm.moca_pid,
+                {pm_bibcode_sql} AS publication_bibcode,
                 dpm.origin,
                 dpm.mission_name,
                 dpm.data_release,
@@ -9977,11 +12212,12 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 AND dpm.adopted = 1
             LIMIT 1
         """, {"oid": oid}))
-        plx_rows = _records(_read_sql(conn, """
+        plx_rows = _records(_read_sql(conn, f"""
             SELECT
                 dplx.parallax_mas,
                 dplx.parallax_mas_unc,
                 dplx.moca_pid,
+                {plx_bibcode_sql} AS publication_bibcode,
                 dplx.origin,
                 dplx.mission_name,
                 dplx.data_release,
@@ -10050,6 +12286,8 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 "id": finite_rows[median_index].get("id"),
                 "ra": finite_rows[median_index].get("ra"),
                 "dec": finite_rows[median_index].get("dec"),
+                "ra_unc_mas": finite_rows[median_index].get("ra_unc_mas"),
+                "dec_unc_mas": finite_rows[median_index].get("dec_unc_mas"),
                 "measurement_epoch_yr": finite_rows[median_index].get("measurement_epoch_yr"),
                 "fallback": True,
             }
@@ -10192,9 +12430,13 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
             "id": 1,
             "ra": base_ra,
             "dec": base_dec,
+            "ra_unc_mas": 8.0,
+            "dec_unc_mas": 9.0,
             "measurement_epoch_yr": epoch_ref,
             "adopt_as_reference": 1,
             "bibcode": "2026Mock....1A",
+            "publication_bibcode": "2026Mock....1A",
+            "publication_name": "Mock Reference Coordinates et al. (2026)",
             "moca_pid": "mock",
             "mission_name": "Mock Reference Survey",
             "data_release": "DR1",
@@ -10206,11 +12448,17 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
             "pmdec_masyr": pmdec,
             "pmra_masyr_unc": 4.0,
             "pmdec_masyr_unc": 5.0,
+            "publication_name": "Mock Proper Motion et al. (2026)",
+            "publication_bibcode": "2026Mock....2B",
+            "moca_pid": "mock_pm",
             "reference": "Mock adopted PM",
         },
         "parallax": {
             "parallax_mas": plx,
             "parallax_mas_unc": 3.0,
+            "publication_name": "Mock Parallax et al. (2026)",
+            "publication_bibcode": "2026Mock....3C",
+            "moca_pid": "mock_plx",
             "reference": "Mock adopted parallax",
         },
         "missions": [
@@ -11065,34 +13313,65 @@ def _rvbam_segment_timestamp_summary(
 
 
 def _rvbam_literature_exists_sql(conn: Any, private: bool) -> str:
-    if not _db_table_exists(conn, "calc_radial_velocities_combined"):
+    object_exists_parts: list[str] = []
+    host_exists_parts: list[str] = []
+    has_combined_table = _db_table_exists(conn, "calc_radial_velocities_combined")
+    has_data_table = _db_table_exists(conn, "data_radial_velocities")
+    if has_combined_table:
+        object_exists_parts.append("""
+            EXISTS (
+                SELECT 1
+                FROM calc_radial_velocities_combined AS crv
+                WHERE crv.moca_oid = r.moca_oid
+                  AND crv.radial_velocity_kms IS NOT NULL
+                  AND COALESCE(crv.ignored, 0) = 0
+            )
+        """)
+        if _db_table_exists(conn, "moca_companions"):
+            host_exists_parts.append("""
+                EXISTS (
+                    SELECT 1
+                    FROM moca_companions AS mc
+                    JOIN calc_radial_velocities_combined AS crv
+                      ON crv.moca_oid = mc.moca_oid_parent
+                    WHERE mc.moca_oid_child = r.moca_oid
+                      AND crv.radial_velocity_kms IS NOT NULL
+                      AND COALESCE(mc.ignored, 0) = 0
+                      AND COALESCE(crv.ignored, 0) = 0
+                )
+            """)
+    if has_data_table:
+        data_public_clause = ""
+        if not private and "is_public" in _db_table_columns(conn, "data_radial_velocities"):
+            data_public_clause = "AND COALESCE(drv.is_public, 1) = 1"
+        object_exists_parts.append(f"""
+            EXISTS (
+                SELECT 1
+                FROM data_radial_velocities AS drv
+                WHERE drv.moca_oid = r.moca_oid
+                  AND drv.radial_velocity_kms IS NOT NULL
+                  AND COALESCE(drv.ignored, 0) = 0
+                  {data_public_clause}
+            )
+        """)
+        if _db_table_exists(conn, "moca_companions"):
+            host_exists_parts.append(f"""
+                EXISTS (
+                    SELECT 1
+                    FROM moca_companions AS mc
+                    JOIN data_radial_velocities AS drv
+                      ON drv.moca_oid = mc.moca_oid_parent
+                    WHERE mc.moca_oid_child = r.moca_oid
+                      AND drv.radial_velocity_kms IS NOT NULL
+                      AND COALESCE(mc.ignored, 0) = 0
+                      AND COALESCE(drv.ignored, 0) = 0
+                      {data_public_clause}
+                )
+            """)
+    exists_parts = object_exists_parts + host_exists_parts
+    if not exists_parts:
         return "0 = 1"
-
-    object_exists = f"""
-        EXISTS (
-            SELECT 1
-            FROM calc_radial_velocities_combined AS crv
-            WHERE crv.moca_oid = r.moca_oid
-              AND crv.radial_velocity_kms IS NOT NULL
-              AND COALESCE(crv.ignored, 0) = 0
-        )
-    """
-    if not _db_table_exists(conn, "moca_companions"):
-        return object_exists
-
-    host_exists = f"""
-        EXISTS (
-            SELECT 1
-            FROM moca_companions AS mc
-            JOIN calc_radial_velocities_combined AS crv
-              ON crv.moca_oid = mc.moca_oid_parent
-            WHERE mc.moca_oid_child = r.moca_oid
-              AND crv.radial_velocity_kms IS NOT NULL
-              AND COALESCE(mc.ignored, 0) = 0
-              AND COALESCE(crv.ignored, 0) = 0
-        )
-    """
-    return f"({object_exists} OR {host_exists})"
+    return f"({' OR '.join(exists_parts)})"
 
 
 def _rvbam_required_tables_available(conn) -> tuple[bool, list[str]]:
@@ -11783,6 +14062,18 @@ def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
     if _rvbam_has_literature_rv_filter(args):
         runs = [row for row in runs if _as_bool(row.get("has_literature_rv"))]
 
+    max_literature_rv_unc = _rvbam_literature_rv_unc_filter_arg(args)
+    if max_literature_rv_unc is not None:
+        runs = [
+            row
+            for row in runs
+            if (
+                (literature_rv := _mock_rvbam_literature_rv(row))
+                and (_safe_float(literature_rv.get("radial_velocity_kms_unc")) is not None)
+                and float(_safe_float(literature_rv.get("radial_velocity_kms_unc")) or 0.0) <= max_literature_rv_unc
+            )
+        ]
+
     min_segments = _rvbam_segment_count_filter_arg(args, "min", "min_segments", "min_segment_count", "min_available_segments")
     if min_segments is not None:
         runs = [row for row in runs if int(row.get("available_segment_count") or 0) >= min_segments]
@@ -11861,6 +14152,7 @@ def _mock_rvbam_runs(args: dict[str, Any]) -> dict[str, Any]:
             "run_count": len(runs),
             "private_db": _is_private_db(args),
             "max_resulting_rv_unc": _pythonize(_rvbam_resulting_rv_unc_filter_arg(args)),
+            "max_literature_rv_unc": _pythonize(_rvbam_literature_rv_unc_filter_arg(args)),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -12010,6 +14302,7 @@ def _mock_rvbam_run_payload(args: dict[str, Any], run_id: int | None = None) -> 
         "min_segments", "min_segment_count", "min_available_segments",
         "max_segments", "max_segment_count", "max_available_segments",
         "min_run_snr", "min_run_median_snr", "min_median_snr", "min_median_snr_per_pix",
+        "max_literature_rv_unc", "max_literature_rv_error", "max_lit_rv_unc", "max_lit_rv_error", "max_mocadb_rv_unc",
     ):
         run_args.pop(key, None)
     run_payload = _mock_rvbam_runs(run_args)
@@ -12064,6 +14357,19 @@ def _rvbam_resulting_rv_unc_filter_arg(args: dict[str, Any]) -> float | None:
         "max_run_rv_unc",
         "max_run_rv_error",
         "max_rvbam_rv_unc",
+    ):
+        if key in args and args.get(key) not in (None, ""):
+            return _safe_float(args.get(key))
+    return None
+
+
+def _rvbam_literature_rv_unc_filter_arg(args: dict[str, Any]) -> float | None:
+    for key in (
+        "max_literature_rv_unc",
+        "max_literature_rv_error",
+        "max_lit_rv_unc",
+        "max_lit_rv_error",
+        "max_mocadb_rv_unc",
     ):
         if key in args and args.get(key) not in (None, ""):
             return _safe_float(args.get(key))
@@ -12468,6 +14774,11 @@ def _rvbam_literature_comparison_point(
         "literature_designation": literature_rv.get("designation"),
         "literature_n_measurements": literature_rv.get("n_measurements"),
         "literature_n_epochs": literature_rv.get("n_epochs"),
+        "literature_is_raw_fallback": bool(literature_rv.get("is_raw_fallback")),
+        "literature_fallback_reason": literature_rv.get("fallback_reason"),
+        "literature_raw_rv_row_count": literature_rv.get("raw_rv_row_count"),
+        "literature_rv_combination_method": literature_rv.get("rv_combination_method"),
+        "literature_rv_combination_method_label": literature_rv.get("rv_combination_method_label"),
     }, None
 
 
@@ -12533,6 +14844,11 @@ def _rvbam_literature_bias_segment_points(
             "rv_bias_kms": _pythonize(float(rv_value) - float(lit_value)),
             "rv_bias_kms_unc": _pythonize(bias_unc),
             "literature_label": literature_rv.get("label"),
+            "literature_is_raw_fallback": bool(literature_rv.get("is_raw_fallback")),
+            "literature_fallback_reason": literature_rv.get("fallback_reason"),
+            "literature_raw_rv_row_count": literature_rv.get("raw_rv_row_count"),
+            "literature_rv_combination_method": literature_rv.get("rv_combination_method"),
+            "literature_rv_combination_method_label": literature_rv.get("rv_combination_method_label"),
         })
     return points, skipped
 
@@ -12615,7 +14931,7 @@ def _rvbam_run_filter_sql(
     if not include_ignored:
         clauses.append("COALESCE(r.ignored, 0) = 0")
 
-    if _rvbam_has_literature_rv_filter(args):
+    if _rvbam_has_literature_rv_filter(args) or _rvbam_literature_rv_unc_filter_arg(args) is not None:
         clauses.append(literature_exists_sql or "COALESCE(lit.has_literature_rv, 0) = 1")
 
     moca_oid = _rvbam_int_arg(args, "moca_oid", "oid")
@@ -13198,6 +15514,29 @@ def _rvbam_apply_run_post_filters_from_db(
             and float(_safe_float(row.get("resulting_rv_kms_unc")) or 0.0) <= max_resulting_rv_unc
         ]
 
+    max_literature_rv_unc = _rvbam_literature_rv_unc_filter_arg(args)
+    if max_literature_rv_unc is not None:
+        literature_by_oid = _rvbam_literature_rvs_from_db(
+            conn,
+            args,
+            [row.get("moca_oid") for row in rows],
+        )
+        filtered_rows: list[dict[str, Any]] = []
+        for row in rows:
+            moca_oid = _safe_float(row.get("moca_oid"))
+            literature_rv = literature_by_oid.get(int(moca_oid)) if moca_oid is not None else None
+            row["has_literature_rv"] = 1 if literature_rv else 0
+            if literature_rv:
+                row["literature_rv_kms"] = literature_rv.get("radial_velocity_kms")
+                row["literature_rv_kms_unc"] = literature_rv.get("radial_velocity_kms_unc")
+                row["literature_rv_source"] = literature_rv.get("source")
+                row["literature_is_raw_fallback"] = bool(literature_rv.get("is_raw_fallback"))
+                row["literature_rv_combination_method_label"] = literature_rv.get("rv_combination_method_label")
+            literature_unc = _safe_float(literature_rv.get("radial_velocity_kms_unc") if literature_rv else None)
+            if literature_unc is not None and literature_unc <= max_literature_rv_unc:
+                filtered_rows.append(row)
+        rows = filtered_rows
+
     min_segments = _rvbam_segment_count_filter_arg(args, "min", "min_segments", "min_segment_count", "min_available_segments")
     if min_segments is not None:
         rows = [row for row in rows if int(row.get("available_segment_count") or 0) >= int(min_segments)]
@@ -13225,7 +15564,7 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
     limit = _rvbam_limit_arg(args, "limit", 250, 2000)
     cache_key = _rvbam_cache_key(
         args,
-        "runs-model-options-v3-weight-ceiling",
+        "runs-model-options-v4-raw-rv-fallback",
         args.get("q") or args.get("search") or "",
         args.get("moca_oid") or args.get("oid") or "",
         args.get("moca_specid") or args.get("specid") or "",
@@ -13249,6 +15588,7 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
         args.get("max_masked_outliers") or args.get("max_noutliers_masked") or "",
         _rvbam_rv_stat_method(args),
         args.get("max_resulting_rv_unc") or args.get("max_resulting_rv_error") or args.get("max_run_rv_unc") or args.get("max_run_rv_error") or args.get("max_rvbam_rv_unc") or "",
+        args.get("max_literature_rv_unc") or args.get("max_literature_rv_error") or args.get("max_lit_rv_unc") or args.get("max_lit_rv_error") or args.get("max_mocadb_rv_unc") or "",
         limit,
     )
     now = time.time()
@@ -13276,8 +15616,10 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
         private_db = _is_private_db(args)
+        max_literature_rv_unc = _rvbam_literature_rv_unc_filter_arg(args)
         has_literature_filter = _rvbam_has_literature_rv_filter(args)
-        if has_literature_filter:
+        literature_required = has_literature_filter or max_literature_rv_unc is not None
+        if literature_required:
             literature_exists_sql = _rvbam_literature_exists_sql(conn, private_db)
             literature_select_sql = """
                 1 AS has_literature_rv,
@@ -13364,6 +15706,7 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "private_db": _is_private_db(args),
             "segment_count_filters_skipped": skipped_count_filters,
             "max_resulting_rv_unc": _pythonize(_rvbam_resulting_rv_unc_filter_arg(args)),
+            "max_literature_rv_unc": _pythonize(_rvbam_literature_rv_unc_filter_arg(args)),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -13388,7 +15731,208 @@ def _rvbam_literature_rv_payload(row: dict[str, Any], source: str, target_moca_o
         "n_measurements": row.get("n_measurements"),
         "n_epochs": row.get("n_epochs"),
         "is_public": row.get("is_public"),
+        "is_raw_fallback": False,
+        "rv_combination_method": "calc_radial_velocities_combined",
+        "rv_combination_method_label": "MOCAdb combined RV",
     }
+
+
+def _rvbam_data_rv_public_clause(conn: Any, args: dict[str, Any], alias: str = "drv") -> str:
+    if _is_private_db(args):
+        return ""
+    if "is_public" not in _db_table_columns(conn, "data_radial_velocities"):
+        return ""
+    return f"AND COALESCE({alias}.is_public, 1) = 1"
+
+
+def _rvbam_data_rv_select_expr(columns: set[str], column: str, default: str = "NULL", alias: str = "drv") -> str:
+    return f"{alias}.{column}" if column in columns else default
+
+
+def _rvbam_raw_rv_fallback_payload(
+    rows: Sequence[dict[str, Any]],
+    *,
+    source: str,
+    target_moca_oid: int,
+    host_moca_oid: Any = None,
+) -> dict[str, Any] | None:
+    available_rows = [
+        row
+        for row in rows
+        if _safe_float(row.get("radial_velocity_kms")) is not None
+    ]
+    if not available_rows:
+        return None
+
+    adopted_rows = [
+        row
+        for row in available_rows
+        if _as_bool(row.get("adopt_asis")) or _as_bool(row.get("public_adopt_asis"))
+    ]
+    used_rows = adopted_rows or available_rows
+    stats = _rvbam_rv_stats(
+        [
+            {
+                "rv_kms": row.get("radial_velocity_kms"),
+                "rv_kms_unc": row.get("radial_velocity_kms_unc"),
+            }
+            for row in used_rows
+        ],
+        "weighted_errors",
+    )
+    rv_value = _safe_float(stats.get("mean"))
+    if rv_value is None:
+        return None
+
+    row_count = len(used_rows)
+    measurement_count = 0
+    for row in used_rows:
+        try:
+            n_measurements = int(row.get("n_measurements") or 0)
+        except (TypeError, ValueError):
+            n_measurements = 0
+        measurement_count += max(1, n_measurements)
+    epochs = {
+        str(row.get("epoch")).strip()
+        for row in used_rows
+        if row.get("epoch") not in (None, "")
+    }
+    public_values = [
+        int(value)
+        for value in (row.get("is_public") for row in used_rows)
+        if value in (0, 1, True, False)
+    ]
+    first_row = used_rows[0]
+    source_ids = [
+        int(row["source_rv_id"])
+        for row in used_rows
+        if row.get("source_rv_id") is not None
+    ]
+    source_label = "host_raw" if source == "host" else "object_raw"
+    label = "Raw MOCAdb host RV fallback" if source == "host" else "Raw MOCAdb RV fallback"
+    reason = (
+        "No non-ignored calc_radial_velocities_combined row is available; "
+        "using an ad hoc inverse-variance combination of non-ignored "
+        "data_radial_velocities rows."
+    )
+    if adopted_rows:
+        reason = (
+            "No non-ignored calc_radial_velocities_combined row is available; "
+            "using an ad hoc inverse-variance combination of raw RV rows flagged "
+            "adopt_asis/public_adopt_asis."
+        )
+    return {
+        "source": source_label,
+        "label": label,
+        "moca_oid": first_row.get("literature_moca_oid"),
+        "target_moca_oid": target_moca_oid,
+        "host_moca_oid": host_moca_oid if source == "host" else None,
+        "designation": first_row.get("literature_designation"),
+        "radial_velocity_kms": _pythonize(rv_value),
+        "radial_velocity_kms_unc": _pythonize(stats.get("unc")),
+        "n_measurements": measurement_count,
+        "n_epochs": len(epochs) if epochs else row_count,
+        "is_public": min(public_values) if public_values else first_row.get("is_public"),
+        "is_raw_fallback": True,
+        "fallback_reason": reason,
+        "raw_rv_row_count": row_count,
+        "raw_rv_available_row_count": len(available_rows),
+        "raw_rv_source_ids": source_ids,
+        "rv_combination_method": "ad_hoc_weighted_raw_rvs",
+        "rv_combination_method_label": "Ad hoc weighted combination of raw MOCAdb RVs",
+        "rv_combination_weighted": bool(stats.get("weighted")),
+        "rv_combination_stats": {
+            key: _pythonize(stats.get(key))
+            for key in (
+                "method", "method_label", "segment_count", "n",
+                "propagated_unc", "scatter_unc", "median_weight",
+                "weight_ceiling", "weight_ceiling_factor",
+                "weight_ceiling_count",
+            )
+            if stats.get(key) is not None
+        },
+    }
+
+
+def _rvbam_raw_rv_rows_for_oid_from_db(conn: Any, args: dict[str, Any], moca_oid: int) -> list[dict[str, Any]]:
+    if not _db_table_exists(conn, "data_radial_velocities"):
+        return []
+    columns = _db_table_columns(conn, "data_radial_velocities")
+    public_clause = _rvbam_data_rv_public_clause(conn, args)
+    rows = _records(_read_sql(conn, f"""
+        SELECT
+            {_rvbam_data_rv_select_expr(columns, "id")} AS source_rv_id,
+            drv.moca_oid AS literature_moca_oid,
+            mo.designation AS literature_designation,
+            drv.radial_velocity_kms,
+            drv.radial_velocity_kms_unc,
+            {_rvbam_data_rv_select_expr(columns, "n_measurements")} AS n_measurements,
+            {_rvbam_data_rv_select_expr(columns, "epoch")} AS epoch,
+            {_rvbam_data_rv_select_expr(columns, "is_public", "1")} AS is_public,
+            {_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")} AS adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")} AS public_adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "origin")} AS origin,
+            {_rvbam_data_rv_select_expr(columns, "comments")} AS comments
+        FROM data_radial_velocities drv
+        LEFT JOIN moca_objects mo
+            ON mo.moca_oid = drv.moca_oid
+        WHERE drv.moca_oid = :moca_oid
+            AND drv.radial_velocity_kms IS NOT NULL
+            AND COALESCE(drv.ignored, 0) = 0
+            {public_clause}
+        ORDER BY
+            COALESCE({_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")}, 0) DESC,
+            COALESCE({_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")}, 0) DESC,
+            {_rvbam_data_rv_select_expr(columns, "id", "0")} DESC
+    """, {"moca_oid": int(moca_oid)}))
+    return rows
+
+
+def _rvbam_raw_rv_fallback_for_oid_from_db(
+    conn: Any,
+    args: dict[str, Any],
+    moca_oid: int,
+    *,
+    source: str = "object",
+    target_moca_oid: int | None = None,
+    host_moca_oid: Any = None,
+) -> dict[str, Any] | None:
+    rows = _rvbam_raw_rv_rows_for_oid_from_db(conn, args, int(moca_oid))
+    return _rvbam_raw_rv_fallback_payload(
+        rows,
+        source=source,
+        target_moca_oid=int(target_moca_oid if target_moca_oid is not None else moca_oid),
+        host_moca_oid=host_moca_oid,
+    )
+
+
+def _rvbam_raw_host_rv_fallback_from_db(conn: Any, args: dict[str, Any], target_moca_oid: int) -> dict[str, Any] | None:
+    if not _db_table_exists(conn, "moca_companions"):
+        return None
+    rows = _records(_read_sql(conn, """
+        SELECT
+            mc.moca_oid_parent AS host_moca_oid,
+            mc.moca_cid
+        FROM moca_companions mc
+        WHERE mc.moca_oid_child = :moca_oid
+            AND COALESCE(mc.ignored, 0) = 0
+        ORDER BY mc.moca_cid
+    """, {"moca_oid": int(target_moca_oid)}))
+    for row in rows:
+        host_oid = row.get("host_moca_oid")
+        if host_oid is None:
+            continue
+        payload = _rvbam_raw_rv_fallback_for_oid_from_db(
+            conn,
+            args,
+            int(host_oid),
+            source="host",
+            target_moca_oid=int(target_moca_oid),
+            host_moca_oid=host_oid,
+        )
+        if payload:
+            return payload
+    return None
 
 
 def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> dict[str, Any] | None:
@@ -13396,78 +15940,88 @@ def _rvbam_literature_rv_from_db(conn, args: dict[str, Any], moca_oid: Any) -> d
         target_moca_oid = int(moca_oid)
     except (TypeError, ValueError):
         return None
-    if not _db_table_exists(conn, "calc_radial_velocities_combined"):
-        return None
 
     private_db = _is_private_db(args)
-    crv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
-    crv_is_public_select = (
-        "crv.is_public"
-        if private_db and crv_has_is_public
-        else ("0 AS is_public" if private_db else "1 AS is_public")
-    )
-    crv_public_order = (
-        "CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,"
-        if private_db and crv_has_is_public
-        else ""
-    )
+    has_combined_table = _db_table_exists(conn, "calc_radial_velocities_combined")
     params = {
         "moca_oid": target_moca_oid,
     }
-    if private_db and crv_has_is_public:
-        params["preferred_is_public"] = 0
-    object_rows = _records(_read_sql(conn, f"""
-        SELECT
-            crv.moca_oid AS literature_moca_oid,
-            mo.designation AS literature_designation,
-            crv.radial_velocity_kms,
-            crv.radial_velocity_kms_unc,
-            crv.n_measurements,
-            crv.n_epochs,
-            {crv_is_public_select}
-        FROM calc_radial_velocities_combined crv
-        LEFT JOIN moca_objects mo
-            ON mo.moca_oid = crv.moca_oid
-        WHERE crv.moca_oid = :moca_oid
-            AND crv.radial_velocity_kms IS NOT NULL
-            AND COALESCE(crv.ignored, 0) = 0
-        ORDER BY
-            {crv_public_order}
-            crv.id DESC
-        LIMIT 1
-    """, params))
-    if object_rows:
-        return _rvbam_literature_rv_payload(object_rows[0], "object", target_moca_oid)
+    crv_is_public_select = "1 AS is_public"
+    crv_public_order = ""
+    if has_combined_table:
+        crv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
+        crv_is_public_select = (
+            "crv.is_public"
+            if private_db and crv_has_is_public
+            else ("0 AS is_public" if private_db else "1 AS is_public")
+        )
+        crv_public_order = (
+            "CASE WHEN crv.is_public = :preferred_is_public THEN 0 ELSE 1 END,"
+            if private_db and crv_has_is_public
+            else ""
+        )
+        if private_db and crv_has_is_public:
+            params["preferred_is_public"] = 0
+        object_rows = _records(_read_sql(conn, f"""
+            SELECT
+                crv.moca_oid AS literature_moca_oid,
+                mo.designation AS literature_designation,
+                crv.radial_velocity_kms,
+                crv.radial_velocity_kms_unc,
+                crv.n_measurements,
+                crv.n_epochs,
+                {crv_is_public_select}
+            FROM calc_radial_velocities_combined crv
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = crv.moca_oid
+            WHERE crv.moca_oid = :moca_oid
+                AND crv.radial_velocity_kms IS NOT NULL
+                AND COALESCE(crv.ignored, 0) = 0
+            ORDER BY
+                {crv_public_order}
+                crv.id DESC
+            LIMIT 1
+        """, params))
+        if object_rows:
+            return _rvbam_literature_rv_payload(object_rows[0], "object", target_moca_oid)
+
+    raw_object_rv = _rvbam_raw_rv_fallback_for_oid_from_db(conn, args, target_moca_oid)
+    if raw_object_rv:
+        return raw_object_rv
 
     if not _db_table_exists(conn, "moca_companions"):
         return None
-    host_rows = _records(_read_sql(conn, f"""
-        SELECT
-            crv.moca_oid AS literature_moca_oid,
-            mo.designation AS literature_designation,
-            mc.moca_oid_parent AS host_moca_oid,
-            crv.radial_velocity_kms,
-            crv.radial_velocity_kms_unc,
-            crv.n_measurements,
-            crv.n_epochs,
-            {crv_is_public_select}
-        FROM moca_companions mc
-        JOIN calc_radial_velocities_combined crv
-            ON crv.moca_oid = mc.moca_oid_parent
-        LEFT JOIN moca_objects mo
-            ON mo.moca_oid = mc.moca_oid_parent
-        WHERE mc.moca_oid_child = :moca_oid
-            AND COALESCE(mc.ignored, 0) = 0
-            AND crv.radial_velocity_kms IS NOT NULL
-            AND COALESCE(crv.ignored, 0) = 0
-        ORDER BY
-            {crv_public_order}
-            mc.moca_cid,
-            crv.id DESC
-        LIMIT 1
-    """, params))
-    if host_rows:
-        return _rvbam_literature_rv_payload(host_rows[0], "host", target_moca_oid)
+    if has_combined_table:
+        host_rows = _records(_read_sql(conn, f"""
+            SELECT
+                crv.moca_oid AS literature_moca_oid,
+                mo.designation AS literature_designation,
+                mc.moca_oid_parent AS host_moca_oid,
+                crv.radial_velocity_kms,
+                crv.radial_velocity_kms_unc,
+                crv.n_measurements,
+                crv.n_epochs,
+                {crv_is_public_select}
+            FROM moca_companions mc
+            JOIN calc_radial_velocities_combined crv
+                ON crv.moca_oid = mc.moca_oid_parent
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = mc.moca_oid_parent
+            WHERE mc.moca_oid_child = :moca_oid
+                AND COALESCE(mc.ignored, 0) = 0
+                AND crv.radial_velocity_kms IS NOT NULL
+                AND COALESCE(crv.ignored, 0) = 0
+            ORDER BY
+                {crv_public_order}
+                mc.moca_cid,
+                crv.id DESC
+            LIMIT 1
+        """, params))
+        if host_rows:
+            return _rvbam_literature_rv_payload(host_rows[0], "host", target_moca_oid)
+    raw_host_rv = _rvbam_raw_host_rv_fallback_from_db(conn, args, target_moca_oid)
+    if raw_host_rv:
+        return raw_host_rv
     return None
 
 
@@ -13578,17 +16132,155 @@ def _rvbam_args_without_comparison_filters(args: dict[str, Any], filter_names: S
     return output
 
 
+def _rvbam_raw_rv_fallbacks_for_oids_from_db(
+    conn: Any,
+    args: dict[str, Any],
+    target_oids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    unique_oids = _rvbam_unique_int_values(target_oids)
+    if not unique_oids or not _db_table_exists(conn, "data_radial_velocities"):
+        return {}
+
+    columns = _db_table_columns(conn, "data_radial_velocities")
+    placeholders, params = _rvbam_placeholders("raw_lit_oid", unique_oids)
+    public_clause = _rvbam_data_rv_public_clause(conn, args)
+    rows = _records(_read_sql(conn, f"""
+        SELECT
+            drv.moca_oid AS target_moca_oid,
+            {_rvbam_data_rv_select_expr(columns, "id")} AS source_rv_id,
+            drv.moca_oid AS literature_moca_oid,
+            mo.designation AS literature_designation,
+            drv.radial_velocity_kms,
+            drv.radial_velocity_kms_unc,
+            {_rvbam_data_rv_select_expr(columns, "n_measurements")} AS n_measurements,
+            {_rvbam_data_rv_select_expr(columns, "epoch")} AS epoch,
+            {_rvbam_data_rv_select_expr(columns, "is_public", "1")} AS is_public,
+            {_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")} AS adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")} AS public_adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "origin")} AS origin,
+            {_rvbam_data_rv_select_expr(columns, "comments")} AS comments
+        FROM data_radial_velocities drv
+        LEFT JOIN moca_objects mo
+            ON mo.moca_oid = drv.moca_oid
+        WHERE drv.moca_oid IN ({placeholders})
+            AND drv.radial_velocity_kms IS NOT NULL
+            AND COALESCE(drv.ignored, 0) = 0
+            {public_clause}
+        ORDER BY
+            drv.moca_oid,
+            COALESCE({_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")}, 0) DESC,
+            COALESCE({_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")}, 0) DESC,
+            {_rvbam_data_rv_select_expr(columns, "id", "0")} DESC
+    """, params))
+    grouped: dict[int, list[dict[str, Any]]] = {oid: [] for oid in unique_oids}
+    for row in rows:
+        target_oid = _safe_float(row.get("target_moca_oid"))
+        if target_oid is None:
+            continue
+        grouped.setdefault(int(target_oid), []).append(row)
+    payloads: dict[int, dict[str, Any]] = {}
+    for oid, oid_rows in grouped.items():
+        payload = _rvbam_raw_rv_fallback_payload(
+            oid_rows,
+            source="object",
+            target_moca_oid=oid,
+        )
+        if payload:
+            payloads[oid] = payload
+    return payloads
+
+
+def _rvbam_raw_host_rv_fallbacks_from_db(
+    conn: Any,
+    args: dict[str, Any],
+    target_oids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    unique_oids = _rvbam_unique_int_values(target_oids)
+    if (
+        not unique_oids
+        or not _db_table_exists(conn, "moca_companions")
+        or not _db_table_exists(conn, "data_radial_velocities")
+    ):
+        return {}
+
+    columns = _db_table_columns(conn, "data_radial_velocities")
+    placeholders, params = _rvbam_placeholders("raw_host_lit_oid", unique_oids)
+    public_clause = _rvbam_data_rv_public_clause(conn, args)
+    rows = _records(_read_sql(conn, f"""
+        SELECT
+            mc.moca_oid_child AS target_moca_oid,
+            mc.moca_oid_parent AS host_moca_oid,
+            mc.moca_cid,
+            {_rvbam_data_rv_select_expr(columns, "id")} AS source_rv_id,
+            drv.moca_oid AS literature_moca_oid,
+            mo.designation AS literature_designation,
+            drv.radial_velocity_kms,
+            drv.radial_velocity_kms_unc,
+            {_rvbam_data_rv_select_expr(columns, "n_measurements")} AS n_measurements,
+            {_rvbam_data_rv_select_expr(columns, "epoch")} AS epoch,
+            {_rvbam_data_rv_select_expr(columns, "is_public", "1")} AS is_public,
+            {_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")} AS adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")} AS public_adopt_asis,
+            {_rvbam_data_rv_select_expr(columns, "origin")} AS origin,
+            {_rvbam_data_rv_select_expr(columns, "comments")} AS comments
+        FROM moca_companions mc
+        JOIN data_radial_velocities drv
+            ON drv.moca_oid = mc.moca_oid_parent
+        LEFT JOIN moca_objects mo
+            ON mo.moca_oid = mc.moca_oid_parent
+        WHERE mc.moca_oid_child IN ({placeholders})
+            AND drv.radial_velocity_kms IS NOT NULL
+            AND COALESCE(mc.ignored, 0) = 0
+            AND COALESCE(drv.ignored, 0) = 0
+            {public_clause}
+        ORDER BY
+            mc.moca_oid_child,
+            mc.moca_cid,
+            COALESCE({_rvbam_data_rv_select_expr(columns, "adopt_asis", "0")}, 0) DESC,
+            COALESCE({_rvbam_data_rv_select_expr(columns, "public_adopt_asis", "0")}, 0) DESC,
+            {_rvbam_data_rv_select_expr(columns, "id", "0")} DESC
+    """, params))
+    grouped: dict[int, dict[int, list[dict[str, Any]]]] = {}
+    host_order: dict[int, list[int]] = {}
+    for row in rows:
+        target_oid = _safe_float(row.get("target_moca_oid"))
+        host_oid = _safe_float(row.get("host_moca_oid"))
+        if target_oid is None or host_oid is None:
+            continue
+        target_key = int(target_oid)
+        host_key = int(host_oid)
+        grouped.setdefault(target_key, {}).setdefault(host_key, []).append(row)
+        host_order.setdefault(target_key, [])
+        if host_key not in host_order[target_key]:
+            host_order[target_key].append(host_key)
+
+    payloads: dict[int, dict[str, Any]] = {}
+    for target_oid in unique_oids:
+        for host_oid in host_order.get(target_oid, []):
+            payload = _rvbam_raw_rv_fallback_payload(
+                grouped.get(target_oid, {}).get(host_oid, []),
+                source="host",
+                target_moca_oid=target_oid,
+                host_moca_oid=host_oid,
+            )
+            if payload:
+                payloads[target_oid] = payload
+                break
+    return payloads
+
+
 def _rvbam_literature_rvs_from_db(
     conn: Any,
     args: dict[str, Any],
     moca_oids: Sequence[Any],
 ) -> dict[int, dict[str, Any]]:
     target_oids = _rvbam_unique_int_values(moca_oids)
-    if not target_oids or not _db_table_exists(conn, "calc_radial_velocities_combined"):
+    if not target_oids:
         return {}
 
     private_db = _is_private_db(args)
-    crv_has_is_public = "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
+    has_combined_table = _db_table_exists(conn, "calc_radial_velocities_combined")
+    crv_has_is_public = has_combined_table and "is_public" in _db_table_columns(conn, "calc_radial_velocities_combined")
     crv_is_public_select = (
         "crv.is_public"
         if private_db and crv_has_is_public
@@ -13599,83 +16291,92 @@ def _rvbam_literature_rvs_from_db(
         if private_db and crv_has_is_public
         else ""
     )
-    placeholders, params = _rvbam_placeholders("lit_oid", target_oids)
-    if private_db and crv_has_is_public:
-        params["preferred_is_public"] = 0
-    object_rows = _records(_read_sql(conn, f"""
-        SELECT
-            crv.moca_oid AS target_moca_oid,
-            crv.moca_oid AS literature_moca_oid,
-            mo.designation AS literature_designation,
-            crv.radial_velocity_kms,
-            crv.radial_velocity_kms_unc,
-            crv.n_measurements,
-            crv.n_epochs,
-            {crv_is_public_select},
-            crv.id AS radial_velocity_id
-        FROM calc_radial_velocities_combined crv
-        LEFT JOIN moca_objects mo
-            ON mo.moca_oid = crv.moca_oid
-        WHERE crv.moca_oid IN ({placeholders})
-            AND crv.radial_velocity_kms IS NOT NULL
-            AND COALESCE(crv.ignored, 0) = 0
-        ORDER BY
-            crv.moca_oid,
-            {crv_public_order}
-            crv.id DESC
-    """, params))
 
     literature_by_oid: dict[int, dict[str, Any]] = {}
-    for row in object_rows:
-        target_oid = _safe_float(row.get("target_moca_oid"))
-        if target_oid is None:
-            continue
-        key = int(target_oid)
-        if key not in literature_by_oid:
-            literature_by_oid[key] = _rvbam_literature_rv_payload(row, "object", key)
+    if has_combined_table:
+        placeholders, params = _rvbam_placeholders("lit_oid", target_oids)
+        if private_db and crv_has_is_public:
+            params["preferred_is_public"] = 0
+        object_rows = _records(_read_sql(conn, f"""
+            SELECT
+                crv.moca_oid AS target_moca_oid,
+                crv.moca_oid AS literature_moca_oid,
+                mo.designation AS literature_designation,
+                crv.radial_velocity_kms,
+                crv.radial_velocity_kms_unc,
+                crv.n_measurements,
+                crv.n_epochs,
+                {crv_is_public_select},
+                crv.id AS radial_velocity_id
+            FROM calc_radial_velocities_combined crv
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = crv.moca_oid
+            WHERE crv.moca_oid IN ({placeholders})
+                AND crv.radial_velocity_kms IS NOT NULL
+                AND COALESCE(crv.ignored, 0) = 0
+            ORDER BY
+                crv.moca_oid,
+                {crv_public_order}
+                crv.id DESC
+        """, params))
+
+        for row in object_rows:
+            target_oid = _safe_float(row.get("target_moca_oid"))
+            if target_oid is None:
+                continue
+            key = int(target_oid)
+            if key not in literature_by_oid:
+                literature_by_oid[key] = _rvbam_literature_rv_payload(row, "object", key)
+
+    missing_oids = [oid for oid in target_oids if oid not in literature_by_oid]
+    literature_by_oid.update(_rvbam_raw_rv_fallbacks_for_oids_from_db(conn, args, missing_oids))
 
     missing_oids = [oid for oid in target_oids if oid not in literature_by_oid]
     if not missing_oids or not _db_table_exists(conn, "moca_companions"):
         return literature_by_oid
 
-    host_placeholders, host_params = _rvbam_placeholders("lit_host_oid", missing_oids)
-    if private_db and crv_has_is_public:
-        host_params["preferred_is_public"] = 0
-    host_rows = _records(_read_sql(conn, f"""
-        SELECT
-            mc.moca_oid_child AS target_moca_oid,
-            crv.moca_oid AS literature_moca_oid,
-            mo.designation AS literature_designation,
-            mc.moca_oid_parent AS host_moca_oid,
-            crv.radial_velocity_kms,
-            crv.radial_velocity_kms_unc,
-            crv.n_measurements,
-            crv.n_epochs,
-            {crv_is_public_select},
-            mc.moca_cid,
-            crv.id AS radial_velocity_id
-        FROM moca_companions mc
-        JOIN calc_radial_velocities_combined crv
-            ON crv.moca_oid = mc.moca_oid_parent
-        LEFT JOIN moca_objects mo
-            ON mo.moca_oid = mc.moca_oid_parent
-        WHERE mc.moca_oid_child IN ({host_placeholders})
-            AND COALESCE(mc.ignored, 0) = 0
-            AND crv.radial_velocity_kms IS NOT NULL
-            AND COALESCE(crv.ignored, 0) = 0
-        ORDER BY
-            mc.moca_oid_child,
-            {crv_public_order}
-            mc.moca_cid,
-            crv.id DESC
-    """, host_params))
-    for row in host_rows:
-        target_oid = _safe_float(row.get("target_moca_oid"))
-        if target_oid is None:
-            continue
-        key = int(target_oid)
-        if key not in literature_by_oid:
-            literature_by_oid[key] = _rvbam_literature_rv_payload(row, "host", key)
+    if has_combined_table:
+        host_placeholders, host_params = _rvbam_placeholders("lit_host_oid", missing_oids)
+        if private_db and crv_has_is_public:
+            host_params["preferred_is_public"] = 0
+        host_rows = _records(_read_sql(conn, f"""
+            SELECT
+                mc.moca_oid_child AS target_moca_oid,
+                crv.moca_oid AS literature_moca_oid,
+                mo.designation AS literature_designation,
+                mc.moca_oid_parent AS host_moca_oid,
+                crv.radial_velocity_kms,
+                crv.radial_velocity_kms_unc,
+                crv.n_measurements,
+                crv.n_epochs,
+                {crv_is_public_select},
+                mc.moca_cid,
+                crv.id AS radial_velocity_id
+            FROM moca_companions mc
+            JOIN calc_radial_velocities_combined crv
+                ON crv.moca_oid = mc.moca_oid_parent
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = mc.moca_oid_parent
+            WHERE mc.moca_oid_child IN ({host_placeholders})
+                AND COALESCE(mc.ignored, 0) = 0
+                AND crv.radial_velocity_kms IS NOT NULL
+                AND COALESCE(crv.ignored, 0) = 0
+            ORDER BY
+                mc.moca_oid_child,
+                {crv_public_order}
+                mc.moca_cid,
+                crv.id DESC
+        """, host_params))
+        for row in host_rows:
+            target_oid = _safe_float(row.get("target_moca_oid"))
+            if target_oid is None:
+                continue
+            key = int(target_oid)
+            if key not in literature_by_oid:
+                literature_by_oid[key] = _rvbam_literature_rv_payload(row, "host", key)
+
+    missing_oids = [oid for oid in target_oids if oid not in literature_by_oid]
+    literature_by_oid.update(_rvbam_raw_host_rv_fallbacks_from_db(conn, args, missing_oids))
     return literature_by_oid
 
 
@@ -13772,7 +16473,7 @@ def _rvbam_json_safe_metadata(value: Any) -> Any:
 
 
 def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]:
-    cache_key = _rvbam_cache_key(args, "run", run_id, args.get("include_ignored") or args.get("show_ignored") or "")
+    cache_key = _rvbam_cache_key(args, "run-v2-raw-rv-fallback", run_id, args.get("include_ignored") or args.get("show_ignored") or "")
     now = time.time()
     cached = _RVBAM_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -13960,7 +16661,7 @@ def _load_rvbam_literature_comparison_from_db(args: dict[str, Any]) -> dict[str,
     limit = _rvbam_limit_arg(args, "limit", 250, 1000)
     cache_key = _rvbam_cache_key(
         args,
-        "literature-comparison-v4-weight-ceiling",
+        "literature-comparison-v5-raw-rv-fallback",
         args.get("q") or args.get("search") or "",
         args.get("moca_oid") or args.get("oid") or "",
         args.get("moca_specid") or args.get("specid") or "",
@@ -13983,6 +16684,7 @@ def _load_rvbam_literature_comparison_from_db(args: dict[str, Any]) -> dict[str,
         args.get("segment_wavelength") or args.get("segment_wavelength_range") or args.get("segment_wv") or args.get("segment_wv_range") or "",
         args.get("max_masked_outliers") or args.get("max_noutliers_masked") or "",
         _rvbam_rv_stat_method(args),
+        args.get("max_literature_rv_unc") or args.get("max_literature_rv_error") or args.get("max_lit_rv_unc") or args.get("max_lit_rv_error") or args.get("max_mocadb_rv_unc") or "",
         limit,
     )
     now = time.time()
@@ -17714,6 +20416,810 @@ def _mock_banyan_sigma_object(moca_oid: int = 999001) -> dict[str, Any]:
     }
 
 
+RETRIEVAL_EXPLORER_REQUIRED_TABLES = (
+    "data_atmosphere_structure",
+    "data_atmosphere_structure_layers",
+    "data_atmosphere_structure_parameters",
+    "data_object_metallicities",
+    "moca_abundances",
+    "moca_atmosphere_parameters",
+    "moca_atmosphere_profile_quantities",
+)
+
+
+def _retrieval_cache_key(args: dict[str, Any], *parts: Any) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        "retrieval-explorer-v1",
+        str(cfg.get("host") or ""),
+        str(cfg.get("port") or ""),
+        str(cfg.get("username") or ""),
+        str(cfg.get("dbname") or ""),
+        *[str(part) for part in parts],
+    ])
+
+
+def _retrieval_int_arg(args: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        raw = args.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            value = int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _retrieval_missing_tables(conn) -> list[str]:
+    return [table for table in RETRIEVAL_EXPLORER_REQUIRED_TABLES if not _db_table_exists(conn, table)]
+
+
+def _retrieval_option_label(row: Mapping[str, Any]) -> str:
+    designation = row.get("designation") or row.get("object_designation") or f"oid{row.get('moca_oid') or '?'}"
+    source = row.get("bibcode") or row.get("moca_pid") or "unknown source"
+    model_bits = [
+        row.get("retrieval_code"),
+        row.get("retrieval_model"),
+        row.get("time_bin_label"),
+    ]
+    model = " / ".join(str(bit) for bit in model_bits if bit)
+    suffix = f" - {model}" if model else ""
+    return f"{designation} | {source}{suffix}"
+
+
+def _retrieval_search_rows_to_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    for row in rows:
+        atmosphere_id = row.get("atmosphere_structure_id") or row.get("id")
+        item = dict(row)
+        item["value"] = atmosphere_id
+        item["atmosphere_structure_id"] = atmosphere_id
+        item["label"] = _retrieval_option_label(item)
+        options.append(item)
+    return options
+
+
+def _mock_retrieval_search(args: dict[str, Any]) -> dict[str, Any]:
+    query = str(args.get("q") or args.get("search") or "").strip().lower()
+    rows = [
+        {
+            "atmosphere_structure_id": 1,
+            "moca_oid": 602,
+            "designation": "SIMP J013656.5+093347.3",
+            "moca_pid": "Nase25",
+            "bibcode": "2025A&A...702A...1N",
+            "moca_specid": None,
+            "structure_kind": "phase_resolved_retrieval",
+            "retrieval_code": "petitRADTRANS retrieval",
+            "retrieval_model": "full-rotation fiducial retrieval",
+            "profile_parameterization": "gradient-parameterized T/P profile",
+            "chemistry_assumption": "hybrid pressure-dependent CH4/CO and uniform gases",
+            "cloud_assumption": "patchy Mg2SiO4 and Fe clouds",
+            "time_bin_label": "full rotation",
+            "layer_count": 84,
+            "temperature_layer_count": 64,
+            "parameter_count": 18,
+            "cloud_parameter_count": 7,
+            "abundance_count": 10,
+            "ignored": 0,
+            "is_public": 1,
+        },
+        {
+            "atmosphere_structure_id": 2,
+            "moca_oid": 371631,
+            "designation": "2MASS J21392676+0220226",
+            "moca_pid": "Vos23",
+            "bibcode": "2023ApJ...944..138V",
+            "moca_specid": None,
+            "structure_kind": "retrieval_summary",
+            "retrieval_code": "CHIMERA",
+            "retrieval_model": "patchy forsterite slab plus iron deck",
+            "profile_parameterization": "free T/P profile",
+            "chemistry_assumption": "vertically uniform free molecular abundances",
+            "cloud_assumption": "patchy Mg2SiO4 slab and Fe deck",
+            "time_bin_label": "published summary",
+            "layer_count": 0,
+            "temperature_layer_count": 0,
+            "parameter_count": 12,
+            "cloud_parameter_count": 6,
+            "abundance_count": 8,
+            "ignored": 0,
+            "is_public": 1,
+        },
+    ]
+    if query:
+        rows = [
+            row for row in rows
+            if query in _retrieval_option_label(row).lower()
+            or query in str(row.get("moca_oid") or "")
+            or query in str(row.get("atmosphere_structure_id") or "")
+        ]
+    options = _retrieval_search_rows_to_options(rows)
+    return {
+        "options": options,
+        "value": options[0]["value"] if options else None,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(options),
+            "private_db": True,
+            "mock": True,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_retrieval_payload(args: dict[str, Any], atmosphere_id: int) -> dict[str, Any]:
+    pressures = np.geomspace(1e-4, 200.0, 72)
+    logp = np.log10(pressures)
+    temp = 920 + 235 * (logp + 1.8) ** 2 / 5.8 + 80 * np.sin((logp + 4.0) * 1.35)
+    temp = np.clip(temp, 760, 1760)
+    profiles = []
+    for index, (pressure, log_pressure, value) in enumerate(zip(pressures, logp, temp, strict=False)):
+        spread = 38 + 11 * abs(math.sin(index / 7))
+        profiles.append({
+            "layer_index": index,
+            "profile_axis_index": 0,
+            "pressure_bar": float(pressure),
+            "log10_pressure_bar": float(log_pressure),
+            "pressure_role": "layer_midpoint",
+            "moca_atpqid": "TEMP_K",
+            "quantity_name": "Temperature",
+            "quantity_kind": "temperature",
+            "value": float(value),
+            "value_p16": float(value - spread),
+            "value_p50": float(value),
+            "value_p84": float(value + spread),
+            "value_unit": "K",
+        })
+
+    species_specs = [
+        ("H2O", 0.12, -1.2, "#364bff"),
+        ("CH4", 0.22, -0.15, "#b04a4a"),
+        ("CO", 0.55, 0.45, "#ef5350"),
+        ("CO2", 1.05, -0.65, "#4d9221"),
+        ("K", 1.25, -3.2, "#e0b400"),
+        ("FeH", 1.55, -2.4, "#3f948c"),
+    ]
+    contribution_rows = []
+    for axis_index, (species, wavelength, peak_logp, _color) in enumerate(species_specs, start=1):
+        for index, (pressure, log_pressure) in enumerate(zip(pressures, logp, strict=False)):
+            value = math.exp(-0.5 * ((float(log_pressure) - peak_logp) / 0.42) ** 2)
+            contribution_rows.append({
+                "layer_index": index,
+                "profile_axis_index": axis_index,
+                "pressure_bar": float(pressure),
+                "log10_pressure_bar": float(log_pressure),
+                "pressure_role": "layer_midpoint",
+                "moca_atpqid": "CONTRIB_FUNC",
+                "quantity_name": "Contribution function",
+                "quantity_kind": "contribution_function",
+                "spectral_region_label": f"{species} {wavelength:.2f}um",
+                "wavelength_um": wavelength,
+                "component_kind": "species",
+                "component_label": species,
+                "species_formula": species,
+                "value": float(value),
+                "value_unit": "normalized",
+            })
+
+    cloud_parameters = [
+        {
+            "moca_atparid": "CLOUD_TOP_PRESSURE_BAR",
+            "parameter_name": "Cloud top pressure",
+            "parameter_kind": "cloud",
+            "component_kind": "cloud",
+            "component_label": "Mg2SiO4 slab",
+            "species_formula": "Mg2SiO4",
+            "pressure_bar": 0.08,
+            "value": 0.08,
+            "value_p16": 0.05,
+            "value_p84": 0.13,
+            "value_unit": "bar",
+        },
+        {
+            "moca_atparid": "CLOUD_BASE_PRESSURE_BAR",
+            "parameter_name": "Cloud base pressure",
+            "parameter_kind": "cloud",
+            "component_kind": "cloud",
+            "component_label": "Mg2SiO4 slab",
+            "species_formula": "Mg2SiO4",
+            "pressure_bar": 1.6,
+            "value": 1.6,
+            "value_p16": 1.0,
+            "value_p84": 2.4,
+            "value_unit": "bar",
+        },
+        {
+            "moca_atparid": "CLOUD_COVERING_FRACTION",
+            "parameter_name": "Cloud covering fraction",
+            "parameter_kind": "cloud",
+            "component_kind": "cloud",
+            "component_label": "patchy component",
+            "species_formula": "Mg2SiO4",
+            "value": 0.42,
+            "value_p16": 0.34,
+            "value_p84": 0.51,
+            "value_unit": "dimensionless",
+        },
+    ]
+    scalar_parameters = [
+        *cloud_parameters,
+        {"moca_atparid": "MASS_MJUP", "parameter_name": "Mass", "parameter_kind": "derived_atmosphere", "value": 14.6, "value_p16": 10.8, "value_p84": 19.1, "value_unit": "Mjup"},
+        {"moca_atparid": "RADIUS_RJUP", "parameter_name": "Radius", "parameter_kind": "derived_atmosphere", "value": 1.09, "value_p16": 1.02, "value_p84": 1.16, "value_unit": "Rjup"},
+        {"moca_atparid": "LOGG_CGS", "parameter_name": "Surface gravity", "parameter_kind": "derived_atmosphere", "value": 4.55, "value_p16": 4.33, "value_p84": 4.78, "value_unit": "dex(cgs)"},
+        {"moca_atparid": "RCB_PRESSURE_BAR", "parameter_name": "Radiative-convective boundary pressure", "parameter_kind": "thermal_parameterization", "value": 32.0, "value_p16": 19.0, "value_p84": 55.0, "value_unit": "bar"},
+        {"moca_atparid": "LOG_EVIDENCE", "parameter_name": "Log evidence", "parameter_kind": "evidence", "value": -1284.6, "value_unit": "dimensionless"},
+    ]
+    abundance_rows = [
+        ("log10(f_H2O)", "molecular_vmr", -3.35, 0.18),
+        ("log10(f_CH4)", "molecular_vmr", -3.58, 0.17),
+        ("log10(f_CO)", "molecular_vmr", -4.25, 0.32),
+        ("log10(f_CO2)", "molecular_vmr", -6.02, 0.45),
+        ("log10(f_NH3)", "molecular_vmr", -4.78, 0.21),
+        ("log10(f_K)", "molecular_vmr", -7.12, 0.35),
+        ("C/O_gas", "elemental_ratio", 0.61, 0.07),
+        ("[M/H]_gas", "bulk_metallicity", 0.18, 0.16),
+    ]
+    abundances = [
+        {
+            "id": index + 1,
+            "moca_oid": 602,
+            "moca_pid": "Nase25",
+            "bibcode": "2025A&A...702A...1N",
+            "abundance_type": abundance_type,
+            "abundance_label": abundance_type,
+            "quantity_kind": quantity_kind,
+            "feh_val": value,
+            "feh_unc": uncertainty,
+            "feh_unc_pos": uncertainty,
+            "feh_unc_neg": uncertainty,
+            "same_publication": 1,
+            "same_calculation_method": 1,
+        }
+        for index, (abundance_type, quantity_kind, value, uncertainty) in enumerate(abundance_rows)
+    ]
+    comparison = []
+    rng = np.random.default_rng(602)
+    for row in abundances:
+        for offset in range(18):
+            scatter = 0.11 if row["quantity_kind"] != "molecular_vmr" else 0.28
+            comparison.append({
+                "moca_oid": 370000 + offset,
+                "designation": f"Mock comparison {offset + 1}",
+                "moca_pid": "comparison",
+                "bibcode": "comparison",
+                "abundance_type": row["abundance_type"],
+                "quantity_kind": row["quantity_kind"],
+                "feh_val": float(row["feh_val"] + rng.normal(0, scatter)),
+                "feh_unc": row["feh_unc"],
+                "selected_object": 0,
+            })
+        comparison.append({**row, "selected_object": 1})
+
+    wavelengths = np.linspace(0.9, 5.1, 180)
+    best = 1410 + 190 * np.sin(wavelengths * 2.15) + 95 * np.sin(wavelengths * 5.2)
+    observed = best + 42 * np.sin(wavelengths * 9.1)
+    spectrum_components = []
+    for species, center, _peak_logp, color in species_specs:
+        absorption = 85 * np.exp(-0.5 * ((wavelengths - center) / 0.17) ** 2)
+        spectrum_components.append({
+            "label": species,
+            "color": color,
+            "wavelength_um": [float(value) for value in wavelengths],
+            "brightness_temperature_k": [float(value) for value in best + absorption],
+        })
+
+    sample_count = 900
+    means = np.array([1150.0, 4.55, 0.18, 0.61])
+    scales = np.array([42.0, 0.18, 0.16, 0.07])
+    cov = np.diag(scales**2)
+    cov[1, 2] = cov[2, 1] = -0.45 * scales[1] * scales[2]
+    cov[2, 3] = cov[3, 2] = 0.28 * scales[2] * scales[3]
+    samples = rng.multivariate_normal(means, cov, size=sample_count)
+    posterior_params = ["Teff_K", "logg", "[M/H]_gas", "C/O_gas"]
+    posterior_samples = [
+        {posterior_params[index]: float(value) for index, value in enumerate(row)}
+        for row in samples
+    ]
+    atmosphere = {
+        "id": int(atmosphere_id),
+        "atmosphere_structure_id": int(atmosphere_id),
+        "moca_oid": 602,
+        "designation": "SIMP J013656.5+093347.3",
+        "moca_pid": "Nase25",
+        "bibcode": "2025A&A...702A...1N",
+        "structure_kind": "phase_resolved_retrieval",
+        "retrieval_code": "petitRADTRANS retrieval",
+        "retrieval_model": "full-rotation fiducial retrieval",
+        "profile_parameterization": "gradient-parameterized T/P profile",
+        "chemistry_assumption": "hybrid pressure-dependent CH4/CO and uniform gases",
+        "cloud_assumption": "patchy Mg2SiO4 and Fe clouds",
+        "pressure_unit": "bar",
+        "n_pressure_points": len(profiles),
+    }
+    return {
+        "selection": {"atmosphere_structure_id": int(atmosphere_id)},
+        "atmosphere": atmosphere,
+        "siblingAtmospheres": _mock_retrieval_search(args)["options"],
+        "profiles": profiles,
+        "profileRows": [*profiles, *contribution_rows],
+        "cloudParameters": cloud_parameters,
+        "scalarParameters": scalar_parameters,
+        "abundances": abundances,
+        "comparisonAbundances": comparison,
+        "solarReferences": [
+            {"abundance_type": "[M/H]_gas", "value": 0.0, "label": "solar [M/H]"},
+            {"abundance_type": "[M/H]_bulk", "value": 0.0, "label": "solar [M/H]"},
+            {"abundance_type": "C/O_gas", "value": 0.55, "label": "solar C/O"},
+            {"abundance_type": "C/O_bulk", "value": 0.55, "label": "solar C/O"},
+        ],
+        "contributionFunctions": contribution_rows,
+        "retrievedSpectrum": {
+            "available": True,
+            "kind": "mock_brightness_temperature",
+            "wavelength_um": [float(value) for value in wavelengths],
+            "observed_brightness_temperature_k": [float(value) for value in observed],
+            "best_fit_brightness_temperature_k": [float(value) for value in best],
+            "components": spectrum_components,
+        },
+        "posterior": {
+            "available": True,
+            "parameters": posterior_params,
+            "samples": posterior_samples,
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": True,
+            "mock": True,
+            "profile_count": len(profiles),
+            "contribution_count": len(contribution_rows),
+            "abundance_count": len(abundances),
+            "comparison_abundance_count": len(comparison),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _load_retrieval_search_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    query = str(args.get("q") or args.get("search") or "").strip()
+    selected_id = _retrieval_int_arg(args, "id", "atmosphere_id", "atmosphere_structure_id", "retrieval_id")
+    selected_oid = _retrieval_int_arg(args, "moca_oid", "oid")
+    include_ignored = _as_bool(args.get("include_ignored") or args.get("show_ignored"))
+    limit = min(max(_retrieval_int_arg(args, "limit", "max_rows") or 80, 1), 250)
+    cache_key = _retrieval_cache_key(args, "search", query, selected_id or "", selected_oid or "", include_ignored, limit)
+    now = time.time()
+    cached = _RETRIEVAL_EXPLORER_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        missing = _retrieval_missing_tables(conn)
+        if missing:
+            return {
+                "options": [],
+                "value": selected_id,
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "row_count": 0,
+                    "missing_tables": missing,
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        clauses = []
+        params: dict[str, Any] = {"limit": int(limit)}
+        if not include_ignored:
+            clauses.append("COALESCE(das.ignored, 0) = 0")
+        if selected_id is not None:
+            clauses.append("das.id = :selected_id")
+            params["selected_id"] = int(selected_id)
+        elif selected_oid is not None:
+            clauses.append("das.moca_oid = :selected_oid")
+            params["selected_oid"] = int(selected_oid)
+        if query:
+            clauses.append("""
+                (
+                    LOWER(COALESCE(mo.designation, das.object_designation, '')) LIKE :query
+                    OR CAST(das.moca_oid AS CHAR) LIKE :query
+                    OR CAST(das.id AS CHAR) LIKE :query
+                    OR LOWER(COALESCE(das.moca_pid, '')) LIKE :query
+                    OR LOWER(COALESCE(das.bibcode, mp.bibcode, '')) LIKE :query
+                    OR LOWER(COALESCE(das.retrieval_code, '')) LIKE :query
+                    OR LOWER(COALESCE(das.retrieval_model, '')) LIKE :query
+                    OR LOWER(COALESCE(das.cloud_assumption, '')) LIKE :query
+                )
+            """)
+            params["query"] = f"%{query.lower()}%"
+        where_sql = " AND ".join(f"({clause})" for clause in clauses) if clauses else "1 = 1"
+        rows = _records(_read_sql(conn, f"""
+            SELECT
+                das.id AS atmosphere_structure_id,
+                das.id,
+                das.moca_oid,
+                mo.designation,
+                das.moca_pid,
+                COALESCE(das.bibcode, mp.bibcode) AS bibcode,
+                das.moca_specid,
+                das.structure_kind,
+                das.time_bin_label,
+                das.rotational_phase,
+                das.longitude_deg,
+                das.retrieval_code,
+                das.retrieval_model,
+                das.profile_parameterization,
+                das.chemistry_assumption,
+                das.cloud_assumption,
+                das.n_pressure_points,
+                das.ignored,
+                das.adopted,
+                das.is_public,
+                (
+                    SELECT COUNT(*)
+                    FROM data_atmosphere_structure_layers l
+                    WHERE l.atmosphere_structure_id = das.id
+                ) AS layer_count,
+                (
+                    SELECT COUNT(*)
+                    FROM data_atmosphere_structure_layers l
+                    WHERE l.atmosphere_structure_id = das.id
+                        AND l.moca_atpqid = 'TEMP_K'
+                ) AS temperature_layer_count,
+                (
+                    SELECT COUNT(*)
+                    FROM data_atmosphere_structure_layers l
+                    WHERE l.atmosphere_structure_id = das.id
+                        AND l.moca_atpqid = 'CONTRIB_FUNC'
+                ) AS contribution_layer_count,
+                (
+                    SELECT COUNT(*)
+                    FROM data_atmosphere_structure_parameters p
+                    WHERE p.atmosphere_structure_id = das.id
+                ) AS parameter_count,
+                (
+                    SELECT COUNT(*)
+                    FROM data_atmosphere_structure_parameters p
+                    JOIN moca_atmosphere_parameters ap
+                        ON ap.moca_atparid = p.moca_atparid
+                    WHERE p.atmosphere_structure_id = das.id
+                        AND ap.parameter_kind = 'cloud'
+                ) AS cloud_parameter_count,
+                (
+                    SELECT COUNT(*)
+                    FROM data_object_metallicities dom
+                    LEFT JOIN moca_abundances ma
+                        ON ma.abundance_type = dom.abundance_type
+                    WHERE dom.moca_oid = das.moca_oid
+                        AND COALESCE(dom.ignored, 0) = 0
+                        AND COALESCE(ma.quantity_kind, '') <> 'legacy'
+                ) AS abundance_count
+            FROM data_atmosphere_structure das
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = das.moca_oid
+            LEFT JOIN moca_publications mp
+                ON mp.moca_pid = das.moca_pid
+            WHERE {where_sql}
+            ORDER BY COALESCE(das.adopted, 0) DESC,
+                COALESCE(das.public_adopted, 0) DESC,
+                temperature_layer_count DESC,
+                contribution_layer_count DESC,
+                das.modified_timestamp DESC,
+                das.id DESC
+            LIMIT :limit
+        """, params))
+    options = _retrieval_search_rows_to_options(rows)
+    payload = {
+        "options": options,
+        "value": int(selected_id) if selected_id is not None else (options[0]["value"] if options else None),
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "row_count": len(options),
+            "private_db": _is_private_db(args),
+            "include_ignored": include_ignored,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RETRIEVAL_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int) -> dict[str, Any]:
+    include_ignored = _as_bool(args.get("include_ignored") or args.get("show_ignored"))
+    cache_key = _retrieval_cache_key(args, "atmosphere", atmosphere_id, include_ignored)
+    now = time.time()
+    cached = _RETRIEVAL_EXPLORER_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        missing = _retrieval_missing_tables(conn)
+        if missing:
+            return {
+                "selection": {"atmosphere_structure_id": int(atmosphere_id)},
+                "atmosphere": {},
+                "siblingAtmospheres": [],
+                "profiles": [],
+                "profileRows": [],
+                "cloudParameters": [],
+                "scalarParameters": [],
+                "abundances": [],
+                "comparisonAbundances": [],
+                "solarReferences": _retrieval_solar_references(),
+                "contributionFunctions": [],
+                "retrievedSpectrum": {"available": False, "message": "No retrieved-spectrum product table is available in the current schema."},
+                "posterior": {"available": False, "message": "No atmosphere-to-sampling-run link is available in the current schema."},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "missing_tables": missing,
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        atmosphere_rows = _records(_read_sql(conn, """
+            SELECT
+                das.*,
+                mo.designation,
+                mp.bibcode AS publication_bibcode,
+                ms.spectrum_name,
+                ms.instrument_name AS spectrum_instrument_name,
+                ms.min_wavelength_angstrom,
+                ms.max_wavelength_angstrom
+            FROM data_atmosphere_structure das
+            LEFT JOIN moca_objects mo
+                ON mo.moca_oid = das.moca_oid
+            LEFT JOIN moca_publications mp
+                ON mp.moca_pid = das.moca_pid
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = das.moca_specid
+            WHERE das.id = :atmosphere_id
+        """, {"atmosphere_id": int(atmosphere_id)}))
+        if not atmosphere_rows:
+            return {
+                "selection": {"atmosphere_structure_id": int(atmosphere_id)},
+                "atmosphere": {},
+                "siblingAtmospheres": [],
+                "profiles": [],
+                "profileRows": [],
+                "cloudParameters": [],
+                "scalarParameters": [],
+                "abundances": [],
+                "comparisonAbundances": [],
+                "solarReferences": _retrieval_solar_references(),
+                "contributionFunctions": [],
+                "retrievedSpectrum": {"available": False, "message": "No atmosphere row was found."},
+                "posterior": {"available": False, "message": "No atmosphere row was found."},
+                "meta": {
+                    "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "private_db": _is_private_db(args),
+                },
+                "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            }
+        atmosphere = atmosphere_rows[0]
+        profile_rows = _records(_read_sql(conn, f"""
+            SELECT
+                l.*,
+                q.quantity_name,
+                q.quantity_symbol,
+                q.quantity_kind,
+                q.default_unit,
+                q.is_logarithmic
+            FROM data_atmosphere_structure_layers l
+            LEFT JOIN moca_atmosphere_profile_quantities q
+                ON q.moca_atpqid = l.moca_atpqid
+            WHERE l.atmosphere_structure_id = :atmosphere_id
+            ORDER BY l.moca_atpqid,
+                l.profile_axis_index,
+                l.component_kind,
+                l.component_label,
+                l.species_formula,
+                l.pressure_bar
+        """, {"atmosphere_id": int(atmosphere_id)}))
+        scalar_rows = _records(_read_sql(conn, """
+            SELECT
+                p.*,
+                ap.parameter_name,
+                ap.parameter_symbol,
+                ap.parameter_kind,
+                ap.value_space,
+                ap.default_unit,
+                ap.is_logarithmic,
+                ap.description AS parameter_description
+            FROM data_atmosphere_structure_parameters p
+            LEFT JOIN moca_atmosphere_parameters ap
+                ON ap.moca_atparid = p.moca_atparid
+            WHERE p.atmosphere_structure_id = :atmosphere_id
+            ORDER BY COALESCE(ap.parameter_kind, ''),
+                p.moca_atparid,
+                p.parameter_index,
+                p.component_kind,
+                p.component_label,
+                p.species_formula
+        """, {"atmosphere_id": int(atmosphere_id)}))
+        cloud_rows = [row for row in scalar_rows if str(row.get("parameter_kind") or "") == "cloud"]
+        moca_oid = _retrieval_int_value(atmosphere.get("moca_oid"))
+        abundances: list[dict[str, Any]] = []
+        comparison_abundances: list[dict[str, Any]] = []
+        sibling_atmospheres: list[dict[str, Any]] = []
+        if moca_oid is not None:
+            abundance_ignored_clause = "" if include_ignored else "AND COALESCE(dom.ignored, 0) = 0"
+            abundances = _records(_read_sql(conn, f"""
+                SELECT
+                    dom.*,
+                    ma.abundance_label,
+                    ma.quantity_kind,
+                    ma.species_formula,
+                    ma.numerator_formula,
+                    ma.denominator_formula,
+                    ma.abundance_phase,
+                    ma.value_space,
+                    ma.default_unit,
+                    ma.is_logarithmic,
+                    mo.designation,
+                    COALESCE(dom.bibcode, mp.bibcode) AS source_bibcode,
+                    CASE WHEN dom.moca_pid = :moca_pid THEN 1 ELSE 0 END AS same_publication,
+                    CASE
+                        WHEN COALESCE(dom.calculation_method, '') = COALESCE(:calculation_method, '')
+                            AND COALESCE(:calculation_method, '') <> ''
+                        THEN 1 ELSE 0
+                    END AS same_calculation_method
+                FROM data_object_metallicities dom
+                LEFT JOIN moca_abundances ma
+                    ON ma.abundance_type = dom.abundance_type
+                LEFT JOIN moca_objects mo
+                    ON mo.moca_oid = dom.moca_oid
+                LEFT JOIN moca_publications mp
+                    ON mp.moca_pid = dom.moca_pid
+                WHERE dom.moca_oid = :moca_oid
+                    {abundance_ignored_clause}
+                    AND COALESCE(ma.quantity_kind, '') <> 'legacy'
+                ORDER BY same_publication DESC,
+                    same_calculation_method DESC,
+                    ma.quantity_kind,
+                    dom.abundance_type,
+                    dom.id
+            """, {
+                "moca_oid": moca_oid,
+                "moca_pid": atmosphere.get("moca_pid"),
+                "calculation_method": atmosphere.get("calculation_method"),
+            }))
+            abundance_types = sorted({
+                str(row.get("abundance_type") or "")
+                for row in abundances
+                if row.get("abundance_type")
+            })
+            if abundance_types:
+                comparison_abundances = _records(_read_sql_expanding(conn, f"""
+                    SELECT
+                        dom.id,
+                        dom.moca_oid,
+                        mo.designation,
+                        dom.moca_pid,
+                        COALESCE(dom.bibcode, mp.bibcode) AS source_bibcode,
+                        dom.abundance_type,
+                        ma.abundance_label,
+                        ma.quantity_kind,
+                        ma.species_formula,
+                        ma.value_space,
+                        ma.default_unit,
+                        dom.feh_val,
+                        dom.feh_unc,
+                        dom.feh_unc_pos,
+                        dom.feh_unc_neg,
+                        dom.calculation_method,
+                        CASE WHEN dom.moca_oid = :moca_oid THEN 1 ELSE 0 END AS selected_object
+                    FROM data_object_metallicities dom
+                    LEFT JOIN moca_abundances ma
+                        ON ma.abundance_type = dom.abundance_type
+                    LEFT JOIN moca_objects mo
+                        ON mo.moca_oid = dom.moca_oid
+                    LEFT JOIN moca_publications mp
+                        ON mp.moca_pid = dom.moca_pid
+                    WHERE dom.abundance_type IN :abundance_types
+                        {abundance_ignored_clause}
+                        AND COALESCE(ma.quantity_kind, '') <> 'legacy'
+                    ORDER BY selected_object DESC,
+                        dom.abundance_type,
+                        dom.moca_oid,
+                        dom.id
+                    LIMIT 2500
+                """, "abundance_types", abundance_types, {"moca_oid": moca_oid}))
+            sibling_rows = _records(_read_sql(conn, f"""
+                SELECT
+                    das.id AS atmosphere_structure_id,
+                    das.id,
+                    das.moca_oid,
+                    mo.designation,
+                    das.moca_pid,
+                    COALESCE(das.bibcode, mp.bibcode) AS bibcode,
+                    das.structure_kind,
+                    das.time_bin_label,
+                    das.retrieval_code,
+                    das.retrieval_model,
+                    das.cloud_assumption,
+                    das.ignored,
+                    das.is_public
+                FROM data_atmosphere_structure das
+                LEFT JOIN moca_objects mo
+                    ON mo.moca_oid = das.moca_oid
+                LEFT JOIN moca_publications mp
+                    ON mp.moca_pid = das.moca_pid
+                WHERE das.moca_oid = :moca_oid
+                    {'' if include_ignored else 'AND COALESCE(das.ignored, 0) = 0'}
+                ORDER BY COALESCE(das.adopted, 0) DESC,
+                    das.modified_timestamp DESC,
+                    das.id DESC
+                LIMIT 100
+            """, {"moca_oid": moca_oid}))
+            sibling_atmospheres = _retrieval_search_rows_to_options(sibling_rows)
+
+    temp_profiles = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "TEMP_K"]
+    contribution_rows = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "CONTRIB_FUNC"]
+    payload = {
+        "selection": {"atmosphere_structure_id": int(atmosphere_id)},
+        "atmosphere": atmosphere,
+        "siblingAtmospheres": sibling_atmospheres,
+        "profiles": temp_profiles,
+        "profileRows": profile_rows,
+        "cloudParameters": cloud_rows,
+        "scalarParameters": scalar_rows,
+        "abundances": abundances,
+        "comparisonAbundances": comparison_abundances,
+        "solarReferences": _retrieval_solar_references(),
+        "contributionFunctions": contribution_rows,
+        "retrievedSpectrum": {
+            "available": False,
+            "message": "The current retrieval schema links the input observed spectrum but has no dedicated best-fit/retrieved spectrum product table yet.",
+        },
+        "posterior": {
+            "available": False,
+            "message": "Generic sampling payload tables exist, but data_atmosphere_structure is not linked to a sampling run in the current schema.",
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "include_ignored": include_ignored,
+            "profile_count": len(temp_profiles),
+            "profile_row_count": len(profile_rows),
+            "contribution_count": len(contribution_rows),
+            "scalar_parameter_count": len(scalar_rows),
+            "cloud_parameter_count": len(cloud_rows),
+            "abundance_count": len(abundances),
+            "comparison_abundance_count": len(comparison_abundances),
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    }
+    _RETRIEVAL_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _retrieval_int_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _retrieval_solar_references() -> list[dict[str, Any]]:
+    return [
+        {"abundance_type": "[M/H]_gas", "value": 0.0, "label": "solar [M/H]"},
+        {"abundance_type": "[M/H]_bulk", "value": 0.0, "label": "solar [M/H]"},
+        {"abundance_type": "[Fe/H]", "value": 0.0, "label": "solar [Fe/H]"},
+        {"abundance_type": "C/O_gas", "value": 0.55, "label": "solar C/O"},
+        {"abundance_type": "C/O_bulk", "value": 0.55, "label": "solar C/O"},
+    ]
+
+
 @app.get("/")
 def index():
     if str(request.script_root or "").rstrip("/").endswith("/js"):
@@ -17744,6 +21250,12 @@ def js_home_context():
             "username": str(cfg.get("username") or ""),
         },
     })
+
+
+@app.get("/api/auth/context")
+@app.get("/js/api/auth/context")
+def auth_context():
+    return jsonify({"ok": True, **_auth_context(dict(request.args))})
 
 
 @app.get("/group-hierarchy")
@@ -17973,6 +21485,14 @@ def rvbam_explorer_page():
     return send_from_directory(STATIC_DIR, "rvbam_explorer.html")
 
 
+@app.get("/retrieval-explorer")
+@app.get("/retrieval_explorer")
+@app.get("/js/retrieval-explorer")
+@app.get("/js/retrieval_explorer")
+def retrieval_explorer_page():
+    return send_from_directory(STATIC_DIR, "retrieval_explorer.html")
+
+
 @app.get("/plotly.min.js")
 @app.get("/js/plotly.min.js")
 def plotly_js():
@@ -17994,6 +21514,84 @@ def js_api_alias(api_path: str):
     query = request.query_string.decode("utf-8", "ignore")
     target = f"/api/{api_path.lstrip('/')}"
     return redirect(f"{target}?{query}" if query else target, code=307)
+
+
+@app.get("/api/retrieval-explorer/search")
+@app.get("/api/retrieval_explorer/search")
+@app.get("/js/api/retrieval-explorer/search")
+@app.get("/js/api/retrieval_explorer/search")
+def retrieval_explorer_search():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean({"ok": True, "source": "mock", **_mock_retrieval_search(args)})
+        payload = _load_retrieval_search_from_db(args)
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return _jsonify_clean({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": _retrieval_int_arg(args, "id", "atmosphere_id", "atmosphere_structure_id", "retrieval_id"),
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "private_db": _is_private_db(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 500)
+
+
+@app.get("/api/retrieval-explorer/atmosphere/<int:atmosphere_id>")
+@app.get("/api/retrieval_explorer/atmosphere/<int:atmosphere_id>")
+@app.get("/js/api/retrieval-explorer/atmosphere/<int:atmosphere_id>")
+@app.get("/js/api/retrieval_explorer/atmosphere/<int:atmosphere_id>")
+def retrieval_explorer_atmosphere(atmosphere_id: int):
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean({"ok": True, "source": "mock", **_mock_retrieval_payload(args, int(atmosphere_id))})
+        payload = _load_retrieval_atmosphere_from_db(args, int(atmosphere_id))
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return _jsonify_clean({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "selection": {"atmosphere_structure_id": int(atmosphere_id)},
+            "atmosphere": {},
+            "siblingAtmospheres": [],
+            "profiles": [],
+            "profileRows": [],
+            "cloudParameters": [],
+            "scalarParameters": [],
+            "abundances": [],
+            "comparisonAbundances": [],
+            "solarReferences": _retrieval_solar_references(),
+            "contributionFunctions": [],
+            "retrievedSpectrum": {"available": False},
+            "posterior": {"available": False},
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "private_db": _is_private_db(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 500)
+
+
+@app.post("/api/retrieval-explorer/cache/clear")
+@app.post("/api/retrieval_explorer/cache/clear")
+@app.post("/js/api/retrieval-explorer/cache/clear")
+@app.post("/js/api/retrieval_explorer/cache/clear")
+def retrieval_explorer_clear_cache():
+    count = len(_RETRIEVAL_EXPLORER_CACHE)
+    _RETRIEVAL_EXPLORER_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {"retrievalExplorer": count},
+        "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    })
 
 
 @app.get("/api/bootstrap")
@@ -18405,6 +22003,45 @@ def spectral_typing_standard():
         }), 500
 
 
+@app.post("/api/spectral-typing/push-spectral-type")
+def spectral_typing_push_spectral_type():
+    args = dict(request.args)
+    allowed, reason = _spectral_typing_management_allowed(args)
+    if not allowed:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": reason,
+        }), 403
+    try:
+        payload = _insert_displayed_spectral_type(args, request.get_json(silent=True) or {})
+        return _jsonify_clean({
+            "ok": True,
+            "source": "MOCAdb",
+            **payload,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+        })
+    except FileExistsError as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "duplicate": True,
+            "error": str(exc),
+        }), 409
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": str(exc),
+        }), 400
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 500
+
+
 @app.post("/api/spectral-typing/cache/clear")
 def spectral_typing_clear_cache():
     grid_count = len(_SPT_GRID_CACHE)
@@ -18470,6 +22107,42 @@ def spectra_explorer_load():
                 "row_count": 0,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.post("/api/spectra/ignore")
+def spectra_explorer_ignore_rows():
+    args = dict(request.args)
+    allowed, reason = _spectra_explorer_management_allowed(args)
+    if not allowed:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": reason,
+            "updated_count": 0,
+        }), 403
+    try:
+        row_ids, specids = _parse_spectra_ignore_request(request.get_json(silent=True) or {})
+        payload = _set_spectra_rows_ignored(args, row_ids, specids)
+        return jsonify({
+            "ok": True,
+            "source": "MOCAdb",
+            **payload,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+        })
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": str(exc),
+            "updated_count": 0,
+        }), 400
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": f"{type(exc).__name__}: {exc}",
+            "updated_count": 0,
         }), 500
 
 
@@ -20033,6 +23706,72 @@ def astrometry_object(oid: int):
             "rows": [],
             "meta": {"row_count": 0, "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
             "cache": {"hit": False, "ttl_seconds": 0},
+        }), 500
+
+
+@app.get("/api/astrometry/fit/capabilities")
+def astrometry_fit_capabilities():
+    args = dict(request.args)
+    return jsonify({"ok": True, **_astrometry_fit_capabilities(args)})
+
+
+@app.post("/api/astrometry/fit")
+def astrometry_fit():
+    args = dict(request.args)
+    body = request.get_json(silent=True) or {}
+    try:
+        payload = _run_astrometry_fit(body, args)
+        return jsonify({
+            "ok": True,
+            "source": "MOCAdb fit",
+            **payload,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+        })
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "fit": None,
+            "capabilities": _astrometry_fit_capabilities(args),
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+        }), 500
+
+
+@app.post("/api/astrometry/fit/push")
+def astrometry_fit_push():
+    args = dict(request.args)
+    allowed, reason = _astrometry_management_allowed(args)
+    if not allowed:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": reason,
+            "insertedCount": 0,
+        }), 403
+    body = request.get_json(silent=True) or {}
+    try:
+        payload = _push_astrometry_fit_to_mocadb(args, body)
+        status = 409 if payload.get("blocked") else 200
+        return _jsonify_clean({
+            "ok": not payload.get("blocked"),
+            "source": "MOCAdb",
+            **payload,
+            "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+        }, status)
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": str(exc),
+            "insertedCount": 0,
+        }), 400
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "MOCAdb",
+            "error": f"{type(exc).__name__}: {exc}",
+            "insertedCount": 0,
         }), 500
 
 

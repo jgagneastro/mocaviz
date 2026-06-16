@@ -120,7 +120,8 @@ function readTrueflowAgeUrlState() {
   tfaEl["tfa-aid-select"].innerHTML = `<option value="${escapeHtml(aid)}">${escapeHtml(aid)}</option>`;
   tfaEl["tfa-aid-select"].value = aid;
 
-  const sources = parseCsv(params.get("sources"), tfaDefaultSources);
+  const defaultSources = scope === "object" ? ["MOCAFlows", ...tfaDefaultSources] : tfaDefaultSources;
+  const sources = parseCsv(params.get("sources"), defaultSources);
   for (const [source, id] of Object.entries(tfaSourceIds)) {
     tfaEl[id].checked = sources.includes(source);
   }
@@ -146,16 +147,25 @@ function canUseTrueflowMocaflows() {
   return Boolean(trueflowAgeUserRole());
 }
 
+function canDisplayTrueflowMocaflowsSource() {
+  return currentTrueflowScope() === "object" || canUseTrueflowMocaflows();
+}
+
 function applyTrueflowMocaflowsAccess() {
   const canUseMocaflows = canUseTrueflowMocaflows();
+  const canDisplayMocaflows = canDisplayTrueflowMocaflowsSource();
   const mocaflowsLine = tfaEl["tfa-source-mocaflows-line"] || tfaEl["tfa-source-mocaflows"]?.closest("label");
-  if (mocaflowsLine) mocaflowsLine.hidden = !canUseMocaflows;
+  if (mocaflowsLine) mocaflowsLine.hidden = !canDisplayMocaflows;
   if (tfaEl["tfa-mocaflows-options"]) tfaEl["tfa-mocaflows-options"].hidden = !canUseMocaflows;
   if (tfaEl["tfa-source-legacy-label"]) {
     tfaEl["tfa-source-legacy-label"].textContent = canUseMocaflows ? "Other age tools" : "MOCAdb age tools";
   }
 
-  for (const id of ["tfa-source-mocaflows", "tfa-posteriors", "tfa-hbm"]) {
+  if (tfaEl["tfa-source-mocaflows"]) {
+    tfaEl["tfa-source-mocaflows"].disabled = !canDisplayMocaflows;
+    if (!canDisplayMocaflows) tfaEl["tfa-source-mocaflows"].checked = false;
+  }
+  for (const id of ["tfa-posteriors", "tfa-hbm"]) {
     if (!tfaEl[id]) continue;
     tfaEl[id].disabled = !canUseMocaflows;
     if (!canUseMocaflows) tfaEl[id].checked = false;
@@ -226,9 +236,10 @@ function bindTrueflowAgeControls() {
 
 function updateTrueflowScopeControls() {
   const scope = currentTrueflowScope();
+  applyTrueflowMocaflowsAccess();
   tfaEl["tfa-object-controls"].hidden = scope !== "object";
   tfaEl["tfa-association-controls"].hidden = scope !== "association";
-  tfaEl["tfa-hbm"].disabled = scope !== "association";
+  tfaEl["tfa-hbm"].disabled = scope !== "association" || !canUseTrueflowMocaflows();
   tfaEl["tfa-open-report"].disabled = scope !== "object" || !selectedTrueflowObjectOid();
 }
 
@@ -368,26 +379,38 @@ function renderTrueflowAgePlot() {
     renderEmptyTrueflowAge("No data loaded");
     return;
   }
+  ensureTrueflowVisibleSources(payload);
   const curves = visibleTrueflowCurves(payload.curves);
   const showCdf = tfaEl["tfa-cdf"].checked;
   const useLogX = tfaEl["tfa-log-x"].checked;
   const useLogY = tfaEl["tfa-log-y"].checked && !showCdf;
-  const traces = curves.map((curve, index) => trueflowCurveTrace(curve, index, { showCdf, useLogY }));
+  const focusedKey = tfaState.focusedKey;
+  const adoptedAge = normalizeTrueflowAdoptedAge(payload.adoptedAge);
+  const membershipAge = normalizeTrueflowAdoptedAge(payload.membershipAge);
+  const traces = curves.map((curve, index) => trueflowCurveTrace(curve, index, { showCdf, useLogY, focusedKey }));
   if (tfaEl["tfa-combine"].checked) {
     const combined = combineTrueflowCurves(curves);
     if (combined) {
-      traces.unshift(trueflowCurveTrace(combined, -1, { showCdf, useLogY }));
+      traces.unshift(trueflowCurveTrace(combined, -1, { showCdf, useLogY, focusedKey }));
     }
+  }
+  if (focusedKey && !traces.some((trace) => trace._curve?.key === focusedKey)) {
+    tfaState.focusedKey = null;
+    renderTrueflowAgePlot();
+    return;
   }
   tfaState.visibleCurves = traces.map((trace) => trace._curve).filter(Boolean);
   const title = trueflowTargetTitle(payload);
-  const layout = trueflowAgeLayout(title, curves, { showCdf, useLogX, useLogY });
+  const layout = trueflowAgeLayout(title, curves, { showCdf, useLogX, useLogY, adoptedAge, membershipAge });
   Plotly.react(tfaEl["tfa-plot"], traces.map(({ _curve, ...trace }) => trace), layout, plotConfig("mocadb_trueflow_age_pdfs"));
+  if (typeof tfaEl["tfa-plot"].removeAllListeners === "function") {
+    tfaEl["tfa-plot"].removeAllListeners("plotly_click");
+  }
   tfaEl["tfa-plot"].on("plotly_click", (event) => {
     const point = event?.points?.[0];
     const key = point?.data?.customdata?.[0];
     tfaState.focusedKey = key || null;
-    renderTrueflowAgeTable();
+    renderTrueflowAgePlot();
   });
   renderTrueflowAgeTable();
   updateTrueflowAgeSummary(curves);
@@ -407,6 +430,17 @@ function visibleTrueflowCurves(curves) {
   });
 }
 
+function ensureTrueflowVisibleSources(payload) {
+  const allCurves = payload?.curves || [];
+  if (!allCurves.length || visibleTrueflowCurves(allCurves).length) return;
+  const hasObjectMocaflows = currentTrueflowScope() === "object"
+    && allCurves.some((curve) => curve.source === "MOCAFlows")
+    && canDisplayTrueflowMocaflowsSource();
+  if (hasObjectMocaflows) {
+    tfaEl["tfa-source-mocaflows"].checked = true;
+  }
+}
+
 function trueflowCurveTrace(curve, index, options) {
   let age = (curve.age_myr || []).map(Number);
   let y = options.showCdf ? cdfFromPdf(age, curve.pdf_age || []) : (curve.pdf_age || []).map(Number);
@@ -422,6 +456,7 @@ function trueflowCurveTrace(curve, index, options) {
   }
   const source = curve.source || "";
   const style = curveStyle(source, index);
+  applyTrueflowFocusStyle(style, curve.key, options.focusedKey);
   return {
     x: xOut,
     y: yOut,
@@ -438,6 +473,18 @@ function trueflowCurveTrace(curve, index, options) {
     ].join("<br>"),
     _curve: curve,
   };
+}
+
+function applyTrueflowFocusStyle(style, curveKey, focusedKey) {
+  if (!focusedKey) return;
+  style.line = { ...(style.line || {}) };
+  if (curveKey === focusedKey) {
+    style.line.width = Math.max(Number(style.line.width) || 0, 5.2);
+    style.opacity = 1;
+  } else {
+    style.line.width = Math.max(1.1, (Number(style.line.width) || 2) * 0.72);
+    style.opacity = Math.min(Number(style.opacity) || 1, 0.16);
+  }
 }
 
 function curveStyle(source, index) {
@@ -457,6 +504,16 @@ function curveStyle(source, index) {
 
 function trueflowAgeLayout(title, curves, options) {
   const axisRange = ageAxisRange(curves, options);
+  const markerShapes = [
+    ...trueflowAgeMarkerShapes(options.adoptedAge, {
+      lineColor: "#5b341c",
+      fillColor: "rgba(135, 93, 48, 0.16)",
+    }),
+    ...trueflowAgeMarkerShapes(options.membershipAge, {
+      lineColor: "#245f73",
+      fillColor: "rgba(36, 95, 115, 0.14)",
+    }),
+  ];
   const xaxis = {
     title: { text: "Age (Myr)", font: { size: 22 } },
     type: options.useLogX ? "log" : "linear",
@@ -505,7 +562,73 @@ function trueflowAgeLayout(title, curves, options) {
     yaxis,
     showlegend: false,
     hovermode: "closest",
+    shapes: markerShapes,
   };
+}
+
+function normalizeTrueflowAdoptedAge(raw) {
+  if (!raw) return null;
+  const value = numberOrNaN(raw.value_myr ?? raw.age_myr);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const minus = numberOrNaN(raw.uncertainty_minus_myr ?? raw.age_myr_unc_neg ?? raw.age_myr_err_neg);
+  const plus = numberOrNaN(raw.uncertainty_plus_myr ?? raw.age_myr_unc_pos ?? raw.age_myr_err_pos);
+  let lower = numberOrNaN(raw.lower_myr);
+  let upper = numberOrNaN(raw.upper_myr);
+  if (!Number.isFinite(lower) && Number.isFinite(minus)) lower = value - Math.abs(minus);
+  if (!Number.isFinite(upper) && Number.isFinite(plus)) upper = value + Math.abs(plus);
+  lower = Number.isFinite(lower) ? Math.max(lower, 1e-6) : null;
+  upper = Number.isFinite(upper) ? Math.max(upper, 1e-6) : null;
+  if (!(Number.isFinite(lower) && Number.isFinite(upper) && upper > lower)) {
+    lower = null;
+    upper = null;
+  }
+  return {
+    ...raw,
+    value_myr: value,
+    uncertainty_minus_myr: Number.isFinite(minus) ? Math.abs(minus) : null,
+    uncertainty_plus_myr: Number.isFinite(plus) ? Math.abs(plus) : null,
+    lower_myr: lower,
+    upper_myr: upper,
+  };
+}
+
+function numberOrNaN(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  if (typeof value === "string" && !value.trim()) return NaN;
+  return Number(value);
+}
+
+function trueflowAgeMarkerShapes(ageMarker, style = {}) {
+  const age = normalizeTrueflowAdoptedAge(ageMarker);
+  if (!age) return [];
+  const lineColor = style.lineColor || "#5b341c";
+  const fillColor = style.fillColor || "rgba(135, 93, 48, 0.16)";
+  const shapes = [];
+  if (Number.isFinite(age.lower_myr) && Number.isFinite(age.upper_myr) && age.upper_myr > age.lower_myr) {
+    shapes.push({
+      type: "rect",
+      xref: "x",
+      yref: "paper",
+      x0: age.lower_myr,
+      x1: age.upper_myr,
+      y0: 0,
+      y1: 1,
+      fillcolor: fillColor,
+      line: { width: 0 },
+      layer: "below",
+    });
+  }
+  shapes.push({
+    type: "line",
+    xref: "x",
+    yref: "paper",
+    x0: age.value_myr,
+    x1: age.value_myr,
+    y0: 0,
+    y1: 1,
+    line: { color: lineColor, width: 2.5, dash: "dash" },
+  });
+  return shapes;
 }
 
 function updateTrueflowAgeSummary(curves) {
@@ -518,10 +641,118 @@ function updateTrueflowAgeSummary(curves) {
   const target = trueflowTargetLabel(payload);
   const seconds = Number.isFinite(Number(timing)) ? ` in ${Number(timing).toFixed(1)}s` : "";
   const cacheText = payload?.cache?.hit ? " cache hit" : "";
-  tfaEl["tfa-summary"].textContent = `Loaded ${meta.age_row_count || 0} scalar age rows and ${curves.length} visible curves for ${target}${seconds}${cacheText} (${sourceText}).`;
+  const loadedText = `Loaded ${meta.age_row_count || 0} scalar age rows and ${curves.length} visible curves for ${target}${seconds}${cacheText} (${sourceText}).`;
+  const summaryLines = [
+    trueflowObjectSummaryHtml(payload),
+    trueflowAdoptedAgeSummaryHtml(payload?.adoptedAge, "Adopted age"),
+  ].filter(Boolean);
+  if (payload?.membershipAge) {
+    summaryLines.push(trueflowAdoptedAgeSummaryHtml(payload.membershipAge, "Membership age"));
+  }
+  summaryLines.push(`<div>${escapeHtml(loadedText)}</div>`);
+  tfaEl["tfa-summary"].innerHTML = summaryLines.join("");
   setTrueflowAgeExportDisabled(curves.length === 0);
   tfaEl["tfa-open-report"].disabled = currentTrueflowScope() !== "object" || !selectedTrueflowObjectOid(payload);
   setTrueflowAgeStatus(`${curves.length} curves displayed`, curves.length ? "" : "error");
+}
+
+function trueflowObjectSummaryHtml(payload) {
+  const selection = payload?.selection || {};
+  if ((selection.scope || currentTrueflowScope()) !== "object") return "";
+  const target = payload?.target || {};
+  const oid = selectedTrueflowObjectOid(payload);
+  const designation = trueflowFullObjectDesignation(target);
+  const spectralType = trueflowAdoptedSpectralTypeText(target.adopted_spectral_type);
+  const lines = [];
+  if (designation || oid) {
+    const oidText = oid ? ` <span class="muted">(moca_oid=${escapeHtml(oid)})</span>` : "";
+    lines.push(`<div><strong>Object:</strong> ${escapeHtml(designation || `moca_oid=${oid}`)}${oidText}</div>`);
+  }
+  if (spectralType) {
+    lines.push(`<div><strong>Adopted spectral type:</strong> ${spectralType}</div>`);
+  }
+  return lines.join("");
+}
+
+function trueflowFullObjectDesignation(target) {
+  const direct = String(target?.full_designation || target?.moca_designation || target?.designation || "").trim();
+  if (direct) return direct;
+  const designations = Array.isArray(target?.designations) ? target.designations : [];
+  return String(designations.find((value) => String(value || "").trim()) || "").trim();
+}
+
+function trueflowAdoptedSpectralTypeText(raw) {
+  if (!raw) return "";
+  const spectralType = String(raw.spectral_type || raw.complete_spectral_type || raw.simple_spectral_type || "").trim();
+  if (!spectralType) return "";
+  const parts = [`<strong>${escapeHtml(spectralType)}</strong>`];
+  if (Number.isFinite(Number(raw.spectral_type_number))) {
+    parts.push(`SpT# ${escapeHtml(formatSig(Number(raw.spectral_type_number)))}`);
+  }
+  if (Number.isFinite(Number(raw.spectral_type_unc))) {
+    parts.push(`± ${escapeHtml(formatSig(Number(raw.spectral_type_unc)))} subtype`);
+  }
+  if (Number(raw.photometric_estimate || 0) !== 0) parts.push("photometric");
+  const reference = trueflowSpectralTypeReferenceMarkup(raw);
+  if (reference) parts.push(`reference ${reference}`);
+  return parts.join("; ");
+}
+
+function trueflowSpectralTypeReferenceMarkup(raw) {
+  const label = raw.reference_name || raw.reference_bibcode || raw.moca_pid || "";
+  if (!label) return "";
+  const bibcode = String(raw.reference_bibcode || "").trim();
+  const url = bibcode ? `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(bibcode)}/abstract` : "";
+  if (!url) return escapeHtml(label);
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+}
+
+function trueflowAdoptedAgeSummaryHtml(raw, label = "Adopted age") {
+  const age = normalizeTrueflowAdoptedAge(raw);
+  if (!age) {
+    return `<div><strong>${escapeHtml(label)}:</strong> no finite adopted scalar age is available for this target.</div>`;
+  }
+  const ageText = trueflowAdoptedAgeText(age);
+  const method = age.method || "adopted age";
+  const flag = age.adoption_flag ? `; ${age.adoption_flag}` : "";
+  const note = age.uncertainty_note ? `; ${age.uncertainty_note}` : "";
+  return [
+    "<div>",
+    `<strong>${escapeHtml(label)}:</strong> `,
+    `<strong>${escapeHtml(ageText)}</strong>`,
+    ` from ${escapeHtml(method)}`,
+    flag ? escapeHtml(flag) : "",
+    note ? escapeHtml(note) : "",
+    "; reference ",
+    trueflowAgeReferenceMarkup(age),
+    "</div>",
+  ].join("");
+}
+
+function trueflowAdoptedAgeText(age) {
+  const value = formatSig(Number(age.value_myr));
+  const minus = numberOrNaN(age.uncertainty_minus_myr);
+  const plus = numberOrNaN(age.uncertainty_plus_myr);
+  if (Number.isFinite(minus) && Number.isFinite(plus)) {
+    return `${value} (+${formatSig(plus)}/-${formatSig(minus)}) Myr`;
+  }
+  return `${value} Myr`;
+}
+
+function trueflowAgeReferenceMarkup(age) {
+  const label = age.reference_name || age.reference_bibcode || age.moca_pid || "ADS reference";
+  const url = trueflowAgeAdsUrl(age);
+  if (!url) return escapeHtml(label);
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+}
+
+function trueflowAgeAdsUrl(age) {
+  const explicit = String(age.ads_url || "").trim();
+  if (explicit) return explicit;
+  const bibcode = String(age.reference_bibcode || "").trim();
+  if (bibcode) return `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(bibcode)}/abstract`;
+  const query = String(age.reference_query || age.reference_name || age.moca_pid || "").trim();
+  return query ? `https://ui.adsabs.harvard.edu/search/q=${encodeURIComponent(query)}` : "";
 }
 
 function renderTrueflowAgeTable() {
@@ -531,11 +762,36 @@ function renderTrueflowAgeTable() {
     key: curve.key,
     ...(curve.summary || {}),
   }));
-  const focused = tfaState.focusedKey ? rows.filter((row) => row.key === tfaState.focusedKey) : rows;
-  tfaEl["tfa-table-title"].textContent = tfaState.focusedKey ? "Selected curve" : "Displayed curves";
-  tfaEl["tfa-table-subtitle"].textContent = tfaState.focusedKey ? "Click empty plot space or reload to return to all curves." : `${rows.length} visible curve summaries.`;
+  tfaEl["tfa-table-title"].textContent = "Displayed curves";
+  tfaEl["tfa-table-subtitle"].textContent = tfaState.focusedKey
+    ? "Highlighted curve. Click another row to move the highlight or click the selected row to clear it."
+    : `${rows.length} visible curve summaries. Click a row to highlight its PDF.`;
   const columns = ["style", "curve", "source", "age", "calculation_method", "moca_pid", "adopted", "public_adopted", "comments"];
-  tfaEl["tfa-table"].innerHTML = tableHtml(columns, focused, { htmlColumns: new Set(["style"]), labels: { style: "" } });
+  tfaEl["tfa-table"].innerHTML = trueflowAgeTableHtml(columns, rows, { htmlColumns: new Set(["style"]), labels: { style: "" } });
+  tfaEl["tfa-table"].querySelectorAll("tbody tr[data-curve-key]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.curveKey || "";
+      tfaState.focusedKey = tfaState.focusedKey === key ? null : key;
+      renderTrueflowAgePlot();
+    });
+  });
+}
+
+function trueflowAgeTableHtml(columns, rows, options = {}) {
+  if (!rows.length) return '<div class="empty-table">No rows to display</div>';
+  const labels = options.labels || {};
+  const htmlColumns = options.htmlColumns || new Set();
+  const header = columns.map((column) => `<th>${escapeHtml(labels[column] ?? column)}</th>`).join("");
+  const body = rows.map((row) => {
+    const key = String(row.key || "");
+    const selectedClass = key && key === tfaState.focusedKey ? ' class="is-focused"' : "";
+    const keyAttr = key ? ` data-curve-key="${escapeHtml(key)}"` : "";
+    return `<tr${keyAttr}${selectedClass}>${columns.map((column) => {
+      const value = formatCell(row[column]);
+      return `<td>${htmlColumns.has(column) ? value : escapeHtml(value)}</td>`;
+    }).join("")}</tr>`;
+  }).join("");
+  return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function trueflowTableSwatch(curve, index) {
@@ -694,6 +950,15 @@ function interpPercentile(age, cdf, p) {
 
 function ageAxisRange(curves, options = {}) {
   const ages = curves.flatMap((curve) => curve.age_myr || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
+  for (const marker of [options.adoptedAge, options.membershipAge]) {
+    const ageMarker = normalizeTrueflowAdoptedAge(marker);
+    if (ageMarker) {
+      for (const value of [ageMarker.lower_myr, ageMarker.value_myr, ageMarker.upper_myr]) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) ages.push(numeric);
+      }
+    }
+  }
   if (ages.length < 2) return null;
   const xmin = Math.min(...ages);
   const xmax = Math.max(...ages);
@@ -730,7 +995,7 @@ function formatPlainAgeTick(value) {
 function selectedTrueflowSources() {
   const out = new Set();
   for (const [source, id] of Object.entries(tfaSourceIds)) {
-    if (source === "MOCAFlows" && !canUseTrueflowMocaflows()) continue;
+    if (source === "MOCAFlows" && !canDisplayTrueflowMocaflowsSource()) continue;
     if (tfaEl[id].checked) out.add(source);
   }
   return out;

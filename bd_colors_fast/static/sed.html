@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb SED Explorer</title>
   <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -71,6 +71,10 @@
           <label class="checkline">
             <input id="sed-hide-ignored" type="checkbox" checked>
             <span>Hide ignored measurements</span>
+          </label>
+          <label class="checkline">
+            <input id="sed-show-filter-responses" type="checkbox">
+            <span>Display photometric filter responses</span>
           </label>
           <label class="checkline">
             <input id="sed-anchor-spectra" type="checkbox" checked>
@@ -153,7 +157,7 @@
         <div class="spectra-toolbar sed-toolbar">
           <div class="spectra-summary">
             <div id="sed-summary">No SED loaded</div>
-            <div id="sed-hint" class="plot-hint">Click a photometric point to foreground its bandpass response.</div>
+            <div id="sed-hint" class="plot-hint">Photometric filter responses hidden.</div>
           </div>
           <div id="sed-flux-note" class="plot-hint sed-flux-note"></div>
         </div>
@@ -169,6 +173,6 @@
       </section>
     </main>
   </div>
-  <script src="static/sed.js?v=sed-explorer-20260611u"></script>
+  <script src="static/sed.js?v=sed-filter-responses-20260613a"></script>
 </body>
 </html>

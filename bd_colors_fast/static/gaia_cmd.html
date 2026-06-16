@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Gaia CMD</title>
   <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -39,6 +39,13 @@
           <label>
             De-emphasize RUWE above
             <input id="gcmd-ruwe" type="number" min="0" step="0.05" value="1.4">
+          </label>
+          <label class="range-label">
+            <span class="range-heading">
+              <span>Min membership probability</span>
+              <output id="gcmd-membership-prob-min-value" for="gcmd-membership-prob-min">90%</output>
+            </span>
+            <input id="gcmd-membership-prob-min" type="range" min="10" max="100" step="1" value="90">
           </label>
         </section>
 
@@ -146,9 +153,10 @@
       <p>
         This page starts from the Gaia DR3 100 pc field table or public view
         for the default field-star sample. Selected associations are added from
-        <code>calc_banyan_sigma</code> with <code>ya_prob &gt;= 90</code> and
+        <code>calc_banyan_sigma</code> with <code>ya_prob &gt;= 10</code> and
         use adopted MOCAdb Gaia photometry unless raw Gaia photometry is
-        requested.
+        requested. The membership-probability slider filters that downloaded
+        association payload in the browser.
       </p>
       <table>
         <thead>
@@ -159,6 +167,7 @@
           <tr><td><code>asso</code>, <code>moca_aid</code></td><td>Comma-separated association IDs</td><td>Adds likely BANYAN Sigma members for the selected associations.</td></tr>
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted MOCAdb objects.</td></tr>
           <tr><td><code>ruwe</code>, <code>ruwe_max</code></td><td>Positive number, or <code>none</code></td><td>De-emphasizes objects with Gaia RUWE above the threshold. Default is <code>1.4</code>.</td></tr>
+          <tr><td><code>membership_prob_min</code>, <code>ya_prob_min</code></td><td><code>10</code>-<code>100</code></td><td>Filters displayed association members by BANYAN Sigma probability in the browser. Default is <code>90</code>; the downloaded association payload is floored at <code>10</code>.</td></tr>
           <tr><td><code>color_age</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Colors objects with BANYAN-linked association ages by age.</td></tr>
           <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
           <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>.</td></tr>
@@ -183,6 +192,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=gaia-cmd-ranges-20260604a"></script>
+  <script src="static/gaia_cmd.js?v=gaia-cmd-membership-filter-20260613a"></script>
 </body>
 </html>

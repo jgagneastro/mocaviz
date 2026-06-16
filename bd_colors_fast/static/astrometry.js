@@ -9,12 +9,18 @@ const atmState = {
   payload: null,
   selectedMissions: new Set(),
   selectedIds: new Set(),
+  manualRejectedIds: new Set(),
   processedRows: [],
   searchTimer: null,
   hasUserMissionChoice: false,
   initialMissions: [],
   fitResult: null,
+  fitBusy: false,
+  pushBusy: false,
+  fitCapabilities: null,
+  authContext: null,
   lastPrepared: null,
+  pushFitSignature: "",
 };
 
 const atmEl = {};
@@ -36,6 +42,8 @@ async function initAstrometry() {
   collectAstrometryElements();
   readAstrometryUrlState();
   bindAstrometryControls();
+  await initializeAstrometryFitContext();
+  updateAstrometryManagementVisibility();
   if (atmState.selectedOid === null) atmState.selectedOid = atmDefaultOid;
   atmEl["atm-target-search"].value = `oid${atmState.selectedOid}`;
   await searchAstrometryTargets("", { selectedOid: atmState.selectedOid, quiet: true });
@@ -63,10 +71,29 @@ function collectAstrometryElements() {
     "atm-adjust-reference",
     "atm-only-recalibrated",
     "atm-revert-raw",
+    "atm-fit-method",
+    "atm-fit-outlier-mixture",
+    "atm-fit-method-note",
+    "atm-reject-selected-fit",
+    "atm-reset-manual-rejections",
+    "atm-manual-rejection-note",
     "atm-fit-pm",
     "atm-fit-plx",
     "atm-clear-fit",
     "atm-fit-summary",
+    "atm-management-tools",
+    "atm-push-coordinate",
+    "atm-push-pm",
+    "atm-push-parallax",
+    "atm-push-moca-pid",
+    "atm-push-origin",
+    "atm-push-comments",
+    "atm-push-is-public",
+    "atm-push-rls",
+    "atm-push-allow-duplicate",
+    "atm-push-preview",
+    "atm-push-apply",
+    "atm-push-status",
     "atm-ra-plot",
     "atm-dec-plot",
     "atm-plot-loader",
@@ -99,6 +126,16 @@ function readAstrometryUrlState() {
   atmEl["atm-adjust-reference"].checked = !asFalse(params.get("adjust_ref"));
   atmEl["atm-only-recalibrated"].checked = !asFalse(params.get("only_recalibrated"));
   atmEl["atm-revert-raw"].checked = asBool(params.get("revert_raw"));
+  if (atmEl["atm-fit-method"]) {
+    const method = String(params.get("fit_method") || params.get("fitter") || "scipy").toLowerCase();
+    atmEl["atm-fit-method"].value = method === "ultranest" ? "ultranest" : "scipy";
+  }
+  if (atmEl["atm-fit-outlier-mixture"]) {
+    const outlierParam = params.has("fit_outlier_mixture")
+      ? params.get("fit_outlier_mixture")
+      : params.get("outlier_mixture");
+    atmEl["atm-fit-outlier-mixture"].checked = !asFalse(outlierParam);
+  }
 }
 
 function bindAstrometryControls() {
@@ -169,12 +206,36 @@ function bindAstrometryControls() {
     updateAstrometryUrl();
     await loadAstrometryObject();
   });
+  for (const id of ["atm-fit-method", "atm-fit-outlier-mixture"]) {
+    if (!atmEl[id]) continue;
+    atmEl[id].addEventListener("change", () => {
+      clearAstrometryFit({ render: false });
+      updateAstrometryFitControlState();
+      renderAstrometry();
+      updateAstrometryUrl();
+    });
+  }
   atmEl["atm-fit-pm"].addEventListener("click", () => runAstrometryFit("pm"));
   atmEl["atm-fit-plx"].addEventListener("click", () => runAstrometryFit("pm_plx"));
+  if (atmEl["atm-reject-selected-fit"]) atmEl["atm-reject-selected-fit"].addEventListener("click", addSelectedAstrometryFitRejections);
+  if (atmEl["atm-reset-manual-rejections"]) atmEl["atm-reset-manual-rejections"].addEventListener("click", clearManualAstrometryFitRejections);
   atmEl["atm-clear-fit"].addEventListener("click", () => {
     clearAstrometryFit({ render: false });
     renderAstrometry();
   });
+  for (const id of ["atm-push-coordinate", "atm-push-pm", "atm-push-parallax", "atm-push-moca-pid", "atm-push-origin", "atm-push-comments", "atm-push-rls", "atm-push-allow-duplicate"]) {
+    if (!atmEl[id]) continue;
+    atmEl[id].addEventListener("input", updateAstrometryPushControls);
+    atmEl[id].addEventListener("change", updateAstrometryPushControls);
+  }
+  if (atmEl["atm-push-is-public"]) {
+    atmEl["atm-push-is-public"].addEventListener("change", () => {
+      syncAstrometryPushRls();
+      updateAstrometryPushControls();
+    });
+  }
+  if (atmEl["atm-push-preview"]) atmEl["atm-push-preview"].addEventListener("click", () => runAstrometryPush(true));
+  if (atmEl["atm-push-apply"]) atmEl["atm-push-apply"].addEventListener("click", () => runAstrometryPush(false));
   atmEl["atm-export-csv"].addEventListener("click", () => exportAstrometry("csv"));
   atmEl["atm-export-tsv"].addEventListener("click", () => exportAstrometry("tsv"));
   atmEl["atm-export-fits"].addEventListener("click", () => exportAstrometry("fits"));
@@ -184,6 +245,242 @@ function bindAstrometryControls() {
     if (!atmEl["atm-target-results"].hidden) positionAstrometrySearchPopup();
     if (atmState.payload) renderAstrometry();
   }, 150));
+}
+
+async function initializeAstrometryFitContext() {
+  if (window.MocaAuthContext?.ready) {
+    try {
+      atmState.authContext = await window.MocaAuthContext.ready;
+    } catch (error) {
+      atmState.authContext = window.MocaAuthContext.current || null;
+    }
+  }
+  try {
+    const payload = await fetchAstrometryJson("api/astrometry/fit/capabilities");
+    if (payload?.ok) {
+      atmState.fitCapabilities = payload;
+      atmState.authContext = payload.auth || atmState.authContext;
+    }
+  } catch (error) {
+    atmState.fitCapabilities = null;
+  }
+  updateAstrometryFitControlState();
+  updateAstrometryManagementVisibility();
+}
+
+function updateAstrometryFitControlState() {
+  const select = atmEl["atm-fit-method"];
+  if (!select) return;
+  const fitters = atmState.fitCapabilities?.fitters || {};
+  const ultranest = fitters.ultranest || {};
+  const ultraOption = select.querySelector('option[value="ultranest"]');
+  if (ultraOption) {
+    const enabled = ultranest.enabled !== false && ultranest.available !== false;
+    ultraOption.disabled = !enabled;
+    ultraOption.textContent = enabled ? "UltraNest" : "UltraNest (unavailable)";
+    ultraOption.title = ultranest.message || "";
+    if (select.value === "ultranest" && !enabled) select.value = "scipy";
+  }
+  select.disabled = Boolean(atmState.fitBusy);
+  if (atmEl["atm-fit-outlier-mixture"]) atmEl["atm-fit-outlier-mixture"].disabled = Boolean(atmState.fitBusy);
+  if (atmEl["atm-fit-method-note"]) {
+    const note = select.value === "ultranest"
+      ? ultranest.message || "UltraNest fits run on the server and can be slow."
+      : "";
+    atmEl["atm-fit-method-note"].textContent = note;
+  }
+  updateManualAstrometryRejectionControls();
+  updateAstrometryPushControls();
+}
+
+function astrometryManagementAllowed() {
+  const params = new URLSearchParams(window.location.search);
+  if (asBool(params.get("mock"))) return false;
+  const auth = atmState.authContext || {};
+  const role = String(auth.role || "").trim().toLowerCase();
+  const privateDb = Boolean(auth.private_db ?? auth.privateDb);
+  return role === "management" && privateDb;
+}
+
+function updateAstrometryManagementVisibility() {
+  if (!atmEl["atm-management-tools"]) return;
+  const visible = astrometryManagementAllowed();
+  atmEl["atm-management-tools"].hidden = !visible;
+  if (visible) {
+    syncAstrometryPushDefaults();
+    syncAstrometryPushRls();
+    updateAstrometryPushControls();
+  }
+}
+
+function astrometryPushFitSignature() {
+  const fit = atmState.fitResult;
+  if (!fit) return "";
+  return [
+    fit.mode || "",
+    fit.fitter || "",
+    fit.outlierMixture ? "outliers" : "plain",
+    finite(fit.t0) ? Number(fit.t0).toFixed(8) : "",
+    finite(fit.pmra) ? Number(fit.pmra).toFixed(8) : "",
+    finite(fit.pmdec) ? Number(fit.pmdec).toFixed(8) : "",
+    finite(fit.plx) ? Number(fit.plx).toFixed(8) : "",
+  ].join("|");
+}
+
+function astrometryDefaultPushOrigin(fit = atmState.fitResult) {
+  const mode = fit?.mode === "pm_plx" ? "pm_plx" : "pm";
+  const suffix = String(fit?.fitter || "").toLowerCase() === "ultranest" ? "_ultranest" : "";
+  return `mocaviz_astrometry_${mode}_fit${suffix}`;
+}
+
+function syncAstrometryPushDefaults() {
+  if (!atmEl["atm-management-tools"] || atmEl["atm-management-tools"].hidden) return;
+  const signature = astrometryPushFitSignature();
+  if (signature === atmState.pushFitSignature) return;
+  atmState.pushFitSignature = signature;
+  const fit = atmState.fitResult;
+  if (atmEl["atm-push-coordinate"]) atmEl["atm-push-coordinate"].checked = Boolean(fit);
+  if (atmEl["atm-push-pm"]) atmEl["atm-push-pm"].checked = Boolean(fit);
+  if (atmEl["atm-push-parallax"]) atmEl["atm-push-parallax"].checked = Boolean(fit && fit.mode === "pm_plx");
+  const origin = fit ? astrometryDefaultPushOrigin(fit) : "";
+  if (atmEl["atm-push-origin"]) atmEl["atm-push-origin"].value = origin;
+  if (atmEl["atm-push-comments"]) {
+    atmEl["atm-push-comments"].value = origin ? `${origin} (management push from JS astrometric explorer)` : "";
+  }
+  setAstrometryPushStatus(fit ? "" : "Run a fit before pushing values.");
+}
+
+function syncAstrometryPushRls() {
+  if (!atmEl["atm-push-is-public"] || !atmEl["atm-push-rls"]) return;
+  if (atmEl["atm-push-is-public"].checked) {
+    atmEl["atm-push-rls"].value = "public";
+    atmEl["atm-push-rls"].disabled = true;
+  } else {
+    atmEl["atm-push-rls"].disabled = false;
+    if (!atmEl["atm-push-rls"].value || atmEl["atm-push-rls"].value === "public") {
+      atmEl["atm-push-rls"].value = "gagne";
+    }
+  }
+}
+
+function astrometryPushUnavailableReason() {
+  if (!astrometryManagementAllowed()) return "Management/private MOCAdb credentials are required.";
+  if (!atmState.fitResult) return "Run a fit before pushing values.";
+  const pushCoordinate = Boolean(atmEl["atm-push-coordinate"]?.checked);
+  const pushPm = Boolean(atmEl["atm-push-pm"]?.checked);
+  const pushParallax = Boolean(atmEl["atm-push-parallax"]?.checked);
+  if (!pushCoordinate && !pushPm && !pushParallax) return "Select at least one fitted quantity.";
+  if (pushParallax && atmState.fitResult.mode !== "pm_plx") return "Run a PM+PLX fit before pushing parallax.";
+  if (!String(atmEl["atm-push-origin"]?.value || "").trim()) return "Origin is required.";
+  if (!atmEl["atm-push-is-public"]?.checked && !String(atmEl["atm-push-rls"]?.value || "").trim()) return "RLS is required.";
+  if (pushCoordinate) {
+    const prepared = atmState.lastPrepared || prepareAstrometryRows();
+    const fittedCoordinate = astrometryFittedCoordinate(atmState.fitResult, prepared);
+    if (!fittedCoordinate || !finite(fittedCoordinate.ra) || !finite(fittedCoordinate.dec)) return "Fitted coordinate is unavailable.";
+  }
+  return "";
+}
+
+function updateAstrometryPushControls() {
+  if (!atmEl["atm-management-tools"] || atmEl["atm-management-tools"].hidden) return;
+  const fit = atmState.fitResult;
+  const busy = Boolean(atmState.pushBusy || atmState.fitBusy);
+  const hasFit = Boolean(fit);
+  const isPlxFit = fit?.mode === "pm_plx";
+  for (const id of ["atm-push-coordinate", "atm-push-pm"]) {
+    if (atmEl[id]) atmEl[id].disabled = busy || !hasFit;
+  }
+  if (atmEl["atm-push-parallax"]) {
+    atmEl["atm-push-parallax"].disabled = busy || !isPlxFit;
+    if (!isPlxFit) atmEl["atm-push-parallax"].checked = false;
+  }
+  for (const id of ["atm-push-moca-pid", "atm-push-origin", "atm-push-comments", "atm-push-is-public", "atm-push-allow-duplicate"]) {
+    if (atmEl[id]) atmEl[id].disabled = busy || !hasFit;
+  }
+  syncAstrometryPushRls();
+  if (atmEl["atm-push-rls"]) atmEl["atm-push-rls"].disabled = busy || !hasFit || Boolean(atmEl["atm-push-is-public"]?.checked);
+  const reason = astrometryPushUnavailableReason();
+  if (atmEl["atm-push-preview"]) atmEl["atm-push-preview"].disabled = busy || Boolean(reason);
+  if (atmEl["atm-push-apply"]) atmEl["atm-push-apply"].disabled = busy || Boolean(reason);
+}
+
+function updateManualAstrometryRejectionControls() {
+  const busy = Boolean(atmState.fitBusy);
+  const selectedCount = manualAstrometryRejectableSelectionCount();
+  const manualCount = manualAstrometryRejectedVisibleCount();
+  if (atmEl["atm-reject-selected-fit"]) {
+    atmEl["atm-reject-selected-fit"].disabled = busy || selectedCount < 1;
+  }
+  if (atmEl["atm-reset-manual-rejections"]) {
+    atmEl["atm-reset-manual-rejections"].disabled = busy || atmState.manualRejectedIds.size < 1;
+  }
+  if (atmEl["atm-manual-rejection-note"]) {
+    const hiddenCount = Math.max(atmState.manualRejectedIds.size - manualCount, 0);
+    const selectionText = selectedCount ? `${selectedCount} selected` : "no selected points";
+    const manualText = manualCount === 1 ? "1 manually rejected point" : `${manualCount} manually rejected points`;
+    atmEl["atm-manual-rejection-note"].textContent = hiddenCount
+      ? `${manualText} visible, ${hiddenCount} hidden by current filters; ${selectionText}`
+      : `${manualText}; ${selectionText}`;
+  }
+}
+
+function manualAstrometryRejectableSelectionCount() {
+  if (!atmState.selectedIds.size || !atmState.processedRows.length) return 0;
+  const selected = new Set([...atmState.selectedIds].map(String));
+  return atmState.processedRows.filter((row) => {
+    const id = astrometryRowIdKey(row);
+    return selected.has(id) && !atmState.manualRejectedIds.has(id);
+  }).length;
+}
+
+function manualAstrometryRejectedVisibleCount() {
+  if (!atmState.manualRejectedIds.size || !atmState.processedRows.length) return 0;
+  return atmState.processedRows.filter((row) => isManuallyRejectedAstrometryRow(row)).length;
+}
+
+function pruneManualAstrometryRejections() {
+  if (!atmState.payload?.rows || !atmState.manualRejectedIds.size) return;
+  const validIds = new Set((atmState.payload.rows || []).map((row) => astrometryRowIdKey(row)));
+  atmState.manualRejectedIds = new Set([...atmState.manualRejectedIds].filter((id) => validIds.has(String(id))));
+}
+
+function addSelectedAstrometryFitRejections() {
+  if (!atmState.selectedIds.size || !atmState.processedRows.length) return;
+  const selected = new Set([...atmState.selectedIds].map(String));
+  let added = 0;
+  atmState.processedRows.forEach((row) => {
+    const id = astrometryRowIdKey(row);
+    if (!selected.has(id) || atmState.manualRejectedIds.has(id)) return;
+    atmState.manualRejectedIds.add(id);
+    added += 1;
+  });
+  if (!added) {
+    updateManualAstrometryRejectionControls();
+    return;
+  }
+  atmState.selectedIds.clear();
+  clearAstrometryFit({ render: false });
+  renderAstrometry();
+  setAstrometryStatus(`${added} point${added === 1 ? "" : "s"} manually rejected from future fits`, "");
+}
+
+function clearManualAstrometryFitRejections() {
+  if (!atmState.manualRejectedIds.size) return;
+  const cleared = atmState.manualRejectedIds.size;
+  atmState.manualRejectedIds.clear();
+  atmState.selectedIds.clear();
+  clearAstrometryFit({ render: false });
+  renderAstrometry();
+  setAstrometryStatus(`Cleared ${cleared} manual fit rejection${cleared === 1 ? "" : "s"}`, "");
+}
+
+function astrometryRowIdKey(rowOrId) {
+  if (rowOrId && typeof rowOrId === "object") return String(rowOrId.id);
+  return String(rowOrId);
+}
+
+function isManuallyRejectedAstrometryRow(row) {
+  return atmState.manualRejectedIds.has(astrometryRowIdKey(row));
 }
 
 async function searchAstrometryTargets(query, options = {}) {
@@ -264,6 +561,7 @@ function selectAstrometryTarget(option, options = {}) {
   if (changed) {
     atmState.payload = null;
     atmState.selectedIds.clear();
+    atmState.manualRejectedIds.clear();
     atmState.selectedMissions.clear();
     atmState.initialMissions = [];
     atmState.hasUserMissionChoice = false;
@@ -289,12 +587,16 @@ async function loadAstrometryObject() {
   setAstrometryLoading(false);
   if (!payload.ok) {
     atmState.payload = null;
+    atmState.selectedIds.clear();
+    atmState.manualRejectedIds.clear();
     clearAstrometryFit({ render: false });
     setAstrometryStatus(payload.error || "Could not load astrometry", "error");
     renderEmptyAstrometry(payload.error || "Could not load astrometry");
     return;
   }
   atmState.payload = payload;
+  atmState.selectedIds.clear();
+  pruneManualAstrometryRejections();
   atmState.selectedTargetLabel = targetLabel(payload.target);
   atmEl["atm-target-search"].value = atmState.selectedTargetLabel;
   updateSelectedTargetDisplay();
@@ -363,7 +665,9 @@ function renderAstrometry() {
   updateAstrometryUrl();
   setAstrometryExportDisabled(!atmState.processedRows.length);
   setAstrometryFitDisabled(!atmState.processedRows.length);
+  updateManualAstrometryRejectionControls();
   updateAstrometryFitSummary();
+  updateAstrometryManagementVisibility();
 }
 
 function prepareAstrometryRows() {
@@ -386,6 +690,8 @@ function prepareAstrometryRows() {
   const pmdecUnc = finite(pm.pmdec_masyr_unc) ? Number(pm.pmdec_masyr_unc) : 0;
   const plxValue = finite(plx.parallax_mas) ? Number(plx.parallax_mas) : 0;
   const plxUnc = finite(plx.parallax_mas_unc) ? Number(plx.parallax_mas_unc) : 0;
+  const refRaUnc = finite(payload.reference?.ra_unc_mas) ? Number(payload.reference.ra_unc_mas) : null;
+  const refDecUnc = finite(payload.reference?.dec_unc_mas) ? Number(payload.reference.dec_unc_mas) : null;
   const displayReference = atmEl["atm-display-reference"].checked;
   let refRa = reference.ra;
   let refDec = reference.dec;
@@ -487,10 +793,17 @@ function prepareAstrometryRows() {
     rows: processed,
     binned,
     model,
-    reference: { ra: refRa, dec: refDec, epoch: refEpoch },
+    reference: {
+      ra: refRa,
+      dec: refDec,
+      raUncMas: refRaUnc,
+      decUncMas: refDecUnc,
+      epoch: refEpoch,
+      source: astrometryPublicationInfo(payload.reference, "Reference coordinates"),
+    },
     referenceAstrometry,
-    pm: { pmra, pmdec, pmraUnc, pmdecUnc, reference: pm.reference },
-    parallax: { value: plxValue, uncertainty: plxUnc, reference: plx.reference },
+    pm: { pmra, pmdec, pmraUnc, pmdecUnc, reference: pm.reference, source: astrometryPublicationInfo(pm, pm.reference || "Proper motion") },
+    parallax: { value: plxValue, uncertainty: plxUnc, reference: plx.reference, source: astrometryPublicationInfo(plx, plx.reference || "Parallax") },
     usedFallbackRecalibration: atmEl["atm-only-recalibrated"].checked && !recalFiltered.length && allRows.length > 0,
   };
 }
@@ -815,6 +1128,27 @@ function renderAstrometryPlot(axis, prepared) {
       hovertemplate: "%{text}<extra></extra>",
     });
   }
+  const fittedReferenceMarker = astrometryFittedReferenceMarker(prepared);
+  if (fittedReferenceMarker) {
+    traces.push({
+      x: [fittedReferenceMarker.plot_x],
+      y: [astrometryYValue(prepared, axis, fittedReferenceMarker)],
+      text: [fittedReferenceHoverText(fittedReferenceMarker, isRa)],
+      type: "scatter",
+      mode: "markers",
+      marker: {
+        symbol: "star",
+        size: 17,
+        color: "#d73027",
+        opacity: 1,
+        line: { width: 2, color: "#252329" },
+      },
+      name: "Fitted reference position",
+      legendgroup: "astrometry-fit-reference",
+      showlegend: isRa,
+      hovertemplate: "%{text}<extra></extra>",
+    });
+  }
   const fitCurve = atmState.fitResult ? buildAstrometryFitCurve(atmState.fitResult, prepared) : null;
   const fitOffsets = fitCurve ? (isRa ? fitCurve.ra : fitCurve.dec) : [];
   const fitY = astrometryYSeries(prepared, axis, fitOffsets);
@@ -834,11 +1168,54 @@ function renderAstrometryPlot(axis, prepared) {
         : `${fitCurve.label}<br>%{x:.5g}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`,
     });
   }
+  const fitOutlierRows = astrometryFitOutlierRows(prepared);
+  if (fitOutlierRows.length) {
+    traces.push({
+      x: fitOutlierRows.map((row) => row.plot_x),
+      y: fitOutlierRows.map((row) => astrometryYValue(prepared, axis, row)),
+      customdata: fitOutlierRows.map((row) => row.id),
+      text: fitOutlierRows.map((row) => astrometryFitOutlierHoverText(row)),
+      type: "scatter",
+      mode: "markers",
+      marker: {
+        symbol: "x-thin",
+        size: 17,
+        color: "#d73027",
+        line: { width: 1, color: "#d73027" },
+      },
+      name: "PM-fit outliers",
+      legendgroup: "astrometry-fit-outliers",
+      showlegend: isRa,
+      hovertemplate: "%{text}<extra></extra>",
+    });
+  }
+  const manualRejectedRows = astrometryManualRejectedRows(prepared);
+  if (manualRejectedRows.length) {
+    traces.push({
+      x: manualRejectedRows.map((row) => row.plot_x),
+      y: manualRejectedRows.map((row) => astrometryYValue(prepared, axis, row)),
+      customdata: manualRejectedRows.map((row) => row.id),
+      text: manualRejectedRows.map((row) => astrometryManualRejectedHoverText(row)),
+      type: "scatter",
+      mode: "markers",
+      marker: {
+        symbol: "x-thin",
+        size: 18,
+        color: "#1f78b4",
+        line: { width: 1.2, color: "#1f78b4" },
+      },
+      name: "Manually rejected from fit",
+      legendgroup: "astrometry-manual-rejections",
+      showlegend: isRa,
+      hovertemplate: "%{text}<extra></extra>",
+    });
+  }
   const yValues = [
     ...prepared.rows.map((row) => astrometryYValue(prepared, axis, row)),
     ...modelY,
     ...fitY,
     ...(referenceMarker ? [astrometryYValue(prepared, axis, referenceMarker)] : []),
+    ...(fittedReferenceMarker ? [astrometryYValue(prepared, axis, fittedReferenceMarker)] : []),
   ].filter(finite);
   const yRange = paddedRange(yValues, null);
   const sexagesimalTicks = displayAbsolute ? astrometrySexagesimalTickSpec(yRange, axis) : null;
@@ -862,6 +1239,7 @@ function renderAstrometryPlot(axis, prepared) {
       range: paddedRange([
         ...prepared.rows.map((row) => row.plot_x),
         ...(referenceMarker ? [referenceMarker.plot_x] : []),
+        ...(fittedReferenceMarker ? [fittedReferenceMarker.plot_x] : []),
       ].filter(finite), atmEl["atm-phase-yearly"].checked ? [0, 1] : null),
       showline: true,
       mirror: true,
@@ -917,22 +1295,84 @@ function renderAstrometryPlot(axis, prepared) {
   plotEl.on("plotly_deselect", () => handleAstrometryDeselect());
 }
 
-function runAstrometryFit(mode) {
+async function runAstrometryFit(mode) {
   if (!atmState.payload) return;
   const prepared = prepareAstrometryRows();
+  const fitter = selectedAstrometryFitMethod();
   try {
-    atmState.fitResult = computeAstrometryFit(mode, prepared);
+    setAstrometryFitBusy(true, `Running ${fitter === "ultranest" ? "UltraNest" : "SciPy"} fit`);
+    const payload = await postAstrometryJson("api/astrometry/fit", buildAstrometryFitRequest(mode, prepared));
+    if (!payload?.ok || !payload.fit) {
+      throw new Error(payload?.error || "Fit failed");
+    }
+    atmState.fitCapabilities = payload.capabilities || atmState.fitCapabilities;
+    atmState.fitResult = payload.fit;
+    updateAstrometryFitControlState();
+    updateAstrometryManagementVisibility();
     renderAstrometry();
+    setAstrometryStatus(`${atmState.fitResult.fitterLabel || "Astrometry"} fit complete`, "");
   } catch (error) {
     atmState.fitResult = null;
     updateAstrometryFitSummary(error.message || "Fit failed");
+    updateAstrometryManagementVisibility();
     setAstrometryFitDisabled(!prepared.rows.length);
+    setAstrometryStatus(error.message || "Fit failed", "error");
+  } finally {
+    setAstrometryFitBusy(false);
   }
+}
+
+function selectedAstrometryFitMethod() {
+  const method = String(atmEl["atm-fit-method"]?.value || "scipy").toLowerCase();
+  return method === "ultranest" ? "ultranest" : "scipy";
+}
+
+function buildAstrometryFitRequest(mode, prepared) {
+  const rows = prepared.rows.filter((row) => (
+    finite(row.plot_epoch_abs)
+    && finite(row.base_rel_ra)
+    && finite(row.base_rel_dec)
+    && !isManuallyRejectedAstrometryRow(row)
+  )).map((row) => ({
+    id: row.id,
+    mission: row.mission,
+    plot_epoch_abs: row.plot_epoch_abs,
+    measurement_epoch_yr: row.measurement_epoch_yr,
+    base_rel_ra: row.base_rel_ra,
+    base_rel_dec: row.base_rel_dec,
+    ra_unc_mas: row.ra_unc_mas,
+    dec_unc_mas: row.dec_unc_mas,
+  }));
+  return {
+    mode,
+    fitter: selectedAstrometryFitMethod(),
+    outlierMixture: atmEl["atm-fit-outlier-mixture"] ? atmEl["atm-fit-outlier-mixture"].checked : true,
+    reference: {
+      ra: prepared.reference.ra,
+      dec: prepared.reference.dec,
+      epoch: prepared.reference.epoch,
+    },
+    parallax: {
+      value: prepared.parallax.value,
+      uncertainty: prepared.parallax.uncertainty,
+    },
+    rows,
+  };
+}
+
+function setAstrometryFitBusy(busy, message = "") {
+  atmState.fitBusy = Boolean(busy);
+  if (message) updateAstrometryFitSummary(message);
+  setAstrometryLoading(Boolean(busy));
+  setAstrometryFitDisabled(!manualAstrometryFitRows(atmState.processedRows).length);
+  updateAstrometryFitControlState();
+  updateAstrometryPushControls();
 }
 
 function clearAstrometryFit(options = {}) {
   atmState.fitResult = null;
   updateAstrometryFitSummary();
+  updateAstrometryManagementVisibility();
   if (options.render) renderAstrometry();
 }
 
@@ -1051,11 +1491,50 @@ function predictAstrometryFit(fit, prepared, epoch) {
   return { ra, dec };
 }
 
+function astrometryFittedReferenceMarker(prepared) {
+  const fit = atmState.fitResult;
+  if (!fit || !finite(fit.posRa) || !finite(fit.posDec) || !finite(fit.t0)) return null;
+  const epoch = Number(fit.t0);
+  const coordinates = astrometryFittedCoordinate(fit, prepared);
+  if (!coordinates || !finite(coordinates.ra) || !finite(coordinates.dec)) return null;
+  const pf = parallaxMotion(prepared.reference.ra, prepared.reference.dec, epoch);
+  let relRa = Number(fit.posRa);
+  let relDec = Number(fit.posDec);
+  if (atmEl["atm-subtract-pm"].checked) {
+    relRa -= prepared.pm.pmra * (epoch - prepared.reference.epoch);
+    relDec -= prepared.pm.pmdec * (epoch - prepared.reference.epoch);
+  }
+  if (atmEl["atm-subtract-plx"].checked) {
+    const adoptedPlx = finite(prepared.parallax.value) ? Number(prepared.parallax.value) : 0;
+    relRa -= adoptedPlx * pf.ra;
+    relDec -= adoptedPlx * pf.dec;
+  }
+  return {
+    id: "fitted-reference-position",
+    plot_x: atmEl["atm-phase-yearly"].checked ? yearlyPhase(epoch) : epoch,
+    plot_epoch_abs: epoch,
+    rel_ra: relRa,
+    rel_dec: relDec,
+    plot_ra: coordinates.ra,
+    plot_dec: coordinates.dec,
+    fitLabel: fit.label,
+    fitMeta: astrometryFitMeta(fit),
+    posRaUnc: coordinates.raUncMas,
+    posDecUnc: coordinates.decUncMas,
+  };
+}
+
 function setAstrometryFitDisabled(disabled) {
-  const rowCount = atmState.processedRows.length;
-  if (atmEl["atm-fit-pm"]) atmEl["atm-fit-pm"].disabled = Boolean(disabled) || rowCount < 2;
-  if (atmEl["atm-fit-plx"]) atmEl["atm-fit-plx"].disabled = Boolean(disabled) || rowCount < 3;
-  if (atmEl["atm-clear-fit"]) atmEl["atm-clear-fit"].disabled = !atmState.fitResult;
+  const rowCount = manualAstrometryFitRows(atmState.processedRows).length;
+  const busy = Boolean(atmState.fitBusy);
+  if (atmEl["atm-fit-pm"]) atmEl["atm-fit-pm"].disabled = busy || Boolean(disabled) || rowCount < 2;
+  if (atmEl["atm-fit-plx"]) atmEl["atm-fit-plx"].disabled = busy || Boolean(disabled) || rowCount < 3;
+  if (atmEl["atm-clear-fit"]) atmEl["atm-clear-fit"].disabled = busy || !atmState.fitResult;
+  updateAstrometryFitControlState();
+}
+
+function manualAstrometryFitRows(rows) {
+  return (rows || []).filter((row) => !isManuallyRejectedAstrometryRow(row));
 }
 
 function updateAstrometryFitSummary(message = "") {
@@ -1085,9 +1564,216 @@ function astrometryFitInlineSummary(fit) {
   } else if (finite(fit.fixedPlx) && Number(fit.fixedPlx) !== 0) {
     parts.push(`adopted parallax fixed at ${formatNumber(fit.fixedPlx, 2)} mas`);
   }
-  parts.push(`N=${fit.nRows}`);
+  if (fit.outlierMixture && finite(fit.nInliers) && finite(fit.nRows)) {
+    parts.push(`inliers ${fit.nInliers}/${fit.nRows}`);
+  } else {
+    parts.push(`N=${fit.nRows}`);
+  }
+  if (atmState.manualRejectedIds.size) {
+    parts.push(`manual rejects ${atmState.manualRejectedIds.size}`);
+  }
   parts.push(`reduced chi2=${formatNumber(fit.reducedChi2, 2)}`);
   return parts.join(" | ");
+}
+
+function astrometrySelectedMissionLabels() {
+  const missions = atmState.selectedMissions?.size
+    ? [...atmState.selectedMissions]
+    : (atmState.processedRows || []).map((row) => row.mission || "No mission");
+  return [...new Set(missions.map((mission) => String(mission || "No mission")))];
+}
+
+function astrometryFitMissionCounts(prepared) {
+  const counts = new Map();
+  (prepared?.rows || []).forEach((row) => {
+    if (
+      !finite(row.plot_epoch_abs)
+      || !finite(row.base_rel_ra)
+      || !finite(row.base_rel_dec)
+      || isManuallyRejectedAstrometryRow(row)
+    ) {
+      return;
+    }
+    const mission = String(row.mission || "No mission");
+    counts.set(mission, (counts.get(mission) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([mission, nData]) => ({ mission, nData }));
+}
+
+function buildAstrometryPushRequest(dryRun) {
+  const fit = atmState.fitResult;
+  const prepared = atmState.lastPrepared || prepareAstrometryRows();
+  const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
+  const target = atmState.payload?.target || {};
+  return {
+    dryRun: Boolean(dryRun),
+    allowDuplicate: Boolean(atmEl["atm-push-allow-duplicate"]?.checked),
+    target: {
+      moca_oid: normalizedMocaOid(target.moca_oid) || normalizedMocaOid(atmState.selectedOid),
+      designation: targetShortName(target),
+    },
+    push: {
+      coordinate: Boolean(atmEl["atm-push-coordinate"]?.checked),
+      pm: Boolean(atmEl["atm-push-pm"]?.checked),
+      parallax: Boolean(atmEl["atm-push-parallax"]?.checked),
+    },
+    visibility: {
+      isPublic: Boolean(atmEl["atm-push-is-public"]?.checked),
+      rls: String(atmEl["atm-push-rls"]?.value || "").trim(),
+    },
+    metadata: {
+      mocaPid: String(atmEl["atm-push-moca-pid"]?.value || "").trim(),
+      origin: String(atmEl["atm-push-origin"]?.value || astrometryDefaultPushOrigin(fit)).trim(),
+      comments: String(atmEl["atm-push-comments"]?.value || "").trim(),
+      selectedMissions: astrometrySelectedMissionLabels(),
+      manualRejectedIds: [...atmState.manualRejectedIds],
+      manualRejectedCount: atmState.manualRejectedIds.size,
+      automaticRejectedCount: finite(fit?.nOutliers) ? Number(fit.nOutliers) : (Array.isArray(fit?.outlierIds) ? fit.outlierIds.length : 0),
+      missionCounts: astrometryFitMissionCounts(prepared),
+    },
+    fit,
+    fittedCoordinate,
+  };
+}
+
+async function runAstrometryPush(dryRun) {
+  const reason = astrometryPushUnavailableReason();
+  if (reason) {
+    setAstrometryPushStatus(reason, "error");
+    updateAstrometryPushControls();
+    return;
+  }
+  const requestBody = buildAstrometryPushRequest(dryRun);
+  const selectedLabels = astrometryPushSelectedLabels(requestBody.push);
+  if (!dryRun && !window.confirm(`Push ${selectedLabels.join(", ")} to MOCAdb?`)) return;
+
+  atmState.pushBusy = true;
+  setAstrometryPushStatus(dryRun ? "Preparing push preview..." : "Pushing fitted values...");
+  updateAstrometryPushControls();
+  try {
+    const payload = await postAstrometryJson("api/astrometry/fit/push", requestBody);
+    setAstrometryPushStatus(astrometryPushResultMarkup(payload), payload?.ok ? "" : "error", true);
+    if (!payload?.ok) return;
+    if (!dryRun && payload.cleared?.astrometryObjects !== undefined) {
+      setAstrometryStatus(`Pushed ${payload.insertedCount || 0} astrometry row${Number(payload.insertedCount) === 1 ? "" : "s"} to MOCAdb`, "");
+    }
+  } catch (error) {
+    setAstrometryPushStatus(error.message || String(error), "error");
+  } finally {
+    atmState.pushBusy = false;
+    updateAstrometryPushControls();
+  }
+}
+
+function astrometryPushSelectedLabels(push) {
+  const labels = [];
+  if (push?.coordinate) labels.push("fitted coordinate");
+  if (push?.pm) labels.push("fitted PM");
+  if (push?.parallax) labels.push("fitted parallax");
+  return labels.length ? labels : ["selected values"];
+}
+
+function astrometryPushResultMarkup(payload) {
+  if (!payload) return "No response from MOCAdb push endpoint.";
+  if (!payload.ok && payload.error && !payload.preparedRows) return escapeHtml(payload.error);
+  const rows = payload.preparedRows || [];
+  const duplicates = payload.duplicates || [];
+  const title = payload.dryRun
+    ? "Push preview"
+    : `Inserted ${Number(payload.insertedCount || 0)} row${Number(payload.insertedCount) === 1 ? "" : "s"}`;
+  const rowText = rows.length
+    ? rows.map((row) => {
+      const values = row.values || {};
+      return `<li>${escapeHtml(row.label || row.kind)} -> ${escapeHtml(row.table)}${astrometryPushValueSnippet(row.kind, values)}</li>`;
+    }).join("")
+    : "<li>No rows prepared.</li>";
+  const duplicateText = duplicates.length
+    ? `<div class="astrometry-push-warning">${escapeHtml(payload.error || "Existing active rows match this push.")}</div><ul>${duplicates.map((row) => (
+      `<li>${escapeHtml(row.label || row.kind)}: ${Number(row.count || 0)} match${Number(row.count) === 1 ? "" : "es"} by ${escapeHtml(row.basis || "origin")}</li>`
+    )).join("")}</ul>`
+    : "";
+  const insertedText = payload.inserted?.length
+    ? `<ul>${payload.inserted.map((row) => (
+      `<li>${escapeHtml(row.label || row.kind)} inserted in ${escapeHtml(row.table)}${row.id ? ` id=${escapeHtml(row.id)}` : ""}</li>`
+    )).join("")}</ul>`
+    : "";
+  const changelogText = payload.changelogId ? `<div>moca_changelog id=${escapeHtml(payload.changelogId)}</div>` : "";
+  const provenance = payload.fitProvenance ? `<div>${escapeHtml(payload.fitProvenance)}</div>` : "";
+  const meta = [
+    payload.origin ? `origin=${payload.origin}` : "",
+    payload.moca_pid ? `moca_pid=${payload.moca_pid}` : "",
+    `rls=${payload.rls || "N/A"}`,
+    `is_public=${Number(payload.is_public || 0)}`,
+  ].filter(Boolean).join("; ");
+  return `
+    <div><strong>${escapeHtml(title)}</strong></div>
+    <div>${escapeHtml(meta)}</div>
+    ${provenance}
+    <ul>${rowText}</ul>
+    ${duplicateText}
+    ${insertedText}
+    ${changelogText}
+  `;
+}
+
+function astrometryPushValueSnippet(kind, values) {
+  if (!values) return "";
+  if (kind === "pm") {
+    return ` (${formatValueErrorSymbol(values.pmra_masyr, values.pmra_masyr_unc, "mas/yr")}, ${formatValueErrorSymbol(values.pmdec_masyr, values.pmdec_masyr_unc, "mas/yr")})`;
+  }
+  if (kind === "parallax") {
+    return ` (${formatValueErrorSymbol(values.parallax_mas, values.parallax_mas_unc, "mas")})`;
+  }
+  if (kind === "coordinate") {
+    return ` (${escapeHtml(formatRaSexagesimal(values.ra))}, ${escapeHtml(formatDecSexagesimal(values.dec))}, epoch ${formatNumber(values.measurement_epoch_yr, 4)})`;
+  }
+  return "";
+}
+
+function setAstrometryPushStatus(content, mode = "", html = false) {
+  if (!atmEl["atm-push-status"]) return;
+  if (html) atmEl["atm-push-status"].innerHTML = content || "";
+  else atmEl["atm-push-status"].textContent = content || "";
+  atmEl["atm-push-status"].classList.toggle("error", mode === "error");
+}
+
+function astrometryFitOutlierRows(prepared) {
+  const fit = atmState.fitResult;
+  if (!fit?.outlierMixture) return [];
+  const ids = new Set((Array.isArray(fit.outlierIds) ? fit.outlierIds : []).map((id) => String(id)));
+  if (!ids.size && Array.isArray(fit.responsibilities)) {
+    fit.responsibilities.forEach((row) => {
+      if (row?.inlier === false && row.id !== undefined && row.id !== null) ids.add(String(row.id));
+    });
+  }
+  if (!ids.size) return [];
+  return prepared.rows.filter((row) => ids.has(String(row.id)));
+}
+
+function astrometryManualRejectedRows(prepared) {
+  if (!atmState.manualRejectedIds.size) return [];
+  return prepared.rows.filter((row) => isManuallyRejectedAstrometryRow(row));
+}
+
+function astrometryFitInlierProbability(rowId) {
+  const fit = atmState.fitResult;
+  if (!Array.isArray(fit?.responsibilities)) return NaN;
+  const match = fit.responsibilities.find((row) => String(row.id) === String(rowId));
+  return finite(match?.inlierProbability) ? Number(match.inlierProbability) : NaN;
+}
+
+function astrometryFitOutlierHoverText(row) {
+  const inlierProbability = astrometryFitInlierProbability(row.id);
+  const probabilityLine = finite(inlierProbability)
+    ? `<br><b>Fit inlier probability:</b> ${formatNumber(inlierProbability, 3)}`
+    : "";
+  return `${hoverText(row)}<br><b>PM-fit status:</b> rejected as outlier${probabilityLine}`;
+}
+
+function astrometryManualRejectedHoverText(row) {
+  return `${hoverText(row)}<br><b>Manual fit status:</b> rejected from fit`;
 }
 
 function astrometryFitSigma(value) {
@@ -1157,9 +1843,48 @@ function dot(values, params) {
   return values.reduce((sum, value, index) => sum + value * params[index], 0);
 }
 
+function astrometryPublicationInfo(row, fallback = "") {
+  const raw = row || {};
+  const explicitName = raw.publication_name || raw.reference || "";
+  const sourceId = raw.moca_pid || raw.origin || "";
+  const name = explicitName || sourceId || fallback || "";
+  const rawBibcode = raw.publication_bibcode || raw.bibcode || "";
+  const bibcode = rawBibcode || (looksLikeAdsBibcode(raw.moca_pid) ? raw.moca_pid : "");
+  const hasSource = Boolean(explicitName || sourceId || rawBibcode || raw.bibcode);
+  return {
+    name,
+    bibcode,
+    query: hasSource ? (explicitName || sourceId || bibcode) : "",
+  };
+}
+
+function astrometryPublicationMarkup(rowOrInfo, fallback = "") {
+  const info = rowOrInfo && (rowOrInfo.name !== undefined || rowOrInfo.query !== undefined || rowOrInfo.bibcode !== undefined)
+    ? rowOrInfo
+    : astrometryPublicationInfo(rowOrInfo, fallback);
+  const label = info.name || info.bibcode || fallback || "N/A";
+  const url = astrometryAdsUrl(info);
+  if (!url) return escapeHtml(label);
+  return `<a href="${url}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+}
+
+function astrometryAdsUrl(info) {
+  const bibcode = String(info?.bibcode || "").trim();
+  if (bibcode) {
+    return `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(bibcode)}/abstract`;
+  }
+  const query = String(info?.query || "").trim();
+  return query ? `https://ui.adsabs.harvard.edu/search/q=${encodeURIComponent(query)}` : "";
+}
+
+function looksLikeAdsBibcode(value) {
+  return /^\d{4}.{14}[A-Za-z0-9.]$/.test(String(value || ""));
+}
+
 function summaryAnnotation(prepared) {
   const pm = prepared.pm;
   const plx = prepared.parallax;
+  const coordRef = prepared.reference?.source;
   return {
     xref: "paper",
     yref: "paper",
@@ -1167,7 +1892,14 @@ function summaryAnnotation(prepared) {
     y: 0.99,
     xanchor: "left",
     yanchor: "top",
-    text: `<b>PMRA:</b> ${formatValueError(pm.pmra, pm.pmraUnc, "mas/yr")} | <b>PMDEC:</b> ${formatValueError(pm.pmdec, pm.pmdecUnc, "mas/yr")} | <b>Parallax:</b> ${formatValueError(plx.value, plx.uncertainty, "mas")}`,
+    text: [
+      `<b>PMRA:</b> ${formatValueError(pm.pmra, pm.pmraUnc, "mas/yr")}`,
+      `<b>PMDEC:</b> ${formatValueError(pm.pmdec, pm.pmdecUnc, "mas/yr")}`,
+      `<b>Parallax:</b> ${formatValueError(plx.value, plx.uncertainty, "mas")}`,
+      `<br><b>PM ref:</b> ${astrometryPublicationMarkup(pm.source, pm.reference || "N/A")}`,
+      `<b>Parallax ref:</b> ${astrometryPublicationMarkup(plx.source, plx.reference || "N/A")}`,
+      `<b>Coord ref:</b> ${astrometryPublicationMarkup(coordRef, "N/A")}`,
+    ].join(" | "),
     showarrow: false,
     font: { size: 13, color: "#252329" },
     bgcolor: "rgba(255,255,255,0.72)",
@@ -1178,6 +1910,7 @@ function handleAstrometrySelection(event) {
   const ids = (event?.points || []).map((point) => point.customdata).filter((id) => id !== undefined && id !== null);
   atmState.selectedIds = new Set(ids);
   renderAstrometryTable();
+  updateManualAstrometryRejectionControls();
 }
 
 function handleAstrometryClick(event) {
@@ -1185,28 +1918,187 @@ function handleAstrometryClick(event) {
   if (!point || point.customdata === undefined || point.customdata === null) return;
   atmState.selectedIds = new Set([point.customdata]);
   renderAstrometryTable();
+  updateManualAstrometryRejectionControls();
 }
 
 function handleAstrometryDeselect() {
   atmState.selectedIds.clear();
   renderAstrometryTable();
+  updateManualAstrometryRejectionControls();
+}
+
+function astrometrySummarySection(title, sourceMarkup, lines, options = {}) {
+  const source = sourceMarkup ? ` <span class="astrometry-summary-source">${sourceMarkup}</span>` : "";
+  const meta = options.meta ? ` <span class="astrometry-summary-source">${escapeHtml(options.meta)}</span>` : "";
+  return `
+    <div class="astrometry-summary-section">
+      <div class="astrometry-summary-title"><strong>${escapeHtml(title)}</strong>${source}${meta}</div>
+      ${lines.map((line) => `<div class="astrometry-summary-line">${line}</div>`).join("")}
+    </div>`;
+}
+
+function astrometrySummaryValueLine(labelHtml, value, error, unit) {
+  return `<span class="astrometry-summary-symbol">${labelHtml}</span><span class="astrometry-summary-value">= ${formatValueErrorSymbol(value, error, unit)}</span>`;
+}
+
+function astrometrySummaryDifferenceLine(labelHtml, literatureValue, fittedValue, literatureError, fittedError, unit) {
+  const delta = finite(literatureValue) && finite(fittedValue) ? Number(literatureValue) - Number(fittedValue) : NaN;
+  const error = astrometryQuadratureError(literatureError, fittedError);
+  const sigma = finite(delta) && finite(error) && Number(error) > 0 ? Math.abs(Number(delta)) / Number(error) : NaN;
+  const sigmaText = finite(sigma) ? ` (${formatNumber(sigma, 2)} &sigma;)` : "";
+  return `<span class="astrometry-summary-symbol">${labelHtml}</span><span class="astrometry-summary-value">= ${formatValueErrorSymbol(delta, error, unit)}${sigmaText}</span>`;
+}
+
+function astrometrySummarySubhead(text) {
+  return `<span class="astrometry-summary-subhead">${escapeHtml(text)}</span>`;
+}
+
+function astrometrySummaryTextLine(label, value) {
+  return `<span class="astrometry-summary-symbol">${escapeHtml(label)}</span><span class="astrometry-summary-value">= ${escapeHtml(value)}</span>`;
+}
+
+function astrometryCoordinateLines(coordinates) {
+  return [
+    astrometryCoordinateLine("&alpha;", coordinates.ra, coordinates.raUncMas, formatRaSexagesimal),
+    astrometryCoordinateLine("&delta;", coordinates.dec, coordinates.decUncMas, formatDecSexagesimal),
+    astrometrySummaryTextLine("epoch", `${formatNumber(coordinates.epoch, 4)} yr`),
+  ];
+}
+
+function astrometryCoordinateLine(labelHtml, value, uncertainty, formatter) {
+  const coordinate = finite(value) ? `${formatter(value)} (${formatNumber(value, 8)} deg)` : "N/A";
+  const errorText = finite(uncertainty) && Number(uncertainty) > 0
+    ? ` &plusmn; ${formatNumber(uncertainty, 2)} mas`
+    : "";
+  return `<span class="astrometry-summary-symbol">${labelHtml}</span><span class="astrometry-summary-value">= ${coordinate}${errorText}</span>`;
+}
+
+function astrometryCoordinateDifferenceLines(prepared, fit) {
+  if (!fit || !finite(fit.posRa) || !finite(fit.posDec)) return [];
+  return [
+    astrometrySummarySubhead("literature - fitted"),
+    astrometrySummaryDifferenceLine("&Delta;&alpha;", 0, fit.posRa, prepared.reference.raUncMas, fit.posRaUnc, "mas"),
+    astrometrySummaryDifferenceLine("&Delta;&delta;", 0, fit.posDec, prepared.reference.decUncMas, fit.posDecUnc, "mas"),
+  ];
+}
+
+function astrometryProperMotionDifferenceLines(prepared, fit) {
+  if (!fit) return [];
+  return [
+    astrometrySummarySubhead("literature - fitted"),
+    astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&alpha;</sub>", prepared.pm.pmra, fit.pmra, prepared.pm.pmraUnc, fit.pmraUnc, "mas/yr"),
+    astrometrySummaryDifferenceLine("&Delta;&mu;<sub>&delta;</sub>", prepared.pm.pmdec, fit.pmdec, prepared.pm.pmdecUnc, fit.pmdecUnc, "mas/yr"),
+  ];
+}
+
+function astrometryParallaxDifferenceLines(prepared, fit) {
+  if (!fit || fit.mode !== "pm_plx") return [];
+  return [
+    astrometrySummarySubhead("literature - fitted"),
+    astrometrySummaryDifferenceLine("&Delta;&varpi;", prepared.parallax.value, fit.plx, prepared.parallax.uncertainty, fit.plxUnc, "mas"),
+  ];
+}
+
+function astrometryFittedCoordinate(fit, prepared) {
+  if (!fit || !finite(fit.posRa) || !finite(fit.posDec)) return null;
+  const raDivisor = astrometryRaDegreeDivisor(prepared);
+  const ra = finite(raDivisor) && Math.abs(raDivisor) > 1e-12
+    ? Number(prepared.reference.ra) + Number(fit.posRa) / raDivisor
+    : NaN;
+  const dec = finite(prepared.reference.dec)
+    ? Number(prepared.reference.dec) + Number(fit.posDec) / (3600 * 1000)
+    : NaN;
+  return {
+    ra,
+    dec,
+    raUncMas: finite(fit.posRaUnc) ? Number(fit.posRaUnc) : null,
+    decUncMas: finite(fit.posDecUnc) ? Number(fit.posDecUnc) : null,
+    epoch: fit.t0,
+  };
+}
+
+function astrometryFitMeta(fit) {
+  const parts = [fit.label || "fit"];
+  if (fit.outlierMixture && finite(fit.nInliers) && finite(fit.nRows)) {
+    parts.push(`inliers ${fit.nInliers}/${fit.nRows}`);
+  } else if (finite(fit.nRows)) {
+    parts.push(`N=${fit.nRows}`);
+  }
+  if (finite(fit.reducedChi2)) parts.push(`reduced chi2=${formatNumber(fit.reducedChi2, 2)}`);
+  return parts.join("; ");
 }
 
 function renderAstrometrySummary(prepared) {
   const target = atmState.payload.target || {};
   const rows = prepared.rows;
   const missionCount = new Set(rows.map((row) => row.mission)).size;
+  const manualRejectedCount = astrometryManualRejectedRows(prepared).length;
   const recalcNote = prepared.usedFallbackRecalibration ? " Recalibrated-only filter had no rows, so all rows are shown." : "";
-  const fitNote = atmState.fitResult ? astrometryFitInlineSummary(atmState.fitResult) : "";
-  atmEl["atm-summary"].innerHTML = [
-    `<strong>${escapeHtml(targetShortName(target))}</strong>`,
-    `oid${target.moca_oid}`,
-    `${rows.length} measurements`,
-    `${missionCount} missions`,
-    `reference epoch ${formatNumber(prepared.reference.epoch, 4)}`,
-    fitNote,
-    recalcNote,
-  ].filter(Boolean).join(" | ");
+  const fit = atmState.fitResult;
+  const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
+  const sections = [
+    astrometrySummarySection(
+      "Reference coordinate",
+      astrometryPublicationMarkup(prepared.reference.source, "N/A"),
+      astrometryCoordinateLines(prepared.reference),
+    ),
+  ];
+  if (fittedCoordinate) {
+    sections.push(astrometrySummarySection(
+      "Fitted coordinate",
+      "",
+      [
+        ...astrometryCoordinateLines(fittedCoordinate),
+        ...astrometryCoordinateDifferenceLines(prepared, fit),
+      ],
+      { meta: astrometryFitMeta(fit) },
+    ));
+  }
+  sections.push(astrometrySummarySection(
+    "Reference proper motion",
+    astrometryPublicationMarkup(prepared.pm.source, prepared.pm.reference || "N/A"),
+    [
+      astrometrySummaryValueLine("&mu;<sub>&alpha;</sub>", prepared.pm.pmra, prepared.pm.pmraUnc, "mas/yr"),
+      astrometrySummaryValueLine("&mu;<sub>&delta;</sub>", prepared.pm.pmdec, prepared.pm.pmdecUnc, "mas/yr"),
+    ],
+  ));
+  if (fit) {
+    sections.push(astrometrySummarySection(
+      "Fitted proper motion",
+      "",
+      [
+        astrometrySummaryValueLine("&mu;<sub>&alpha;</sub>", fit.pmra, fit.pmraUnc, "mas/yr"),
+        astrometrySummaryValueLine("&mu;<sub>&delta;</sub>", fit.pmdec, fit.pmdecUnc, "mas/yr"),
+        ...astrometryProperMotionDifferenceLines(prepared, fit),
+      ],
+    ));
+  }
+  sections.push(astrometrySummarySection(
+    "Reference parallax",
+    astrometryPublicationMarkup(prepared.parallax.source, prepared.parallax.reference || "N/A"),
+    [astrometrySummaryValueLine("&varpi;", prepared.parallax.value, prepared.parallax.uncertainty, "mas")],
+  ));
+  if (fit?.mode === "pm_plx") {
+    sections.push(astrometrySummarySection(
+      "Fitted parallax",
+      "",
+      [
+        astrometrySummaryValueLine("&varpi;", fit.plx, fit.plxUnc, "mas"),
+        ...astrometryParallaxDifferenceLines(prepared, fit),
+      ],
+    ));
+  }
+  atmEl["atm-summary"].innerHTML = `
+    <div class="astrometry-summary-meta">
+      <strong>${escapeHtml(targetShortName(target))}</strong>
+      <span>oid${escapeHtml(target.moca_oid)}</span>
+      <span>${rows.length} measurements</span>
+      <span>${missionCount} missions</span>
+      ${manualRejectedCount ? `<span>${manualRejectedCount} manually rejected from fit</span>` : ""}
+    </div>
+    <div class="astrometry-summary-grid">${sections.join("")}</div>
+    ${recalcNote ? `<div class="astrometry-summary-note">${escapeHtml(recalcNote.trim())}</div>` : ""}
+  `;
 }
 
 function renderAstrometryTable() {
@@ -1344,11 +2236,23 @@ function referenceAstrometryHoverText(row, isRa) {
     `<b>${isRa ? "R.A." : "Decl."} offset:</b> ${formatNumber(isRa ? row.rel_ra : row.rel_dec, 2)} mas`,
     `<b>R.A.:</b> ${formatRaSexagesimal(row.plot_ra)} (${formatNumber(row.plot_ra, 8)} deg)`,
     `<b>Decl.:</b> ${formatDecSexagesimal(row.plot_dec)} (${formatNumber(row.plot_dec, 8)} deg)`,
-    `<b>Bibcode:</b> ${escapeHtml(row.bibcode || "N/A")}`,
+    `<b>Publication:</b> ${astrometryPublicationMarkup(row, row.moca_pid || "N/A")}`,
+    `<b>Bibcode:</b> ${row.publication_bibcode || row.bibcode ? astrometryPublicationMarkup({ name: row.publication_bibcode || row.bibcode, bibcode: row.publication_bibcode || row.bibcode }) : "N/A"}`,
     `<b>Mission:</b> ${escapeHtml(row.mission_name || "N/A")}`,
     `<b>Data release:</b> ${escapeHtml(row.data_release || "N/A")}`,
     `<b>Origin:</b> ${escapeHtml(row.origin || row.moca_pid || "N/A")}`,
     `<b>Comments:</b> ${escapeHtml(row.comments || "")}`,
+  ].join("<br>");
+}
+
+function fittedReferenceHoverText(row, isRa) {
+  return [
+    "<b>Fitted reference position</b>",
+    `<b>Fit:</b> ${escapeHtml(row.fitMeta || row.fitLabel || "fit")}`,
+    `<b>Epoch:</b> ${formatNumber(row.plot_epoch_abs, 5)} yr`,
+    `<b>${isRa ? "R.A." : "Decl."} offset:</b> ${formatNumber(isRa ? row.rel_ra : row.rel_dec, 2)} mas`,
+    `<b>Fitted R.A.:</b> ${formatRaSexagesimal(row.plot_ra)} (${formatNumber(row.plot_ra, 8)} deg) +/- ${formatNumber(row.posRaUnc, 2)} mas`,
+    `<b>Fitted Decl.:</b> ${formatDecSexagesimal(row.plot_dec)} (${formatNumber(row.plot_dec, 8)} deg) +/- ${formatNumber(row.posDecUnc, 2)} mas`,
   ].join("<br>");
 }
 
@@ -1504,6 +2408,10 @@ function updateAstrometryUrl() {
   setBoolParam(params, "display_absolute", atmEl["atm-display-absolute"].checked);
   setBoolParam(params, "display_merged", atmEl["atm-display-merged"].checked);
   setBoolParam(params, "revert_raw", atmEl["atm-revert-raw"].checked);
+  if (selectedAstrometryFitMethod() === "ultranest") params.set("fit_method", "ultranest");
+  else params.delete("fit_method");
+  if (atmEl["atm-fit-outlier-mixture"] && !atmEl["atm-fit-outlier-mixture"].checked) params.set("fit_outlier_mixture", "0");
+  else params.delete("fit_outlier_mixture");
   if (!atmEl["atm-display-reference"].checked) params.set("display_reference", "0");
   else params.delete("display_reference");
   if (!atmEl["atm-adjust-reference"].checked) params.set("adjust_ref", "0");
@@ -1522,7 +2430,7 @@ function setBoolParam(params, key, checked) {
 function apiParams() {
   const source = new URLSearchParams(window.location.search);
   const params = new URLSearchParams();
-  for (const key of ["host", "user", "pwd", "dbase", "mock"]) {
+  for (const key of ["host", "user", "username", "pwd", "password", "dbase", "db", "database", "port", "mock"]) {
     if (source.has(key)) params.set(key, source.get(key));
   }
   return params;
@@ -1595,6 +2503,19 @@ function formatValueError(value, error, unit) {
   if (!finite(value)) return "N/A";
   if (!finite(error) || Number(error) <= 0) return `${formatNumber(value, 2)} ${unit}`;
   return `${formatNumber(value, 2)} +/- ${formatNumber(error, 2)} ${unit}`;
+}
+
+function formatValueErrorSymbol(value, error, unit) {
+  if (!finite(value)) return "N/A";
+  const safeUnit = escapeHtml(unit);
+  if (!finite(error) || Number(error) <= 0) return `${formatNumber(value, 2)} ${safeUnit}`;
+  return `${formatNumber(value, 2)} &plusmn; ${formatNumber(error, 2)} ${safeUnit}`;
+}
+
+function astrometryQuadratureError(...values) {
+  const finiteValues = values.filter((value) => finite(value) && Number(value) > 0).map(Number);
+  if (!finiteValues.length) return NaN;
+  return Math.sqrt(finiteValues.reduce((sum, value) => sum + value ** 2, 0));
 }
 
 function formatNumber(value, digits) {

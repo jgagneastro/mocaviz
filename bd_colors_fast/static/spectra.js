@@ -1,7 +1,9 @@
 const speDefaultSpecids = [13510];
 const speDefaultNorm = "0.95-1.35";
 const speDefaultBinsPerMicron = 0;
+const speDefaultDisplayBinsPerMicron = 200;
 const speDefaultShowFeatures = true;
+const speLowResolutionThreshold = 100;
 const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
@@ -45,6 +47,10 @@ const speState = {
   selectedPoints: [],
   searchTimer: null,
   loadToken: 0,
+  ignoreBusy: false,
+  authContext: { role: "", hasCredentials: false },
+  ignoreSpecids: new Set(),
+  ignoreSelectionInitialized: false,
 };
 
 const speEl = {};
@@ -65,6 +71,9 @@ function speAppUrl(path) {
 async function initSpectraExplorer() {
   collectSpectraElements();
   readSpectraUrlState();
+  updateSpectraDisplayResolutionControls();
+  await loadSpectraAuthContext();
+  updateSpectraManagementVisibility();
   bindSpectraControls();
   renderSelectedSpectra();
   await loadSelectedSpectrumLabels();
@@ -89,9 +98,19 @@ function collectSpectraElements() {
     "spe-showfeatures",
     "spe-disable-lowres-wrap",
     "spe-disable-lowres",
+    "spe-decrease-resolution",
+    "spe-display-bins-wrap",
+    "spe-display-bins",
     "spe-normalize",
     "spe-normrange",
     "spe-reset-norm",
+    "spe-management-tools",
+    "spe-ignore-spectrum-list",
+    "spe-ignore-all-spectra",
+    "spe-ignore-no-spectra",
+    "spe-ignore-summary",
+    "spe-ignore-selected",
+    "spe-ignore-status",
     "spe-plot",
     "spe-plot-loader",
     "spe-summary",
@@ -130,6 +149,15 @@ function readSpectraUrlState() {
     ? !asFalse(params.get("showfeatures"))
     : speDefaultShowFeatures;
   speEl["spe-disable-lowres"].checked = asBool(params.get("disable_lowres"));
+  speEl["spe-decrease-resolution"].checked = asBool(
+    params.get("decrease_resolution") || params.get("decrease_resolving_power") || params.get("display_lowres")
+  );
+  speEl["spe-display-bins"].value = (
+    params.get("display_bins")
+    || params.get("display_bins_per_micron")
+    || params.get("decrease_resolution_bins")
+    || String(speDefaultDisplayBinsPerMicron)
+  );
   speEl["spe-normalize"].checked = !asFalse(params.get("normalize"));
   speEl["spe-normrange"].value = params.get("norm") || speDefaultNorm;
 }
@@ -156,15 +184,31 @@ function bindSpectraControls() {
     speState.processed = [];
     renderSelectedSpectra();
     renderEmptySpectra("Select one or more spectra");
+    updateSpectraIgnoreControls();
     updateSpectraUrl();
     speEl["spe-search"].focus();
   });
-  for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-normalize"]) {
+  for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-decrease-resolution", "spe-normalize"]) {
     speEl[id].addEventListener("change", () => {
+      if (id === "spe-decrease-resolution") updateSpectraDisplayResolutionControls();
       renderSpectra();
       updateSpectraUrl();
     });
   }
+  const renderDisplayBinning = debounce(() => {
+    if (!spectraDisplayResolutionDecreased()) {
+      updateSpectraUrl();
+      return;
+    }
+    renderSpectra();
+    updateSpectraUrl();
+  }, 180);
+  speEl["spe-display-bins"].addEventListener("input", renderDisplayBinning);
+  speEl["spe-display-bins"].addEventListener("change", () => {
+    updateSpectraDisplayResolutionControls();
+    renderSpectra();
+    updateSpectraUrl();
+  });
   speEl["spe-hide-ignored"].addEventListener("change", loadSpectra);
   speEl["spe-normrange"].addEventListener("change", () => {
     renderSpectra();
@@ -175,6 +219,25 @@ function bindSpectraControls() {
     renderSpectra();
     updateSpectraUrl();
   });
+  if (speEl["spe-ignore-selected"]) {
+    speEl["spe-ignore-selected"].addEventListener("click", ignoreSelectedSpectralRows);
+  }
+  if (speEl["spe-ignore-all-spectra"]) {
+    speEl["spe-ignore-all-spectra"].addEventListener("click", () => {
+      speState.ignoreSpecids = new Set((speState.processed || []).map((spectrum) => Number(spectrum.specid)));
+      speState.ignoreSelectionInitialized = true;
+      renderSpectraIgnoreTraceChoices();
+      updateSpectraIgnoreControls();
+    });
+  }
+  if (speEl["spe-ignore-no-spectra"]) {
+    speEl["spe-ignore-no-spectra"].addEventListener("click", () => {
+      speState.ignoreSpecids = new Set();
+      speState.ignoreSelectionInitialized = true;
+      renderSpectraIgnoreTraceChoices();
+      updateSpectraIgnoreControls();
+    });
+  }
   speEl["spe-export-csv"].addEventListener("click", () => exportPlottedSpectra("csv"));
   speEl["spe-export-tsv"].addEventListener("click", () => exportPlottedSpectra("tsv"));
   speEl["spe-export-fits"].addEventListener("click", () => exportPlottedSpectra("fits"));
@@ -382,6 +445,8 @@ async function loadSpectra() {
   }
   speState.payload = payload;
   speState.selectedPoints = [];
+  speState.ignoreSpecids = new Set();
+  speState.ignoreSelectionInitialized = false;
   const metadata = new Map((payload.spectra || []).map((item) => {
     const specid = Number(item.moca_specid);
     return [specid, spectraMetadataFromOption({ ...(item.metadata || {}), value: specid })];
@@ -407,11 +472,16 @@ function renderSpectra() {
   setSpectraLoading(true);
   const processed = processSpectraPayload();
   speState.processed = processed;
+  updateLowresToggleState(processed);
+  syncSpectraIgnoreTraceSelection();
+  renderSpectraIgnoreTraceChoices();
   renderSelectedSpectra();
   const traces = [];
   const showSnr = speEl["spe-snr"].checked;
   const showErrorShade = speEl["spe-error-shade"].checked && !showSnr;
   const ylog = speEl["spe-ylog"].checked;
+  const managementMode = spectraManagementToolsVisible();
+  const displayResolutionDecreased = spectraDisplayResolutionDecreased();
   processed.forEach((spectrum, index) => {
     const color = spectrum.color || speColors[index % speColors.length];
     const hasRegularPoints = spectrum.points.length > 0;
@@ -420,11 +490,12 @@ function renderSpectra() {
     if (showErrorShade && hasRegularPoints) traces.push(...errorShadeTraces(spectrum, color, ylog));
     if (spectrum.lowRes && !speEl["spe-disable-lowres"].checked) {
       if (hasRegularPoints) {
+        const lineData = lineWithGaps(spectrum.points);
         traces.push({
           type: "scattergl",
           mode: "lines",
-          x: spectrum.points.map((point) => point.lam),
-          y: spectrum.points.map((point) => point.y),
+          x: lineData.x,
+          y: lineData.y,
           line: { color, width: 1.4 },
           opacity: 0.65,
           name: spectrum.name,
@@ -439,8 +510,8 @@ function renderSpectra() {
           y: spectrum.points.map((point) => point.y),
           customdata: spectrum.points.map((point) => point.custom),
           marker: {
-            symbol: "circle-open",
-            color,
+            symbol: "circle",
+            color: "#ffffff",
             size: 8,
             line: { color, width: 2 },
           },
@@ -448,9 +519,9 @@ function renderSpectra() {
             type: "data",
             array: spectrum.points.map((point) => point.yerr || 0),
             visible: spectrum.points.some((point) => finite(point.yerr)),
-            color,
+            color: colorWithAlpha(color, 0.45),
             thickness: 1,
-            width: 2,
+            width: 0,
           },
           name: spectrum.name,
           legendgroup: String(spectrum.specid),
@@ -461,7 +532,7 @@ function renderSpectra() {
     } else {
       if (hasRegularPoints) {
         const lineData = lineWithGaps(spectrum.points);
-        traces.push({
+        const trace = {
           type: "scattergl",
           mode: "lines",
           x: lineData.x,
@@ -472,7 +543,9 @@ function renderSpectra() {
           legendgroup: String(spectrum.specid),
           hovertemplate: hoverTemplate(),
           hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
-        });
+        };
+        traces.push(trace);
+        if (managementMode && !displayResolutionDecreased) traces.push(selectableSpectrumPointsTrace(spectrum, color));
       }
     }
     if (hasIgnoredPoints) traces.push(ignoredPointsTrace(spectrum, color));
@@ -488,10 +561,14 @@ function renderSpectra() {
   const rowCountText = pluralize(rowCount, "spectral row", "spectral rows");
   setSpectraStatus(`${spectraCountText} loaded${cacheText}`, "");
   speEl["spe-summary"].textContent = `${spectraCountText} loaded, ${rowCountText}`;
-  speEl["spe-hint"].textContent = showSnr
+  const displayBinsText = displayResolutionDecreased
+    ? ` Display resolving power is decreased to ${spectraDisplayBinsPerMicron().toLocaleString()} bins/μm${speEl["spe-xlog"].checked || speEl["spe-ylog"].checked ? " with log-space averaging for log axes" : ""}.`
+    : "";
+  speEl["spe-hint"].textContent = (showSnr
     ? "Displayed values are flux divided by flux uncertainty per pixel."
-    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.");
+    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.")) + displayBinsText;
   renderSpectraTable();
+  updateSpectraIgnoreControls();
   setSpectraLoading(false);
 }
 
@@ -500,13 +577,15 @@ function bindSpectraPlotEvents() {
   speEl["spe-plot"].dataset.bound = "1";
   speEl["spe-plot"].on("plotly_click", (event) => {
     const points = event?.points || [];
-    speState.selectedPoints = points.map(pointFromPlotly).filter(Boolean);
+    speState.selectedPoints = uniqueSpectralPlotPoints(points.map(pointFromPlotly).filter(Boolean));
     renderSpectraTable();
+    updateSpectraIgnoreControls();
   });
   speEl["spe-plot"].on("plotly_selected", (event) => {
     const points = event?.points || [];
-    speState.selectedPoints = points.map(pointFromPlotly).filter(Boolean);
+    speState.selectedPoints = uniqueSpectralPlotPoints(points.map(pointFromPlotly).filter(Boolean));
     renderSpectraTable();
+    updateSpectraIgnoreControls();
   });
 }
 
@@ -534,6 +613,7 @@ function processSpectraPayload() {
       return {
         rowIndex,
         specid: Number(spectrum.moca_specid),
+        dataSpectraId: parseInteger(row.data_spectra_id ?? row.id),
         lam,
         rawFlambdaUm,
         rawErrFlambdaUm,
@@ -567,12 +647,24 @@ function processSpectraPayload() {
           normalized: normalize,
           unit: yAxisUnit(),
           rowIndex: row.rowIndex,
+          dataSpectraId: row.dataSpectraId,
           color,
         },
       };
     }).filter((row) => finite(row.lam) && finite(row.y) && (!ylog || row.y > 0));
-    const points = displayPoints.filter((row) => !row.ignored);
-    const ignoredPoints = hideIgnored ? [] : displayPoints.filter((row) => row.ignored);
+    const regularDisplayPoints = displayPoints.filter((row) => !row.ignored);
+    const ignoredDisplayPoints = hideIgnored ? [] : displayPoints.filter((row) => row.ignored);
+    const points = displayBinSpectralPoints(regularDisplayPoints);
+    const ignoredPoints = hideIgnored ? [] : displayBinSpectralPoints(ignoredDisplayPoints);
+    const storedAverageResolvingPower = finite(spectrum.meta?.average_resolving_power)
+      ? Number(spectrum.meta.average_resolving_power)
+      : null;
+    const displayAverageResolvingPower = spectraDisplayResolutionDecreased()
+      ? estimateDisplayResolvingPower(points.length ? points : ignoredPoints)
+      : null;
+    const effectiveAverageResolvingPower = finite(displayAverageResolvingPower)
+      ? displayAverageResolvingPower
+      : storedAverageResolvingPower;
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
@@ -580,11 +672,150 @@ function processSpectraPayload() {
       rawRows,
       points,
       ignoredPoints,
-      lowRes: finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < 100,
-      averageResolvingPower: spectrum.meta?.average_resolving_power,
+      displayResolutionDecreased: spectraDisplayResolutionDecreased(),
+      lowRes: finite(effectiveAverageResolvingPower) && Number(effectiveAverageResolvingPower) < speLowResolutionThreshold,
+      averageResolvingPower: effectiveAverageResolvingPower,
+      storedAverageResolvingPower,
       color,
     };
   });
+}
+
+function displayBinSpectralPoints(points) {
+  if (!spectraDisplayResolutionDecreased() || !points.length) return points;
+  const binsPerMicron = spectraDisplayBinsPerMicron();
+  if (!Number.isFinite(binsPerMicron) || binsPerMicron <= 0) return points;
+  const xlog = speEl["spe-xlog"].checked;
+  const ylog = speEl["spe-ylog"].checked;
+  const clean = points
+    .filter((point) => finite(point.lam) && finite(point.y) && (!xlog || point.lam > 0) && (!ylog || point.y > 0))
+    .sort((a, b) => a.lam - b.lam);
+  return contiguousPointGroups(clean).flatMap((group) => binSpectralPointGroup(group, binsPerMicron, { xlog, ylog }));
+}
+
+function binSpectralPointGroup(points, binsPerMicron, options = {}) {
+  if (points.length < 2) return points;
+  const wavelengths = points.map((point) => point.lam).filter(finite);
+  const lamMin = Math.min(...wavelengths);
+  const lamMax = Math.max(...wavelengths);
+  if (!finite(lamMin) || !finite(lamMax) || lamMax <= lamMin) return points;
+
+  const binCount = Math.max(1, Math.round((lamMax - lamMin) * binsPerMicron));
+  if (binCount >= points.length) return points;
+
+  const xMin = options.xlog ? Math.log10(lamMin) : lamMin;
+  const xMax = options.xlog ? Math.log10(lamMax) : lamMax;
+  if (!finite(xMin) || !finite(xMax) || xMax <= xMin) return points;
+  const binWidth = (xMax - xMin) / binCount;
+  if (!finite(binWidth) || binWidth <= 0) return points;
+
+  const bins = new Map();
+  points.forEach((point) => {
+    const xValue = options.xlog ? Math.log10(point.lam) : point.lam;
+    if (!finite(xValue)) return;
+    let binIndex = Math.floor((xValue - xMin) / binWidth);
+    if (binIndex < 0) return;
+    if (binIndex >= binCount) binIndex = binCount - 1;
+    if (!bins.has(binIndex)) bins.set(binIndex, []);
+    bins.get(binIndex).push(point);
+  });
+
+  return [...bins.keys()]
+    .sort((a, b) => a - b)
+    .map((binIndex) => aggregateSpectralBin(bins.get(binIndex), options))
+    .filter(Boolean);
+}
+
+function aggregateSpectralBin(points, options = {}) {
+  if (!points?.length) return null;
+  const first = points[0];
+  const xValues = points.map((point) => options.xlog ? Math.log10(point.lam) : point.lam).filter(finite);
+  const yValues = points.map((point) => options.ylog ? Math.log10(point.y) : point.y).filter(finite);
+  if (!xValues.length || !yValues.length) return null;
+  const xMean = averageFinite(xValues);
+  const yMean = averageFinite(yValues);
+  if (!finite(xMean) || !finite(yMean)) return null;
+  const lam = options.xlog ? 10 ** xMean : xMean;
+  const y = options.ylog ? 10 ** yMean : yMean;
+  const yerr = aggregateSpectralBinError(points, y, options.ylog);
+  const rawFlambdaUm = averageFinite(points.map((point) => point.rawFlambdaUm));
+  const rawErrFlambdaUm = aggregateLinearError(points.map((point) => point.rawErrFlambdaUm));
+  const custom = {
+    ...(first.custom || {}),
+    lam,
+    y,
+    yerr,
+    rawFlambdaUm,
+    rawErrFlambdaUm,
+    rowIndex: null,
+    dataSpectraId: null,
+    binned: true,
+    nData: points.length,
+    ignored: first.ignored,
+  };
+  return {
+    ...first,
+    rowIndex: null,
+    dataSpectraId: null,
+    lam,
+    y,
+    yerr,
+    rawFlambdaUm,
+    rawErrFlambdaUm,
+    binned: true,
+    nData: points.length,
+    custom,
+  };
+}
+
+function aggregateSpectralBinError(points, y, ylog) {
+  if (!ylog) return aggregateLinearError(points.map((point) => point.yerr));
+  if (!finite(y) || y <= 0) return null;
+  const logSigmas = [];
+  points.forEach((point) => {
+    const center = Number(point.y);
+    const err = Math.abs(Number(point.yerr));
+    if (!finite(center) || !finite(err) || center <= 0) return;
+    const upper = center + err;
+    if (upper <= 0) return;
+    const upperSigma = Math.log10(upper) - Math.log10(center);
+    const lower = center - err;
+    const lowerSigma = lower > 0 ? Math.log10(center) - Math.log10(lower) : upperSigma;
+    const sigma = 0.5 * (Math.abs(upperSigma) + Math.abs(lowerSigma));
+    if (finite(sigma)) logSigmas.push(sigma);
+  });
+  if (!logSigmas.length) return null;
+  const logSigma = Math.sqrt(logSigmas.reduce((sum, value) => sum + value * value, 0)) / logSigmas.length;
+  const upper = 10 ** (Math.log10(y) + logSigma);
+  return finite(upper) ? Math.max(0, upper - y) : null;
+}
+
+function aggregateLinearError(values) {
+  const clean = values.map(Number).filter((value) => finite(value) && value >= 0);
+  if (!clean.length) return null;
+  return Math.sqrt(clean.reduce((sum, value) => sum + value * value, 0)) / clean.length;
+}
+
+function averageFinite(values) {
+  const clean = values.map(Number).filter(finite);
+  if (!clean.length) return NaN;
+  return clean.reduce((sum, value) => sum + value, 0) / clean.length;
+}
+
+function estimateDisplayResolvingPower(points) {
+  const estimates = [];
+  for (const group of contiguousPointGroups((points || []).slice().sort((a, b) => a.lam - b.lam))) {
+    if (group.length < 2) continue;
+    group.forEach((point, index) => {
+      const left = index > 0 ? point.lam - group[index - 1].lam : NaN;
+      const right = index < group.length - 1 ? group[index + 1].lam - point.lam : NaN;
+      const widths = [left, right].filter((value) => finite(value) && value > 0);
+      if (!widths.length || !finite(point.lam) || point.lam <= 0) return;
+      const deltaLambda = averageFinite(widths);
+      if (finite(deltaLambda) && deltaLambda > 0) estimates.push(point.lam / deltaLambda);
+    });
+  }
+  return robustMedian(estimates);
 }
 
 function lineWithGaps(points) {
@@ -620,6 +851,30 @@ function lineWithGaps(points) {
 
 function displayedSpectrumPoints(spectrum) {
   return [...(spectrum.points || []), ...(spectrum.ignoredPoints || [])];
+}
+
+function selectableSpectrumPointsTrace(spectrum, color) {
+  const points = spectrum.points || [];
+  return {
+    type: "scattergl",
+    mode: "markers",
+    x: points.map((point) => point.lam),
+    y: points.map((point) => point.y),
+    customdata: points.map((point) => point.custom),
+    marker: {
+      symbol: "circle",
+      color,
+      size: 8,
+      opacity: 0,
+      line: { width: 0 },
+    },
+    selected: { marker: { opacity: 0, size: 8 } },
+    unselected: { marker: { opacity: 0, size: 8 } },
+    name: `${spectrum.name} selectable points`,
+    legendgroup: String(spectrum.specid),
+    showlegend: false,
+    hoverinfo: "skip",
+  };
 }
 
 function ignoredPointsTrace(spectrum, color) {
@@ -906,11 +1161,38 @@ function hoverTemplate() {
   ].join("<br>");
 }
 
-function updateLowresToggleState() {
-  const hasLowRes = (speState.payload?.spectra || []).some((spectrum) => finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < 100);
+function updateLowresToggleState(processed = null) {
+  const processedSpectra = Array.isArray(processed) ? processed : null;
+  const hasLowRes = processedSpectra
+    ? processedSpectra.some((spectrum) => spectrum.lowRes)
+    : (
+      (speState.payload?.spectra || []).some((spectrum) => finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < speLowResolutionThreshold)
+      || spectraDisplayResolutionDecreased()
+    );
   speEl["spe-disable-lowres"].disabled = !hasLowRes;
   speEl["spe-disable-lowres-wrap"].classList.toggle("is-disabled", !hasLowRes);
   if (!hasLowRes) speEl["spe-disable-lowres"].checked = false;
+}
+
+function updateSpectraDisplayResolutionControls() {
+  const input = speEl["spe-display-bins"];
+  if (!input) return;
+  const parsed = parseInteger(input.value);
+  if (parsed === null || parsed <= 0) input.value = String(speDefaultDisplayBinsPerMicron);
+  else if (parsed > 2000) input.value = "2000";
+  const checked = spectraDisplayResolutionDecreased();
+  input.disabled = !checked;
+  if (speEl["spe-display-bins-wrap"]) speEl["spe-display-bins-wrap"].classList.toggle("disabled-field", !checked);
+}
+
+function spectraDisplayResolutionDecreased() {
+  return Boolean(speEl["spe-decrease-resolution"]?.checked);
+}
+
+function spectraDisplayBinsPerMicron() {
+  const parsed = parseInteger(speEl["spe-display-bins"]?.value);
+  if (parsed !== null && parsed > 0) return Math.max(1, Math.min(2000, parsed));
+  return speDefaultDisplayBinsPerMicron;
 }
 
 function renderDownloadLinks() {
@@ -935,10 +1217,12 @@ function renderSpectraTable() {
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
     const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "ignored"];
+    if (spectraManagementToolsVisible()) columns.splice(3, 0, "row_id");
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
       oid: point.oid,
+      row_id: point.dataSpectraId ?? "",
       wavelength_um: formatNumber(point.lam, 6),
       display_flux: formatScientific(point.y),
       display_error: finite(point.yerr) ? formatScientific(point.yerr) : "",
@@ -996,6 +1280,206 @@ function pointFromPlotly(point) {
   return custom;
 }
 
+function uniqueSpectralPlotPoints(points) {
+  const seen = new Set();
+  const output = [];
+  for (const point of points || []) {
+    if (!point) continue;
+    const key = [
+      point.dataSpectraId ?? "",
+      point.specid ?? "",
+      finite(point.lam) ? Number(point.lam).toPrecision(12) : "",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(point);
+  }
+  return output;
+}
+
+async function loadSpectraAuthContext() {
+  speState.authContext = spectraUrlAuthContext();
+  try {
+    const payload = window.MocaAuthContext?.ready
+      ? await window.MocaAuthContext.ready
+      : await fetchJsonUrl(speAppUrl(`api/auth/context${window.location.search || ""}`));
+    const role = String(payload?.role || "").trim().toLowerCase();
+    speState.authContext = {
+      role,
+      hasCredentials: Boolean(payload?.hasCredentials ?? payload?.has_credentials),
+      source: payload?.source || "",
+    };
+  } catch (error) {
+    speState.authContext = spectraUrlAuthContext();
+  }
+}
+
+function spectraUrlAuthContext() {
+  const params = new URLSearchParams(window.location.search);
+  const user = String(params.get("user") || params.get("username") || "").trim().toLowerCase();
+  const password = params.get("pwd") ?? params.get("password");
+  const hasCredentials = user === "management" && password !== null && String(password).length > 0;
+  return {
+    role: hasCredentials ? "management" : "",
+    hasCredentials,
+    source: "url",
+  };
+}
+
+function updateSpectraManagementVisibility() {
+  if (!speEl["spe-management-tools"]) return;
+  speEl["spe-management-tools"].hidden = !hasSpectraManagementCredentials();
+  if (!speEl["spe-management-tools"].hidden) {
+    syncSpectraIgnoreTraceSelection();
+    renderSpectraIgnoreTraceChoices();
+  }
+  updateSpectraIgnoreControls();
+}
+
+function spectraManagementToolsVisible() {
+  return Boolean(speEl["spe-management-tools"] && !speEl["spe-management-tools"].hidden);
+}
+
+function hasSpectraManagementCredentials() {
+  const context = speState.authContext || spectraUrlAuthContext();
+  return context.role === "management" && Boolean(context.hasCredentials);
+}
+
+function syncSpectraIgnoreTraceSelection() {
+  if (!spectraManagementToolsVisible()) return;
+  const validSpecids = (speState.processed || [])
+    .map((spectrum) => Number(spectrum.specid))
+    .filter(Number.isFinite);
+  const validSet = new Set(validSpecids);
+  if (!speState.ignoreSelectionInitialized) {
+    speState.ignoreSpecids = new Set(validSpecids);
+    speState.ignoreSelectionInitialized = true;
+    return;
+  }
+  speState.ignoreSpecids = new Set([...speState.ignoreSpecids].filter((specid) => validSet.has(Number(specid))));
+}
+
+function renderSpectraIgnoreTraceChoices() {
+  if (!speEl["spe-ignore-spectrum-list"] || !spectraManagementToolsVisible()) return;
+  const spectra = speState.processed || [];
+  if (!spectra.length) {
+    speEl["spe-ignore-spectrum-list"].innerHTML = `<div class="plot-hint">No spectra loaded</div>`;
+    return;
+  }
+  speEl["spe-ignore-spectrum-list"].innerHTML = spectra.map((spectrum) => {
+    const specid = Number(spectrum.specid);
+    const checked = speState.ignoreSpecids.has(specid) ? " checked" : "";
+    return `
+      <label class="checkline spectra-ignore-trace-choice">
+        <input type="checkbox" value="${specid}"${checked}>
+        <span class="spectra-token-swatch" style="--swatch-color: ${escapeHtml(spectrum.color || spectraColorForSpecid(specid))}"></span>
+        <span>${escapeHtml(spectrumLegendName(spectrum.metadata, specid))}</span>
+      </label>
+    `;
+  }).join("");
+  speEl["spe-ignore-spectrum-list"].querySelectorAll("input[type='checkbox']").forEach((input) => {
+    input.addEventListener("change", () => {
+      const specid = Number(input.value);
+      if (input.checked) speState.ignoreSpecids.add(specid);
+      else speState.ignoreSpecids.delete(specid);
+      speState.ignoreSelectionInitialized = true;
+      updateSpectraIgnoreControls();
+    });
+  });
+}
+
+function selectedEditableSpectralRows() {
+  const seen = new Set();
+  const rows = [];
+  const allowedSpecids = speState.ignoreSpecids || new Set();
+  for (const point of speState.selectedPoints || []) {
+    const dataSpectraId = parseInteger(point?.dataSpectraId);
+    const specid = parseInteger(point?.specid);
+    if (dataSpectraId === null || specid === null || ignoredFlag(point?.ignored)) continue;
+    if (!allowedSpecids.has(specid)) continue;
+    const key = `${specid}:${dataSpectraId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({
+      data_spectra_id: dataSpectraId,
+      moca_specid: specid,
+      lam: Number(point.lam),
+    });
+  }
+  return rows;
+}
+
+function spectraIgnoreUnavailableReason(editableRows) {
+  if (!spectraManagementToolsVisible()) return "";
+  const params = new URLSearchParams(window.location.search);
+  if (asBool(params.get("mock"))) return "Mock spectra cannot be written to MOCAdb.";
+  if (speState.payload?.meta?.bins_per_micron) return "Reload raw spectra to edit ignored flags.";
+  if (spectraDisplayResolutionDecreased()) return "Disable display resolving-power reduction to edit ignored flags.";
+  if (!speState.ignoreSpecids?.size) return "No spectra selected for updating.";
+  if (!(speState.selectedPoints || []).length) return "No spectral rows selected.";
+  if (!editableRows.length) return "No selected editable rows in the chosen spectra.";
+  return "";
+}
+
+function updateSpectraIgnoreControls() {
+  if (!speEl["spe-management-tools"] || speEl["spe-management-tools"].hidden) return;
+  const editableRows = selectedEditableSpectralRows();
+  const reason = spectraIgnoreUnavailableReason(editableRows);
+  const summary = selectedSpectralRowsSummary(editableRows);
+  if (speEl["spe-ignore-summary"]) speEl["spe-ignore-summary"].textContent = reason || summary;
+  if (speEl["spe-ignore-selected"]) {
+    speEl["spe-ignore-selected"].disabled = speState.ignoreBusy || Boolean(reason);
+  }
+}
+
+function selectedSpectralRowsSummary(rows) {
+  if (!rows.length) return "No editable rows selected.";
+  const specids = [...new Set(rows.map((row) => row.moca_specid))].sort((a, b) => a - b);
+  const wavelengths = rows.map((row) => row.lam).filter(finite);
+  const range = wavelengths.length
+    ? `, ${formatNumber(Math.min(...wavelengths), 6)}-${formatNumber(Math.max(...wavelengths), 6)} um`
+    : "";
+  return `${pluralize(rows.length, "editable row", "editable rows")} selected from ${pluralize(specids.length, "spectrum", "spectra")}${range}.`;
+}
+
+async function ignoreSelectedSpectralRows() {
+  const editableRows = selectedEditableSpectralRows();
+  const reason = spectraIgnoreUnavailableReason(editableRows);
+  if (reason) {
+    setSpectraIgnoreStatus(reason, "error");
+    updateSpectraIgnoreControls();
+    return;
+  }
+  const summary = selectedSpectralRowsSummary(editableRows);
+  if (!window.confirm(`Set ignored=1 for ${summary}`)) return;
+
+  speState.ignoreBusy = true;
+  setSpectraIgnoreStatus("Updating selected rows...");
+  updateSpectraIgnoreControls();
+  try {
+    const payload = await postSpectraJson("api/spectra/ignore", {
+      data_spectra_ids: editableRows.map((row) => row.data_spectra_id),
+      moca_specids: [...new Set(editableRows.map((row) => row.moca_specid))],
+    });
+    if (!payload.ok) throw new Error(payload.error || "Could not update ignored flags");
+    speState.selectedPoints = [];
+    await loadSpectra();
+    const updated = Number(payload.updated_count || 0).toLocaleString();
+    setSpectraIgnoreStatus(`Set ignored=1 for ${updated} spectral row${Number(payload.updated_count) === 1 ? "" : "s"}.`);
+  } catch (error) {
+    setSpectraIgnoreStatus(error.message || String(error), "error");
+  } finally {
+    speState.ignoreBusy = false;
+    updateSpectraIgnoreControls();
+  }
+}
+
+function setSpectraIgnoreStatus(text, mode = "") {
+  if (!speEl["spe-ignore-status"]) return;
+  speEl["spe-ignore-status"].textContent = text || "";
+  speEl["spe-ignore-status"].classList.toggle("error", mode === "error");
+}
+
 function renderEmptySpectra(message) {
   const layout = {
     paper_bgcolor: "#eeeeef",
@@ -1018,6 +1502,7 @@ function renderEmptySpectra(message) {
   setSpectraExportDisabled(true);
   setSpectraLoading(false);
   setSpectraStatus(message, message.includes("Could not") ? "error" : "");
+  updateSpectraIgnoreControls();
 }
 
 const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom", "ignored"];
@@ -1138,6 +1623,13 @@ function updateSpectraUrl() {
   if (!speEl["spe-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
   setBoolParam(params, "disable_lowres", speEl["spe-disable-lowres"].checked);
+  setBoolParam(params, "decrease_resolution", spectraDisplayResolutionDecreased());
+  params.delete("decrease_resolving_power");
+  params.delete("display_lowres");
+  params.delete("display_bins_per_micron");
+  params.delete("decrease_resolution_bins");
+  if (spectraDisplayResolutionDecreased()) params.set("display_bins", String(spectraDisplayBinsPerMicron()));
+  else params.delete("display_bins");
   if (!speEl["spe-normalize"].checked) params.set("normalize", "0");
   else params.delete("normalize");
   if ((speEl["spe-normrange"].value || "").trim() !== speDefaultNorm) params.set("norm", speEl["spe-normrange"].value.trim());
@@ -1289,8 +1781,14 @@ function tableHtml(columns, rows, options = {}) {
 function apiParams() {
   const source = new URLSearchParams(window.location.search);
   const params = new URLSearchParams();
-  for (const key of ["host", "user", "pwd", "dbase", "mock"]) {
+  for (const key of ["host", "port", "user", "username", "pwd", "password", "dbase", "db", "database", "mock"]) {
     if (source.has(key)) params.set(key, source.get(key));
+  }
+  if (!params.has("user") && params.has("username")) params.set("user", params.get("username"));
+  if (!params.has("pwd") && params.has("password")) params.set("pwd", params.get("password"));
+  if (!params.has("dbase")) {
+    if (params.has("db")) params.set("dbase", params.get("db"));
+    else if (params.has("database")) params.set("dbase", params.get("database"));
   }
   return params;
 }
@@ -1312,7 +1810,8 @@ async function fetchJsonUrl(url) {
 }
 
 function plotConfig(filename) {
-  return {
+  const managementMode = spectraManagementToolsVisible();
+  const config = {
     responsive: true,
     displaylogo: false,
     toImageButtonOptions: {
@@ -1323,6 +1822,11 @@ function plotConfig(filename) {
       filename,
     },
   };
+  if (managementMode) {
+    config.displayModeBar = true;
+    config.modeBarButtonsToAdd = ["select2d", "lasso2d"];
+  }
+  return config;
 }
 
 function setBoolParam(params, key, checked) {

@@ -92,6 +92,16 @@ const rvbScatterYAxisOptions = {
   mean_outofbounds_fraction: { key: "mean_outofbounds_fraction", label: "Out-of-bounds fraction", axisTitle: "Out-of-bounds fraction", digits: 4 },
   n_iterations: { key: "n_iterations", label: "Sampler iterations", axisTitle: "Sampler iterations", digits: 1 },
 };
+const rvbScatterThresholdSpecs = {
+  rv_kms_unc: { filterKey: "maxRvUnc", direction: "max", label: "Max RV uncertainty" },
+  lsf: { filterKey: "maxLsf", direction: "max", label: "Max LSF width" },
+  segment_snr_median: { filterKey: "minSnr", direction: "min", label: "Min segment median S/N" },
+  data_contrast: { filterKey: "minDataContrast", direction: "min", label: "Min data RV content" },
+  model_contrast: { filterKey: "minModelContrast", direction: "min", label: "Min model RV content" },
+  nmodel_10p_contrast: { filterKey: "minModel10p", direction: "min", label: "Min model deep-line pixels" },
+  noutliers_masked: { filterKey: "maxMaskedOutliers", direction: "max", label: "Max masked line outliers" },
+  best_chi2: { filterKey: "maxBestChi2", direction: "max", label: "Max best chi2" },
+};
 
 document.addEventListener("DOMContentLoaded", initRvbamExplorer);
 
@@ -126,6 +136,7 @@ function collectRvbamElements() {
     "rvb-instid",
     "rvb-mgridid",
     "rvb-has-literature-rv",
+    "rvb-max-literature-rv-unc",
     "rvb-wavelength-coverage",
     "rvb-min-segments",
     "rvb-max-segments",
@@ -138,6 +149,7 @@ function collectRvbamElements() {
     "rvb-rv-method",
     "rvb-use-selection",
     "rvb-show-errors",
+    "rvb-show-hover",
     "rvb-use-online-figures",
     "rvb-use-online-figures-row",
     "rvb-include-ignored",
@@ -190,6 +202,7 @@ function collectRvbamElements() {
     "rvb-rebuilt-fit-meta",
     "rvb-lit-rv-plot",
     "rvb-lit-rv-bias-plot",
+    "rvb-lit-rv-bias-summary",
     "rvb-lit-rv-meta",
     "rvb-params-table",
     "rvb-payload-table",
@@ -198,6 +211,18 @@ function collectRvbamElements() {
   ].forEach((id) => {
     rvbEl[id] = document.getElementById(id);
   });
+}
+
+function rvbamShowPlotHoverText() {
+  return rvbEl["rvb-show-hover"]?.checked === true;
+}
+
+function rvbamHoverInfo(enabledValue = "text") {
+  return rvbamShowPlotHoverText() ? enabledValue : "none";
+}
+
+function rvbamHoverTemplate(template) {
+  return rvbamShowPlotHoverText() ? template : null;
 }
 
 function readRvbamUrlState() {
@@ -226,6 +251,9 @@ function readRvbamUrlState() {
   if (params.has("has_literature_rv") || params.has("literature_rv") || params.has("lit_rv")) {
     rvbEl["rvb-has-literature-rv"].checked = asBool(params.get("has_literature_rv") || params.get("literature_rv") || params.get("lit_rv"));
   }
+  if (params.has("max_literature_rv_unc") || params.has("max_literature_rv_error") || params.has("max_lit_rv_unc") || params.has("max_lit_rv_error") || params.has("max_mocadb_rv_unc")) {
+    rvbEl["rvb-max-literature-rv-unc"].value = params.get("max_literature_rv_unc") || params.get("max_literature_rv_error") || params.get("max_lit_rv_unc") || params.get("max_lit_rv_error") || params.get("max_mocadb_rv_unc") || "";
+  }
   if (params.has("wavelength_coverage") || params.has("wv_coverage") || params.has("coverage")) {
     rvbEl["rvb-wavelength-coverage"].value = params.get("wavelength_coverage") || params.get("wv_coverage") || params.get("coverage") || "";
   }
@@ -243,6 +271,9 @@ function readRvbamUrlState() {
   }
   if (params.has("include_ignored")) rvbEl["rvb-include-ignored"].checked = asBool(params.get("include_ignored"));
   if (params.has("errors")) rvbEl["rvb-show-errors"].checked = asBool(params.get("errors"));
+  if (params.has("hover_text") || params.has("show_hover") || params.has("hover")) {
+    rvbEl["rvb-show-hover"].checked = asBool(params.get("hover_text") || params.get("show_hover") || params.get("hover"));
+  }
   if (params.has("use_selection")) rvbEl["rvb-use-selection"].checked = asBool(params.get("use_selection"));
   if (params.has("online_figures") || params.has("use_online_figures")) {
     rvbEl["rvb-use-online-figures"].checked = asBool(params.get("online_figures") || params.get("use_online_figures"));
@@ -307,13 +338,20 @@ function bindRvbamControls() {
   rvbEl["rvb-has-literature-rv"].addEventListener("change", runFilterChanged);
   rvbEl["rvb-wavelength-coverage"].addEventListener("input", debounce(runFilterChanged, 350));
   rvbEl["rvb-wavelength-coverage"].addEventListener("change", runFilterChanged);
-  for (const id of ["rvb-min-segments", "rvb-max-segments", "rvb-min-run-snr", "rvb-max-resulting-rv-unc"]) {
+  for (const id of ["rvb-max-literature-rv-unc", "rvb-min-segments", "rvb-max-segments", "rvb-min-run-snr", "rvb-max-resulting-rv-unc"]) {
     rvbEl[id].addEventListener("input", debounce(runFilterChanged, 250));
     rvbEl[id].addEventListener("change", runFilterChanged);
   }
   rvbEl["rvb-show-errors"].addEventListener("change", () => {
     renderRvbamRun();
     renderRvbamLiteratureComparison();
+    updateRvbamUrl();
+  });
+  rvbEl["rvb-show-hover"].addEventListener("change", () => {
+    renderRvbamSegmentPlot();
+    renderRvbamLiteratureComparison();
+    if (rvbState.posterior) renderRvbamPosterior();
+    if (rvbState.rebuiltFit) renderRvbamRebuiltFit();
     updateRvbamUrl();
   });
   rvbEl["rvb-use-online-figures"].addEventListener("change", () => {
@@ -444,6 +482,7 @@ function rvbamRunQueryParams() {
   const minSegments = String(rvbEl["rvb-min-segments"].value || "").trim();
   const maxSegments = String(rvbEl["rvb-max-segments"].value || "").trim();
   const minRunSnr = String(rvbEl["rvb-min-run-snr"].value || "").trim();
+  const maxLiteratureRvUnc = String(rvbEl["rvb-max-literature-rv-unc"].value || "").trim();
   const maxResultingRvUnc = String(rvbEl["rvb-max-resulting-rv-unc"].value || "").trim();
   if (query) params.set("q", query);
   if (oid) params.set("moca_oid", oid);
@@ -454,6 +493,7 @@ function rvbamRunQueryParams() {
   if (minSegments) params.set("min_segments", minSegments);
   if (maxSegments) params.set("max_segments", maxSegments);
   if (minRunSnr) params.set("min_run_snr", minRunSnr);
+  if (maxLiteratureRvUnc) params.set("max_literature_rv_unc", maxLiteratureRvUnc);
   if (maxResultingRvUnc) params.set("max_resulting_rv_unc", maxResultingRvUnc);
   if (rvbEl["rvb-has-literature-rv"].checked) params.set("has_literature_rv", "1");
   const wavelengthCoverage = String(rvbEl["rvb-wavelength-coverage"].value || "").trim();
@@ -763,6 +803,7 @@ function renderRvbamInfo() {
   const latestModifiedTimestamp = firstPresent(meta.latest_segment_modified_timestamp, run.latest_segment_modified_timestamp);
   const bervStatus = rvbamBervStatus(run, spectrum);
   const bervMetadata = bervStatus.metadata || {};
+  const literatureRv = rvbState.payload?.literatureRv || null;
   const bervEntries = [
     ["BERV status", bervStatus.shortLabel],
     ["RVBAM BERV", bervStatus.correctionLabel],
@@ -780,7 +821,9 @@ function renderRvbamInfo() {
     ["Template", basename(run.template_name)],
     ["Model Grid", run.moca_mgridid],
     ["Segments", segments.length],
-    ["Literature RV", rvbState.payload?.literatureRv ? "1 (yes)" : formatFlag(run.has_literature_rv)],
+    ["MOCAdb RV", literatureRv ? rvbamLiteratureRvInfoText(literatureRv) : formatFlag(run.has_literature_rv)],
+    ["MOCAdb RV source", rvbamLiteratureRvSourceLabel(literatureRv)],
+    ["MOCAdb RV note", rvbamLiteratureRvFallbackNote(literatureRv)],
     ["Oldest RV added", formatTimestamp(oldestRvTimestamp)],
     ["Latest RV added", formatTimestamp(latestRvTimestamp)],
     ["Latest RV modified", formatTimestamp(latestModifiedTimestamp)],
@@ -812,6 +855,32 @@ function renderRvbamInfoValue(key, value) {
     }
   }
   return escapeHtml(displayValue(value));
+}
+
+function rvbamLiteratureRvInfoText(literatureRv) {
+  if (!literatureRv) return "";
+  const value = uncertaintyText(literatureRv.radial_velocity_kms, literatureRv.radial_velocity_kms_unc, "km/s", 2);
+  return literatureRv.label ? `${literatureRv.label}: ${value}` : value;
+}
+
+function rvbamLiteratureRvSourceLabel(literatureRv) {
+  if (!literatureRv) return "";
+  const method = literatureRv.rv_combination_method_label || (literatureRv.is_raw_fallback ? "Ad hoc weighted raw RV fallback" : "");
+  const count = numberOrNull(literatureRv.raw_rv_row_count);
+  if (literatureRv.is_raw_fallback) {
+    const countText = count ? ` (${count} raw row${count === 1 ? "" : "s"})` : "";
+    return `${method || "Ad hoc weighted raw RV fallback"}${countText}`;
+  }
+  if (literatureRv.source === "host") return method || "MOCAdb combined host RV";
+  return method || "MOCAdb combined RV";
+}
+
+function rvbamLiteratureRvFallbackNote(literatureRv) {
+  if (!literatureRv?.is_raw_fallback) return "";
+  const count = numberOrNull(literatureRv.raw_rv_row_count);
+  if (literatureRv.fallback_reason) return literatureRv.fallback_reason;
+  const countText = count ? ` from ${count} non-ignored raw row${count === 1 ? "" : "s"}` : "";
+  return `Fallback because no combined RV row was found; using an ad hoc weighted combination${countText} in data_radial_velocities.`;
 }
 
 function renderRvbamSpectrumTable() {
@@ -902,7 +971,7 @@ function renderRvbamSegmentPlot() {
   const filteredActiveRows = activeRows.filter((row) => filteredOutIds.has(Number(row.moca_rv_sampling_segment_id)));
   const validActiveRows = activeRows.filter((row) => !filteredOutIds.has(Number(row.moca_rv_sampling_segment_id)));
   const xRangeRows = rows.length ? rows : averageRows;
-  const yRangeRows = averageRows;
+  const yRangeRows = averageRows.length ? averageRows : selectedRows;
   const traces = [];
   if (filteredActiveRows.length) {
     traces.push(segmentTrace(filteredActiveRows, "Filtered from average", "x-thin", false, showErrors, 14, false, ySpec, { filtered: true }));
@@ -916,7 +985,10 @@ function renderRvbamSegmentPlot() {
   if (selected.length) traces.push(segmentTrace(selected, "Selected", "star", false, showErrors, 18, true, ySpec));
   const literatureRv = rvbamLiteratureRvForYAxis(ySpec);
   if (literatureRv) traces.push(rvbamLiteratureRvLegendTrace(literatureRv));
+  const yThreshold = rvbamScatterYAxisThreshold(ySpec);
+  if (yThreshold) traces.push(rvbamScatterThresholdLegendTrace(yThreshold));
   const shapes = [];
+  if (yThreshold) shapes.push(rvbamScatterThresholdLine(yThreshold));
   if (literatureRv) {
     const band = rvbamLiteratureRvErrorBand(literatureRv);
     if (band) shapes.push(band);
@@ -941,6 +1013,7 @@ function renderRvbamSegmentPlot() {
     : `${titlePrefix}<br>${ySpec.label} average unavailable${filterNote}`;
   const xRange = scatterAxisRange(xRangeRows, (row) => segmentWavelengthMicron(row));
   const yExtraValues = ySpec.key === "rv_kms" ? rvbamLiteratureRvRangeValues(literatureRv) : [];
+  if (yThreshold) yExtraValues.push(yThreshold.value);
   const yRange = scatterAxisRange(
     yRangeRows,
     (row) => asNumber(row[ySpec.key]),
@@ -1149,6 +1222,7 @@ function renderRvbamLiteratureBiasPlot(payload) {
   const selectedPoints = points.filter((point) => Number(point.moca_rv_sample_run_id) === Number(selectedRunId));
   const regularPoints = points.filter((point) => Number(point.moca_rv_sample_run_id) !== Number(selectedRunId));
   const linearFit = rvbamRobustWeightedLiteratureBiasFit(points);
+  renderRvbamLiteratureBiasSummary(points, linearFit);
   const xRange = rvbamLiteratureBiasTimeRange(points);
   const yRange = rvbamLiteratureBiasRange(points, linearFit);
   const traces = [];
@@ -1165,6 +1239,9 @@ function renderRvbamLiteratureBiasPlot(payload) {
     xaxis: {
       title: "Year",
       range: xRange || undefined,
+      tickformat: ".1f",
+      hoverformat: ".4f",
+      separatethousands: false,
       zeroline: false,
       gridcolor: "rgba(211,211,211,0.65)",
       showline: true,
@@ -1216,6 +1293,7 @@ function rvbamLiteraturePointsForActiveModelFilter(points) {
 
 function rvbamLiteratureComparisonTrace(points, name, selectedTrace) {
   const showErrors = rvbEl["rvb-show-errors"]?.checked !== false;
+  const showHover = rvbamShowPlotHoverText();
   return {
     type: "scatter",
     mode: "markers",
@@ -1242,8 +1320,8 @@ function rvbamLiteratureComparisonTrace(points, name, selectedTrace) {
       ? { color: "#ffffff", size: 16, symbol: "star", line: { color: "#d6a100", width: 4 } }
       : { color: "#ffffff", size: 9, symbol: "circle", line: { color: "#000000", width: 2.1 } },
     customdata: points.map((point) => Number(point.moca_rv_sample_run_id)),
-    text: points.map(rvbamLiteratureComparisonHover),
-    hoverinfo: "text",
+    text: showHover ? points.map(rvbamLiteratureComparisonHover) : undefined,
+    hoverinfo: rvbamHoverInfo("text"),
   };
 }
 
@@ -1350,14 +1428,15 @@ function rvbamLiteratureComparisonFitTrace(fit) {
     x: [fit.xMin, fit.xMax],
     y: [fit.yMin, fit.yMax],
     line: { color: "#d62728", width: 2.4, dash: "dash" },
-    hovertemplate: [
+    hoverinfo: rvbamHoverInfo("text"),
+    hovertemplate: rvbamHoverTemplate([
       "Robust weighted linear fit",
       "Literature RV %{x:.3f} km/s",
       "RVBAM RV %{y:.3f} km/s",
-      `Slope ${escapeHtml(formatGenericCell(fit.slope))}`,
+      `Slope ${escapeHtml(signedUncertaintyText(fit.slope, fit.slopeUnc, "", 3))}`,
       `N ${escapeHtml(fit.n)}`,
       "<extra></extra>",
-    ].join("<br>"),
+    ].join("<br>")),
   };
 }
 
@@ -1450,8 +1529,11 @@ function rvbamWeightedLinearFit(rows, x0) {
   let sy = 0;
   let sxx = 0;
   let sxy = 0;
+  const fitRows = [];
   for (const row of rows) {
-    const weight = row.baseWeight * row.robustWeight;
+    const baseWeight = Number.isFinite(row.baseWeight) && row.baseWeight > 0 ? row.baseWeight : 1;
+    const robustWeight = Number.isFinite(row.robustWeight) && row.robustWeight > 0 ? row.robustWeight : 1;
+    const weight = baseWeight * robustWeight;
     if (!Number.isFinite(weight) || weight <= 0) continue;
     const dx = row.x - x0;
     sw += weight;
@@ -1459,13 +1541,32 @@ function rvbamWeightedLinearFit(rows, x0) {
     sy += weight * row.y;
     sxx += weight * dx * dx;
     sxy += weight * dx * row.y;
+    fitRows.push({ row, weight, dx });
   }
   const denominator = sw * sxx - sx * sx;
   if (!Number.isFinite(denominator) || Math.abs(denominator) <= Number.EPSILON) return null;
   const slope = (sw * sxy - sx * sy) / denominator;
   const intercept = (sy - slope * sx) / sw;
   if (!Number.isFinite(slope) || !Number.isFinite(intercept)) return null;
-  return { slope, intercept };
+  let chi2 = 0;
+  for (const item of fitRows) {
+    const residual = item.row.y - (intercept + slope * item.dx);
+    chi2 += item.weight * residual * residual;
+  }
+  const dof = Math.max(1, fitRows.length - 2);
+  const reducedChi2 = fitRows.length > 2 ? chi2 / dof : 1;
+  const covarianceScale = Number.isFinite(reducedChi2) ? Math.max(1, reducedChi2) : 1;
+  const slopeUnc = Math.sqrt(Math.max(0, covarianceScale * sw / denominator));
+  const interceptUnc = Math.sqrt(Math.max(0, covarianceScale * sxx / denominator));
+  return {
+    slope,
+    intercept,
+    slopeUnc: Number.isFinite(slopeUnc) ? slopeUnc : null,
+    interceptUnc: Number.isFinite(interceptUnc) ? interceptUnc : null,
+    chi2,
+    dof,
+    reducedChi2,
+  };
 }
 
 function rvbamLiteratureBiasFitTrace(fit) {
@@ -1476,19 +1577,74 @@ function rvbamLiteratureBiasFitTrace(fit) {
     x: [fit.xMin, fit.xMax],
     y: [fit.yMin, fit.yMax],
     line: { color: "#d62728", width: 2.4, dash: "dash" },
-    hovertemplate: [
+    hoverinfo: rvbamHoverInfo("text"),
+    hovertemplate: rvbamHoverTemplate([
       "Robust weighted linear fit",
       "Year %{x:.4f}",
       "Residual %{y:.3f} km/s",
-      `Slope ${escapeHtml(formatGenericCell(fit.slope))} km/s/yr`,
+      `Slope ${escapeHtml(signedUncertaintyText(fit.slope, fit.slopeUnc, "km/s/yr", 3))}`,
       `N ${escapeHtml(fit.n)}`,
       "<extra></extra>",
-    ].join("<br>"),
+    ].join("<br>")),
   };
+}
+
+function renderRvbamLiteratureBiasSummary(points, linearFit) {
+  if (!rvbEl["rvb-lit-rv-bias-summary"]) return;
+  const stats = rvbamLiteratureBiasMedianStats(points);
+  if (!stats.n) {
+    rvbEl["rvb-lit-rv-bias-summary"].innerHTML = '<span class="muted">No residuals available.</span>';
+    return;
+  }
+  const medianText = signedUncertaintyText(stats.median, stats.uncertainty, "km/s", 2);
+  const driftText = linearFit
+    ? signedUncertaintyText(linearFit.slope, linearFit.slopeUnc, "km/s/yr", 3)
+    : "unavailable";
+  const details = [
+    `${stats.n} residual${stats.n === 1 ? "" : "s"}`,
+    stats.scatter !== null && stats.scatter > 0 ? `robust scatter ${formatFixed(stats.scatter, 2)} km/s` : "",
+    linearFit?.n ? `${linearFit.n} trend point${linearFit.n === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join("; ");
+  rvbEl["rvb-lit-rv-bias-summary"].innerHTML = [
+    `Median RVBAM - literature RV: <strong>${escapeHtml(medianText)}</strong>`,
+    `Drift: <strong>${escapeHtml(driftText)}</strong>`,
+    details ? `<span class="muted">${escapeHtml(details)}</span>` : "",
+  ].filter(Boolean).join(" | ");
+}
+
+function rvbamLiteratureBiasMedianStats(points) {
+  const rows = (points || [])
+    .map((point) => ({
+      value: asNumber(point.rv_bias_kms),
+      uncertainty: asNumber(point.rv_bias_kms_unc),
+    }))
+    .filter((row) => row.value !== null);
+  const n = rows.length;
+  if (!n) return { n: 0, median: null, uncertainty: null, scatter: null };
+  const values = rows.map((row) => row.value);
+  const median = medianValue(values);
+  const mad = median === null ? null : medianValue(values.map((value) => Math.abs(value - median)));
+  const scatter = mad !== null && mad > 0 ? 1.4826 * mad : null;
+  const finiteUncertainties = rows
+    .map((row) => row.uncertainty)
+    .filter((value) => value !== null && value > 0);
+  const medianMeasurementUnc = medianValue(finiteUncertainties);
+  const measurementTerm = medianMeasurementUnc !== null && medianMeasurementUnc > 0
+    ? (n === 1 ? medianMeasurementUnc : 1.253 * medianMeasurementUnc / Math.sqrt(n))
+    : null;
+  const scatterTerm = scatter !== null && scatter > 0 && n > 1
+    ? 1.253 * scatter / Math.sqrt(n)
+    : null;
+  const terms = [measurementTerm, scatterTerm].filter((value) => value !== null && Number.isFinite(value) && value > 0);
+  const uncertainty = terms.length
+    ? Math.sqrt(terms.reduce((sum, value) => sum + value * value, 0))
+    : null;
+  return { n, median, uncertainty, scatter };
 }
 
 function rvbamLiteratureBiasTrace(points, name, selectedTrace) {
   const showErrors = rvbEl["rvb-show-errors"]?.checked !== false;
+  const showHover = rvbamShowPlotHoverText();
   return {
     type: "scatter",
     mode: "markers",
@@ -1507,8 +1663,8 @@ function rvbamLiteratureBiasTrace(points, name, selectedTrace) {
       ? { color: "#ffffff", size: 14, symbol: "star", line: { color: "#d6a100", width: 3.8 } }
       : { color: "#ffffff", size: 8, symbol: "circle", line: { color: "#000000", width: 1.9 } },
     customdata: points.map((point) => Number(point.moca_rv_sample_run_id)),
-    text: points.map(rvbamLiteratureBiasHover),
-    hoverinfo: "text",
+    text: showHover ? points.map(rvbamLiteratureBiasHover) : undefined,
+    hoverinfo: rvbamHoverInfo("text"),
   };
 }
 
@@ -1543,11 +1699,13 @@ function rvbamLiteratureComparisonHover(point) {
   const literature = uncertaintyText(point.literature_rv_kms, point.literature_rv_kms_unc, "km/s", 2);
   const countText = `${displayValue(point.kept_segment_count)}/${displayValue(point.available_segment_count)} kept segments`;
   const methodText = point.rvbam_rv_method_label || rvbRvMethodLabels[rvMethodValue(point.rvbam_rv_method)] || (point.rvbam_rv_weighted ? "weighted by RV uncertainty" : "unweighted mean");
+  const literatureSourceText = rvbamLiteraturePointSourceText(point);
   return [
     `<b>${escapeHtml(target)}</b>`,
     `Run ${escapeHtml(point.moca_rv_sample_run_id)}`,
     `RVBAM RV ${escapeHtml(rvbam)} (${escapeHtml(methodText)})`,
     `${escapeHtml(point.literature_label || "Literature RV")} ${escapeHtml(literature)}`,
+    literatureSourceText ? `MOCAdb RV source ${escapeHtml(literatureSourceText)}` : "",
     point.literature_designation ? `Literature target ${escapeHtml(point.literature_designation)}` : "",
     countText,
     point.template_name ? `Template ${escapeHtml(basename(point.template_name))}` : "",
@@ -1563,17 +1721,26 @@ function rvbamLiteratureBiasHover(point) {
   const methodText = point.rvbam_rv_method_label || rvbRvMethodLabels[rvMethodValue(point.rvbam_rv_method)] || (point.rvbam_rv_weighted ? "weighted by RV uncertainty" : "combined RV");
   const keptCount = firstPresent(point.kept_segment_count, point.rvbam_rv_segment_count);
   const countText = keptCount !== null && keptCount !== undefined ? `${displayValue(keptCount)} kept segments` : "";
+  const literatureSourceText = rvbamLiteraturePointSourceText(point);
   return [
     `<b>${escapeHtml(target)}</b>`,
     `Year ${escapeHtml(formatFixed(point.decimal_year, 4))}`,
     `Run ${escapeHtml(point.moca_rv_sample_run_id)}`,
     `Combined RV ${escapeHtml(measured)} (${escapeHtml(methodText)})`,
     `${escapeHtml(point.literature_label || "Literature RV")} ${escapeHtml(literature)}`,
+    literatureSourceText ? `MOCAdb RV source ${escapeHtml(literatureSourceText)}` : "",
     `Combined - literature ${escapeHtml(bias)}`,
     countText,
     point.decimal_year_source ? `Epoch source ${escapeHtml(point.decimal_year_source)}` : "",
     point.template_name ? `Template ${escapeHtml(basename(point.template_name))}` : "",
   ].filter(Boolean).join("<br>");
+}
+
+function rvbamLiteraturePointSourceText(point) {
+  if (!point?.literature_is_raw_fallback) return "";
+  const method = point.literature_rv_combination_method_label || "Ad hoc weighted raw RV fallback";
+  const count = numberOrNull(point.literature_raw_rv_row_count);
+  return count ? `${method} (${count} raw row${count === 1 ? "" : "s"})` : method;
 }
 
 function uncertaintyText(value, uncertainty, unit, digits) {
@@ -1583,6 +1750,20 @@ function uncertaintyText(value, uncertainty, unit, digits) {
   const rounded = oneSignificantUncertaintyLabel(valueNumber, uncertaintyNumber);
   if (rounded) return `${rounded.value} ${unit} +/- ${rounded.unc} ${unit}`;
   return `${formatFixed(valueNumber, digits ?? 2)} ${unit}`;
+}
+
+function signedUncertaintyText(value, uncertainty, unit, digits) {
+  const valueNumber = asNumber(value);
+  if (valueNumber === null) return "unavailable";
+  const unitText = unit ? ` ${unit}` : "";
+  const sign = valueNumber > 0 ? "+" : "";
+  const uncertaintyNumber = asNumber(uncertainty);
+  const rounded = oneSignificantUncertaintyLabel(valueNumber, uncertaintyNumber);
+  if (rounded) {
+    const roundedSign = Number(rounded.value) > 0 ? "+" : "";
+    return `${roundedSign}${rounded.value}${unitText} +/- ${rounded.unc}${unitText}`;
+  }
+  return `${sign}${formatFixed(valueNumber, digits ?? 2)}${unitText}`;
 }
 
 function rvbamLiteratureComparisonSignature() {
@@ -1624,6 +1805,7 @@ function renderEmptyLiteratureRvPlot(message) {
 function renderEmptyLiteratureBiasPlot(message) {
   if (!rvbEl["rvb-lit-rv-bias-plot"]) return;
   Plotly.react(rvbEl["rvb-lit-rv-bias-plot"], [], emptyLayout(message || "No literature RV residuals"), plotConfig("rvbam_literature_bias_empty"));
+  if (rvbEl["rvb-lit-rv-bias-summary"]) rvbEl["rvb-lit-rv-bias-summary"].innerHTML = "";
 }
 
 function bindRvbamLiteratureComparisonEvents() {
@@ -1671,6 +1853,7 @@ function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTra
   if (!rows.length) return null;
   const selectedpoints = selectedPointIndices(rows);
   const filtered = Boolean(options.filtered);
+  const showHover = rvbamShowPlotHoverText();
   const errorColor = filtered ? "rgba(168,18,18,0.22)" : "rgba(0,0,0,0.24)";
   return {
     type: "scatter",
@@ -1709,8 +1892,8 @@ function segmentTrace(rows, name, symbol, ignored, showErrors, size, selectedTra
         },
       },
     customdata: rows.map((row) => Number(row.moca_rv_sampling_segment_id)),
-    text: rows.map((row) => filtered ? `${segmentHover(row, ySpec)}<br><b>Filtered from average</b>` : segmentHover(row, ySpec)),
-    hoverinfo: "text",
+    text: showHover ? rows.map((row) => filtered ? filteredSegmentHover(row, ySpec) : segmentHover(row, ySpec)) : undefined,
+    hoverinfo: rvbamHoverInfo("text"),
     selectedpoints,
     selected: { marker: { opacity: 1 } },
     unselected: { marker: { opacity: rvbState.selectedIds && !filtered ? 0.28 : 1 } },
@@ -1732,7 +1915,7 @@ function normalizedRvbamLiteratureRv() {
     ...literatureRv,
     value,
     uncertainty,
-    label: literatureRv.label || (literatureRv.source === "host" ? "Literature host RV" : "Literature RV"),
+    label: literatureRv.label || (literatureRv.is_raw_fallback ? "Raw MOCAdb RV fallback" : (literatureRv.source === "host" ? "Literature host RV" : "Literature RV")),
   };
 }
 
@@ -1795,6 +1978,39 @@ function selectedPointIndices(rows) {
 function selectedIdsKey() {
   if (!rvbState.selectedIds?.size) return "none";
   return Array.from(rvbState.selectedIds).sort((a, b) => a - b).join(",");
+}
+
+function rvbamScatterYAxisThreshold(ySpec) {
+  const thresholdSpec = rvbScatterThresholdSpecs[ySpec?.key];
+  if (!thresholdSpec) return null;
+  const value = asNumber(averageFilters()[thresholdSpec.filterKey]);
+  if (value === null) return null;
+  const digits = Number.isFinite(ySpec.digits) ? ySpec.digits : 3;
+  return {
+    ...thresholdSpec,
+    value,
+    text: `${thresholdSpec.label} = ${formatFixed(value, digits)}`,
+    color: "rgba(43, 92, 171, 0.94)",
+    width: 2.6,
+    dash: thresholdSpec.direction === "min" ? "dash" : "dot",
+  };
+}
+
+function rvbamScatterThresholdLine(threshold) {
+  return rvbamAverageLine(threshold.value, threshold.color, threshold.width, threshold.dash);
+}
+
+function rvbamScatterThresholdLegendTrace(threshold) {
+  return {
+    type: "scatter",
+    mode: "lines",
+    name: threshold.text,
+    x: [null, null],
+    y: [null, null],
+    line: { color: threshold.color, width: threshold.width, dash: threshold.dash },
+    hoverinfo: "skip",
+    showlegend: true,
+  };
 }
 
 function rvbamAverageLine(y, color, width, dash) {
@@ -2267,7 +2483,8 @@ function renderRvbamPosterior() {
       x: samples.map((row) => row[xName]),
       y: samples.map((row) => row[yName]),
       marker: { size: 4, color: "rgba(73, 97, 107, .46)" },
-      hovertemplate: `${escapeHtml(xName)}: %{x:.5g}<br>${escapeHtml(yName)}: %{y:.5g}<extra></extra>`,
+      hoverinfo: rvbamHoverInfo("text"),
+      hovertemplate: rvbamHoverTemplate(`${escapeHtml(xName)}: %{x:.5g}<br>${escapeHtml(yName)}: %{y:.5g}<extra></extra>`),
     });
   } else {
     traces.push({
@@ -2275,7 +2492,8 @@ function renderRvbamPosterior() {
       x,
       marker: { color: "#6b7379" },
       nbinsx: 44,
-      hovertemplate: `${escapeHtml(xName)}: %{x:.5g}<br>N: %{y}<extra></extra>`,
+      hoverinfo: rvbamHoverInfo("text"),
+      hovertemplate: rvbamHoverTemplate(`${escapeHtml(xName)}: %{x:.5g}<br>N: %{y}<extra></extra>`),
     });
   }
   const layout = {
@@ -2310,7 +2528,8 @@ function renderRvbamCorrelation(correlation) {
       [1, "#9b4b3f"],
     ],
     colorbar: { title: "r", len: 0.8 },
-    hovertemplate: "%{y} vs %{x}: %{z:.3f}<extra></extra>",
+    hoverinfo: rvbamHoverInfo("text"),
+    hovertemplate: rvbamHoverTemplate("%{y} vs %{x}: %{z:.3f}<extra></extra>"),
   };
   const layout = {
     margin: { l: 88, r: 18, t: 20, b: 82 },
@@ -2685,7 +2904,8 @@ function renderRvbamRebuiltFit() {
         size: 7.2,
         line: { color: "rgba(0,0,0,0)", width: 0 },
       },
-      hovertemplate: "Inflated err<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>",
+      hoverinfo: rvbamHoverInfo("text"),
+      hovertemplate: rvbamHoverTemplate("Inflated err<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>"),
     });
   }
   traces.push(
@@ -2710,7 +2930,8 @@ function renderRvbamRebuiltFit() {
         line: { color: "#111111", width: 2.3 },
       },
       opacity: 1,
-      hovertemplate: "Data<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>",
+      hoverinfo: rvbamHoverInfo("text"),
+      hovertemplate: rvbamHoverTemplate("Data<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>"),
     },
     {
       type: "scatter",
@@ -2719,7 +2940,8 @@ function renderRvbamRebuiltFit() {
       x: modelX,
       y: model.map((row) => asNumber(row.model_flux)),
       line: { color: "rgba(168,18,18,.95)", width: 2.2 },
-      hovertemplate: "HDF5 rebuilt model<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>",
+      hoverinfo: rvbamHoverInfo("text"),
+      hovertemplate: rvbamHoverTemplate("HDF5 rebuilt model<br>wavelength: %{x:.6g} μm<br>flux: %{y:.5g}<extra></extra>"),
     },
   );
   const run = payload.run || {};
@@ -3067,9 +3289,16 @@ function rvbamLiteratureRvSummaryText() {
   const literatureRv = normalizedRvbamLiteratureRv();
   if (!literatureRv) return "";
   const unit = "km/s";
+  const fallbackSuffix = rvbamLiteratureRvSummarySuffix(literatureRv);
   const rounded = oneSignificantUncertaintyLabel(literatureRv.value, literatureRv.uncertainty);
-  if (rounded) return `${literatureRv.label} = ${rounded.value} ${unit} +/- ${rounded.unc} ${unit}`;
-  return `${literatureRv.label} = ${formatFixed(literatureRv.value, 1)} ${unit}`;
+  if (rounded) return `${literatureRv.label} = ${rounded.value} ${unit} +/- ${rounded.unc} ${unit}${fallbackSuffix}`;
+  return `${literatureRv.label} = ${formatFixed(literatureRv.value, 1)} ${unit}${fallbackSuffix}`;
+}
+
+function rvbamLiteratureRvSummarySuffix(literatureRv) {
+  if (!literatureRv?.is_raw_fallback) return "";
+  const count = numberOrNull(literatureRv.raw_rv_row_count);
+  return count ? ` (ad hoc from ${count} raw row${count === 1 ? "" : "s"})` : " (ad hoc raw RV fallback)";
 }
 
 function updateRvbamReportButton() {
@@ -3231,6 +3460,21 @@ function passesAverageFilters(row, filters) {
     && passesSegmentWavelengthFilter(row, filters.segmentWavelengthRanges)
     && passesMaxFilter(row.noutliers_masked, filters.maxMaskedOutliers)
   );
+}
+
+function failedAverageFilterKeys(row, filters = averageFilters()) {
+  if (!filters.active) return new Set();
+  const failed = new Set();
+  if (!passesMaxFilter(row.lsf, filters.maxLsf)) failed.add("lsf");
+  if (!passesMaxFilter(row.best_chi2, filters.maxBestChi2)) failed.add("best_chi2");
+  if (!passesMaxFilter(row.rv_kms_unc, filters.maxRvUnc)) failed.add("rv_kms_unc");
+  if (!passesMinFilter(row.data_contrast, filters.minDataContrast)) failed.add("data_contrast");
+  if (!passesMinFilter(row.model_contrast, filters.minModelContrast)) failed.add("model_contrast");
+  if (!passesMinFilter(row.nmodel_10p_contrast, filters.minModel10p)) failed.add("nmodel_10p_contrast");
+  if (!passesMinFilter(row.segment_snr_median, filters.minSnr)) failed.add("segment_snr_median");
+  if (!passesSegmentWavelengthFilter(row, filters.segmentWavelengthRanges)) failed.add("wavelength");
+  if (!passesMaxFilter(row.noutliers_masked, filters.maxMaskedOutliers)) failed.add("noutliers_masked");
+  return failed;
 }
 
 function passesSegmentWavelengthFilter(row, ranges) {
@@ -3641,17 +3885,21 @@ function updateRvbamUrl() {
   copyInputToParam(params, "min_segments", "rvb-min-segments");
   copyInputToParam(params, "max_segments", "rvb-max-segments");
   copyInputToParam(params, "min_run_snr", "rvb-min-run-snr");
+  copyInputToParam(params, "max_literature_rv_unc", "rvb-max-literature-rv-unc");
   copyInputToParam(params, "max_resulting_rv_unc", "rvb-max-resulting-rv-unc");
   for (const alias of ["instid", "instrument"]) params.delete(alias);
   for (const alias of ["mgridid", "model_grid", "atmosphere_model", "model"]) params.delete(alias);
   for (const alias of ["min_segment_count", "min_available_segments", "max_segment_count", "max_available_segments"]) params.delete(alias);
   for (const alias of ["min_run_median_snr", "min_median_snr", "min_median_snr_per_pix"]) params.delete(alias);
+  for (const alias of ["max_literature_rv_error", "max_lit_rv_unc", "max_lit_rv_error", "max_mocadb_rv_unc"]) params.delete(alias);
   for (const alias of ["max_resulting_rv_error", "max_run_rv_unc", "max_run_rv_error", "max_rvbam_rv_unc"]) params.delete(alias);
   if (rvbEl["rvb-has-literature-rv"].checked) params.set("has_literature_rv", "1");
   else params.delete("has_literature_rv");
   copyInputToParam(params, "wavelength_coverage", "rvb-wavelength-coverage");
   params.set("include_ignored", rvbEl["rvb-include-ignored"].checked ? "1" : "0");
   params.set("errors", rvbEl["rvb-show-errors"].checked ? "1" : "0");
+  params.set("hover_text", rvbEl["rvb-show-hover"].checked ? "1" : "0");
+  for (const alias of ["show_hover", "hover"]) params.delete(alias);
   params.set("use_selection", rvbEl["rvb-use-selection"].checked ? "1" : "0");
   params.set("online_figures", rvbEl["rvb-use-online-figures"].checked && !rvbEl["rvb-use-online-figures"].disabled ? "1" : "0");
   params.set("scatter_y", scatterYAxisSpec().key);
@@ -3740,24 +3988,41 @@ function formatFlag(value) {
   return "unknown";
 }
 
-function segmentHover(row, ySpec) {
+function filteredSegmentHover(row, ySpec) {
+  const failedKeys = failedAverageFilterKeys(row);
+  return `${segmentHover(row, ySpec, { failedKeys })}<br><b>Filtered from average</b>`;
+}
+
+function segmentHover(row, ySpec, options = {}) {
+  const failedKeys = options.failedKeys || new Set();
   const yValue = ySpec && ySpec.key !== "rv_kms"
-    ? `${ySpec.label}: ${formatGenericCell(row[ySpec.key])}`
+    ? rvbamSegmentHoverMetricLine(ySpec.label, formatGenericCell(row[ySpec.key]), ySpec.key, failedKeys)
     : "";
   return [
     `Segment ${displayValue(row.segment_number)}`,
     `Order ${displayValue(row.order_number)} window ${displayValue(row.window_number)}`,
-    `Wavelength ${formatFixed(segmentWavelengthMicron(row), 5)} micron`,
+    rvbamSegmentHoverMetricLine("Wavelength", `${formatFixed(segmentWavelengthMicron(row), 5)} micron`, "wavelength", failedKeys),
     yValue,
-    `RV ${formatFixed(row.rv_kms, 3)} +/- ${formatFixed(row.rv_kms_unc, 3)} km/s`,
-    `LSF ${formatFixed(row.lsf, 3)} km/s`,
+    `RV ${formatFixed(row.rv_kms, 3)} km/s`,
+    rvbamSegmentHoverMetricLine("RV uncertainty", `${formatFixed(row.rv_kms_unc, 3)} km/s`, "rv_kms_unc", failedKeys),
+    rvbamSegmentHoverMetricLine("LSF", `${formatFixed(row.lsf, 3)} km/s`, "lsf", failedKeys),
     `vsini ${formatFixed(row.vsini_kms, 3)} km/s`,
-    asNumber(row.segment_snr_median) !== null ? `Segment median S/N ${formatFixed(row.segment_snr_median, 2)} (spectrum quality)` : "",
-    asNumber(row.data_contrast) !== null ? `Data RV content ${formatFixed(row.data_contrast, 4)}: intrinsic fractional data structure after flux errors` : "",
-    asNumber(row.model_contrast) !== null ? `Model RV content ${formatFixed(row.model_contrast, 4)}: template 99-to-1 percentile fractional contrast` : "",
-    asNumber(row.nmodel_10p_contrast) !== null ? `Model deep-line pixels ${formatGenericCell(row.nmodel_10p_contrast)}: pixels at least 10% below high flux` : "",
-    asNumber(row.noutliers_masked) !== null ? `Masked high-residual pixels ${formatGenericCell(row.noutliers_masked)}: fit points removed before final RV` : "",
+    asNumber(row.best_chi2) !== null ? rvbamSegmentHoverMetricLine("Best chi2", formatFixed(row.best_chi2, 3), "best_chi2", failedKeys) : "",
+    asNumber(row.segment_snr_median) !== null ? rvbamSegmentHoverMetricLine("Segment median S/N", `${formatFixed(row.segment_snr_median, 2)} (spectrum quality)`, "segment_snr_median", failedKeys) : "",
+    asNumber(row.data_contrast) !== null ? rvbamSegmentHoverMetricLine("Data RV content", `${formatFixed(row.data_contrast, 4)}: intrinsic fractional data structure after flux errors`, "data_contrast", failedKeys) : "",
+    asNumber(row.model_contrast) !== null ? rvbamSegmentHoverMetricLine("Model RV content", `${formatFixed(row.model_contrast, 4)}: template 99-to-1 percentile fractional contrast`, "model_contrast", failedKeys) : "",
+    asNumber(row.nmodel_10p_contrast) !== null ? rvbamSegmentHoverMetricLine("Model deep-line pixels", `${formatGenericCell(row.nmodel_10p_contrast)}: pixels at least 10% below high flux`, "nmodel_10p_contrast", failedKeys) : "",
+    asNumber(row.noutliers_masked) !== null ? rvbamSegmentHoverMetricLine("Masked high-residual pixels", `${formatGenericCell(row.noutliers_masked)}: fit points removed before final RV`, "noutliers_masked", failedKeys) : "",
   ].filter(Boolean).join("<br>");
+}
+
+function rvbamSegmentHoverMetricLine(label, valueText, key, failedKeys) {
+  const line = `${label} ${valueText}`;
+  return failedKeys?.has(key) ? rvbamFailedHoverLine(line) : line;
+}
+
+function rvbamFailedHoverLine(text) {
+  return `<b><span style="color:#b00020">${text}</span></b>`;
 }
 
 function wavelengthRangeLabel(rows) {
@@ -3899,9 +4164,10 @@ function slugify(value) {
 }
 
 function plotConfig(name, options = {}) {
-  const removeButtons = options.saveImage ? [] : ["toImage"];
+  const removeButtons = options.saveImage === false ? ["toImage"] : [];
   return {
     responsive: true,
+    displayModeBar: true,
     displaylogo: false,
     modeBarButtonsToRemove: removeButtons,
     toImageButtonOptions: { format: "png", filename: name || "rvbam_explorer", scale: options.imageScale || 2 },

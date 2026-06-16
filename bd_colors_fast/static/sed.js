@@ -16,7 +16,7 @@ const sedState = {
   template: null,
   visible: {},
   selectedRows: [],
-  selectedBandpass: null,
+  filterResponseDisplay: null,
   empirical: null,
   selectedSpectrumKeys: new Set(),
   selectedSpectrumRows: {},
@@ -69,6 +69,7 @@ function collectSedElements() {
     "sed-ylog",
     "sed-hover",
     "sed-hide-ignored",
+    "sed-show-filter-responses",
     "sed-anchor-spectra",
     "sed-anchor-ground-only",
     "sed-exclude-ground-telluric",
@@ -114,6 +115,7 @@ function readSedUrlState() {
   sedEl["sed-ylog"].checked = !asFalse(params.get("ylog"));
   sedEl["sed-hover"].checked = params.has("hover") ? !asFalse(params.get("hover")) : true;
   sedEl["sed-hide-ignored"].checked = !asFalse(params.get("hide_ignored"));
+  sedEl["sed-show-filter-responses"].checked = params.has("filter_responses") ? !asFalse(params.get("filter_responses")) : false;
   sedEl["sed-anchor-spectra"].checked = params.has("anchor_spectra") ? !asFalse(params.get("anchor_spectra")) : true;
   sedEl["sed-anchor-ground-only"].checked = params.has("anchor_ground_only") ? !asFalse(params.get("anchor_ground_only")) : true;
   sedEl["sed-exclude-ground-telluric"].checked = params.has("exclude_ground_telluric") ? !asFalse(params.get("exclude_ground_telluric")) : true;
@@ -180,6 +182,7 @@ function bindSedControls() {
     "sed-xlog",
     "sed-ylog",
     "sed-hover",
+    "sed-show-filter-responses",
     "sed-anchor-spectra",
     "sed-anchor-ground-only",
     "sed-exclude-ground-telluric",
@@ -310,7 +313,6 @@ async function loadSedObject() {
   sedState.payload = payload;
   sedState.oid = Number(payload.target?.moca_oid || sedState.oid);
   sedState.selectedRows = [];
-  sedState.selectedBandpass = null;
   sedState.empirical = null;
   clearPlotlySelectionState();
   sedState.selectionDisabledSpectra = new Set();
@@ -369,8 +371,11 @@ function renderSed() {
   const processed = buildSedProcessedData();
   renderLayerTokens(processed);
   renderBolometricSummary();
-  const traces = sedTraces(processed);
-  const layout = sedLayout(processed, traces);
+  const baseTraces = sedTraces(processed);
+  const layout = sedLayout(processed, baseTraces);
+  const filterResponses = filterResponseOverlays(processed, layout);
+  const traces = [...baseTraces, ...filterResponses.traces];
+  sedState.filterResponseDisplay = filterResponses.info;
   sedState.plotResetRanges = sedAxisResetRangesFromLayout(layout);
   Plotly.react(sedEl["sed-plot"], traces, layout, plotConfig("mocadb_sed_explorer")).then(() => {
     updateSedPlotInitialRanges(sedEl["sed-plot"], sedState.plotResetRanges);
@@ -629,8 +634,6 @@ function sedTraces(processed) {
       });
     }
   }
-  const bandpassTrace = selectedBandpassTrace(processed);
-  if (bandpassTrace) photometrySpanTraces.push(bandpassTrace);
   for (const point of visiblePhotometry) {
     const custom = photCustomData(point);
     photometryMarkerTraces.push({
@@ -656,33 +659,104 @@ function sedTraces(processed) {
   ];
 }
 
-function selectedBandpassTrace(processed) {
-  const selected = sedState.selectedBandpass;
-  if (!selected) return null;
-  const point = processed.photometry.find((item) => item.key === selected.key);
-  if (!point || !point.visible || !point.plotable) return null;
-  const rows = (sedState.payload.bandpasses || []).filter((row) => row.moca_psid === point.row.moca_psid);
-  if (!rows.length) return null;
-  const maxResponse = Math.max(...rows.map((row) => Number(row.relative_spectral_response) || 0));
-  if (!finite(maxResponse) || maxResponse <= 0) return null;
+function filterResponseOverlays(processed, layout) {
+  if (!sedEl["sed-show-filter-responses"]?.checked) return { traces: [], info: null };
+  const yMapper = bandpassYMapper(layout);
+  if (!yMapper) return { traces: [], info: null };
+  const bandpassRows = new Map();
+  (sedState.payload.bandpasses || []).forEach((row) => {
+    const key = row.moca_psid;
+    if (!key) return;
+    if (!bandpassRows.has(key)) bandpassRows.set(key, []);
+    bandpassRows.get(key).push(row);
+  });
+  const traces = [];
+  const visiblePhotometry = processed.photometry.filter((point) => point.visible && point.plotable);
+  for (const point of visiblePhotometry) {
+    traces.push(...filterResponseTracesForPoint(point, bandpassRows.get(point.row.moca_psid) || [], yMapper));
+  }
+  const count = traces.filter((trace) => trace.meta?.sedFilterResponseLine).length;
+  return {
+    traces,
+    info: count ? { count } : null,
+  };
+}
+
+function filterResponseTracesForPoint(point, rows, yMapper) {
+  if (!rows.length) return [];
+  const xlog = sedEl["sed-xlog"].checked;
+  const samples = rows.map((row) => ({
+    x: wavelengthToDisplay(Number(row.wavelength_angstrom) * 1e-4),
+    response: Math.max(0, Number(row.relative_spectral_response) || 0),
+  })).filter((sample) => (
+    finite(sample.x)
+    && finite(sample.response)
+    && (!xlog || sample.x > 0)
+  )).sort((left, right) => left.x - right.x);
+  if (samples.length < 2) return [];
+  const minResponse = Math.min(...samples.map((sample) => sample.response));
+  const maxResponse = Math.max(...samples.map((sample) => sample.response));
+  const responseSpan = maxResponse - minResponse;
+  if (!finite(maxResponse) || maxResponse <= 0 || !finite(responseSpan) || responseSpan <= 0) {
+    return [];
+  }
+
   const x = [];
   const y = [];
-  rows.forEach((row) => {
-    const lam = Number(row.wavelength_angstrom) * 1e-4;
-    const response = Math.max(0, Number(row.relative_spectral_response) || 0) / maxResponse;
-    x.push(wavelengthToDisplay(lam));
-    y.push(point.y * (0.62 + 0.46 * response));
+  samples.forEach((sample) => {
+    const normalized = (sample.response - minResponse) / responseSpan;
+    x.push(sample.x);
+    y.push(yMapper.at(normalized));
   });
+  const baseline = yMapper.at(0);
+  const fillX = [...x, ...x.slice().reverse()];
+  const fillY = [...y, ...x.map(() => baseline).reverse()];
+  const label = point.row.moca_psid || "selected filter";
+  const meta = { sedAutorange: false, sedFilterResponse: true, mocaPsid: label };
+  return [
+    {
+      type: "scatter",
+      mode: "lines",
+      x: fillX,
+      y: fillY,
+      fill: "toself",
+      fillcolor: colorWithAlpha(point.color, 0.08),
+      line: { color: "rgba(0, 0, 0, 0)", width: 0 },
+      name: `${label} filter response area`,
+      showlegend: false,
+      hoverinfo: "skip",
+      meta,
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x,
+      y,
+      line: { color: colorWithAlpha(point.color, 0.82), width: 2 },
+      name: `${label} filter response`,
+      showlegend: false,
+      hoverinfo: "skip",
+      meta: { ...meta, sedFilterResponseLine: true },
+    },
+  ];
+}
+
+function bandpassYMapper(layout) {
+  const range = normalizeSedAxisRange(layout?.yaxis?.range);
+  if (!range) return null;
+  const lo = Math.min(range[0], range[1]);
+  const hi = Math.max(range[0], range[1]);
+  const span = hi - lo;
+  if (!finite(span) || span <= 0) return null;
+  const innerLo = lo + span * 0.025;
+  const innerHi = hi - span * 0.025;
+  if (sedEl["sed-ylog"].checked) {
+    return {
+      at: (fraction) => 10 ** (innerLo + (innerHi - innerLo) * Math.max(0, Math.min(1, Number(fraction)))),
+    };
+  }
   return {
-    type: "scattergl",
-    mode: "lines",
-    x,
-    y,
-    line: { color: point.color, width: 3 },
-    opacity: 0.48,
-    name: `${point.row.moca_psid} bandpass`,
-    showlegend: false,
-    hoverinfo: "skip",
+    at: (fraction) => innerLo + (innerHi - innerLo) * Math.max(0, Math.min(1, Number(fraction))),
   };
 }
 
@@ -873,12 +947,6 @@ function bindSedPlotEvents() {
   sedEl["sed-plot"].on("plotly_click", (event) => {
     const rows = (event?.points || []).map((point) => point?.customdata).filter(Boolean);
     sedState.selectedRows = rows;
-    const phot = rows.find((row) => row.kind === "photometry");
-    if (phot) {
-      sedState.selectedBandpass = { key: phot.key };
-      renderSed();
-      return;
-    }
     renderSedTable();
   });
   sedEl["sed-plot"].on("plotly_selected", (event) => {
@@ -1013,7 +1081,6 @@ function disableSelectedPhotometry() {
     updateSpectrumSelectionControls();
     return;
   }
-  if (sedState.selectedBandpass && selection.has(sedState.selectedBandpass.key)) sedState.selectedBandpass = null;
   sedState.selectedRows = sedState.selectedRows.filter((row) => row?.kind !== "photometry" || !selection.has(row.key));
   clearPlotlySelectionState();
   renderSed();
@@ -1403,6 +1470,9 @@ function renderSedSummary(processed) {
   const distText = processed.distance?.distance_pc ? `distance ${formatNumber(processed.distance.distance_pc, 4)} pc` : "no non-photometric distance";
   setSedStatus(`SED loaded${cacheText}`, "");
   sedEl["sed-summary"].textContent = `${targetName()} · ${photText}, ${specText}${rangeText}, ${distText}`;
+  sedEl["sed-hint"].textContent = sedState.filterResponseDisplay
+    ? `Filter responses displayed for ${sedState.filterResponseDisplay.count} photometric filter${sedState.filterResponseDisplay.count === 1 ? "" : "s"}.`
+    : "Photometric filter responses hidden.";
   const missing = (payload.photometry || []).filter((row) => row.conversion_status !== "ok").length;
   sedEl["sed-flux-note"].textContent = missing
     ? `${missing} photometric rows lack wavelength or zeropoint metadata for physical-flux plotting.`
@@ -1585,12 +1655,16 @@ function renderSedTable() {
       return;
     }
     sedEl["sed-table-title"].textContent = "Selected data";
-    sedEl["sed-table-subtitle"].textContent = "Hover or click plot elements for metadata.";
+    sedEl["sed-table-subtitle"].textContent = sedState.filterResponseDisplay
+      ? "Filter responses displayed."
+      : "Hover or click plot elements for metadata.";
     sedEl["sed-table"].textContent = "No data selected.";
     return;
   }
   sedEl["sed-table-title"].textContent = `${sedState.selectedRows.length} selected item${sedState.selectedRows.length === 1 ? "" : "s"}`;
-  sedEl["sed-table-subtitle"].textContent = "Values reflect current display units.";
+  sedEl["sed-table-subtitle"].textContent = sedState.filterResponseDisplay
+    ? "Filter responses displayed. Values reflect current display units."
+    : "Values reflect current display units.";
   const rows = sedState.selectedRows.map((row) => ({
     kind: row.kind,
     label: row.label,
@@ -1976,6 +2050,7 @@ function updateSedUrl() {
   setBoolParam(params, "ylog", sedEl["sed-ylog"].checked, true);
   setBoolParam(params, "hover", sedEl["sed-hover"].checked, true);
   setBoolParam(params, "hide_ignored", sedEl["sed-hide-ignored"].checked, true);
+  setBoolParam(params, "filter_responses", sedEl["sed-show-filter-responses"].checked, false);
   setBoolParam(params, "anchor_spectra", sedEl["sed-anchor-spectra"].checked, true);
   setBoolParam(params, "anchor_ground_only", sedEl["sed-anchor-ground-only"].checked, true);
   setBoolParam(params, "exclude_ground_telluric", sedEl["sed-exclude-ground-telluric"].checked, true);

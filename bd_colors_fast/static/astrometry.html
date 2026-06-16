@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
-  <script src="static/auth_theme.js?v=dataviz-home-link-20260613a"></script>
+  <link rel="stylesheet" href="static/styles.css?v=astrometry-mocadb-push-20260615a">
+  <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -83,12 +83,76 @@
             <input id="atm-revert-raw" type="checkbox">
             <span>Use raw, non-recalibrated astrometry</span>
           </label>
+          <div class="astrometry-fit-controls">
+            <label for="atm-fit-method">Fit method</label>
+            <select id="atm-fit-method">
+              <option value="scipy">SciPy</option>
+              <option value="ultranest">UltraNest</option>
+            </select>
+            <div id="atm-fit-method-note" class="plot-hint"></div>
+          </div>
+          <label class="checkline">
+            <input id="atm-fit-outlier-mixture" type="checkbox" checked>
+            <span>Reject outliers with two-component likelihood</span>
+          </label>
+          <div class="button-grid astrometry-fit-actions">
+            <button id="atm-reject-selected-fit" type="button" disabled>Reject selected from fit</button>
+            <button id="atm-reset-manual-rejections" type="button" disabled>Reset manual rejections</button>
+          </div>
+          <div id="atm-manual-rejection-note" class="plot-hint">0 manually rejected points; no selected points</div>
           <div class="button-grid astrometry-fit-actions">
             <button id="atm-fit-pm" type="button" disabled>Fit proper motion</button>
             <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
           </div>
           <button id="atm-clear-fit" type="button" disabled>Clear fit</button>
           <div id="atm-fit-summary" class="plot-hint">No fit computed</div>
+        </section>
+
+        <section id="atm-management-tools" class="control-section astrometry-management-section" hidden>
+          <h2>Management</h2>
+          <label class="checkline">
+            <input id="atm-push-coordinate" type="checkbox" checked>
+            <span>Push fitted reference coordinate</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-push-pm" type="checkbox" checked>
+            <span>Push fitted proper motion</span>
+          </label>
+          <label class="checkline">
+            <input id="atm-push-parallax" type="checkbox">
+            <span>Push fitted parallax</span>
+          </label>
+          <div class="astrometry-push-fields">
+            <label>
+              MOCAPID
+              <input id="atm-push-moca-pid" type="text" placeholder="optional">
+            </label>
+            <label>
+              Origin
+              <input id="atm-push-origin" type="text">
+            </label>
+            <label>
+              Comments
+              <textarea id="atm-push-comments" rows="3"></textarea>
+            </label>
+          </div>
+          <label class="checkline">
+            <input id="atm-push-is-public" type="checkbox">
+            <span>Public rows</span>
+          </label>
+          <label>
+            RLS
+            <input id="atm-push-rls" type="text" value="gagne">
+          </label>
+          <label class="checkline">
+            <input id="atm-push-allow-duplicate" type="checkbox">
+            <span>Allow duplicate push</span>
+          </label>
+          <div class="button-grid astrometry-push-actions">
+            <button id="atm-push-preview" type="button" disabled>Preview push</button>
+            <button id="atm-push-apply" type="button" disabled>Push to MOCAdb</button>
+          </div>
+          <div id="atm-push-status" class="cache-status astrometry-push-status"></div>
         </section>
       </aside>
 
@@ -105,7 +169,7 @@
         <div class="astrometry-toolbar">
           <div>
             <div id="atm-summary" class="astrometry-summary">No target loaded</div>
-            <div id="atm-hint" class="plot-hint">Click or box-select points in either plot.<br>Double-click an empty region of the plot to reset Plotly selection</div>
+            <div id="atm-hint" class="plot-hint"><br>Click or box-select points in either plot.<br>Double-click an empty region of the plot to reset Plotly selection</div>
           </div>
           <div class="export-actions astrometry-actions">
             <button id="atm-export-csv" type="button" disabled>Export CSV</button>
@@ -149,6 +213,8 @@
           <tr><td><code>adjust_ref</code></td><td><code>0</code> disables it</td><td>Uses adjusted reference astrometry by default.</td></tr>
           <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated rows, or missions explicitly marked as display-ready, by default.</td></tr>
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
+          <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
+          <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses the moving-star plus outlier likelihood during PM fits by default.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
       </table>
@@ -164,6 +230,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/astrometry.js?v=url-sync-20260514b"></script>
+    <script src="static/astrometry.js?v=astrometry-mocadb-push-20260615a"></script>
 </body>
 </html>

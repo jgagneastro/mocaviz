@@ -46,6 +46,8 @@ const sptState = {
   hasAppliedInitialIndex: false,
   fixedRvValue: sptDefaultFixedRv,
   cloudAlphaValue: sptDefaultCloudAlpha,
+  authContext: { role: "", hasCredentials: false, privateDb: false },
+  managementBusy: false,
 };
 
 const sptEl = {};
@@ -66,7 +68,9 @@ function sptAppUrl(path) {
 async function initSpectralTyping() {
   collectSpectralElements();
   readSpectralUrlState();
+  await loadSpectralAuthContext();
   bindSpectralControls();
+  updateSpectralManagementVisibility();
   await loadSpectralGrid();
   if (sptState.selectedSpecid !== null) {
     await searchSpectra("", { selectedSpecid: sptState.selectedSpecid, quiet: true });
@@ -102,6 +106,12 @@ function collectSpectralElements() {
     "spt-allred",
     "spt-showfeatures",
     "spt-disable-lowres",
+    "spt-management-tools",
+    "spt-management-proposal",
+    "spt-management-rls",
+    "spt-management-author",
+    "spt-push-spectral-type",
+    "spt-management-status",
     "spt-plot",
     "spt-chi2-plot",
     "spt-plot-loader",
@@ -216,6 +226,21 @@ function bindSpectralControls() {
   sptEl["spt-export-fits"].addEventListener("click", () => exportSpectralTyping("fits"));
   sptEl["spt-export-votable"].addEventListener("click", () => exportSpectralTyping("votable"));
   sptEl["spt-clear-cache"].addEventListener("click", () => clearSpectralCache());
+  sptEl["spt-push-spectral-type"]?.addEventListener("click", () => pushCurrentSpectralType());
+  for (const id of ["spt-management-rls", "spt-management-author"]) {
+    sptEl[id]?.addEventListener("input", () => updateSpectralManagementControls());
+  }
+  window.addEventListener("mocaviz-auth-context", (event) => {
+    const detail = event.detail || {};
+    const role = String(detail.role || "").trim().toLowerCase();
+    sptState.authContext = {
+      role,
+      hasCredentials: Boolean(detail.hasCredentials ?? detail.has_credentials),
+      privateDb: Boolean(detail.privateDb ?? detail.private_db ?? role),
+      source: detail.source || "",
+    };
+    updateSpectralManagementVisibility();
+  });
   window.addEventListener("resize", debounce(() => {
     if (!sptEl["spt-comparison-results"].hidden) positionSearchResultsPopup();
     if (sptState.comparePayload) renderSpectralTyping();
@@ -412,6 +437,7 @@ function clearComparisonSpectrum() {
   updateSpectralUrl();
   setSpectralStatus("Select a comparison spectrum", "");
   renderEmptySpectralPlots("Select a comparison spectrum");
+  updateSpectralManagementControls();
   sptEl["spt-comparison-search"].focus();
 }
 
@@ -526,6 +552,7 @@ function applyQuickStandardPayload(payload) {
   updateLowResControl(mergedPayload);
   updateMetadata(mergedPayload, entry);
   renderCorrectionInfo(mergedPayload);
+  updateSpectralManagementControls();
   updateGridButtons();
 }
 
@@ -606,6 +633,191 @@ function currentStandardSpecid() {
   return specid === null || specid === undefined ? null : Number(specid);
 }
 
+function currentSpectralEntry() {
+  const entries = filteredEntries();
+  if (!entries.length) return null;
+  const index = Math.min(Math.max(0, sptState.currentIndex || 0), entries.length - 1);
+  return entries[index] || null;
+}
+
+async function loadSpectralAuthContext() {
+  sptState.authContext = spectralUrlAuthContext();
+  try {
+    const payload = window.MocaAuthContext?.ready
+      ? await window.MocaAuthContext.ready
+      : await fetchJsonUrl(sptAppUrl(`api/auth/context${window.location.search || ""}`));
+    const role = String(payload?.role || "").trim().toLowerCase();
+    sptState.authContext = {
+      role,
+      hasCredentials: Boolean(payload?.hasCredentials ?? payload?.has_credentials),
+      privateDb: Boolean(payload?.privateDb ?? payload?.private_db ?? role),
+      source: payload?.source || "",
+    };
+  } catch (error) {
+    sptState.authContext = spectralUrlAuthContext();
+  }
+}
+
+function spectralUrlAuthContext() {
+  const params = new URLSearchParams(window.location.search);
+  const user = String(params.get("user") || params.get("username") || "").trim().toLowerCase();
+  const password = params.get("pwd") ?? params.get("password");
+  const dbName = String(params.get("dbase") || params.get("db") || params.get("database") || "").trim().toLowerCase();
+  const privateDb = dbName === "mocadb_private_tables";
+  const hasCredentials = user === "management" && password !== null && String(password).length > 0;
+  return {
+    role: hasCredentials && privateDb ? "management" : "",
+    hasCredentials,
+    privateDb,
+    source: "url",
+  };
+}
+
+function updateSpectralManagementVisibility() {
+  if (!sptEl["spt-management-tools"]) return;
+  sptEl["spt-management-tools"].hidden = !hasSpectralManagementCredentials();
+  updateSpectralManagementControls();
+}
+
+function hasSpectralManagementCredentials() {
+  const context = sptState.authContext || spectralUrlAuthContext();
+  return context.role === "management" && Boolean(context.hasCredentials) && context.privateDb !== false;
+}
+
+function spectralManagementToolsVisible() {
+  return Boolean(sptEl["spt-management-tools"] && !sptEl["spt-management-tools"].hidden);
+}
+
+function isSpectralMockMode() {
+  return asSpectralBool(new URLSearchParams(window.location.search).get("mock"));
+}
+
+function currentSpectralTypeProposal() {
+  const payload = sptState.comparePayload;
+  const entry = currentSpectralEntry();
+  if (!payload || !entry) return null;
+  const comparisonRows = payload.comparison || [];
+  const wavelengths = comparisonRows.map((row) => Number(row.wv)).filter(Number.isFinite);
+  const maxWavelength = wavelengths.length ? Math.max(...wavelengths) : null;
+  const meta = payload.comparisonMetadata || {};
+  const comparisonSpecid = parseInteger(payload.meta?.specid ?? sptState.selectedSpecid);
+  const standardSpecid = parseInteger(entry.moca_specid);
+  const gridHistoryId = parseInteger(entry.moca_sptgridhid);
+  const comparisonOid = parseInteger(meta.moca_oid);
+  const spectralTypeNumber = finiteNumber(entry.spectral_type_number) ? Number(entry.spectral_type_number) : null;
+  const deredden = Boolean(sptEl["spt-deredden"]?.checked);
+  const cloud = Boolean(sptEl["spt-cloud"]?.checked);
+  return {
+    moca_oid: comparisonOid,
+    moca_specid: comparisonSpecid,
+    moca_instid: meta.moca_instid || null,
+    object_designation: meta.designation || meta.spectrum_name || null,
+    comparison_label: comparisonShortName(payload),
+    spectral_type: entry.spectral_type || "",
+    spectral_type_number: spectralTypeNumber,
+    spectral_type_unc: 0.5,
+    quality_flag: "B",
+    moca_sptgridhid: gridHistoryId,
+    spectral_standard_moca_specid: standardSpecid,
+    standard_designation: entry.object_designation || entry.designation || null,
+    standard_label: entry.label || entry.object_designation || entry.designation || `specid${standardSpecid || ""}`,
+    grid: entry.grid || "",
+    gravity_class: entry.gravity_class || "",
+    reduced_chi2: finiteNumber(entry.reduced_chi2) ? Number(entry.reduced_chi2) : null,
+    wavelength_regime: maxWavelength !== null && maxWavelength < 0.8 ? "visible" : "near_infrared",
+    comparison_wavelength_max_um: maxWavelength,
+    norm_regions: payload.meta?.norm_regions || parseNormText(sptEl["spt-norm"]?.value || sptDefaultNormText),
+    norm_regions_text: payload.meta?.norm_regions_text || (sptEl["spt-norm"]?.value || sptDefaultNormText),
+    bins_per_micron: parseInteger(sptEl["spt-bins"]?.value) || sptDefaultBins,
+    correction: deredden ? "dereddened" : (cloud ? "bd_slope" : "none"),
+    deredden,
+    cloud_correction: cloud,
+    best_parameters: spectralTypingBestParameters(entry),
+    rls: managementInputValue("spt-management-rls", "gagne"),
+    author: managementInputValue("spt-management-author", "gagne"),
+  };
+}
+
+function managementInputValue(id, fallback) {
+  const value = String(sptEl[id]?.value || "").trim();
+  return value || fallback;
+}
+
+function spectralManagementUnavailableReason(proposal = currentSpectralTypeProposal()) {
+  if (!hasSpectralManagementCredentials()) return "Management credentials are required.";
+  if (isSpectralMockMode()) return "Mock comparisons cannot be written to MOCAdb.";
+  if (!proposal) return "No comparison displayed.";
+  if (!proposal.moca_specid) return "Comparison moca_specid is missing.";
+  if (!proposal.moca_oid) return "Comparison moca_oid is missing.";
+  if (!proposal.spectral_standard_moca_specid) return "Standard moca_specid is missing.";
+  if (!proposal.moca_sptgridhid) return "Grid history id is missing.";
+  if (!proposal.spectral_type) return "Spectral type is missing.";
+  if (!finiteNumber(proposal.spectral_type_number)) return "Spectral type number is missing.";
+  if (!proposal.rls) return "RLS is required.";
+  return "";
+}
+
+function updateSpectralManagementControls() {
+  if (!spectralManagementToolsVisible()) return;
+  const proposal = currentSpectralTypeProposal();
+  const reason = spectralManagementUnavailableReason(proposal);
+  if (sptEl["spt-management-proposal"]) {
+    sptEl["spt-management-proposal"].innerHTML = proposal ? spectralManagementProposalHtml(proposal) : "No comparison displayed";
+  }
+  if (sptEl["spt-push-spectral-type"]) {
+    sptEl["spt-push-spectral-type"].disabled = sptState.managementBusy || Boolean(reason);
+    sptEl["spt-push-spectral-type"].title = reason || "";
+  }
+  if (reason && !sptState.managementBusy && sptEl["spt-management-status"]) {
+    setSpectralManagementStatus(reason, "error");
+  } else if (!reason && sptEl["spt-management-status"]?.classList.contains("error")) {
+    setSpectralManagementStatus("");
+  }
+}
+
+function spectralManagementProposalHtml(proposal) {
+  const chi = finiteNumber(proposal.reduced_chi2) ? formatNumber(proposal.reduced_chi2, 2) : "N/A";
+  const standard = proposal.standard_label || proposal.standard_designation || `specid${proposal.spectral_standard_moca_specid}`;
+  return [
+    `<div><strong>${escapeHtml(proposal.spectral_type)}</strong> for ${escapeHtml(proposal.comparison_label || `specid${proposal.moca_specid}`)}</div>`,
+    `<div>Standard: ${escapeHtml(standard)} (${escapeHtml(proposal.spectral_standard_moca_specid)})</div>`,
+    `<div>Grid: ${escapeHtml(proposal.grid || "N/A")}; χ²: ${escapeHtml(chi)}</div>`,
+  ].join("");
+}
+
+async function pushCurrentSpectralType() {
+  const proposal = currentSpectralTypeProposal();
+  const reason = spectralManagementUnavailableReason(proposal);
+  if (reason) {
+    setSpectralManagementStatus(reason, "error");
+    updateSpectralManagementControls();
+    return;
+  }
+  const label = proposal.comparison_label || `specid${proposal.moca_specid}`;
+  if (!window.confirm(`Push spectral type ${proposal.spectral_type} for ${label} into data_spectral_types?`)) return;
+
+  sptState.managementBusy = true;
+  setSpectralManagementStatus("Pushing spectral type...");
+  updateSpectralManagementControls();
+  try {
+    const payload = await postSpectralJson("api/spectral-typing/push-spectral-type", proposal);
+    if (!payload.ok) throw new Error(payload.error || "Could not push spectral type");
+    const insertedId = payload.inserted_id ? ` id ${payload.inserted_id}` : "";
+    setSpectralManagementStatus(`Inserted data_spectral_types${insertedId}.`);
+  } catch (error) {
+    setSpectralManagementStatus(error.message || String(error), "error");
+  } finally {
+    sptState.managementBusy = false;
+    updateSpectralManagementControls();
+  }
+}
+
+function setSpectralManagementStatus(text, mode = "") {
+  if (!sptEl["spt-management-status"]) return;
+  sptEl["spt-management-status"].textContent = text || "";
+  sptEl["spt-management-status"].classList.toggle("error", mode === "error");
+}
+
 function hasExplicitUrlStandardSelection() {
   return Boolean(sptState.initialGridParam) && sptState.initialGridIndexParam !== null;
 }
@@ -646,6 +858,7 @@ function renderSpectralTyping() {
   updateLowResControl(payload);
   updateMetadata(payload, entry);
   renderCorrectionInfo(payload);
+  updateSpectralManagementControls();
 }
 
 function renderSpectrumPlot(payload, entry) {
@@ -660,14 +873,21 @@ function renderSpectrumPlot(payload, entry) {
   const allred = sptEl["spt-allred"].checked;
   const standardColor = allred ? sptStandardRed : sptStandardPalette[Math.abs(sptState.currentIndex) % sptStandardPalette.length];
   const standardName = `Std. ${entry.spectral_type || ""}`.trim();
+  const lowres = finiteNumber(payload.meta?.average_resolving_power)
+    && payload.meta.average_resolving_power < 100
+    && !sptEl["spt-disable-lowres"].checked;
+  const standardLineColor = lowres ? mixHexColorWithWhite(standardColor, 0.4) : standardColor;
+  const standardCurveRows = lowres && Array.isArray(entry.spectrum_display) && entry.spectrum_display.length
+    ? entry.spectrum_display
+    : standardRows;
 
   for (const [index, region] of normRegions.entries()) {
-    const segment = segmentRows(standardRows, region);
+    const segment = segmentRows(standardCurveRows, region);
     if (!segment.length) continue;
     addSegmentedLineTraces(traces, segment, {
       type: "scatter",
       mode: "lines",
-      line: { shape: "hv", width: 4, color: standardColor },
+      line: { shape: "hv", width: 4, color: standardLineColor },
       opacity: correctedRows ? 0.3 : 1,
       name: correctedRows ? `${standardName}, original` : standardName,
       legendgroup: "standard-original",
@@ -683,7 +903,7 @@ function renderSpectrumPlot(payload, entry) {
       addSegmentedLineTraces(traces, segment, {
         type: "scatter",
         mode: "lines",
-        line: { shape: "hv", width: 4, color: standardColor },
+        line: { shape: "hv", width: 4, color: standardLineColor },
         opacity: 1,
         name: `${standardName}, ${correctionLabel}`,
         legendgroup: "standard-corrected",
@@ -693,23 +913,25 @@ function renderSpectrumPlot(payload, entry) {
     }
   }
 
-  const lowres = finiteNumber(payload.meta?.average_resolving_power)
-    && payload.meta.average_resolving_power < 100
-    && !sptEl["spt-disable-lowres"].checked;
   if (lowres) {
+    addLowResolutionStandardMarkerTraces(traces, correctedRows || standardRows, normRegions, {
+      standardColor,
+      standardName,
+      correctionLabel: correctedRows ? correctionLabel : "",
+    });
     traces.push({
       x: comparisonRows.map((row) => row.wv),
       y: comparisonRows.map((row) => row.spn),
       error_y: {
         type: "data",
         array: comparisonRows.map((row) => finiteNumber(row.espn) ? row.espn : 0),
-        color: "rgba(90,90,90,0.85)",
+        color: "rgba(90,90,90,0.38)",
         thickness: 2,
         width: 0,
       },
       type: "scatter",
       mode: "markers",
-      marker: { size: 9, color: "white", line: { color: "black", width: 2 } },
+      marker: { size: 10, color: "white", line: { color: "rgba(72,72,72,0.96)", width: 3.25 } },
       name: "Comparison",
       legendgroup: "comparison",
       hovertemplate: "Comparison<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
@@ -732,7 +954,7 @@ function renderSpectrumPlot(payload, entry) {
   }
 
   const title = spectrumTitle(payload, entry);
-  const values = [...comparisonRows, ...standardRows, ...(correctedRows || [])].filter((row) => finiteNumber(row.wv) && finiteNumber(row.spn));
+  const values = [...comparisonRows, ...standardRows, ...standardCurveRows, ...(correctedRows || [])].filter((row) => finiteNumber(row.wv) && finiteNumber(row.spn));
   const xVals = values.map((row) => row.wv);
   const yVals = values.map((row) => row.spn);
   const xRange = paddedRange(xVals, 0.015, [0.85, 2.4]);
@@ -1112,6 +1334,7 @@ function renderEmptySpectralPlots(message) {
   sptEl["spt-open-standard-report"].disabled = true;
   setSpectralTypingExportDisabled(true);
   updateLowResControl(null);
+  updateSpectralManagementControls();
 }
 
 const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
@@ -1262,6 +1485,29 @@ function addSegmentedLineTraces(traces, rows, baseTrace) {
       showlegend: Boolean(baseTrace.showlegend) && index === 0,
     });
   });
+}
+
+function addLowResolutionStandardMarkerTraces(traces, rows, normRegions, options) {
+  const { standardColor, standardName, correctionLabel } = options;
+  for (const region of normRegions) {
+    const segment = segmentRows(rows, region);
+    if (!segment.length) continue;
+    const chunks = splitRowsByWavelengthGap(segment);
+    chunks.forEach((chunk) => {
+      traces.push({
+        x: chunk.map((row) => row.wv),
+        y: chunk.map((row) => row.spn),
+        type: "scatter",
+        mode: "markers",
+        marker: { symbol: "diamond-open", size: 9, color: standardColor, line: { color: standardColor, width: 2.25 } },
+        opacity: 0.95,
+        name: correctionLabel ? `${standardName}, ${correctionLabel} sampled` : `${standardName}, sampled`,
+        legendgroup: "standard-lowres-markers",
+        showlegend: false,
+        hovertemplate: "Sampled standard<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
+      });
+    });
+  }
 }
 
 function splitRowsByWavelengthGap(rows) {
@@ -1569,7 +1815,7 @@ async function clearSpectralCache() {
 function apiParams() {
   const source = new URLSearchParams(window.location.search);
   const params = new URLSearchParams();
-  for (const key of ["host", "user", "pwd", "dbase", "mock"]) {
+  for (const key of ["host", "port", "user", "username", "pwd", "password", "dbase", "db", "database", "mock"]) {
     if (source.has(key)) params.set(key, source.get(key));
   }
   return params;
@@ -1675,6 +1921,16 @@ function medianNumber(values) {
   if (!sorted.length) return 0;
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : 0.5 * (sorted[mid - 1] + sorted[mid]);
+}
+
+function mixHexColorWithWhite(color, whiteFraction) {
+  const match = String(color || "").trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!match) return color;
+  const fraction = Math.max(0, Math.min(1, Number(whiteFraction) || 0));
+  const hex = match[1];
+  const channels = [0, 2, 4].map((start) => Number.parseInt(hex.slice(start, start + 2), 16));
+  const mixed = channels.map((channel) => Math.round(channel * (1 - fraction) + 255 * fraction));
+  return `rgb(${mixed[0]}, ${mixed[1]}, ${mixed[2]})`;
 }
 
 function escapeHtml(value) {
