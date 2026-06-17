@@ -34,8 +34,6 @@ async function initBanyanSigma() {
   updateBanyanSigmaRangeControls();
   renderBanyanSigmaInputTable();
   await loadBanyanSigmaModel();
-  const oid = currentBanyanSigmaOid();
-  if (oid) await loadBanyanSigmaObject(oid);
   setBanyanSigmaLoader(false);
 }
 

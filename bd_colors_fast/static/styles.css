@@ -3981,6 +3981,11 @@ body.is-management #spe-plot .modebar {
   overflow: auto;
 }
 
+.banyan-sigma-page .bsig-primary-action {
+  width: 100%;
+  margin: 4px 0 8px;
+}
+
 .bsig-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));

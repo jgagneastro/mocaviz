@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BANYAN Sigma</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-home-link-20260613a">
+  <link rel="stylesheet" href="static/styles.css?v=banyan-sigma-default-au-mic-20260617a">
   <script src="static/auth_theme.js?v=auth-context-20260615b"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
@@ -22,17 +22,18 @@
           <h2>MOCAdb</h2>
           <div class="designation-picker">
             <label for="bsig-object-search">Search by designation</label>
-            <input id="bsig-object-search" type="text" autocomplete="off" placeholder="Start typing a designation">
+            <input id="bsig-object-search" type="text" autocomplete="off" placeholder="Start typing a designation" value="AU Mic">
             <div id="bsig-object-results" class="designation-results" hidden></div>
           </div>
           <label>
             MOCAdb OID
-            <input id="bsig-moca-oid" type="number" min="1" step="1" placeholder="Optional">
+            <input id="bsig-moca-oid" type="number" min="1" step="1" placeholder="Optional" value="10946">
           </label>
           <div class="button-grid">
             <button id="bsig-load-object" type="button">Load</button>
             <button id="bsig-clear-object" type="button">Clear</button>
           </div>
+          <button id="bsig-run" type="button" class="bsig-primary-action">Run BANYAN Sigma</button>
           <div id="bsig-loaded-object" class="plot-hint">No object loaded</div>
         </section>
 
@@ -163,7 +164,6 @@
             <input id="bsig-no-xyz" type="checkbox">
             <span>No XYZ constraint</span>
           </label>
-          <button id="bsig-run" type="button">Run BANYAN Sigma</button>
         </section>
       </aside>
 
@@ -265,6 +265,6 @@
       </section>
     </main>
   </div>
-  <script src="static/banyan_sigma.js?v=banyan-sigma-20260604b"></script>
+  <script src="static/banyan_sigma.js?v=banyan-sigma-default-au-mic-20260617a"></script>
 </body>
 </html>
