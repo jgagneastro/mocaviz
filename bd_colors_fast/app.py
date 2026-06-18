@@ -4337,6 +4337,13 @@ def _spectra_explorer_label(row: dict[str, Any]) -> str:
     return label
 
 
+def _spectra_original_download_url_select(conn) -> str:
+    columns = _db_table_columns(conn, "moca_spectra")
+    if "original_download_url" in columns:
+        return "ms.original_download_url AS original_download_url"
+    return "NULL AS original_download_url"
+
+
 def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
     search_text = (query or "").strip()
     selected_specids = selected_specids or []
@@ -4347,32 +4354,33 @@ def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, se
     if search_text.isdigit():
         search_int = int(search_text)
 
-    base_query = """
-        SELECT
-            ms.moca_specid,
-            ms.moca_oid,
-            ms.moca_instid,
-            ms.instrument_mode_name,
-            ms.spectrum_name,
-            ms.data_collection_date,
-            ms.median_spectral_resolving_power,
-            COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
-            mo.designation,
-            spt.spectral_type
-        FROM moca_spectra ms
-        LEFT JOIN moca_objects mo USING(moca_oid)
-        LEFT JOIN (
-            SELECT moca_oid, spectral_type
-            FROM data_spectral_types
-            WHERE adopted = 1
-        ) spt USING(moca_oid)
-        WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
-            AND COALESCE(ms.ignored, 0) = 0
-    """
-
     rows: list[dict[str, Any]] = []
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
+        original_download_url_select = _spectra_original_download_url_select(conn)
+        base_query = f"""
+            SELECT
+                ms.moca_specid,
+                ms.moca_oid,
+                ms.moca_instid,
+                ms.instrument_mode_name,
+                ms.spectrum_name,
+                ms.data_collection_date,
+                ms.median_spectral_resolving_power,
+                {original_download_url_select},
+                COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+                mo.designation,
+                spt.spectral_type
+            FROM moca_spectra ms
+            LEFT JOIN moca_objects mo USING(moca_oid)
+            LEFT JOIN (
+                SELECT moca_oid, spectral_type
+                FROM data_spectral_types
+                WHERE adopted = 1
+            ) spt USING(moca_oid)
+            WHERE (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
+                AND COALESCE(ms.ignored, 0) = 0
+        """
         if selected_specids:
             specid_clause = ",".join(str(int(specid)) for specid in selected_specids)
             rows.extend(_records(_read_sql(conn, base_query + f"""
@@ -4441,6 +4449,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
     specid_clause = ",".join(str(int(specid)) for specid in clean_specids)
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
+        original_download_url_select = _spectra_original_download_url_select(conn)
         metadata_rows = _records(_read_sql(conn, f"""
             SELECT
                 ms.moca_specid,
@@ -4450,6 +4459,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                 ms.spectrum_name,
                 ms.data_collection_date,
                 ms.median_spectral_resolving_power,
+                {original_download_url_select},
                 COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
                 mo.designation,
                 spt.spectral_type

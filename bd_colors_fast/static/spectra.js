@@ -1204,10 +1204,31 @@ function renderDownloadLinks() {
   speEl["spe-download-links"].innerHTML = spectra.map((spectrum) => (
     `<button type="button" data-format="csv" data-specid="${spectrum.moca_specid}">CSV specid${spectrum.moca_specid}</button>`
     + `<button type="button" data-format="fits" data-specid="${spectrum.moca_specid}">FITS specid${spectrum.moca_specid}</button>`
+    + originalSpectrumDownloadLinkHtml(spectrum)
   )).join("");
   speEl["spe-download-links"].querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => downloadRawSpectrum(Number(button.dataset.specid), button.dataset.format || "csv"));
   });
+}
+
+function originalSpectrumDownloadUrl(spectrum) {
+  const rawUrl = String(spectrum?.metadata?.original_download_url || "").trim();
+  if (!rawUrl) return "";
+  try {
+    const url = new URL(rawUrl, window.location.href);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.href;
+  } catch (error) {
+    return "";
+  }
+}
+
+function originalSpectrumDownloadLinkHtml(spectrum) {
+  const url = originalSpectrumDownloadUrl(spectrum);
+  if (!url) return "";
+  const specid = Number(spectrum?.moca_specid);
+  const label = Number.isFinite(specid) ? `Original specid${specid}` : "Original file";
+  return `<a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" download>${escapeHtml(label)}</a>`;
 }
 
 function renderSpectraTable() {
