@@ -1,7 +1,8 @@
 const tfaDefaultOid = 11266;
 const tfaDefaultAid = "ABDMG";
 const tfaDefaultSources = ["Legacy", "Scalar Gaussian"];
-const tfaUniverseAgeMyr = 13800;
+const tfaAgeRangeMinMyr = 1;
+const tfaAgeRangeMaxMyr = 14000;
 const tfaTeamUsers = new Set(["collaborators", "management"]);
 const tfaSourceIds = {
   "MOCAFlows": "tfa-source-mocaflows",
@@ -49,6 +50,15 @@ function tfaAppUrl(path) {
 
 function tfaRootUrl(path) {
   return new URL(String(path || "").replace(/^\/+/, ""), `${window.location.origin}/`).toString();
+}
+
+function clampTrueflowAgeRange(lower, upper) {
+  const boundedLower = Math.max(tfaAgeRangeMinMyr, Number(lower));
+  const boundedUpper = Math.min(tfaAgeRangeMaxMyr, Number(upper));
+  if (Number.isFinite(boundedLower) && Number.isFinite(boundedUpper) && boundedUpper > boundedLower) {
+    return [boundedLower, boundedUpper];
+  }
+  return [tfaAgeRangeMinMyr, tfaAgeRangeMaxMyr];
 }
 
 async function initTrueflowAgePdfs() {
@@ -503,7 +513,7 @@ function curveStyle(source, index) {
 }
 
 function trueflowAgeLayout(title, curves, options) {
-  const axisRange = ageAxisRange(curves, options);
+  const axisRange = ageAxisRange(curves, options) || [tfaAgeRangeMinMyr, tfaAgeRangeMaxMyr];
   const markerShapes = [
     ...trueflowAgeMarkerShapes(options.adoptedAge, {
       lineColor: "#5b341c",
@@ -527,16 +537,14 @@ function trueflowAgeLayout(title, curves, options) {
     zeroline: false,
     automargin: true,
   };
-  if (axisRange) {
-    if (options.useLogX) {
-      xaxis.range = [Math.log10(axisRange[0]), Math.log10(axisRange[1])];
-      const ticks = plainLogTicks(axisRange[0], axisRange[1]);
-      xaxis.tickmode = "array";
-      xaxis.tickvals = ticks.values;
-      xaxis.ticktext = ticks.text;
-    } else {
-      xaxis.range = axisRange;
-    }
+  if (options.useLogX) {
+    xaxis.range = [Math.log10(axisRange[0]), Math.log10(axisRange[1])];
+    const ticks = plainLogTicks(axisRange[0], axisRange[1]);
+    xaxis.tickmode = "array";
+    xaxis.tickvals = ticks.values;
+    xaxis.ticktext = ticks.text;
+  } else {
+    xaxis.range = axisRange;
   }
   const yaxis = {
     title: { text: options.showCdf ? "CDF" : "Probability density", font: { size: 22 } },
@@ -813,7 +821,14 @@ function renderEmptyTrueflowAge(message) {
     paper_bgcolor: "#e8e7ea",
     plot_bgcolor: "#ffffff",
     margin: { l: 76, r: 30, t: 68, b: 74 },
-    xaxis: { title: "Age (Myr)", showline: true, linewidth: 2, linecolor: "black", mirror: true },
+    xaxis: {
+      title: "Age (Myr)",
+      showline: true,
+      linewidth: 2,
+      linecolor: "black",
+      mirror: true,
+      range: [tfaAgeRangeMinMyr, tfaAgeRangeMaxMyr],
+    },
     yaxis: { title: "Probability density", showline: true, linewidth: 2, linecolor: "black", mirror: true },
   };
   Plotly.react(tfaEl["tfa-plot"], [], layout, plotConfig("mocadb_trueflow_age_pdfs_empty"));
@@ -968,9 +983,7 @@ function ageAxisRange(curves, options = {}) {
   const logPad = 0.06 * (Math.log10(xmax) - Math.log10(xmin));
   const lower = 10 ** (Math.log10(xmin) - logPad);
   const upper = 10 ** (Math.log10(xmax) + logPad);
-  if (options.useLogX) return [lower, upper];
-  const cappedUpper = Math.min(upper, tfaUniverseAgeMyr);
-  return [Math.min(lower, cappedUpper * 0.999), cappedUpper];
+  return clampTrueflowAgeRange(lower, upper);
 }
 
 function plainLogTicks(xmin, xmax) {

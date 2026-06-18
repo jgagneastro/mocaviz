@@ -32,6 +32,8 @@ def _np_trapezoid(y: Any, x: Any) -> Any:
 
 
 PAGE_PREFIX = "trueflow-agepdfs-v2"
+AGE_AXIS_MIN_MYR = 1.0
+AGE_AXIS_MAX_MYR = 14000.0
 
 ONLINE_DB_DEFAULTS = {
     "host": "104.248.106.21",
@@ -263,6 +265,21 @@ def _plain_log_age_ticks(xmin: float, xmax: float) -> tuple[list[float], list[st
         return f"{value:.2g}"
 
     return tick_values, [fmt(value) for value in tick_values]
+
+
+def _clamped_age_axis_range(xmin: Any, xmax: Any) -> list[float]:
+    try:
+        lower = float(xmin)
+        upper = float(xmax)
+    except (TypeError, ValueError):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    if not (math.isfinite(lower) and math.isfinite(upper)):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    lower = max(AGE_AXIS_MIN_MYR, lower)
+    upper = min(AGE_AXIS_MAX_MYR, upper)
+    if upper <= lower:
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    return [lower, upper]
 
 
 def _table_exists(engine, table_name: str) -> bool:
@@ -1244,6 +1261,7 @@ def _plot_age_pdfs(
             xaxis_title="Age (Myr)",
             yaxis_title="Probability density",
         )
+        fig.update_xaxes(range=[AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR])
         return fig, config, "", []
 
     selected_sources = selected_sources or []
@@ -1262,6 +1280,7 @@ def _plot_age_pdfs(
             title=f"Failed to load {scope} age PDFs for {target}: {exc}",
             margin=dict(l=70, r=30, t=70, b=65),
         )
+        fig.update_xaxes(range=[AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR])
         return fig, config, f"Load failed: {exc}", []
 
     curves = [curve for curve in curves if curve.source in selected_sources]
@@ -1361,6 +1380,18 @@ def _plot_age_pdfs(
     elif not use_logy:
         fig.update_yaxes(rangemode="tozero")
 
+    default_xrange = [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    if use_logx:
+        tick_values, tick_text = _plain_log_age_ticks(default_xrange[0], default_xrange[1])
+        fig.update_xaxes(
+            range=[math.log10(default_xrange[0]), math.log10(default_xrange[1])],
+            tickmode="array",
+            tickvals=tick_values,
+            ticktext=tick_text,
+        )
+    else:
+        fig.update_xaxes(range=default_xrange)
+
     if curves:
         all_age = np.concatenate([curve.age_myr for curve in curves if curve.age_myr.size])
         all_pdf = np.concatenate([curve.pdf_age for curve in curves if curve.pdf_age.size])
@@ -1373,6 +1404,7 @@ def _plot_age_pdfs(
                     pad = 0.06 * (math.log10(xmax) - math.log10(xmin))
                     plot_xmin = 10.0 ** (math.log10(xmin) - pad)
                     plot_xmax = 10.0 ** (math.log10(xmax) + pad)
+                    plot_xmin, plot_xmax = _clamped_age_axis_range(plot_xmin, plot_xmax)
                     tick_values, tick_text = _plain_log_age_ticks(plot_xmin, plot_xmax)
                     fig.update_xaxes(
                         range=[math.log10(plot_xmin), math.log10(plot_xmax)],
@@ -1382,6 +1414,6 @@ def _plot_age_pdfs(
                     )
                 else:
                     pad = 0.06 * (xmax - xmin)
-                    fig.update_xaxes(range=[max(0.0, xmin - pad), xmax + pad])
+                    fig.update_xaxes(range=_clamped_age_axis_range(xmin - pad, xmax + pad))
 
     return fig, config, status, table_rows

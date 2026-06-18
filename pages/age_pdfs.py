@@ -24,6 +24,8 @@ default_host = '104.248.106.21'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
+AGE_AXIS_MIN_MYR = 1.0
+AGE_AXIS_MAX_MYR = 14000.0
 
 env_host = os.environ.get('MOCA_HOST', default_host)
 env_username = os.environ.get('MOCA_USERNAME', default_username)
@@ -79,6 +81,22 @@ figure_export_config = {
 def get_engine_from_params(search: str):
     conn_str = get_connection_string_agepdfs(search)
     return create_engine(conn_str, pool_recycle=3600, pool_pre_ping=True)
+
+def clamp_age_axis_range(x_range):
+    if x_range is None:
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    try:
+        lower = float(x_range[0])
+        upper = float(x_range[1])
+    except (TypeError, ValueError, IndexError):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    if not (np.isfinite(lower) and np.isfinite(upper)):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    lower = max(AGE_AXIS_MIN_MYR, lower)
+    upper = min(AGE_AXIS_MAX_MYR, upper)
+    if upper <= lower:
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    return [lower, upper]
 
 def parse_bool_flag(qs_value, default=False):
     if qs_value is None:
@@ -488,6 +506,7 @@ def update_graph(moca_aid, methods, display_opts, search):
                     xmin = center / half
                     xmax = center * half
             x_range = [xmin, xmax]
+    x_range = clamp_age_axis_range(x_range)
 
     # Axes and layout
     fig.update_layout(
@@ -564,11 +583,10 @@ def update_graph(moca_aid, methods, display_opts, search):
             rangemode="tozero"  # force lower bound to 0 in linear mode
         )
 
-    # Apply dynamic x-range if computed (log axis expects log10 values)
-    if x_range is not None:
-        if use_logx:
-            fig.update_xaxes(range=[float(np.log10(x_range[0])), float(np.log10(x_range[1]))])
-        else:
-            fig.update_xaxes(range=x_range)
+    # Apply x-range; log axis expects log10 values.
+    if use_logx:
+        fig.update_xaxes(range=[float(np.log10(x_range[0])), float(np.log10(x_range[1]))])
+    else:
+        fig.update_xaxes(range=x_range)
 
     return fig, config, combined_stats_text

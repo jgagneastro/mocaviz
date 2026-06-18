@@ -23,6 +23,8 @@ default_host = '104.248.106.21'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
+AGE_AXIS_MIN_MYR = 1.0
+AGE_AXIS_MAX_MYR = 14000.0
 
 env_host = os.environ.get('MOCA_HOST', default_host)
 env_username = os.environ.get('MOCA_USERNAME', default_username)
@@ -50,6 +52,22 @@ def get_connection_string_oage(url_search=None):
 
 def get_engine_from_params(search: str):
     return create_engine(get_connection_string_oage(search), pool_recycle=3600, pool_pre_ping=True)
+
+def clamp_age_axis_range(x_range):
+    if x_range is None:
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    try:
+        lower = float(x_range[0])
+        upper = float(x_range[1])
+    except (TypeError, ValueError, IndexError):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    if not (np.isfinite(lower) and np.isfinite(upper)):
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    lower = max(AGE_AXIS_MIN_MYR, lower)
+    upper = min(AGE_AXIS_MAX_MYR, upper)
+    if upper <= lower:
+        return [AGE_AXIS_MIN_MYR, AGE_AXIS_MAX_MYR]
+    return [lower, upper]
 
 # -----------------------------------------------------------------------------
 # Page registration
@@ -446,6 +464,7 @@ def update_graph(moca_oid, methods, display_opts, search):
                     half = np.sqrt(min_factor)
                     xmin = center / half; xmax = center * half
             x_range = [xmin, xmax]
+    x_range = clamp_age_axis_range(x_range)
 
     # Layout + styling (identical to association page)
     fig.update_layout(
@@ -483,10 +502,9 @@ def update_graph(moca_oid, methods, display_opts, search):
         fig.update_yaxes(type=("log" if "log_y" in (display_opts or []) else "linear"),
                          showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.1)", rangemode="tozero")
 
-    if x_range is not None:
-        if "log_x" in (display_opts or []):
-            fig.update_xaxes(range=[float(np.log10(x_range[0])), float(np.log10(x_range[1]))])
-        else:
-            fig.update_xaxes(range=x_range)
+    if "log_x" in (display_opts or []):
+        fig.update_xaxes(range=[float(np.log10(x_range[0])), float(np.log10(x_range[1]))])
+    else:
+        fig.update_xaxes(range=x_range)
 
     return fig, config, combined_stats_text
