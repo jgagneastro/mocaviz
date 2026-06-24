@@ -23,6 +23,9 @@ bcg_color = 'rgb(255,255,255)'
 
 initial_specids = [59595,13510,8168]
 
+LOWRES_PIX_PER_RES_ELEMENT_DEFAULT = 2.2
+LOWRES_RESOLVING_POWER_PER_PIXEL_THRESHOLD = 45.0
+
 figure_export_config = {
   'toImageButtonOptions': {
     'format': 'png', # one of png, svg, jpeg, webp
@@ -35,7 +38,9 @@ figure_export_config = {
 
 
 query_e = """
-    SELECT ds.moca_specid, ms.spectrum_name, COALESCE(ms.flux_units,"NO_UNITS") AS flux_units, ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp
+    SELECT ds.moca_specid, ms.spectrum_name, COALESCE(ms.flux_units,"NO_UNITS") AS flux_units,
+        ms.median_spectral_resolving_power, ms.pix_per_res_element,
+        ds.wavelength_angstrom*1e-4 AS lam, flux_flambda AS sp, flux_flambda_unc AS esp
     FROM moca_spectra ms
     JOIN data_spectra ds ON(ds.moca_specid=ms.moca_specid AND ds.ignored=0)
 """
@@ -139,6 +144,8 @@ EMPTY_SPECTRA_DF = pd.DataFrame(
         "moca_specid",
         "spectrum_name",
         "flux_units",
+        "median_spectral_resolving_power",
+        "pix_per_res_element",
         "lam",
         "sp",
         "esp",
@@ -190,6 +197,30 @@ def average_resolving_power(lam_array):
     if not np.any(valid):
         return np.nan
     return float(np.nanmean(lam_mid[valid] / dlam[valid]))
+
+def _first_finite_value(values):
+    numeric = pd.to_numeric(pd.Series(values), errors='coerce').to_numpy(dtype=float)
+    numeric = numeric[np.isfinite(numeric)]
+    return float(numeric[0]) if numeric.size else np.nan
+
+def lowres_resolving_power_per_pixel(df_spectrum):
+    if df_spectrum is None or df_spectrum.empty or 'median_spectral_resolving_power' not in df_spectrum:
+        return np.nan
+    median_r = _first_finite_value(df_spectrum['median_spectral_resolving_power'])
+    if not np.isfinite(median_r):
+        return np.nan
+    pix_per_res_element = LOWRES_PIX_PER_RES_ELEMENT_DEFAULT
+    if 'pix_per_res_element' in df_spectrum:
+        pix_value = _first_finite_value(df_spectrum['pix_per_res_element'])
+        if np.isfinite(pix_value):
+            pix_per_res_element = pix_value
+    if not np.isfinite(pix_per_res_element) or pix_per_res_element <= 0:
+        return np.nan
+    return median_r / pix_per_res_element
+
+def is_lowres_spectrum(df_spectrum):
+    resolving_power_per_pixel = lowres_resolving_power_per_pixel(df_spectrum)
+    return np.isfinite(resolving_power_per_pixel) and resolving_power_per_pixel < LOWRES_RESOLVING_POWER_PER_PIXEL_THRESHOLD
 
 # Assign color to legend
 # Eventually move this to a subroutine
@@ -597,8 +628,7 @@ def generate_spectrum(df_spectra, df_aids, selected_data, style, showfeatures, n
         legend_group = f"spec_{unique_specids[i]}"
 
         dfi = spec_map[unique_specids[i]].copy()
-        avg_resolving_power = average_resolving_power(dfi['lam'].values)
-        use_lowres_display = (not disable_lowres_display) and np.isfinite(avg_resolving_power) and (avg_resolving_power < 100.0)
+        use_lowres_display = (not disable_lowres_display) and is_lowres_spectrum(dfi)
 
         if use_lowres_display:
             valid_lowres = np.isfinite(dfi['lam'].values) & np.isfinite(dfi['sp'].values)
@@ -1098,8 +1128,7 @@ def update_lowres_toggle_state(jsonified_db_data, current_values):
         df = pd.read_json(jsonified_db_data[0], orient='split')
         if not df.empty:
             for _, dfi in df.groupby('moca_specid'):
-                avg_r = average_resolving_power(dfi['lam'].values)
-                if np.isfinite(avg_r) and avg_r < 100.0:
+                if is_lowres_spectrum(dfi):
                     has_lowres = True
                     break
 

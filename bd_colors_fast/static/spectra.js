@@ -3,7 +3,8 @@ const speDefaultNorm = "0.95-1.35";
 const speDefaultBinsPerMicron = 0;
 const speDefaultDisplayBinsPerMicron = 200;
 const speDefaultShowFeatures = true;
-const speLowResolutionThreshold = 100;
+const speDefaultPixPerResolutionElement = 2.2;
+const speLowResolutionResolvingPowerPerPixelThreshold = 45;
 const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
@@ -525,7 +526,7 @@ function renderSpectra() {
           },
           name: spectrum.name,
           legendgroup: String(spectrum.specid),
-          hovertemplate: hoverTemplate(),
+          hovertemplate: hoverTemplatesForCustomData(spectrum.points.map((point) => point.custom)),
           hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
         });
       }
@@ -541,7 +542,7 @@ function renderSpectra() {
           line: { color, width: 1.5 },
           name: spectrum.name,
           legendgroup: String(spectrum.specid),
-          hovertemplate: hoverTemplate(),
+          hovertemplate: hoverTemplatesForCustomData(lineData.custom),
           hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
         };
         traces.push(trace);
@@ -638,6 +639,12 @@ function processSpectraPayload() {
           specid: Number(spectrum.moca_specid),
           oid: metadata.moca_oid,
           label: spectrumName(metadata, Number(spectrum.moca_specid)),
+          instrument: instrumentLabel(metadata) || "N/A",
+          obsDate: observationDateLabel(metadata) || "N/A",
+          mocaPid: metadata.moca_pid || "",
+          spectrumRef: spectrumReferenceLabel(metadata),
+          spectrumRefUrl: spectrumReferenceUrl(metadata),
+          spectrumBibcode: spectrumBibcodeLabel(metadata),
           lam: row.lam,
           y,
           yerr,
@@ -665,6 +672,7 @@ function processSpectraPayload() {
     const effectiveAverageResolvingPower = finite(displayAverageResolvingPower)
       ? displayAverageResolvingPower
       : storedAverageResolvingPower;
+    const lowresResolvingPowerPerPixel = spectrumLowresResolvingPowerPerPixel(spectrum);
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
@@ -673,9 +681,10 @@ function processSpectraPayload() {
       points,
       ignoredPoints,
       displayResolutionDecreased: spectraDisplayResolutionDecreased(),
-      lowRes: finite(effectiveAverageResolvingPower) && Number(effectiveAverageResolvingPower) < speLowResolutionThreshold,
+      lowRes: finite(lowresResolvingPowerPerPixel) && lowresResolvingPowerPerPixel < speLowResolutionResolvingPowerPerPixelThreshold,
       averageResolvingPower: effectiveAverageResolvingPower,
       storedAverageResolvingPower,
+      lowresResolvingPowerPerPixel,
       color,
     };
   });
@@ -894,7 +903,7 @@ function ignoredPointsTrace(spectrum, color) {
     name: `${spectrum.name} ignored`,
     legendgroup: String(spectrum.specid),
     showlegend: false,
-    hovertemplate: hoverTemplate(),
+    hovertemplate: hoverTemplatesForCustomData(points.map((point) => point.custom)),
     hoverinfo: speEl["spe-hover"].checked ? undefined : "skip",
   };
 }
@@ -1135,12 +1144,24 @@ function featureAnnotationX(band, xlog) {
   return 0.5 * (x0 + x1);
 }
 
-function hoverTemplate() {
+function hoverTemplatesForCustomData(customDataItems) {
   if (!speEl["spe-hover"].checked) return undefined;
+  return (customDataItems || []).map((customData) => (
+    customData ? hoverTemplate(customData) : "<extra></extra>"
+  ));
+}
+
+function hoverTemplate(customData) {
+  const referenceLines = spectrumReferenceLabel(customData)
+    ? ["spectrum reference = %{customdata.spectrumRef}"]
+    : [];
   if (speEl["spe-snr"].checked) {
     return [
       "<b>%{customdata.label}</b>",
       "specid %{customdata.specid}",
+      "instrument = %{customdata.instrument}",
+      "obs date = %{customdata.obsDate}",
+      ...referenceLines,
       "λ = %{x:.6g} μm",
       "S/N per pixel = %{y:.6g}",
       "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
@@ -1152,6 +1173,9 @@ function hoverTemplate() {
   return [
     "<b>%{customdata.label}</b>",
     "specid %{customdata.specid}",
+    "instrument = %{customdata.instrument}",
+    "obs date = %{customdata.obsDate}",
+    ...referenceLines,
     "λ = %{x:.6g} μm",
     `${speEl["spe-normalize"].checked ? "Normalized flux" : "Flux"} = %{y:.6g} %{customdata.unit}`,
     "error = %{customdata.yerr:.3g} %{customdata.unit}",
@@ -1165,10 +1189,7 @@ function updateLowresToggleState(processed = null) {
   const processedSpectra = Array.isArray(processed) ? processed : null;
   const hasLowRes = processedSpectra
     ? processedSpectra.some((spectrum) => spectrum.lowRes)
-    : (
-      (speState.payload?.spectra || []).some((spectrum) => finite(spectrum.meta?.average_resolving_power) && Number(spectrum.meta.average_resolving_power) < speLowResolutionThreshold)
-      || spectraDisplayResolutionDecreased()
-    );
+    : (speState.payload?.spectra || []).some((spectrum) => spectrumUsesLowresDisplay(spectrum));
   speEl["spe-disable-lowres"].disabled = !hasLowRes;
   speEl["spe-disable-lowres-wrap"].classList.toggle("is-disabled", !hasLowRes);
   if (!hasLowRes) speEl["spe-disable-lowres"].checked = false;
@@ -1237,20 +1258,21 @@ function renderSpectraTable() {
     speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["plot", "specid", "oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "ignored"];
+    const columns = ["plot", "specid", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "ignored"];
     if (spectraManagementToolsVisible()) columns.splice(3, 0, "row_id");
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
       oid: point.oid,
       row_id: point.dataSpectraId ?? "",
+      reference: spectrumReferenceHtml(point),
       wavelength_um: formatNumber(point.lam, 6),
       display_flux: formatScientific(point.y),
       display_error: finite(point.yerr) ? formatScientific(point.yerr) : "",
       raw_flambda_w_m2_um: formatScientific(point.rawFlambdaUm),
       ignored: point.ignored,
     }));
-    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot"]) });
+    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "reference"]) });
     return;
   }
   const rows = (speState.processed || []).map((spectrum) => {
@@ -1262,14 +1284,15 @@ function renderSpectraTable() {
       object: spectrum.metadata?.designation || "",
       spectral_type: spectrum.metadata?.spectral_type || "",
       instrument: instrumentLabel(spectrum.metadata),
+      reference: spectrumReferenceHtml(spectrum.metadata),
       rows: spectrum.rawRows.length.toLocaleString(),
       resolving_power: finite(spectrum.averageResolvingPower) ? Math.round(Number(spectrum.averageResolvingPower)).toLocaleString() : "",
       report: reportUrl ? `<a class="report-link" href="${reportUrl}" target="_blank" rel="noopener">Report</a>` : "",
     };
   });
-  speEl["spe-table-title"].textContent = "Selected spectra";
+  speEl["spe-table-title"].textContent = `Selected spectra (${pluralize(rows.length, "spectrum", "spectra")})`;
   speEl["spe-table-subtitle"].textContent = "Click or box-select plotted points to inspect spectral rows.";
-  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "report"]) });
+  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "reference", "report"]) });
 }
 
 function spectraColorForSpecid(specid) {
@@ -1698,7 +1721,52 @@ function spectrumLegendName(metadata, specid) {
 }
 
 function instrumentLabel(metadata) {
-  return [metadata?.moca_instid, metadata?.instrument_mode_name ? `${metadata.instrument_mode_name} mode` : ""].filter(Boolean).join(", ");
+  return metadata?.instrument_description || metadata?.moca_instrument_description || metadata?.moca_instid || "";
+}
+
+function observationDateLabel(metadata) {
+  return metadata?.data_collection_date || metadata?.obs_date || metadata?.observation_date || "";
+}
+
+function spectrumReferenceLabel(metadata) {
+  if (!metadata?.moca_pid && !metadata?.mocaPid) return "";
+  return metadata?.spectrumRef
+    || metadata?.spectrum_ref
+    || metadata?.spectrum_reference
+    || metadata?.publication_name
+    || "";
+}
+
+function spectrumBibcodeLabel(metadata) {
+  return metadata?.spectrumBibcode
+    || metadata?.publication_bibcode
+    || metadata?.reference_bibcode
+    || metadata?.spectrum_bibcode
+    || "";
+}
+
+function spectrumReferenceUrl(metadata) {
+  const url = String(metadata?.spectrumRefUrl
+    || metadata?.spectrum_ref_url
+    || metadata?.publication_url
+    || metadata?.reference_url
+    || "").trim();
+  if (!url) return "";
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    return parsed.href;
+  } catch (error) {
+    return "";
+  }
+}
+
+function spectrumReferenceHtml(metadata) {
+  const label = spectrumReferenceLabel(metadata);
+  if (!label) return "";
+  const url = spectrumReferenceUrl(metadata);
+  if (!url) return escapeHtml(label);
+  return `<a class="report-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
 }
 
 function wavelengthMicron(value) {
@@ -1706,6 +1774,42 @@ function wavelengthMicron(value) {
   if (!finite(lam) || lam <= 0) return NaN;
   // The API normally returns microns, but older/mock payloads may still expose Angstrom values.
   return lam > 100 ? lam * 1e-4 : lam;
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    if (finite(value)) return Number(value);
+  }
+  return null;
+}
+
+function spectrumLowresResolvingPowerPerPixel(spectrum) {
+  const storedMetric = firstFiniteNumber(
+    spectrum?.meta?.lowres_resolving_power_per_pixel,
+    spectrum?.meta?.resolving_power_per_pixel
+  );
+  if (finite(storedMetric)) return storedMetric;
+  const medianResolvingPower = firstFiniteNumber(
+    spectrum?.meta?.median_spectral_resolving_power,
+    spectrum?.metadata?.median_spectral_resolving_power,
+    spectrum?.meta?.stored_average_resolving_power
+  );
+  if (!finite(medianResolvingPower)) return null;
+  const storedPixPerResElement = firstFiniteNumber(
+    spectrum?.meta?.pix_per_res_element,
+    spectrum?.metadata?.pix_per_res_element
+  );
+  const pixPerResElement = finite(storedPixPerResElement)
+    ? storedPixPerResElement
+    : speDefaultPixPerResolutionElement;
+  if (!finite(pixPerResElement) || pixPerResElement <= 0) return null;
+  return medianResolvingPower / pixPerResElement;
+}
+
+function spectrumUsesLowresDisplay(spectrum) {
+  const resolvingPowerPerPixel = spectrumLowresResolvingPowerPerPixel(spectrum);
+  return finite(resolvingPowerPerPixel)
+    && resolvingPowerPerPixel < speLowResolutionResolvingPowerPerPixelThreshold;
 }
 
 function parseNormRange(raw) {

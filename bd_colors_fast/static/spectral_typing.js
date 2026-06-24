@@ -3,6 +3,11 @@ const sptDefaultBins = 200;
 const sptDefaultSpecid = 450;
 const sptDefaultFixedRv = "3.1";
 const sptDefaultCloudAlpha = "1.7";
+const sptStandardsSourceMoca = "moca";
+const sptStandardsSourcePickles = "pickles";
+const sptPicklesDefaultGrid = "V solar M/H";
+const sptPicklesLuminosityOrder = new Map([["V", 0], ["IV", 1], ["III", 2], ["II", 3], ["I", 4]]);
+const sptPicklesMetallicityOrder = new Map([["strong", 0], ["solar", 1], ["weak", 2]]);
 const sptGridColors = ["#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5"];
 const sptStandardRed = "#E41A1C";
 const sptStandardPalette = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF"];
@@ -65,6 +70,47 @@ function sptAppUrl(path) {
   return new URL(String(path || "").replace(/^\/+/, ""), sptAppBaseUrl).toString();
 }
 
+function picklesGridSortParts(grid) {
+  const text = String(grid || "").trim();
+  const [luminosity = "", ...labelParts] = text.split(/\s+/);
+  const label = labelParts.join(" ").toLowerCase();
+  let metallicity = "solar";
+  if (label.startsWith("strong")) metallicity = "strong";
+  if (label.startsWith("weak")) metallicity = "weak";
+  return {
+    luminosityOrder: sptPicklesLuminosityOrder.get(luminosity.toUpperCase()) ?? 99,
+    metallicityOrder: sptPicklesMetallicityOrder.get(metallicity) ?? 99,
+    text: text.toLowerCase(),
+  };
+}
+
+function comparePicklesGridNames(a, b) {
+  const aa = picklesGridSortParts(a);
+  const bb = picklesGridSortParts(b);
+  return aa.luminosityOrder - bb.luminosityOrder
+    || aa.metallicityOrder - bb.metallicityOrder
+    || aa.text.localeCompare(bb.text);
+}
+
+function orderedGridOptions(options = []) {
+  const out = [...(options || [])];
+  if (selectedStandardsSource() !== sptStandardsSourcePickles) return out;
+  return out.sort((a, b) => comparePicklesGridNames(a?.value, b?.value));
+}
+
+function orderedGridValues(values = []) {
+  const out = [...new Set((values || []).map((value) => String(value)).filter(Boolean))];
+  if (selectedStandardsSource() !== sptStandardsSourcePickles) return out;
+  return out.sort(comparePicklesGridNames);
+}
+
+function defaultGridForCurrentStandardsSource(values = []) {
+  if (selectedStandardsSource() === sptStandardsSourcePickles && values.includes(sptPicklesDefaultGrid)) {
+    return sptPicklesDefaultGrid;
+  }
+  return values[0] || "";
+}
+
 async function initSpectralTyping() {
   collectSpectralElements();
   readSpectralUrlState();
@@ -88,6 +134,7 @@ function collectSpectralElements() {
     "spt-selected-spectrum",
     "spt-selected-spectrum-text",
     "spt-clear-spectrum",
+    "spt-standards-source",
     "spt-grid-select",
     "spt-prev-grid",
     "spt-next-grid",
@@ -145,6 +192,7 @@ function readSpectralUrlState() {
   sptEl["spt-allred"].checked = !asFalse(params.get("allred"));
   sptEl["spt-showfeatures"].checked = !asFalse(params.get("showfeatures"));
   sptEl["spt-disable-lowres"].checked = asSpectralBool(params.get("disable_lowres"));
+  sptEl["spt-standards-source"].value = spectralStandardsSourceUrlValue(params);
   if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
   sptState.fixedRvValue = spectralFixedRvUrlValue(params);
   sptState.cloudAlphaValue = spectralCloudAlphaUrlValue(params);
@@ -188,6 +236,21 @@ function bindSpectralControls() {
   sptEl["spt-prev-standard"].addEventListener("click", () => moveStandard(-1));
   sptEl["spt-next-standard"].addEventListener("click", () => moveStandard(1));
   bindSpectralKeyboardNavigation();
+  sptEl["spt-standards-source"].addEventListener("change", async () => {
+    sptState.comparePayload = null;
+    sptState.selectedGrid = "";
+    sptState.currentIndex = 0;
+    sptState.initialGridParam = "";
+    sptState.initialGridIndexParam = null;
+    sptState.hasAppliedInitialIndex = false;
+    updateSpectralUrl();
+    await loadSpectralGrid();
+    if (sptState.selectedSpecid !== null) {
+      await computeSpectralComparison();
+    } else {
+      renderEmptySpectralPlots("Select a comparison spectrum");
+    }
+  });
   sptEl["spt-deredden"].addEventListener("change", () => {
     if (sptEl["spt-deredden"].checked) sptEl["spt-cloud"].checked = false;
     updateProcessingModeControls();
@@ -308,13 +371,16 @@ function fixedParameterValue() {
 async function loadSpectralGrid() {
   setSpectralLoading(true);
   setSpectralStatus("Loading standards grid", "loading");
-  const payload = await fetchSpectralJson("api/spectral-typing/grid");
+  const params = new URLSearchParams();
+  params.set("standards_source", selectedStandardsSource());
+  const suffix = params.toString();
+  const payload = await fetchSpectralJson(`api/spectral-typing/grid${suffix ? `?${suffix}` : ""}`);
   if (!payload.ok) {
     setSpectralStatus(payload.error || "Could not load standards grid", "error");
     setSpectralLoading(false);
     return;
   }
-  sptState.gridOptions = payload.options || [];
+  sptState.gridOptions = orderedGridOptions(payload.options || []);
   sptState.gridData = payload.gridData || [];
   fillGridSelect();
   setSpectralStatus(`${payload.meta?.standard_count || 0} standards loaded`, "");
@@ -322,14 +388,16 @@ async function loadSpectralGrid() {
 }
 
 function fillGridSelect(options = sptState.gridOptions) {
-  sptEl["spt-grid-select"].innerHTML = options
+  const orderedOptions = orderedGridOptions(options);
+  sptState.gridOptions = orderedOptions;
+  sptEl["spt-grid-select"].innerHTML = orderedOptions
     .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label || option.value)}</option>`)
     .join("");
-  const values = options.map((option) => String(option.value));
+  const values = orderedOptions.map((option) => String(option.value));
   if (!sptState.hasAppliedInitialIndex && sptState.initialGridParam && values.includes(sptState.initialGridParam)) {
     sptState.selectedGrid = sptState.initialGridParam;
   } else if (!sptState.selectedGrid || !values.includes(sptState.selectedGrid)) {
-    sptState.selectedGrid = values[0] || "";
+    sptState.selectedGrid = defaultGridForCurrentStandardsSource(values);
   }
   if (sptState.selectedGrid) sptEl["spt-grid-select"].value = sptState.selectedGrid;
   updateGridButtons();
@@ -475,6 +543,7 @@ async function computeSpectralComparison() {
     cloud_alpha: cloud ? (fixedValue || sptDefaultCloudAlpha) : sptDefaultCloudAlpha,
     fix_rv: deredden ? (fixedValue || null) : null,
     priority_standard_specid: priorityStandardSpecid || null,
+    standards_source: selectedStandardsSource(),
   };
   if (canShowQuickStandard) {
     const quickToken = ++sptState.quickComputeToken;
@@ -504,7 +573,7 @@ async function computeSpectralComparison() {
     return;
   }
   sptState.comparePayload = payload;
-  sptState.gridOptions = payload.options || sptState.gridOptions;
+  sptState.gridOptions = orderedGridOptions(payload.options || sptState.gridOptions);
   chooseGridAndIndexAfterCompute();
   fillGridSelect(sptState.gridOptions);
   updateSpectralUrl();
@@ -540,7 +609,7 @@ function applyQuickStandardPayload(payload) {
     };
   }
   sptState.comparePayload = mergedPayload;
-  sptState.gridOptions = payload.options || sptState.gridOptions;
+  sptState.gridOptions = orderedGridOptions(payload.options || sptState.gridOptions);
   if (!sptState.selectedGrid) sptState.selectedGrid = String(quickEntry.grid || "");
   fillGridSelect(sptState.gridOptions);
   const localIndex = localIndexForEntry(quickEntry);
@@ -563,10 +632,17 @@ function chooseGridAndIndexAfterCompute() {
     sptState.currentIndex = 0;
     return;
   }
-  const gridValues = [...new Set(entries.map((entry) => String(entry.grid)).filter(Boolean))];
+  const gridValues = orderedGridValues(entries.map((entry) => entry.grid));
   let selectedGlobalBest = false;
   if (sptState.initialGridParam && gridValues.includes(sptState.initialGridParam)) {
     sptState.selectedGrid = sptState.initialGridParam;
+  } else if (
+    selectedStandardsSource() === sptStandardsSourcePickles
+    && !sptState.hasAppliedInitialIndex
+    && !sptState.initialGridParam
+    && gridValues.includes(sptPicklesDefaultGrid)
+  ) {
+    sptState.selectedGrid = sptPicklesDefaultGrid;
   } else if (!sptState.hasAppliedInitialIndex || !sptState.selectedGrid || !gridValues.includes(sptState.selectedGrid)) {
     selectedGlobalBest = selectBestGlobalStandard(gridValues);
   }
@@ -582,7 +658,7 @@ function chooseGridAndIndexAfterCompute() {
 function selectBestGlobalStandard(gridValues) {
   const best = bestGlobalStandardEntry();
   if (!best) {
-    sptState.selectedGrid = gridValues[0] || "";
+    sptState.selectedGrid = defaultGridForCurrentStandardsSource(gridValues);
     sptState.currentIndex = bestIndexForGrid(sptState.selectedGrid);
     return false;
   }
@@ -992,7 +1068,7 @@ function renderSpectrumPlot(payload, entry) {
 function renderChi2Plot(payload, selectedEntry) {
   const entries = payload.entries || [];
   const adjustedEntries = adjustedChiEntries(entries);
-  const grids = [...new Set(adjustedEntries.map((entry) => String(entry.grid)).filter(Boolean))];
+  const grids = orderedGridValues(adjustedEntries.map((entry) => entry.grid));
   const traces = [];
   const selectedAdjusted = adjustedEntries.find((entry) => Number(entry.moca_specid) === Number(selectedEntry.moca_specid) && String(entry.grid) === String(selectedEntry.grid));
   const selectedTrace = selectedAdjusted ? {
@@ -1018,6 +1094,7 @@ function renderChi2Plot(payload, selectedEntry) {
       mode: "lines",
       name: grid,
       legendgroup: grid,
+      legendrank: gridIndex,
       line: { color, width: 3 },
       hoverinfo: "skip",
     });
@@ -1462,7 +1539,7 @@ function moveStandard(delta) {
 
 function currentGridValues() {
   if (sptState.comparePayload?.entries?.length) {
-    return [...new Set(sptState.comparePayload.entries.map((entry) => String(entry.grid)).filter(Boolean))];
+    return orderedGridValues(sptState.comparePayload.entries.map((entry) => entry.grid));
   }
   return sptState.gridOptions.map((option) => String(option.value));
 }
@@ -1793,6 +1870,11 @@ function updateSpectralUrl() {
   else params.delete("showfeatures");
   if (sptEl["spt-disable-lowres"].checked) params.set("disable_lowres", "1");
   else params.delete("disable_lowres");
+  if (selectedStandardsSource() === sptStandardsSourcePickles) params.set("standards_source", sptStandardsSourcePickles);
+  else params.delete("standards_source");
+  params.delete("extend_pickles");
+  params.delete("pickles");
+  params.delete("pickles_standards");
   const nextUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", nextUrl);
 }
@@ -1819,6 +1901,33 @@ function apiParams() {
     if (source.has(key)) params.set(key, source.get(key));
   }
   return params;
+}
+
+function selectedStandardsSource() {
+  return sptEl["spt-standards-source"]?.value === sptStandardsSourcePickles
+    ? sptStandardsSourcePickles
+    : sptStandardsSourceMoca;
+}
+
+function spectralStandardsSourceUrlValue(params) {
+  const rawValue = String(
+    params.get("standards_source")
+    || params.get("standard_source")
+    || params.get("template_source")
+    || params.get("templates")
+    || ""
+  ).trim().toLowerCase();
+  if (["pickles", "pickles_spectral_library", "pickles-library", "pickles library"].includes(rawValue)) {
+    return sptStandardsSourcePickles;
+  }
+  if (
+    asSpectralBool(params.get("extend_pickles"))
+    || asSpectralBool(params.get("pickles"))
+    || asSpectralBool(params.get("pickles_standards"))
+  ) {
+    return sptStandardsSourcePickles;
+  }
+  return sptStandardsSourceMoca;
 }
 
 async function fetchSpectralJson(path) {

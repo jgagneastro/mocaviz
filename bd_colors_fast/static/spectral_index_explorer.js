@@ -679,13 +679,7 @@ function spectralIndexTraces(processed, calculation) {
     customdata: line.custom,
     line: { color: sieSpectrumColor, width: 1.7 },
     name: spectrumName(processed.metadata, processed.specid),
-    hovertemplate: [
-      "<b>%{customdata.label}</b>",
-      "lambda = %{x:.7g} um",
-      "display flux = %{y:.6g}",
-      "stored flux = %{customdata.flux:.4e}",
-      "<extra></extra>",
-    ].join("<br>"),
+    hovertemplate: line.custom.map(spectralIndexHoverTemplate),
   }];
 
   if (calculation.integrationRows?.length && calculation.continuum && sieEl["sie-show-continuum"].checked) {
@@ -748,11 +742,33 @@ function lineWithGaps(points) {
 }
 
 function pointCustomData(point) {
+  const metadata = sieState.processed?.metadata || {};
   return {
-    label: spectrumName(sieState.processed?.metadata || {}, sieState.processed?.specid || sieState.specid),
+    label: spectrumName(metadata, sieState.processed?.specid || sieState.specid),
+    instrument: instrumentLabel(metadata) || "N/A",
+    obsDate: observationDateLabel(metadata) || "N/A",
+    mocaPid: metadata.moca_pid || "",
+    spectrumRef: spectrumReferenceLabel(metadata),
     flux: point.flux,
     ignored: point.ignored,
   };
+}
+
+function spectralIndexHoverTemplate(customData) {
+  if (!customData) return "<extra></extra>";
+  const referenceLines = spectrumReferenceLabel(customData)
+    ? ["spectrum reference = %{customdata.spectrumRef}"]
+    : [];
+  return [
+    "<b>%{customdata.label}</b>",
+    "instrument = %{customdata.instrument}",
+    "obs date = %{customdata.obsDate}",
+    ...referenceLines,
+    "lambda = %{x:.7g} um",
+    "display flux = %{y:.6g}",
+    "stored flux = %{customdata.flux:.4e}",
+    "<extra></extra>",
+  ].join("<br>");
 }
 
 function continuumLineTrace(processed, continuum) {
@@ -1171,7 +1187,19 @@ function spectrumName(metadata, specid) {
 }
 
 function instrumentLabel(metadata) {
-  return [metadata?.moca_instid, metadata?.instrument_mode_name].filter(Boolean).join(" ");
+  return metadata?.instrument_description || metadata?.moca_instrument_description || metadata?.moca_instid || "";
+}
+
+function observationDateLabel(metadata) {
+  return metadata?.data_collection_date || metadata?.obs_date || metadata?.observation_date || "";
+}
+
+function spectrumReferenceLabel(metadata) {
+  if (!metadata?.moca_pid && !metadata?.mocaPid) return "";
+  return metadata?.spectrum_ref
+    || metadata?.spectrum_reference
+    || metadata?.publication_name
+    || "";
 }
 
 function normalizedMocaOid(oid) {

@@ -122,10 +122,22 @@ SPT_DEFAULT_BINS_PER_MICRON = 200
 SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
 SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
+SPT_STANDARDS_SOURCE_MOCA = "moca"
+SPT_STANDARDS_SOURCE_PICKLES = "pickles"
+SPT_PICKLES_LUMINOSITY_CLASS_ORDER = {"V": 0, "IV": 1, "III": 2, "II": 3, "I": 4}
+SPT_PICKLES_METALLICITY_ORDER = {"strong": 0, "solar": 1, "weak": 2}
+SPT_PICKLES_METALLICITY_GRID_LABELS = {
+    "weak": "weak M/H",
+    "strong": "strong M/H",
+    "solar": "solar M/H",
+}
+SPT_PICKLES_METALLICITY_MOCK_OFFSET = {"weak": -1, "solar": 0, "strong": 1}
 SPECTRA_EXPLORER_DEFAULT_SPECIDS = (13510,)
 SPECTRA_EXPLORER_MAX_SELECTED = int(os.environ.get("SPECTRA_EXPLORER_MAX_SELECTED", "30"))
 SPECTRA_EXPLORER_DEFAULT_BINS_PER_MICRON = int(os.environ.get("SPECTRA_EXPLORER_BINS_PER_MICRON", "0"))
 SPECTRA_EXPLORER_MAX_IGNORE_ROWS = int(os.environ.get("SPECTRA_EXPLORER_MAX_IGNORE_ROWS", "50000"))
+SPECTRA_EXPLORER_LOWRES_PIX_PER_RES_ELEMENT_DEFAULT = 2.2
+SPECTRA_EXPLORER_LOWRES_RESOLVING_POWER_PER_PIXEL_THRESHOLD = 45.0
 SPECTRAL_INDEX_EXPLORER_DEFAULT_SPECID = int(os.environ.get("SPECTRAL_INDEX_EXPLORER_DEFAULT_SPECID", "758"))
 SPECTRAL_INDEX_EXPLORER_PUBLIC_DEFAULT_SPECID = int(os.environ.get("SPECTRAL_INDEX_EXPLORER_PUBLIC_DEFAULT_SPECID", "758"))
 SPECTRAL_INDEX_EXPLORER_DEFAULT_DEFINITION_UID = os.environ.get(
@@ -572,6 +584,24 @@ def _as_false(value: Any) -> bool:
     if value is True:
         return False
     return str(value or "").strip().lower() in {"0", "false", "no", "off", "free", "fit"}
+
+
+def _spt_standards_source(args: Mapping[str, Any], body: Mapping[str, Any] | None = None) -> str:
+    sources = [args.get(key) for key in ("standards_source", "standard_source", "template_source", "templates")]
+    if body is not None:
+        sources.extend(body.get(key) for key in ("standards_source", "standard_source", "template_source", "templates"))
+    for value in sources:
+        text_value = str(value or "").strip().lower()
+        if text_value in {"pickles", "pickles_spectral_library", "pickles-library", "pickles library"}:
+            return SPT_STANDARDS_SOURCE_PICKLES
+        if text_value in {"moca", "moca_ucd", "moca_ucd_templates", "ucd", "ucd_templates"}:
+            return SPT_STANDARDS_SOURCE_MOCA
+    legacy_keys = ("extend_pickles", "pickles", "pickles_standards")
+    if any(_as_bool(args.get(key)) for key in legacy_keys):
+        return SPT_STANDARDS_SOURCE_PICKLES
+    if body is not None and any(_as_bool(body.get(key)) for key in legacy_keys):
+        return SPT_STANDARDS_SOURCE_PICKLES
+    return SPT_STANDARDS_SOURCE_MOCA
 
 
 def _safe_float(value: Any) -> float | None:
@@ -2024,6 +2054,21 @@ def _spt_average_resolving_power(wavelengths: Any) -> float | None:
     return float(np.nanmean(mid[valid] / dwv[valid]))
 
 
+def _spectra_lowres_resolving_power_per_pixel(
+    median_spectral_resolving_power: Any,
+    pix_per_res_element: Any,
+) -> float | None:
+    median_r = _spt_float(median_spectral_resolving_power)
+    if median_r is None:
+        return None
+    pix_value = _spt_float(pix_per_res_element)
+    if pix_value is None:
+        pix_value = SPECTRA_EXPLORER_LOWRES_PIX_PER_RES_ELEMENT_DEFAULT
+    if pix_value <= 0:
+        return None
+    return median_r / pix_value
+
+
 def _spt_weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
     if not np.any(valid):
@@ -3018,13 +3063,145 @@ def _spt_sql_wavelength_region_filter(regions: list[tuple[float, float]] | tuple
     return "AND (" + " OR ".join(clauses) + ")"
 
 
+def _spt_pickles_grid_label(luminosity_class: str, metallicity_variant: str) -> str:
+    luminosity = str(luminosity_class or "").strip().upper()
+    metallicity = str(metallicity_variant or "solar").strip().lower()
+    return f"{luminosity} {SPT_PICKLES_METALLICITY_GRID_LABELS.get(metallicity, 'solar M/H')}"
+
+
+def _spt_pickles_grid_name_sort_key(grid_name: Any) -> tuple[int, int, str]:
+    text = str(grid_name or "").strip()
+    luminosity_class, _, label = text.partition(" ")
+    label = label.strip().lower()
+    metallicity_variant = "solar"
+    if label.startswith("strong"):
+        metallicity_variant = "strong"
+    elif label.startswith("weak"):
+        metallicity_variant = "weak"
+    return (
+        SPT_PICKLES_LUMINOSITY_CLASS_ORDER.get(luminosity_class.upper(), 99),
+        SPT_PICKLES_METALLICITY_ORDER.get(metallicity_variant, 99),
+        text.lower(),
+    )
+
+
+def _spt_pickles_grid_row_sort_key(row: dict[str, Any]) -> tuple[int, int, float, int]:
+    spectral_type_number = _spt_float(row.get("spectral_type_number"))
+    specid = _spt_int_value(row.get("moca_specid"))
+    return (
+        SPT_PICKLES_LUMINOSITY_CLASS_ORDER.get(str(row.get("luminosity_class") or "").upper(), 99),
+        SPT_PICKLES_METALLICITY_ORDER.get(str(row.get("metallicity_variant") or "").lower(), 99),
+        spectral_type_number if spectral_type_number is not None else 1e9,
+        specid if specid is not None else 10**12,
+    )
+
+
+def _spt_pickles_metallicity_variant(prefix: str | None) -> str:
+    text = str(prefix or "").strip().lower()
+    if text == "w":
+        return "weak"
+    if text == "r":
+        return "strong"
+    return "solar"
+
+
+def _spt_pickles_spectral_type(spectrum_name: Any) -> tuple[str, float, str, str, str] | None:
+    name = str(spectrum_name or "").strip()
+    match = re.search(r"Pickles\s+UVKLIB\s+(.+)$", name, re.IGNORECASE)
+    if not match:
+        return None
+    raw_type = match.group(1).strip()
+    if not raw_type:
+        return None
+    display_type = re.sub(r"\s+", "", raw_type).replace("_", "-")
+    type_match = re.search(
+        r"^(?P<metallicity>[wr]?)(?P<class>[OBAFGKM])(?P<subtype>\d+(?:[._-]\d+)?(?:\.\d+)?)(?P<luminosity>III|II|IV|V|I)$",
+        display_type,
+        re.IGNORECASE,
+    )
+    if not type_match:
+        return None
+    spectral_class = type_match.group("class").upper()
+    subtype_text = type_match.group("subtype").replace("_", "-")
+    try:
+        if "-" in subtype_text:
+            bounds = [float(part) for part in subtype_text.split("-", 1)]
+            subtype = sum(bounds) / len(bounds)
+        else:
+            subtype = float(subtype_text)
+    except (TypeError, ValueError):
+        return None
+    spectral_type_number = _parse_spt_label(f"{spectral_class}{subtype:g}")
+    if spectral_type_number is None or spectral_type_number > 0:
+        return None
+    metallicity_prefix = type_match.group("metallicity").lower()
+    display_type = f"{metallicity_prefix}{spectral_class}{subtype_text}{type_match.group('luminosity').upper()}"
+    luminosity_class = type_match.group("luminosity").upper()
+    metallicity_variant = _spt_pickles_metallicity_variant(metallicity_prefix)
+    grid_label = _spt_pickles_grid_label(luminosity_class, metallicity_variant)
+    return display_type, float(spectral_type_number), luminosity_class, metallicity_variant, grid_label
+
+
+def _spt_pickles_grid_rows(conn) -> list[dict[str, Any]]:
+    rows = _records(_read_sql(conn, """
+        SELECT
+            ms.moca_specid,
+            ms.moca_oid,
+            ms.moca_pid,
+            ms.spectrum_name,
+            mo.designation AS object_designation,
+            ms.comments,
+            COALESCE(ms.bibcode, mp.bibcode) AS bibcode
+        FROM moca_spectra ms
+        LEFT JOIN moca_publications mp ON mp.moca_pid = ms.moca_pid
+        LEFT JOIN moca_objects mo USING(moca_oid)
+        WHERE COALESCE(ms.ignored, 0) = 0
+            AND ms.moca_pid = 'Pick98'
+            AND ms.spectrum_name LIKE 'Pickles UVKLIB %'
+        ORDER BY ms.moca_specid
+    """))
+    pickles_rows: list[dict[str, Any]] = []
+    for row in rows:
+        parsed = _spt_pickles_spectral_type(row.get("spectrum_name"))
+        if parsed is None:
+            continue
+        spectral_type, spectral_type_number, luminosity_class, metallicity_variant, grid_label = parsed
+        specid = _spt_int_value(row.get("moca_specid"))
+        if specid is None:
+            continue
+        spectrum_name = str(row.get("spectrum_name") or f"Pickles UVKLIB {spectral_type}").strip()
+        designation = spectrum_name.replace("Pickles UVKLIB ", "Pickles ", 1)
+        pickles_rows.append({
+            "grid": grid_label,
+            "moca_sptgridhid": None,
+            "moca_specid": specid,
+            "moca_oid": _pythonize(row.get("moca_oid")),
+            "object_designation": row.get("object_designation") or spectrum_name,
+            "comments": row.get("comments") or "Pickles spectral library template.",
+            "bibcode": row.get("bibcode") or "1998PASP..110..863P",
+            "spectral_type": spectral_type,
+            "spectral_type_number": round(float(spectral_type_number), 4),
+            "designation": designation,
+            "label": f"{spectral_type} ({designation})",
+            "gravity_class": None,
+            "luminosity_class": luminosity_class,
+            "metallicity_variant": metallicity_variant,
+            "metallicity_label": SPT_PICKLES_METALLICITY_GRID_LABELS.get(metallicity_variant, "solar M/H"),
+            "pickles_template": True,
+        })
+    pickles_rows.sort(key=_spt_pickles_grid_row_sort_key)
+    return pickles_rows
+
+
 def _load_spt_grid_from_db(
     args: dict[str, Any],
     include_spectra: bool = True,
     wavelength_regions: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None = None,
     bins_per_micron: int | None = None,
     standard_specids: list[int] | tuple[int, ...] | None = None,
+    standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
 ) -> dict[str, Any]:
+    standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     region_key = _spt_format_norm_regions(list(wavelength_regions or [])) if wavelength_regions else "all"
     bins_key = max(1, min(int(bins_per_micron or 0), 2000)) if bins_per_micron else 0
     standard_specid_key = "all"
@@ -3037,7 +3214,7 @@ def _load_spt_grid_from_db(
         }
         if standard_specid_set:
             standard_specid_key = ",".join(str(specid) for specid in sorted(standard_specid_set))
-    cache_key = f"{_spt_db_cache_key(args)}|grid|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|grid|source:{standards_source}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
     now = time.time()
     cached = _SPT_GRID_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -3063,35 +3240,40 @@ def _load_spt_grid_from_db(
 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
-        grid_rows = _records(_read_sql(conn, f"""
-            SELECT
-                dstg.moca_sptgridid AS grid,
-                dstg.moca_sptgridhid,
-                dstg.moca_specid,
-                dstg.moca_oid,
-                dstg.object_designation,
-                dstg.comments,
-                dstg.bibcode,
-                dstg.spectral_type,
-                dstg.spectral_type_number,
-                dstg.short_object_designation AS designation,
-                CONCAT(dstg.spectral_type, ' (', dstg.short_object_designation, ')') AS label,
-                CASE WHEN mstg.moca_sptgridid = 'extremely low gravity' THEN 'delta'
-                     WHEN mstg.moca_sptgridid = 'very low gravity' THEN 'gamma'
-                     WHEN mstg.moca_sptgridid = 'intermediate gravity' THEN 'beta'
-                     WHEN mstg.moca_sptgridid = 'field' THEN 'alpha'
-                     ELSE NULL
-                END AS gravity_class
-            FROM data_spectral_typing_grids dstg
-            JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
-            JOIN moca_spectra ms ON ms.moca_specid = dstg.moca_specid
-            WHERE dstg.ignored = 0
-                AND mstg.ignored = 0
-                AND dstg.moca_specid IS NOT NULL
-                AND COALESCE(ms.ignored, 0) = 0
-                {private_public_clause}
-            ORDER BY mstg.display_order, dstg.grid_index
-        """))
+        if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
+            grid_rows = _spt_pickles_grid_rows(conn)
+            pickles_template_count = len(grid_rows)
+        else:
+            grid_rows = _records(_read_sql(conn, f"""
+                SELECT
+                    dstg.moca_sptgridid AS grid,
+                    dstg.moca_sptgridhid,
+                    dstg.moca_specid,
+                    dstg.moca_oid,
+                    dstg.object_designation,
+                    dstg.comments,
+                    dstg.bibcode,
+                    dstg.spectral_type,
+                    dstg.spectral_type_number,
+                    dstg.short_object_designation AS designation,
+                    CONCAT(dstg.spectral_type, ' (', dstg.short_object_designation, ')') AS label,
+                    CASE WHEN mstg.moca_sptgridid = 'extremely low gravity' THEN 'delta'
+                         WHEN mstg.moca_sptgridid = 'very low gravity' THEN 'gamma'
+                         WHEN mstg.moca_sptgridid = 'intermediate gravity' THEN 'beta'
+                         WHEN mstg.moca_sptgridid = 'field' THEN 'alpha'
+                         ELSE NULL
+                    END AS gravity_class
+                FROM data_spectral_typing_grids dstg
+                JOIN moca_spectral_typing_grids mstg USING(moca_sptgridid)
+                JOIN moca_spectra ms ON ms.moca_specid = dstg.moca_specid
+                WHERE dstg.ignored = 0
+                    AND mstg.ignored = 0
+                    AND dstg.moca_specid IS NOT NULL
+                    AND COALESCE(ms.ignored, 0) = 0
+                    {private_public_clause}
+                ORDER BY mstg.display_order, dstg.grid_index
+            """))
+            pickles_template_count = 0
         specids = sorted({
             int(row["moca_specid"])
             for row in grid_rows
@@ -3165,6 +3347,8 @@ def _load_spt_grid_from_db(
             "private_db": _is_private_db(args),
             "grid_count": len(grids),
             "standard_count": len(grid_rows),
+            "standards_source": standards_source,
+            "pickles_template_count": int(pickles_template_count),
             "spectrum_row_count": int(len(spectra_df)),
             "spectrum_regions": list(wavelength_regions or []),
             "spectrum_bins_per_micron": bins_key or None,
@@ -3367,7 +3551,9 @@ def _precompute_spt_comparison(
     cloud_lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
     only_standard_specid: int | None = None,
     priority_standard_specid: int | None = None,
+    standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
 ) -> dict[str, Any]:
+    standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
     norm_key = _spt_format_norm_regions(norm_regions_param)
     fixed_key = "" if fixed_r_v is None else f"{fixed_r_v:.6g}"
@@ -3385,7 +3571,7 @@ def _precompute_spt_comparison(
     cloud_lambda0 = cloud_lambda0 if math.isfinite(cloud_lambda0) and cloud_lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
-    cache_key = f"{_spt_db_cache_key(args)}|compare|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|source:{standards_source}|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _SPT_COMPARE_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -3398,6 +3584,7 @@ def _precompute_spt_comparison(
         wavelength_regions=norm_regions_param,
         bins_per_micron=bins,
         standard_specids=[int(only_standard_specid)] if only_standard_specid is not None else None,
+        standards_source=standards_source,
     )
     spectrum_payload = _load_spt_spectrum_from_db(args, specid)
     comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
@@ -3723,6 +3910,8 @@ def _precompute_spt_comparison(
             "average_resolving_power": spectrum_payload.get("meta", {}).get("average_resolving_power"),
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
+            "standards_source": standards_source,
+            "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -3730,40 +3919,91 @@ def _precompute_spt_comparison(
     return payload
 
 
-def _mock_spt_grid_payload() -> dict[str, Any]:
+def _mock_spt_grid_payload(standards_source: str = SPT_STANDARDS_SOURCE_MOCA) -> dict[str, Any]:
+    standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     rows = []
     spectra = []
-    grids = [
-        ("field", 0.0),
-        ("low gravity", -0.7),
-    ]
-    specid = 800000
-    for grid_name, offset in grids:
-        for index, sptn in enumerate(np.linspace(7, 30, 16)):
-            specid += 1
-            label = _spt_label_from_number(float(sptn))
-            designation = f"MOCK-{grid_name[:2].upper()}-{index:02d}"
-            rows.append({
-                "grid": grid_name,
-                "moca_sptgridhid": 9000 + index,
-                "moca_specid": specid,
-                "moca_oid": 990000 + index,
-                "object_designation": designation,
-                "comments": "mock standard",
-                "bibcode": None,
-                "spectral_type": label,
-                "spectral_type_number": round(float(sptn), 2),
-                "designation": designation,
-                "label": f"{label} ({designation})",
-                "gravity_class": "alpha" if grid_name == "field" else "beta",
-            })
-            wv = np.arange(0.82, 2.45, 0.002)
-            water = 0.18 * np.exp(-0.5 * ((wv - 1.4) / 0.04) ** 2) + 0.22 * np.exp(-0.5 * ((wv - 1.9) / 0.06) ** 2)
-            methane = max(0, (sptn - 18) / 14) * (0.18 * np.exp(-0.5 * ((wv - 1.63) / 0.06) ** 2) + 0.2 * np.exp(-0.5 * ((wv - 2.22) / 0.08) ** 2))
-            slope = 1.0 + 0.08 * np.sin(wv * 5 + sptn / 5) + 0.04 * (sptn - 18 + offset) * (wv - 1.55)
-            flux = np.clip(slope - water - methane, 0.02, None)
-            for x, y in zip(wv, flux):
-                spectra.append({"moca_specid": specid, "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.02})
+    if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
+        pickles_template_groups = [
+            ("V", ["wF5V", "wG0V", "rF6V", "rG0V", "O5V", "B0V", "A0V", "F5V", "G2V", "K5V", "M0V"]),
+            ("IV", ["B2IV", "A0IV", "F5IV", "G0IV", "K0IV", "M0IV"]),
+            ("III", ["wG5III", "wK0III", "rG5III", "rK0III", "O8III", "B1III", "A0III", "G0III", "G5III", "K0III", "M0III"]),
+            ("II", ["B2II", "A0II", "F5II", "G5II", "K0II", "M0II"]),
+            ("I", ["B0I", "A0I", "F5I", "G0I", "K0I", "M0I"]),
+        ]
+        pickles_specid = 799900
+        grid_values: list[str] = []
+        for _group_luminosity, labels in pickles_template_groups:
+            for index, label in enumerate(labels):
+                parsed = _spt_pickles_spectral_type(f"Pickles UVKLIB {label}")
+                if parsed is None:
+                    continue
+                spectral_type, spectral_type_number, luminosity_class, metallicity_variant, grid_label = parsed
+                if grid_label not in grid_values:
+                    grid_values.append(grid_label)
+                pickles_specid += 1
+                designation = f"Pickles {spectral_type}"
+                rows.append({
+                    "grid": grid_label,
+                    "moca_sptgridhid": None,
+                    "moca_specid": pickles_specid,
+                    "moca_oid": None,
+                    "object_designation": f"Pickles UVKLIB {spectral_type}",
+                    "comments": "mock Pickles spectral library template",
+                    "bibcode": "1998PASP..110..863P",
+                    "spectral_type": spectral_type,
+                    "spectral_type_number": round(float(spectral_type_number), 2),
+                    "designation": designation,
+                    "label": f"{spectral_type} ({designation})",
+                    "gravity_class": None,
+                    "luminosity_class": luminosity_class,
+                    "metallicity_variant": metallicity_variant,
+                    "metallicity_label": SPT_PICKLES_METALLICITY_GRID_LABELS.get(metallicity_variant, "solar M/H"),
+                    "pickles_template": True,
+                })
+                wv = np.arange(0.82, 2.45, 0.002)
+                class_offset = SPT_PICKLES_LUMINOSITY_CLASS_ORDER.get(luminosity_class, 0)
+                metallicity_offset = SPT_PICKLES_METALLICITY_MOCK_OFFSET.get(metallicity_variant, 0)
+                slope = 1.0 + 0.03 * (float(spectral_type_number) / 20.0) * (wv - 1.55) + 0.01 * class_offset * np.cos(wv * 3)
+                lines = 0.02 * np.exp(-0.5 * ((wv - 1.25) / 0.02) ** 2)
+                flux = np.clip(slope - lines + 0.015 * np.sin(wv * 7 + index) + 0.006 * metallicity_offset, 0.02, None)
+                for x, y in zip(wv, flux):
+                    spectra.append({"moca_specid": pickles_specid, "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.02})
+        rows.sort(key=_spt_pickles_grid_row_sort_key)
+        grid_values.sort(key=_spt_pickles_grid_name_sort_key)
+        grids = [(grid_name, 0.0) for grid_name in grid_values]
+    else:
+        grids = [
+            ("field", 0.0),
+            ("low gravity", -0.7),
+        ]
+        specid = 800000
+        for grid_name, offset in grids:
+            for index, sptn in enumerate(np.linspace(7, 30, 16)):
+                specid += 1
+                label = _spt_label_from_number(float(sptn))
+                designation = f"MOCK-{grid_name[:2].upper()}-{index:02d}"
+                rows.append({
+                    "grid": grid_name,
+                    "moca_sptgridhid": 9000 + index,
+                    "moca_specid": specid,
+                    "moca_oid": 990000 + index,
+                    "object_designation": designation,
+                    "comments": "mock standard",
+                    "bibcode": None,
+                    "spectral_type": label,
+                    "spectral_type_number": round(float(sptn), 2),
+                    "designation": designation,
+                    "label": f"{label} ({designation})",
+                    "gravity_class": "alpha" if grid_name == "field" else "beta",
+                })
+                wv = np.arange(0.82, 2.45, 0.002)
+                water = 0.18 * np.exp(-0.5 * ((wv - 1.4) / 0.04) ** 2) + 0.22 * np.exp(-0.5 * ((wv - 1.9) / 0.06) ** 2)
+                methane = max(0, (sptn - 18) / 14) * (0.18 * np.exp(-0.5 * ((wv - 1.63) / 0.06) ** 2) + 0.2 * np.exp(-0.5 * ((wv - 2.22) / 0.08) ** 2))
+                slope = 1.0 + 0.08 * np.sin(wv * 5 + sptn / 5) + 0.04 * (sptn - 18 + offset) * (wv - 1.55)
+                flux = np.clip(slope - water - methane, 0.02, None)
+                for x, y in zip(wv, flux):
+                    spectra.append({"moca_specid": specid, "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.02})
     return {
         "options": [{"label": grid, "value": grid} for grid, _offset in grids],
         "gridData": rows,
@@ -3773,6 +4013,8 @@ def _mock_spt_grid_payload() -> dict[str, Any]:
             "private_db": False,
             "grid_count": len(grids),
             "standard_count": len(rows),
+            "standards_source": standards_source,
+            "pickles_template_count": len(rows) if standards_source == SPT_STANDARDS_SOURCE_PICKLES else 0,
             "spectrum_row_count": len(spectra),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
@@ -3827,8 +4069,10 @@ def _mock_spt_compare(
     cloud_lambda0: float = SPT_DEFAULT_CLOUD_LAMBDA0,
     only_standard_specid: int | None = None,
     priority_standard_specid: int | None = None,
+    standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
 ) -> dict[str, Any]:
-    grid_payload = _mock_spt_grid_payload()
+    standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
+    grid_payload = _mock_spt_grid_payload(standards_source=standards_source)
     spectrum_payload = _mock_spt_spectrum_payload(specid)
     temp_args = dict(args)
     temp_args["mock"] = "0"
@@ -3961,6 +4205,8 @@ def _mock_spt_compare(
             "average_resolving_power": spectrum_payload["meta"]["average_resolving_power"],
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
+            "standards_source": standards_source,
+            "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -4344,6 +4590,21 @@ def _spectra_original_download_url_select(conn) -> str:
     return "NULL AS original_download_url"
 
 
+def _spectra_resolution_metadata_select(conn) -> str:
+    columns = _db_table_columns(conn, "moca_spectra")
+    median_select = (
+        "ms.median_spectral_resolving_power AS median_spectral_resolving_power"
+        if "median_spectral_resolving_power" in columns
+        else "NULL AS median_spectral_resolving_power"
+    )
+    pix_select = (
+        "ms.pix_per_res_element AS pix_per_res_element"
+        if "pix_per_res_element" in columns
+        else "NULL AS pix_per_res_element"
+    )
+    return f"{median_select},\n                {pix_select}"
+
+
 def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
     search_text = (query or "").strip()
     selected_specids = selected_specids or []
@@ -4358,6 +4619,7 @@ def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, se
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
         original_download_url_select = _spectra_original_download_url_select(conn)
+        resolution_metadata_select = _spectra_resolution_metadata_select(conn)
         base_query = f"""
             SELECT
                 ms.moca_specid,
@@ -4366,12 +4628,22 @@ def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, se
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
-                ms.median_spectral_resolving_power,
+                ms.moca_pid,
+                ms.bibcode,
+                spec_pub.bibcode AS publication_bibcode,
+                spec_pub.url AS spectrum_ref_url,
+                mi.description AS instrument_description,
+                {resolution_metadata_select},
                 {original_download_url_select},
                 COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+                spec_pub.name AS spectrum_ref,
                 mo.designation,
                 spt.spectral_type
             FROM moca_spectra ms
+            LEFT JOIN moca_publications spec_pub
+                ON spec_pub.moca_pid = ms.moca_pid
+            LEFT JOIN moca_instruments mi
+                ON mi.moca_instid = ms.moca_instid
             LEFT JOIN moca_objects mo USING(moca_oid)
             LEFT JOIN (
                 SELECT moca_oid, spectral_type
@@ -4396,6 +4668,7 @@ def _search_spectra_explorer_from_db(args: dict[str, Any], query: str | None, se
                     OR COALESCE(mo.designation, '') LIKE :search_prefix
                     OR COALESCE(ms.spectrum_name, '') LIKE :search_like
                     OR COALESCE(ms.moca_instid, '') LIKE :search_like
+                    OR COALESCE(mi.description, '') LIKE :search_like
                     OR COALESCE(ms.instrument_mode_name, '') LIKE :search_like
                     OR EXISTS (
                         SELECT 1
@@ -4450,6 +4723,7 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
         original_download_url_select = _spectra_original_download_url_select(conn)
+        resolution_metadata_select = _spectra_resolution_metadata_select(conn)
         metadata_rows = _records(_read_sql(conn, f"""
             SELECT
                 ms.moca_specid,
@@ -4458,12 +4732,22 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
-                ms.median_spectral_resolving_power,
+                ms.moca_pid,
+                ms.bibcode,
+                spec_pub.bibcode AS publication_bibcode,
+                spec_pub.url AS spectrum_ref_url,
+                mi.description AS instrument_description,
+                {resolution_metadata_select},
                 {original_download_url_select},
                 COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+                spec_pub.name AS spectrum_ref,
                 mo.designation,
                 spt.spectral_type
             FROM moca_spectra ms
+            LEFT JOIN moca_publications spec_pub
+                ON spec_pub.moca_pid = ms.moca_pid
+            LEFT JOIN moca_instruments mi
+                ON mi.moca_instid = ms.moca_instid
             LEFT JOIN moca_objects mo USING(moca_oid)
             LEFT JOIN data_spectral_types spt
                 ON spt.moca_oid = ms.moca_oid
@@ -4531,6 +4815,11 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             if not spec_rows.empty else None
         )
         stored_average_resolving_power = _spt_float(metadata.get("median_spectral_resolving_power"))
+        pix_per_res_element = _spt_float(metadata.get("pix_per_res_element"))
+        lowres_resolving_power_per_pixel = _spectra_lowres_resolving_power_per_pixel(
+            stored_average_resolving_power,
+            pix_per_res_element,
+        )
         average_resolving_power = (
             grid_average_resolving_power
             if bins_per_micron
@@ -4545,8 +4834,11 @@ def _load_spectra_explorer_from_db(args: dict[str, Any], specids: list[int]) -> 
             "meta": {
                 "row_count": len(row_records),
                 "average_resolving_power": _pythonize(average_resolving_power),
+                "median_spectral_resolving_power": _pythonize(stored_average_resolving_power),
                 "stored_average_resolving_power": _pythonize(stored_average_resolving_power),
                 "grid_average_resolving_power": _pythonize(grid_average_resolving_power),
+                "pix_per_res_element": _pythonize(pix_per_res_element),
+                "lowres_resolving_power_per_pixel": _pythonize(lowres_resolving_power_per_pixel),
                 "bins_per_micron": bins_per_micron or None,
                 "hide_ignored": hide_ignored,
             },
@@ -4676,10 +4968,13 @@ def _set_spectra_rows_ignored(args: dict[str, Any], row_ids: list[int], specids:
 def _mock_spectra_explorer_search(query: str | None, selected_specids: list[int] | None = None) -> dict[str, Any]:
     selected_specids = selected_specids or []
     rows = [
-        {"moca_specid": 59595, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "spectral_type": "T2.5", "moca_instid": "SpeX", "instrument_mode_name": "prism", "data_collection_date": "2013-10-20", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A"},
-        {"moca_specid": 13510, "moca_oid": 10995, "designation": "2MASS J05591914-1404488", "spectral_type": "T4.5", "moca_instid": "SpeX", "instrument_mode_name": "prism", "data_collection_date": "2006-11-03", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A"},
-        {"moca_specid": 8168, "moca_oid": 2616, "designation": "2MASS J03552337+1133437", "spectral_type": "L5 gamma", "moca_instid": "NIRSPEC", "instrument_mode_name": "low-res", "data_collection_date": "2016-09-18", "spectrum_name": "mock NIRSPEC", "flux_units": "W/m2/A"},
+        {"moca_specid": 59595, "moca_oid": 602, "designation": "SIMP J013656.5+093347.3", "spectral_type": "T2.5", "moca_instid": "SpeX", "instrument_description": "SpeX spectrograph on the NASA Infrared Telescope Facility", "instrument_mode_name": "prism", "data_collection_date": "2013-10-20", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A", "moca_pid": "Mock13", "bibcode": "2013Mock....1S", "publication_bibcode": "2013Mock....1S", "spectrum_ref": "Mock Spectral Library et al. (2013)", "spectrum_ref_url": "https://ui.adsabs.harvard.edu/abs/2013Mock....1S/abstract"},
+        {"moca_specid": 13510, "moca_oid": 10995, "designation": "2MASS J05591914-1404488", "spectral_type": "T4.5", "moca_instid": "SpeX", "instrument_description": "SpeX spectrograph on the NASA Infrared Telescope Facility", "instrument_mode_name": "prism", "data_collection_date": "2006-11-03", "spectrum_name": "mock SpeX prism", "flux_units": "W/m2/A", "moca_pid": "Mock06", "bibcode": "2006Mock....2S", "publication_bibcode": "2006Mock....2S", "spectrum_ref": "Mock SpeX Standards et al. (2006)", "spectrum_ref_url": "https://ui.adsabs.harvard.edu/abs/2006Mock....2S/abstract"},
+        {"moca_specid": 8168, "moca_oid": 2616, "designation": "2MASS J03552337+1133437", "spectral_type": "L5 gamma", "moca_instid": "NIRSPEC", "instrument_description": "NIRSPEC near-infrared spectrograph on Keck", "instrument_mode_name": "low-res", "data_collection_date": "2016-09-18", "spectrum_name": "mock NIRSPEC", "flux_units": "W/m2/A", "moca_pid": "Mock16", "bibcode": "2016Mock....3S", "publication_bibcode": "2016Mock....3S", "spectrum_ref": "Mock NIRSPEC Follow-up et al. (2016)", "spectrum_ref_url": None},
     ]
+    for row in rows:
+        row["pix_per_res_element"] = SPECTRA_EXPLORER_LOWRES_PIX_PER_RES_ELEMENT_DEFAULT
+        row["median_spectral_resolving_power"] = 80.0 if int(row["moca_specid"]) == 8168 else 1200.0
     q = str(query or "").strip().lower()
     if selected_specids:
         rows = [row for row in rows if int(row["moca_specid"]) in set(map(int, selected_specids))]
@@ -4737,10 +5032,25 @@ def _mock_spectra_explorer_payload(specids: list[int], args: dict[str, Any] | No
             "designation": f"Mock spectrum {specid}",
             "spectral_type": "L/T",
             "moca_instid": "mock",
+            "instrument_description": "Mock synthetic spectrograph",
             "instrument_mode_name": "synthetic",
             "spectrum_name": f"mock spectrum {specid}",
             "flux_units": "W/m2/A",
+            "moca_pid": "mock",
+            "bibcode": "2026Mock....1S",
+            "publication_bibcode": "2026Mock....1S",
+            "spectrum_ref": "Mock Spectrum Reference",
+            "spectrum_ref_url": "https://ui.adsabs.harvard.edu/abs/2026Mock....1S/abstract",
         }
+        metadata = {**metadata}
+        metadata.setdefault("pix_per_res_element", SPECTRA_EXPLORER_LOWRES_PIX_PER_RES_ELEMENT_DEFAULT)
+        metadata.setdefault("median_spectral_resolving_power", 80.0 if low_res else 1200.0)
+        median_spectral_resolving_power = _spt_float(metadata.get("median_spectral_resolving_power"))
+        pix_per_res_element = _spt_float(metadata.get("pix_per_res_element"))
+        lowres_resolving_power_per_pixel = _spectra_lowres_resolving_power_per_pixel(
+            median_spectral_resolving_power,
+            pix_per_res_element,
+        )
         spectra.append({
             "moca_specid": specid,
             "metadata": {**metadata, "label": _spectra_explorer_label(metadata)},
@@ -4748,6 +5058,9 @@ def _mock_spectra_explorer_payload(specids: list[int], args: dict[str, Any] | No
             "meta": {
                 "row_count": len(rows),
                 "average_resolving_power": _spt_average_resolving_power(wave),
+                "median_spectral_resolving_power": _pythonize(median_spectral_resolving_power),
+                "pix_per_res_element": _pythonize(pix_per_res_element),
+                "lowres_resolving_power_per_pixel": _pythonize(lowres_resolving_power_per_pixel),
                 "hide_ignored": hide_ignored,
             },
         })
@@ -5049,10 +5362,20 @@ def _load_spectral_index_explorer_from_db(args: dict[str, Any], specid: int, def
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
+                ms.moca_pid,
+                ms.bibcode,
+                spec_pub.bibcode AS publication_bibcode,
+                spec_pub.url AS spectrum_ref_url,
+                mi.description AS instrument_description,
                 COALESCE(ms.flux_units, 'NO_UNITS') AS flux_units,
+                spec_pub.name AS spectrum_ref,
                 mo.designation,
                 spt.spectral_type
             FROM moca_spectra ms
+            LEFT JOIN moca_publications spec_pub
+                ON spec_pub.moca_pid = ms.moca_pid
+            LEFT JOIN moca_instruments mi
+                ON mi.moca_instid = ms.moca_instid
             LEFT JOIN moca_objects mo USING(moca_oid)
             LEFT JOIN data_spectral_types spt
                 ON spt.moca_oid = ms.moca_oid
@@ -24193,11 +24516,12 @@ def preload():
 def spectral_typing_grid():
     args = dict(request.args)
     include_spectra = _as_bool(args.get("include_spectra"))
+    standards_source = _spt_standards_source(args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            payload = _spt_grid_response_payload(_mock_spt_grid_payload(), include_spectra)
+            payload = _spt_grid_response_payload(_mock_spt_grid_payload(standards_source=standards_source), include_spectra)
             return jsonify({"ok": True, "source": "mock", **payload})
-        payload = _load_spt_grid_from_db(args, include_spectra=include_spectra)
+        payload = _load_spt_grid_from_db(args, include_spectra=include_spectra, standards_source=standards_source)
         payload = _spt_grid_response_payload(payload, include_spectra)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
@@ -24277,6 +24601,7 @@ def spectral_typing_spectrum(specid: int):
 def spectral_typing_compare():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
+    standards_source = _spt_standards_source(args, body)
     raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
     try:
         specid = int(raw_specid)
@@ -24344,6 +24669,7 @@ def spectral_typing_compare():
                 cloud_alpha,
                 cloud_alpha_fixed,
                 cloud_lambda0,
+                standards_source=standards_source,
             )
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
@@ -24359,6 +24685,7 @@ def spectral_typing_compare():
             cloud_alpha_fixed=cloud_alpha_fixed,
             cloud_lambda0=cloud_lambda0,
             priority_standard_specid=priority_standard_specid,
+            standards_source=standards_source,
         )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
@@ -24382,6 +24709,7 @@ def spectral_typing_compare():
                 "cloud_alpha": cloud_alpha,
                 "cloud_alpha_fixed": cloud_alpha_fixed,
                 "cloud_lambda0": cloud_lambda0,
+                "standards_source": standards_source,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), 500
@@ -24391,6 +24719,7 @@ def spectral_typing_compare():
 def spectral_typing_standard():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
+    standards_source = _spt_standards_source(args, body)
     raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
     raw_standard_specid = (
         body.get("standard_specid")
@@ -24456,6 +24785,7 @@ def spectral_typing_standard():
                 cloud_alpha_fixed,
                 cloud_lambda0,
                 only_standard_specid=standard_specid,
+                standards_source=standards_source,
             )
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
@@ -24471,6 +24801,7 @@ def spectral_typing_standard():
             cloud_alpha_fixed=cloud_alpha_fixed,
             cloud_lambda0=cloud_lambda0,
             only_standard_specid=standard_specid,
+            standards_source=standards_source,
         )
         payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
@@ -24495,6 +24826,7 @@ def spectral_typing_standard():
                 "cloud_alpha": cloud_alpha,
                 "cloud_alpha_fixed": cloud_alpha_fixed,
                 "cloud_lambda0": cloud_lambda0,
+                "standards_source": standards_source,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), 500

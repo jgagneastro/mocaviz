@@ -34,6 +34,13 @@
         <section class="control-section filters-section">
           <h2>Standards</h2>
           <label>
+            Standards source
+            <select id="spt-standards-source">
+              <option value="moca">MOCA UCD templates</option>
+              <option value="pickles">Pickles Spectral Library</option>
+            </select>
+          </label>
+          <label>
             Spectral grid
             <select id="spt-grid-select"></select>
           </label>
@@ -160,6 +167,7 @@
         <li><code>?specid=450&amp;grid=field&amp;grid_index=4&amp;norm=0.860-1.350,1.445-1.800,2.010-2.400</code></li>
         <li><code>?specid=450&amp;deredden=1&amp;fix_rv=3.1</code></li>
         <li><code>?specid=450&amp;cloud=1</code></li>
+        <li><code>?specid=450&amp;standards_source=pickles&amp;grid=III%20weak%20M%2FH</code></li>
         <li><code>?mock=1&amp;specid=450</code> for a network-free local sample dataset.</li>
       </ul>
 
@@ -214,6 +222,11 @@
             <td>Positive number; <code>cloud_alpha_fixed=0</code> or <code>cloud_alpha=free</code> to fit</td>
             <td>Controls the slope-correction wavelength exponent. In the page controls, entering a value fixes alpha; clearing the field fits alpha.</td>
           </tr>
+          <tr>
+            <td><code>standards_source</code></td>
+            <td><code>moca</code> or <code>pickles</code></td>
+            <td>Selects either the MOCA UCD template grids or Pickles luminosity and metallicity grids.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -230,6 +243,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=spt-lowres-cosmetics-20260616b"></script>
+  <script src="static/spectral_typing.js?v=spt-pickles-source-20260620a"></script>
 </body>
 </html>
