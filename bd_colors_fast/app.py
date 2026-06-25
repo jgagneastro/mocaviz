@@ -22827,116 +22827,111 @@ def _load_retrieval_object_fundamentals_from_db(
         payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
         return payload
 
-    ignored_clause = "" if include_ignored else "AND COALESCE(ignored, 0) = 0"
     engine = _engine(_connection_string(args))
     rows: list[dict[str, Any]] = []
     with engine.connect() as conn:
-        if _db_table_exists(conn, "data_teff"):
-            for row in _records(_read_sql(conn, f"""
-                SELECT id, moca_oid, moca_pid, bibcode, teff_k, teff_k_unc,
-                    quality, ignored, adopted, is_public, comments
-                FROM data_teff
-                WHERE moca_oid = :moca_oid
-                    AND moca_pid = :moca_pid
-                    {ignored_clause}
-                ORDER BY COALESCE(adopted, 0) DESC, id DESC
+        def _fundamental_rows(table_name: str, value_columns: list[str]) -> list[dict[str, Any]]:
+            if not _db_table_exists(conn, table_name):
+                return []
+            columns = _db_table_columns(conn, table_name)
+            if not {"moca_oid", "moca_pid"}.issubset(columns):
+                return []
+            select_terms = [
+                _retrieval_select_column("main", columns, "id"),
+                _retrieval_select_column("main", columns, "moca_oid"),
+                _retrieval_select_column("main", columns, "moca_pid"),
+                _retrieval_select_column("main", columns, "bibcode"),
+                *[_retrieval_select_column("main", columns, column) for column in value_columns],
+                _retrieval_select_column("main", columns, "quality"),
+                _retrieval_select_column("main", columns, "ignored"),
+                _retrieval_select_column("main", columns, "adopted"),
+                _retrieval_select_column("main", columns, "comments"),
+                (
+                    _retrieval_select_column("main", columns, "is_public")
+                    if "is_public" in columns else "1 AS `is_public`"
+                ),
+            ]
+            where_clauses = [
+                "main.`moca_oid` = :moca_oid",
+                "main.`moca_pid` = :moca_pid",
+            ]
+            if not include_ignored and "ignored" in columns:
+                where_clauses.append("COALESCE(main.`ignored`, 0) = 0")
+            order_terms = _retrieval_adoption_order_terms("main", columns)
+            order_terms.append("main.`id` DESC" if "id" in columns else "main.`moca_oid` DESC")
+            return _records(_read_sql(conn, f"""
+                SELECT {", ".join(select_terms)}
+                FROM `{table_name}` AS main
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY {", ".join(order_terms)}
                 LIMIT 1
-            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
-                out = _retrieval_object_fundamental_row(
-                    row,
-                    source_table="data_teff",
-                    moca_atparid="TEFF_K",
-                    parameter_name="Effective temperature",
-                    parameter_symbol="Teff",
-                    value=_retrieval_float_or_none(row.get("teff_k")),
-                    value_unc=_retrieval_float_or_none(row.get("teff_k_unc")),
-                    value_unit="K",
-                )
-                if out is not None:
-                    rows.append(out)
-        if _db_table_exists(conn, "data_masses"):
-            for row in _records(_read_sql(conn, f"""
-                SELECT id, moca_oid, moca_pid, bibcode, mass_msun, mass_msun_unc,
-                    mass_msun_unc_pos, mass_msun_unc_neg, quality, ignored,
-                    adopted, is_public, comments
-                FROM data_masses
-                WHERE moca_oid = :moca_oid
-                    AND moca_pid = :moca_pid
-                    {ignored_clause}
-                ORDER BY COALESCE(adopted, 0) DESC, id DESC
-                LIMIT 1
-            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
-                unc = _retrieval_float_or_none(row.get("mass_msun_unc"))
-                unc_pos = _retrieval_float_or_none(row.get("mass_msun_unc_pos"))
-                unc_neg = _retrieval_float_or_none(row.get("mass_msun_unc_neg"))
-                out = _retrieval_object_fundamental_row(
-                    row,
-                    source_table="data_masses",
-                    moca_atparid="MASS_MJUP",
-                    parameter_name="Mass",
-                    parameter_symbol="M",
-                    value=(
-                        _retrieval_float_or_none(row.get("mass_msun")) * BD_EVOLUTION_MSUN_TO_MJUP
-                        if _retrieval_float_or_none(row.get("mass_msun")) is not None else None
-                    ),
-                    value_unc=(
-                        unc * BD_EVOLUTION_MSUN_TO_MJUP
-                        if unc is not None else None
-                    ),
-                    value_unit="Mjup",
-                )
-                if out is not None:
-                    out["value_unc_pos"] = unc_pos * BD_EVOLUTION_MSUN_TO_MJUP if unc_pos is not None else None
-                    out["value_unc_neg"] = unc_neg * BD_EVOLUTION_MSUN_TO_MJUP if unc_neg is not None else None
-                    rows.append(out)
-        if _db_table_exists(conn, "data_radii"):
-            for row in _records(_read_sql(conn, f"""
-                SELECT id, moca_oid, moca_pid, bibcode, radius_rsun, radius_rsun_unc,
-                    quality, ignored, adopted, is_public, comments
-                FROM data_radii
-                WHERE moca_oid = :moca_oid
-                    AND moca_pid = :moca_pid
-                    {ignored_clause}
-                ORDER BY COALESCE(adopted, 0) DESC, id DESC
-                LIMIT 1
-            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
-                radius = _retrieval_float_or_none(row.get("radius_rsun"))
-                radius_unc = _retrieval_float_or_none(row.get("radius_rsun_unc"))
-                out = _retrieval_object_fundamental_row(
-                    row,
-                    source_table="data_radii",
-                    moca_atparid="RADIUS_RJUP",
-                    parameter_name="Radius",
-                    parameter_symbol="R",
-                    value=radius / BD_EVOLUTION_RJUP_TO_RSUN if radius is not None else None,
-                    value_unc=radius_unc / BD_EVOLUTION_RJUP_TO_RSUN if radius_unc is not None else None,
-                    value_unit="Rjup",
-                )
-                if out is not None:
-                    rows.append(out)
-        if _db_table_exists(conn, "data_logg"):
-            for row in _records(_read_sql(conn, f"""
-                SELECT id, moca_oid, moca_pid, bibcode, logg, logg_unc,
-                    quality, ignored, adopted, is_public, comments
-                FROM data_logg
-                WHERE moca_oid = :moca_oid
-                    AND moca_pid = :moca_pid
-                    {ignored_clause}
-                ORDER BY COALESCE(adopted, 0) DESC, id DESC
-                LIMIT 1
-            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid})):
-                out = _retrieval_object_fundamental_row(
-                    row,
-                    source_table="data_logg",
-                    moca_atparid="LOGG_CGS",
-                    parameter_name="Surface gravity",
-                    parameter_symbol="logg",
-                    value=_retrieval_float_or_none(row.get("logg")),
-                    value_unc=_retrieval_float_or_none(row.get("logg_unc")),
-                    value_unit="dex(cgs)",
-                )
-                if out is not None:
-                    rows.append(out)
+            """, {"moca_oid": int(moca_oid), "moca_pid": moca_pid}))
+
+        for row in _fundamental_rows("data_teff", ["teff_k", "teff_k_unc"]):
+            out = _retrieval_object_fundamental_row(
+                row,
+                source_table="data_teff",
+                moca_atparid="TEFF_K",
+                parameter_name="Effective temperature",
+                parameter_symbol="Teff",
+                value=_retrieval_float_or_none(row.get("teff_k")),
+                value_unc=_retrieval_float_or_none(row.get("teff_k_unc")),
+                value_unit="K",
+            )
+            if out is not None:
+                rows.append(out)
+        for row in _fundamental_rows("data_masses", ["mass_msun", "mass_msun_unc", "mass_msun_unc_pos", "mass_msun_unc_neg"]):
+            unc = _retrieval_float_or_none(row.get("mass_msun_unc"))
+            unc_pos = _retrieval_float_or_none(row.get("mass_msun_unc_pos"))
+            unc_neg = _retrieval_float_or_none(row.get("mass_msun_unc_neg"))
+            out = _retrieval_object_fundamental_row(
+                row,
+                source_table="data_masses",
+                moca_atparid="MASS_MJUP",
+                parameter_name="Mass",
+                parameter_symbol="M",
+                value=(
+                    _retrieval_float_or_none(row.get("mass_msun")) * BD_EVOLUTION_MSUN_TO_MJUP
+                    if _retrieval_float_or_none(row.get("mass_msun")) is not None else None
+                ),
+                value_unc=(
+                    unc * BD_EVOLUTION_MSUN_TO_MJUP
+                    if unc is not None else None
+                ),
+                value_unit="Mjup",
+            )
+            if out is not None:
+                out["value_unc_pos"] = unc_pos * BD_EVOLUTION_MSUN_TO_MJUP if unc_pos is not None else None
+                out["value_unc_neg"] = unc_neg * BD_EVOLUTION_MSUN_TO_MJUP if unc_neg is not None else None
+                rows.append(out)
+        for row in _fundamental_rows("data_radii", ["radius_rsun", "radius_rsun_unc"]):
+            radius = _retrieval_float_or_none(row.get("radius_rsun"))
+            radius_unc = _retrieval_float_or_none(row.get("radius_rsun_unc"))
+            out = _retrieval_object_fundamental_row(
+                row,
+                source_table="data_radii",
+                moca_atparid="RADIUS_RJUP",
+                parameter_name="Radius",
+                parameter_symbol="R",
+                value=radius / BD_EVOLUTION_RJUP_TO_RSUN if radius is not None else None,
+                value_unc=radius_unc / BD_EVOLUTION_RJUP_TO_RSUN if radius_unc is not None else None,
+                value_unit="Rjup",
+            )
+            if out is not None:
+                rows.append(out)
+        for row in _fundamental_rows("data_logg", ["logg", "logg_unc"]):
+            out = _retrieval_object_fundamental_row(
+                row,
+                source_table="data_logg",
+                moca_atparid="LOGG_CGS",
+                parameter_name="Surface gravity",
+                parameter_symbol="logg",
+                value=_retrieval_float_or_none(row.get("logg")),
+                value_unc=_retrieval_float_or_none(row.get("logg_unc")),
+                value_unit="dex(cgs)",
+            )
+            if out is not None:
+                rows.append(out)
 
     order = {"TEFF_K": 0, "MASS_MJUP": 1, "RADIUS_RJUP": 2, "LOGG_CGS": 3}
     rows.sort(key=lambda row: order.get(str(row.get("moca_atparid") or ""), 99))
@@ -23378,6 +23373,14 @@ def _load_retrieval_search_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
+        das_columns = _db_table_columns(conn, "data_atmosphere_structure")
+        order_terms = [
+            *_retrieval_adoption_order_terms("das", das_columns),
+            "temperature_layer_count DESC",
+            "contribution_layer_count DESC",
+            "das.modified_timestamp DESC",
+            "das.id DESC",
+        ]
         clauses = []
         params: dict[str, Any] = {"limit": int(limit)}
         if not include_ignored:
@@ -23470,12 +23473,7 @@ def _load_retrieval_search_from_db(args: dict[str, Any]) -> dict[str, Any]:
             LEFT JOIN moca_publications mp
                 ON mp.moca_pid = das.moca_pid
             WHERE {where_sql}
-            ORDER BY COALESCE(das.adopted, 0) DESC,
-                COALESCE(das.public_adopted, 0) DESC,
-                temperature_layer_count DESC,
-                contribution_layer_count DESC,
-                das.modified_timestamp DESC,
-                das.id DESC
+            ORDER BY {", ".join(order_terms)}
             LIMIT :limit
         """, params))
     options = _retrieval_search_rows_to_options(rows)
@@ -23499,6 +23497,15 @@ def _retrieval_select_column(alias: str, columns: set[str], column: str, output:
     if column in columns:
         return f"{alias}.`{column}` AS `{out}`"
     return f"NULL AS `{out}`"
+
+
+def _retrieval_adoption_order_terms(alias: str, columns: set[str]) -> list[str]:
+    terms = []
+    if "adopted" in columns:
+        terms.append(f"COALESCE({alias}.`adopted`, 0) DESC")
+    if "public_adopted" in columns:
+        terms.append(f"COALESCE({alias}.`public_adopted`, 0) DESC")
+    return terms
 
 
 def _load_retrieval_condensation_curves_from_db(conn) -> list[dict[str, Any]]:
@@ -23681,6 +23688,15 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
+        spectral_type_columns = (
+            _db_table_columns(conn, "data_spectral_types")
+            if _db_table_exists(conn, "data_spectral_types") else set()
+        )
+        spectral_type_order_terms = _retrieval_adoption_order_terms("dst", spectral_type_columns)
+        if "photometric_estimate" in spectral_type_columns:
+            spectral_type_order_terms.append("COALESCE(dst.`photometric_estimate`, 0) ASC")
+        spectral_type_order_terms.append("dst.`id` DESC" if "id" in spectral_type_columns else "dst.`moca_oid` DESC")
+        spectral_type_order_sql = ",\n                            ".join(spectral_type_order_terms)
         atmosphere_rows = _records(_read_sql(conn, """
             SELECT
                 das.*,
@@ -23789,10 +23805,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                         WHERE dst.moca_oid = dom.moca_oid
                             AND COALESCE(dst.ignored, 0) = 0
                             AND COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, '')) IS NOT NULL
-                        ORDER BY COALESCE(dst.adopted, 0) DESC,
-                            COALESCE(dst.public_adopted, 0) DESC,
-                            COALESCE(dst.photometric_estimate, 0) ASC,
-                            dst.id DESC
+                        ORDER BY {spectral_type_order_sql}
                         LIMIT 1
                     ) AS spectral_type,
                     (
@@ -23801,10 +23814,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                         WHERE dst.moca_oid = dom.moca_oid
                             AND COALESCE(dst.ignored, 0) = 0
                             AND dst.spectral_type_number IS NOT NULL
-                        ORDER BY COALESCE(dst.adopted, 0) DESC,
-                            COALESCE(dst.public_adopted, 0) DESC,
-                            COALESCE(dst.photometric_estimate, 0) ASC,
-                            dst.id DESC
+                        ORDER BY {spectral_type_order_sql}
                         LIMIT 1
                     ) AS spectral_type_number,
                     COALESCE(dom.bibcode, mp.bibcode) AS source_bibcode,
@@ -23851,10 +23861,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                             WHERE dst.moca_oid = dom.moca_oid
                                 AND COALESCE(dst.ignored, 0) = 0
                                 AND COALESCE(NULLIF(dst.complete_spectral_type, ''), NULLIF(dst.spectral_type, ''), NULLIF(dst.simple_spectral_type, '')) IS NOT NULL
-                            ORDER BY COALESCE(dst.adopted, 0) DESC,
-                                COALESCE(dst.public_adopted, 0) DESC,
-                                COALESCE(dst.photometric_estimate, 0) ASC,
-                                dst.id DESC
+                            ORDER BY {spectral_type_order_sql}
                             LIMIT 1
                         ) AS spectral_type,
                         (
@@ -23863,10 +23870,7 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                             WHERE dst.moca_oid = dom.moca_oid
                                 AND COALESCE(dst.ignored, 0) = 0
                                 AND dst.spectral_type_number IS NOT NULL
-                            ORDER BY COALESCE(dst.adopted, 0) DESC,
-                                COALESCE(dst.public_adopted, 0) DESC,
-                                COALESCE(dst.photometric_estimate, 0) ASC,
-                                dst.id DESC
+                            ORDER BY {spectral_type_order_sql}
                             LIMIT 1
                         ) AS spectral_type_number,
                         dom.moca_pid,

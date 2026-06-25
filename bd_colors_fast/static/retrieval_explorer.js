@@ -227,10 +227,20 @@ async function searchRetrievals(options = {}) {
       }
       await loadSelectedRetrieval();
     } else {
+      if (options.loadFirst) {
+        rexState.payload = null;
+        renderRetrievalPayload();
+        setRetrievalLoader(false);
+      }
       setRetrievalStatus(`${rexState.options.length} retrievals`, "");
     }
   } catch (error) {
     setRetrievalStatus(error.message || "Could not load retrievals", "error");
+    if (options.loadFirst) {
+      rexState.payload = null;
+      renderRetrievalPayload();
+      setRetrievalLoader(false);
+    }
     renderRetrievalOptions();
   }
 }
