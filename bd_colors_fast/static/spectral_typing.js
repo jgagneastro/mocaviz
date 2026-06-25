@@ -1,4 +1,12 @@
 const sptDefaultNormText = "0.860-1.350, 1.445-1.800, 2.010-2.400";
+const sptDefaultNormPreset = "nir-ground";
+const sptNormPresets = [
+  { value: "red-visible", label: "Red-visible", norm: "0.520-0.900", bins: 800 },
+  { value: sptDefaultNormPreset, label: "NIR ground-based", norm: sptDefaultNormText },
+  { value: "nir-space", label: "NIR space-based (JWST NIRSpec Prism, SPHEREx)", norm: "0.800-5.000" },
+  { value: "extended-bd-sed", label: "Extended BD SED", norm: "0.800-20.000" },
+];
+const sptNormPresetByValue = new Map(sptNormPresets.map((preset) => [preset.value, preset]));
 const sptDefaultBins = 200;
 const sptDefaultSpecid = 450;
 const sptDefaultFixedRv = "3.1";
@@ -111,6 +119,38 @@ function defaultGridForCurrentStandardsSource(values = []) {
   return values[0] || "";
 }
 
+function normRegionsMatch(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((region, index) => (
+    Array.isArray(region)
+    && Array.isArray(b[index])
+    && Math.abs(Number(region[0]) - Number(b[index][0])) < 1e-6
+    && Math.abs(Number(region[1]) - Number(b[index][1])) < 1e-6
+  ));
+}
+
+function normPresetValueForText(text) {
+  const regions = parseNormText(text || sptDefaultNormText);
+  const match = sptNormPresets.find((preset) => normRegionsMatch(regions, parseNormText(preset.norm)));
+  return match?.value || "custom";
+}
+
+function syncNormPresetFromText() {
+  const select = sptEl["spt-norm-preset"];
+  if (!select) return;
+  select.value = normPresetValueForText(sptEl["spt-norm"]?.value || sptDefaultNormText);
+}
+
+function setNormText(value) {
+  sptEl["spt-norm"].value = value || sptDefaultNormText;
+  syncNormPresetFromText();
+}
+
+function defaultBinsForCurrentNormPreset() {
+  const preset = sptNormPresetByValue.get(sptEl["spt-norm-preset"]?.value);
+  return preset?.bins || sptDefaultBins;
+}
+
 async function initSpectralTyping() {
   collectSpectralElements();
   readSpectralUrlState();
@@ -143,6 +183,7 @@ function collectSpectralElements() {
     "spt-prev-standard",
     "spt-next-standard",
     "spt-bins",
+    "spt-norm-preset",
     "spt-norm",
     "spt-reset-norm",
     "spt-deredden",
@@ -185,8 +226,8 @@ function readSpectralUrlState() {
   sptState.selectedSpecid = parseInteger(rawSpecid);
   sptState.initialGridParam = params.get("grid") || "";
   sptState.initialGridIndexParam = parseInteger(params.get("grid_index"));
-  sptEl["spt-bins"].value = params.get("bins") || String(sptDefaultBins);
-  sptEl["spt-norm"].value = params.get("norm") || sptDefaultNormText;
+  setNormText(params.get("norm") || sptDefaultNormText);
+  sptEl["spt-bins"].value = params.get("bins") || String(defaultBinsForCurrentNormPreset());
   sptEl["spt-deredden"].checked = asSpectralBool(params.get("deredden"));
   sptEl["spt-cloud"].checked = asSpectralBool(params.get("cloud")) || asSpectralBool(params.get("cloud_correction"));
   sptEl["spt-allred"].checked = !asFalse(params.get("allred"));
@@ -262,7 +303,19 @@ function bindSpectralControls() {
     computeSpectralComparison();
   });
   sptEl["spt-fixed-param"].addEventListener("input", syncFixedParameterValue);
-  for (const id of ["spt-bins", "spt-norm", "spt-fixed-param"]) {
+  sptEl["spt-norm-preset"].addEventListener("change", () => {
+    const preset = sptNormPresetByValue.get(sptEl["spt-norm-preset"].value);
+    if (!preset) return;
+    setNormText(preset.norm);
+    if (preset.bins) sptEl["spt-bins"].value = String(preset.bins);
+    computeSpectralComparison();
+  });
+  sptEl["spt-norm"].addEventListener("input", syncNormPresetFromText);
+  sptEl["spt-norm"].addEventListener("change", () => {
+    syncNormPresetFromText();
+    computeSpectralComparison();
+  });
+  for (const id of ["spt-bins", "spt-fixed-param"]) {
     sptEl[id].addEventListener("change", () => computeSpectralComparison());
   }
   for (const id of ["spt-allred", "spt-showfeatures", "spt-disable-lowres"]) {
@@ -272,7 +325,7 @@ function bindSpectralControls() {
     });
   }
   sptEl["spt-reset-norm"].addEventListener("click", () => {
-    sptEl["spt-norm"].value = sptDefaultNormText;
+    setNormText(sptDefaultNormText);
     computeSpectralComparison();
   });
   sptEl["spt-open-report"].addEventListener("click", () => {

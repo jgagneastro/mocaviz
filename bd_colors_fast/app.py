@@ -113,8 +113,8 @@ _DB_TABLE_EXISTS_CACHE: dict[tuple[str, str, str, str, str], bool] = {}
 _DB_COLUMNS_CACHE: dict[tuple[str, str, str, str, str], set[str]] = {}
 _PLOTLY_JS: str | None = None
 
-SPT_WV_MIN = 0.85
-SPT_WV_MAX = 2.4
+SPT_WV_MIN = 0.52
+SPT_WV_MAX = 20.0
 SPT_MASKED_REGIONS = ((1.367, 1.424), (1.86, 2.0))
 SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
@@ -3132,7 +3132,7 @@ def _spt_pickles_spectral_type(spectrum_name: Any) -> tuple[str, float, str, str
     except (TypeError, ValueError):
         return None
     spectral_type_number = _parse_spt_label(f"{spectral_class}{subtype:g}")
-    if spectral_type_number is None or spectral_type_number > 0:
+    if spectral_type_number is None:
         return None
     metallicity_prefix = type_match.group("metallicity").lower()
     display_type = f"{metallicity_prefix}{spectral_class}{subtype_text}{type_match.group('luminosity').upper()}"
@@ -3925,10 +3925,10 @@ def _mock_spt_grid_payload(standards_source: str = SPT_STANDARDS_SOURCE_MOCA) ->
     spectra = []
     if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
         pickles_template_groups = [
-            ("V", ["wF5V", "wG0V", "rF6V", "rG0V", "O5V", "B0V", "A0V", "F5V", "G2V", "K5V", "M0V"]),
+            ("V", ["wF5V", "wG0V", "rF6V", "rG0V", "O5V", "B0V", "A0V", "F5V", "G2V", "K5V", "M0V", "M1V", "M2V", "M2.5V", "M3V", "M4V", "M5V", "M6V"]),
             ("IV", ["B2IV", "A0IV", "F5IV", "G0IV", "K0IV", "M0IV"]),
-            ("III", ["wG5III", "wK0III", "rG5III", "rK0III", "O8III", "B1III", "A0III", "G0III", "G5III", "K0III", "M0III"]),
-            ("II", ["B2II", "A0II", "F5II", "G5II", "K0II", "M0II"]),
+            ("III", ["wG5III", "wK0III", "rG5III", "rK0III", "O8III", "B1III", "A0III", "G0III", "G5III", "K0III", "M0III", "M1III", "M2III", "M3III", "M4III", "M5III", "M6III", "M7III", "M8III", "M9III", "M10III"]),
+            ("II", ["B2II", "A0II", "F5II", "G5II", "K0II", "M0II", "M3II"]),
             ("I", ["B0I", "A0I", "F5I", "G0I", "K0I", "M0I"]),
         ]
         pickles_specid = 799900

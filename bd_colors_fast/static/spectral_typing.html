@@ -69,6 +69,16 @@
         <section class="control-section options-section">
           <h2>Processing</h2>
           <label>
+            Normalization preset
+            <select id="spt-norm-preset">
+              <option value="custom" hidden>Custom</option>
+              <option value="red-visible">Red-visible</option>
+              <option value="nir-ground" selected>NIR ground-based</option>
+              <option value="nir-space">NIR space-based (JWST NIRSpec Prism, SPHEREx)</option>
+              <option value="extended-bd-sed">Extended BD SED</option>
+            </select>
+          </label>
+          <label>
             Bins per micron
             <input id="spt-bins" type="number" value="200" min="1" max="2000" step="1">
           </label>
@@ -200,7 +210,7 @@
           <tr>
             <td><code>norm</code></td>
             <td>Comma-separated wavelength windows in microns</td>
-            <td>Sets the normalization regions. Separators like <code>0.860-1.350,1.445-1.800</code> are accepted.</td>
+            <td>Sets the normalization regions. Separators like <code>0.860-1.350,1.445-1.800</code> are accepted; the preset selector fills this value.</td>
           </tr>
           <tr>
             <td><code>deredden</code></td>
@@ -243,6 +253,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=spt-pickles-source-20260620a"></script>
+  <script src="static/spectral_typing.js?v=spt-norm-presets-20260625a"></script>
 </body>
 </html>
