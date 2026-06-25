@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 .DS_STORE
+AGENTS.md
 
 # C extensions
 *.so
