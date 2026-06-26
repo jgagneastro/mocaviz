@@ -38,6 +38,23 @@
           </label>
         </section>
 
+        <section class="control-section filters-section">
+          <h2>Highlight</h2>
+          <div class="designation-picker">
+            <label for="exo-object-search">Search by designation</label>
+            <input id="exo-object-search" type="text" autocomplete="off" placeholder="Type host, planet, TOI, TIC, or moca_oid">
+            <div id="exo-object-results" class="designation-results" hidden></div>
+            <div id="exo-selected-objects" class="designation-selected" aria-live="polite"></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Direct moca_oid entry</summary>
+            <label>
+              moca_oid list
+              <input id="exo-highlight-oids" type="text" value="" placeholder="123, 456, 789">
+            </label>
+          </details>
+        </section>
+
         <section class="control-section options-section">
           <h2>Display</h2>
           <label class="checkline">
@@ -63,18 +80,10 @@
         </section>
 
         <section class="control-section filters-section">
-          <h2>Filters</h2>
-          <label>
-            Filter by planet, host, TOI, TIC, or OID
-            <input id="exo-filter-text" type="text" value="" placeholder="All objects">
-          </label>
+          <h2>Sample</h2>
           <label>
             Filter by discovery method
             <input id="exo-filter-method" type="text" value="" placeholder="All methods">
-          </label>
-          <label>
-            Filter by TESS disposition
-            <input id="exo-filter-tess-disposition" type="text" value="" placeholder="All dispositions">
           </label>
           <label>
             Spectral range

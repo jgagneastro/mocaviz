@@ -114,7 +114,14 @@ const exoState = {
   axes: new Map(exoDefaultAxes.map((axis) => [axis.key, axis])),
   rows: [],
   payload: null,
+  highlightOids: new Set(),
+  highlightRowIds: new Set(),
   selectedIds: new Set(),
+  designationIndex: null,
+  designationIndexKey: "",
+  designationIndexPromise: null,
+  designationCacheBust: "",
+  searchTimer: null,
   filterLoadTimer: null,
   loadToken: 0,
 };
@@ -144,9 +151,10 @@ async function initExoplanetsExplorer() {
 function collectExoplanetElements() {
   [
     "exo-status", "exo-x-axis", "exo-y-axis", "exo-x-log", "exo-y-log",
+    "exo-object-search", "exo-object-results", "exo-selected-objects", "exo-highlight-oids",
     "exo-color-age", "exo-show-confirmed", "exo-show-tess", "exo-error-bars",
     "exo-hover-text",
-    "exo-filter-text", "exo-filter-method", "exo-filter-tess-disposition", "exo-spt-range",
+    "exo-filter-method", "exo-spt-range",
     "exo-use-photometric-distances",
     ...exoRangeFilters.flatMap((filter) => [filter.minId, filter.maxId, filter.nullId]),
     "exo-max-confirmed", "exo-max-tess", "exo-load", "exo-clear-cache", "exo-clear-cache-status",
@@ -173,7 +181,7 @@ function bindExoplanetControls() {
       loadExoplanetData();
     });
   }
-  for (const id of ["exo-color-age", "exo-error-bars", "exo-hover-text", "exo-filter-text", "exo-filter-method", "exo-filter-tess-disposition"]) {
+  for (const id of ["exo-color-age", "exo-error-bars", "exo-hover-text", "exo-filter-method"]) {
     exoEl[id].addEventListener("input", () => {
       updateExoplanetUrl();
       renderExoplanetsExplorer();
@@ -183,6 +191,26 @@ function bindExoplanetControls() {
       renderExoplanetsExplorer();
     });
   }
+  exoEl["exo-highlight-oids"].addEventListener("change", () => {
+    setExoplanetHighlightOids(parseIntegerList(exoEl["exo-highlight-oids"].value));
+  });
+  exoEl["exo-highlight-oids"].addEventListener("keydown", (event) => {
+    if (event.key === "Enter") setExoplanetHighlightOids(parseIntegerList(exoEl["exo-highlight-oids"].value));
+  });
+  exoEl["exo-object-search"].addEventListener("input", () => {
+    clearTimeout(exoState.searchTimer);
+    const value = exoEl["exo-object-search"].value.trim();
+    exoState.searchTimer = setTimeout(() => searchExoplanetTargets(value), 220);
+  });
+  exoEl["exo-object-search"].addEventListener("focus", () => {
+    const value = exoEl["exo-object-search"].value.trim();
+    if (value) searchExoplanetTargets(value);
+  });
+  document.addEventListener("click", (event) => {
+    if (!exoEl["exo-object-results"].contains(event.target) && event.target !== exoEl["exo-object-search"]) {
+      exoEl["exo-object-results"].hidden = true;
+    }
+  });
   exoEl["exo-spt-range"].addEventListener("input", () => {
     updateExoplanetUrl();
     scheduleExoplanetDataLoad();
@@ -223,16 +251,16 @@ function bindExoplanetControls() {
 function populateExoplanetAxisSelects() {
   const axes = [...exoState.axes.values()];
   for (const id of ["exo-x-axis", "exo-y-axis"]) {
-    const current = exoEl[id]?.value || (id === "exo-x-axis" ? "orbital_period_days" : "planet_radius_rjup");
+    const current = exoEl[id]?.value || (id === "exo-x-axis" ? "sep_au" : "planet_mass_mjup");
     exoEl[id].innerHTML = axes.map((axis) => `<option value="${escapeHtml(axis.key)}">${escapeHtml(axis.label || axis.key)}</option>`).join("");
-    exoEl[id].value = exoState.axes.has(current) ? current : (id === "exo-x-axis" ? "orbital_period_days" : "planet_radius_rjup");
+    exoEl[id].value = exoState.axes.has(current) ? current : (id === "exo-x-axis" ? "sep_au" : "planet_mass_mjup");
   }
 }
 
 function readExoplanetUrlState() {
   const params = new URLSearchParams(window.location.search);
-  exoEl["exo-x-axis"].value = params.get("x") || params.get("xaxis") || "orbital_period_days";
-  exoEl["exo-y-axis"].value = params.get("y") || params.get("yaxis") || "planet_radius_rjup";
+  exoEl["exo-x-axis"].value = params.get("x") || params.get("xaxis") || "sep_au";
+  exoEl["exo-y-axis"].value = params.get("y") || params.get("yaxis") || "planet_mass_mjup";
   exoEl["exo-x-log"].checked = truthyParam(params.get("xlog") ?? params.get("x_log"), axisSpec(exoEl["exo-x-axis"].value).defaultLog);
   exoEl["exo-y-log"].checked = truthyParam(params.get("ylog") ?? params.get("y_log"), axisSpec(exoEl["exo-y-axis"].value).defaultLog);
   exoEl["exo-color-age"].checked = truthyParam(params.get("color_age") ?? params.get("color_by_age"), false);
@@ -240,9 +268,7 @@ function readExoplanetUrlState() {
   exoEl["exo-show-tess"].checked = truthyParam(params.get("show_tess_candidates") ?? params.get("tess_candidates") ?? params.get("tess"), true);
   exoEl["exo-error-bars"].checked = truthyParam(params.get("errors") ?? params.get("error_bars"), false);
   exoEl["exo-hover-text"].checked = truthyParam(params.get("hover_text") ?? params.get("hover"), true);
-  exoEl["exo-filter-text"].value = params.get("filter") || params.get("q") || "";
   exoEl["exo-filter-method"].value = params.get("method") || params.get("discoverymethod") || "";
-  exoEl["exo-filter-tess-disposition"].value = params.get("tess_disposition") || params.get("tfopwg_disp") || "";
   exoEl["exo-spt-range"].value = params.get("spt_range") || params.get("spt") || "";
   exoEl["exo-use-photometric-distances"].checked = truthyParam(
     params.get("use_photometric_distances") ?? params.get("photometric_distances") ?? params.get("phot_dist"),
@@ -255,6 +281,12 @@ function readExoplanetUrlState() {
   }
   exoEl["exo-max-confirmed"].value = params.get("max_confirmed") || params.get("max_exoplanets") || "50000";
   exoEl["exo-max-tess"].value = params.get("max_tess_candidates") || params.get("max_tess") || "50000";
+  setExoplanetHighlightOids(parseIntegerList(
+    params.get("highlight_oids") || params.get("highlight_oid") || params.get("moca_oids") || params.get("moca_oid") || params.get("oids") || params.get("oid") || "",
+  ), { quiet: true });
+  setExoplanetHighlightRowIds(parseTokenList(
+    params.get("highlight_exoplanets") || params.get("highlight_planets") || params.get("exoplanet_ids") || params.get("planet_ids") || "",
+  ), { quiet: true });
   updateTessAvailability();
 }
 
@@ -280,6 +312,7 @@ async function loadExoplanetData(options = {}) {
       exoState.axes = new Map(payload.axes.map((axis) => [axis.key, axis]));
       populateExoplanetAxisSelects();
     }
+    renderHighlightedExoplanetList();
     if (!payload.ok) {
       setExoplanetStatus(payload.error || "Could not load exoplanets", "error");
     } else {
@@ -314,13 +347,17 @@ function renderExoplanetsExplorer() {
   const rows = displayRows();
   const plottable = rows.filter((row) => rowIsPlottable(row, xKey, yKey, xLog, yLog));
   const selected = plottable.filter((row) => exoState.selectedIds.has(rowId(row)));
-  const base = plottable.filter((row) => !exoState.selectedIds.has(rowId(row)));
+  const highlighted = plottable.filter((row) => !exoState.selectedIds.has(rowId(row)) && rowIsHighlighted(row));
+  const base = plottable.filter((row) => !exoState.selectedIds.has(rowId(row)) && !rowIsHighlighted(row));
   const confirmedBase = base.filter(isConfirmedRow);
   const tessBase = base.filter(isTessRow);
-  const hasAgeColorbar = exoEl["exo-color-age"].checked && confirmedBase.some(rowHasUsableAge);
+  const confirmedAgeColorbar = exoEl["exo-color-age"].checked && confirmedBase.some(rowHasUsableAge);
+  const tessAgeColorbar = exoEl["exo-color-age"].checked && !confirmedAgeColorbar && tessBase.some(rowHasUsableAge);
+  const hasAgeColorbar = confirmedAgeColorbar || tessAgeColorbar;
   const traces = [
-    ...tessCandidateTraces(tessBase, xKey, yKey),
-    ...confirmedPlanetTraces(confirmedBase, xKey, yKey, { showAgeColorbar: hasAgeColorbar }),
+    ...tessCandidateTraces(tessBase, xKey, yKey, { showAgeColorbar: tessAgeColorbar }),
+    ...confirmedPlanetTraces(confirmedBase, xKey, yKey, { showAgeColorbar: confirmedAgeColorbar }),
+    highlightTrace(highlighted, xKey, yKey),
     selectedTrace(selected, xKey, yKey),
   ].filter(Boolean);
   const layout = exoplanetLayout(xKey, yKey, xLog, yLog, plottable, { hasAgeColorbar });
@@ -333,7 +370,7 @@ function renderExoplanetsExplorer() {
 
 function confirmedPlanetTraces(rows, xKey, yKey, options = {}) {
   if (!exoEl["exo-show-confirmed"].checked || !rows.length) return [];
-  const methods = uniqueSorted(rows.map((row) => row.discoverymethod || "Unknown"));
+  const methods = methodsByDecreasingClassSize(rows);
   if (!exoEl["exo-color-age"].checked) {
     return methods.map((method, index) => {
       const methodRows = rows.filter((row) => (row.discoverymethod || "Unknown") === method);
@@ -342,7 +379,7 @@ function confirmedPlanetTraces(rows, xKey, yKey, options = {}) {
         marker: {
           color: methodColor(method, index),
           size: 8,
-          opacity: 0.78,
+          opacity: 0.58,
           symbol: exoMethodSymbols.get(method) || "circle",
           line: { color: "rgba(255,255,255,0.86)", width: 0.65 },
         },
@@ -357,12 +394,12 @@ function confirmedPlanetTraces(rows, xKey, yKey, options = {}) {
     const withoutAge = methodRows.filter((row) => !rowHasUsableAge(row));
     traces.push(scatterTrace(withoutAge, xKey, yKey, {
       name: countLabel(`${method}: age unknown`, withoutAge),
-      marker: unknownAgeMarker({ symbol: exoMethodSymbols.get(method) || "circle", size: 8, opacity: 0.27 }),
+      marker: unknownAgeMarker({ symbol: exoMethodSymbols.get(method) || "circle", size: 8, opacity: 0.24 }),
     }));
     const showColorbar = colorbarAvailable && withAge.length > 0;
     traces.push(scatterTrace(withAge, xKey, yKey, {
       name: countLabel(`${method}: host ages`, withAge),
-      marker: ageColorMarker(withAge, { symbol: exoMethodSymbols.get(method) || "circle", size: 8, showColorbar }),
+      marker: ageColorMarker(withAge, { symbol: exoMethodSymbols.get(method) || "circle", size: 8, showColorbar, opacity: 0.64 }),
     }));
     if (showColorbar) colorbarAvailable = false;
   }
@@ -372,6 +409,23 @@ function confirmedPlanetTraces(rows, xKey, yKey, options = {}) {
 function tessCandidateTraces(rows, xKey, yKey, options = {}) {
   if (!tessEnabled() || !rows.length) return [];
   const transitSymbol = exoMethodSymbols.get("Transit") || "circle";
+  if (exoEl["exo-color-age"].checked) {
+    const withAge = rows.filter(rowHasUsableAge);
+    const withoutAge = rows.filter((row) => !rowHasUsableAge(row));
+    return [
+      scatterTrace(withoutAge, xKey, yKey, {
+        name: countLabel("TESS candidates: age unknown", withoutAge),
+        marker: tessUnknownAgeMarker(transitSymbol),
+      }),
+      scatterTrace(withAge, xKey, yKey, {
+        name: countLabel("TESS candidates: host ages", withAge),
+        marker: tessAgeColorMarker(withAge, {
+          symbol: transitSymbol,
+          showColorbar: options.showAgeColorbar,
+        }),
+      }),
+    ].filter(Boolean);
+  }
   return [scatterTrace(rows, xKey, yKey, {
     name: countLabel("TESS candidates", rows),
     marker: {
@@ -389,6 +443,14 @@ function selectedTrace(rows, xKey, yKey) {
   return scatterTrace(rows, xKey, yKey, {
     name: countLabel("Selected", rows),
     marker: { color: "#FACC15", size: 15, opacity: 0.98, symbol: "star", line: { color: "#111111", width: 1.8 } },
+  });
+}
+
+function highlightTrace(rows, xKey, yKey) {
+  if (!rows.length) return null;
+  return scatterTrace(rows, xKey, yKey, {
+    name: countLabel("Highlighted", rows),
+    marker: { color: "#FFD43B", size: 15, opacity: 0.98, symbol: "star", line: { color: "#111111", width: 1.8 } },
   });
 }
 
@@ -497,16 +559,12 @@ function plotAxis(key, logScale) {
 }
 
 function displayRows() {
-  const text = normalizeSearchText(exoEl["exo-filter-text"].value);
   const method = normalizeSearchText(exoEl["exo-filter-method"].value);
-  const disposition = normalizeSearchText(exoEl["exo-filter-tess-disposition"].value);
   const activeRanges = activeRangeFilters();
   return (exoState.rows || []).filter((row) => {
     if (isConfirmedRow(row) && !exoEl["exo-show-confirmed"].checked) return false;
     if (isTessRow(row) && !tessEnabled()) return false;
-    if (text && !rowText(row).includes(text)) return false;
     if (method && !normalizeSearchText(row.discoverymethod).includes(method)) return false;
-    if (disposition && !normalizeSearchText(row.tfopwg_disp).includes(disposition)) return false;
     return rowMatchesRangeFilters(row, activeRanges);
   });
 }
@@ -583,17 +641,19 @@ function renderExoplanetSummary(rows, plottable) {
   const total = exoState.rows.length;
   const confirmed = rows.filter(isConfirmedRow).length;
   const tess = rows.filter(isTessRow).length;
-  const selected = selectedRows().length;
+  const selected = (exoState.rows || []).filter((row) => exoState.selectedIds.has(rowId(row))).length;
+  const highlighted = highlightedRows().length;
   const cache = exoState.payload?.cache?.hit ? "cached" : exoState.payload?.source || "";
-  exoEl["exo-summary"].textContent = `${plottable.length.toLocaleString()} plotted; ${rows.length.toLocaleString()} of ${total.toLocaleString()} rows filtered; ${confirmed.toLocaleString()} confirmed, ${tess.toLocaleString()} TESS${selected ? `; ${selected} selected` : ""}`;
+  exoEl["exo-summary"].textContent = `${plottable.length.toLocaleString()} plotted; ${rows.length.toLocaleString()} of ${total.toLocaleString()} rows filtered; ${confirmed.toLocaleString()} confirmed, ${tess.toLocaleString()} TESS${selected ? `; ${selected} selected` : ""}${highlighted ? `; ${highlighted} highlighted` : ""}`;
   exoEl["exo-subtitle"].textContent = `${axisSpec(exoEl["exo-x-axis"].value).label} vs ${axisSpec(exoEl["exo-y-axis"].value).label}${cache ? ` (${cache})` : ""}`;
 }
 
 function renderExoplanetTable() {
   const rows = selectedRows();
-  exoEl["exo-clear-selection"].disabled = !exoState.selectedIds.size;
-  exoEl["exo-table-title"].textContent = exoState.selectedIds.size ? "Selected exoplanets" : "Selected exoplanets";
-  exoEl["exo-table-subtitle"].textContent = rows.length ? `${rows.length.toLocaleString()} rows` : "Click or lasso points in the plot.";
+  const hasSelection = Boolean(exoState.selectedIds.size);
+  exoEl["exo-clear-selection"].disabled = !hasSelection;
+  exoEl["exo-table-title"].textContent = hasSelection ? "Selected exoplanets" : "Highlighted exoplanets";
+  exoEl["exo-table-subtitle"].textContent = rows.length ? `${rows.length.toLocaleString()} rows` : "Click, lasso, or highlight objects in the plot.";
   if (!rows.length) {
     exoEl["exo-table"].innerHTML = `<div class="designation-result-note">No exoplanets selected.</div>`;
     return;
@@ -605,8 +665,12 @@ function renderExoplanetTable() {
 }
 
 function selectedRows() {
-  const display = displayRows();
-  return display.filter((row) => exoState.selectedIds.has(rowId(row)));
+  const selected = (exoState.rows || []).filter((row) => exoState.selectedIds.has(rowId(row)));
+  return selected.length ? selected : highlightedRows();
+}
+
+function highlightedRows() {
+  return (exoState.rows || []).filter(rowIsHighlighted);
 }
 
 function selectionColumns() {
@@ -630,6 +694,303 @@ function reportButtonHtml(url, label) {
   return `<a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
 }
 
+async function searchExoplanetTargets(query) {
+  if (!query || query.length < 2) {
+    exoEl["exo-object-results"].innerHTML = `<div class="designation-result-note">Type at least two characters</div>`;
+    exoEl["exo-object-results"].hidden = false;
+    return;
+  }
+  exoEl["exo-object-results"].innerHTML = `<div class="designation-result-note">Searching designations...</div>`;
+  exoEl["exo-object-results"].hidden = false;
+  try {
+    const index = await ensureExoplanetDesignationIndex();
+    if (normalizeSearchText(exoEl["exo-object-search"].value) !== normalizeSearchText(query)) return;
+    const indexResults = localExoplanetSearchResults(query, index);
+    if (indexResults.length) {
+      renderExoplanetSearchResults(indexResults);
+      return;
+    }
+  } catch (error) {
+    console.warn("Exoplanet designation index unavailable", error);
+  }
+  const localResults = localExoplanetSearchResults(query, exoState.rows || []);
+  if (localResults.length) {
+    renderExoplanetSearchResults(localResults);
+    return;
+  }
+  const params = exoplanetDesignationParams();
+  params.set("q", query);
+  const payload = await fetchExoplanetJson(`api/exoplanets-explorer/search?${params.toString()}`);
+  renderExoplanetSearchResults(payload.options || []);
+}
+
+async function ensureExoplanetDesignationIndex() {
+  const key = `${exoEl["exo-show-confirmed"].checked ? "confirmed" : "no-confirmed"}:${tessEnabled() ? "tess" : "no-tess"}`;
+  if (exoState.designationIndex && exoState.designationIndexKey === key) return exoState.designationIndex;
+  if (exoState.designationIndexPromise && exoState.designationIndexKey === key) return exoState.designationIndexPromise;
+  exoState.designationIndexKey = key;
+  const params = exoplanetDesignationParams();
+  if (exoState.designationCacheBust) params.set("_cache_bust", exoState.designationCacheBust);
+  exoState.designationIndexPromise = fetchExoplanetJson(`api/exoplanets-explorer/designations?${params.toString()}`)
+    .then((payload) => {
+      if (!payload.ok) throw new Error(payload.error || "Could not load designation index");
+      exoState.designationIndex = payload.options || [];
+      return exoState.designationIndex;
+    })
+    .finally(() => {
+      exoState.designationIndexPromise = null;
+    });
+  return exoState.designationIndexPromise;
+}
+
+function exoplanetDesignationParams() {
+  const params = exoplanetApiParams();
+  params.set("include_confirmed", exoEl["exo-show-confirmed"].checked ? "1" : "0");
+  params.set("include_tess_candidates", tessEnabled() ? "1" : "0");
+  params.set("max_confirmed", exoEl["exo-max-confirmed"].value || "50000");
+  params.set("max_tess_candidates", exoEl["exo-max-tess"].value || "50000");
+  return params;
+}
+
+function localExoplanetSearchResults(query, rows = []) {
+  const needle = normalizeSearchText(query);
+  if (!needle) return [];
+  const sourceRows = rows || [];
+  const hostCounts = new Map();
+  for (const row of sourceRows) {
+    const oid = exoplanetHostOid(row);
+    if (oid !== null && exoplanetResultKind(row) !== "host") hostCounts.set(oid, (hostCounts.get(oid) || 0) + 1);
+  }
+  const hostResults = [];
+  const seenHosts = new Set();
+  const planetResults = [];
+  for (const row of sourceRows) {
+    const kind = exoplanetResultKind(row);
+    const oid = exoplanetHostOid(row);
+    if (kind === "host" || oid !== null) {
+      const hostKey = oid !== null ? String(oid) : normalizeSearchText(exoplanetHostName(row));
+      if (hostKey && !seenHosts.has(hostKey)) {
+        seenHosts.add(hostKey);
+        const hostFields = [
+          exoplanetHostName(row),
+          row.parent_designations,
+          oid,
+        ].map(normalizeSearchText);
+        if (hostFields.some((value) => value.includes(needle))) {
+          hostResults.push({
+            ...row,
+            result_kind: "host",
+            value: oid,
+            moca_oid: oid,
+            label: exoplanetSearchResultMainLabel({ ...row, result_kind: "host", value: oid }),
+            main_label: exoplanetSearchResultMainLabel({ ...row, result_kind: "host", value: oid }),
+            detail_label: exoplanetSearchResultDetailLabel({ ...row, result_kind: "host", value: oid }, needle, hostCounts.get(oid) || 0),
+          });
+        }
+      }
+    }
+    if (kind === "host") continue;
+    const rowIdentifier = exoplanetOptionRowId(row);
+    const textFields = [
+      exoplanetPlanetName(row),
+      exoplanetHostName(row),
+      row.parent_designations,
+      row.child_designations,
+      rowIdentifier,
+      row.nasa_id,
+      row.tess_candidate_id,
+      row.toi,
+      row.tid,
+      oid,
+    ].map(normalizeSearchText);
+    if (!textFields.some((value) => value.includes(needle))) continue;
+    planetResults.push({
+      ...row,
+      result_kind: kind,
+      value: rowIdentifier,
+      label: exoplanetSearchResultLabel(row, needle),
+      main_label: exoplanetSearchResultMainLabel(row),
+      detail_label: exoplanetSearchResultDetailLabel(row, needle),
+    });
+    if (planetResults.length >= 80) break;
+  }
+  const hostLimit = Math.min(hostResults.length, 30);
+  return [
+    ...hostResults.slice(0, hostLimit),
+    ...planetResults.slice(0, 80 - hostLimit),
+  ].slice(0, 80);
+}
+
+function renderExoplanetSearchResults(results) {
+  if (!results.length) {
+    exoEl["exo-object-results"].innerHTML = `<div class="designation-result-note">No matching objects found</div>`;
+    exoEl["exo-object-results"].hidden = false;
+    return;
+  }
+  exoEl["exo-object-results"].innerHTML = results.map((result, index) => searchResultButtonHtml(result, index)).join("");
+  exoEl["exo-object-results"].querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const result = results[Number(button.dataset.index)];
+      if (exoplanetResultKind(result) === "host") {
+        addExoplanetHighlightOid(result.moca_oid ?? result.moca_oid_parent ?? result.value);
+      } else {
+        addExoplanetHighlightRowId(result.value || exoplanetOptionRowId(result));
+      }
+      exoEl["exo-object-search"].value = result.label || exoplanetSearchResultMainLabel(result);
+      exoEl["exo-object-results"].hidden = true;
+    });
+  });
+  exoEl["exo-object-results"].hidden = false;
+}
+
+function searchResultButtonHtml(result, index) {
+  const main = result.main_label || result.label || exoplanetSearchResultMainLabel(result);
+  const detail = result.detail_label || "";
+  return [
+    `<button class="designation-result" type="button" data-index="${index}">`,
+    `<span class="designation-result-main">${escapeHtml(main)}</span>`,
+    detail ? `<span class="designation-result-meta">${escapeHtml(detail)}</span>` : "",
+    "</button>",
+  ].join("");
+}
+
+function exoplanetSearchResultLabel(row, needle) {
+  const base = exoplanetSearchResultMainLabel(row);
+  const aliases = matchingExoplanetAliasLabels(row, needle);
+  return aliases.length ? `${base} [${aliases.slice(0, 3).join("; ")}]` : base;
+}
+
+function exoplanetSearchResultMainLabel(row) {
+  const kind = exoplanetResultKind(row);
+  if (kind === "host") {
+    const oid = exoplanetHostOid(row);
+    return `${oid !== null ? `oid${oid}: ` : ""}${exoplanetHostName(row) || "host"}`;
+  }
+  const prefix = kind === "tess_candidate" ? "TESS" : "planet";
+  return `${prefix}: ${exoplanetHostName(row) || "host"} -> ${exoplanetPlanetName(row) || "planet"}`;
+}
+
+function exoplanetSearchResultDetailLabel(row, needle, hostCount = 0) {
+  if (exoplanetResultKind(row) === "host") {
+    const aliases = matchingExoplanetAliasLabels(row, needle);
+    const countText = hostCount ? `${hostCount.toLocaleString()} row${hostCount === 1 ? "" : "s"}` : "";
+    return [countText, ...aliases.slice(0, 2)].filter(Boolean).join("; ");
+  }
+  const aliases = matchingExoplanetAliasLabels(row, needle);
+  if (aliases.length) return aliases.slice(0, 3).join("; ");
+  const details = [];
+  if (row.discoverymethod) details.push(row.discoverymethod);
+  if (row.tfopwg_disp) details.push(row.tfopwg_disp);
+  if (row.toi) details.push(`TOI ${row.toi}`);
+  if (row.tid) details.push(`TIC ${row.tid}`);
+  const oid = exoplanetHostOid(row);
+  if (oid !== null) details.push(`oid${oid}`);
+  return details.slice(0, 3).join("; ");
+}
+
+function matchingExoplanetAliasLabels(row, needle) {
+  const labels = [];
+  for (const [field, prefix] of [["parent_designations", "host"], ["child_designations", "planet"]]) {
+    for (const alias of splitDesignationAliases(row[field])) {
+      if (normalizeSearchText(alias).includes(needle) && alias !== exoplanetHostName(row) && alias !== exoplanetPlanetName(row)) {
+        labels.push(`${prefix}: ${alias}`);
+      }
+      if (labels.length >= 4) return labels;
+    }
+  }
+  return labels;
+}
+
+function splitDesignationAliases(value) {
+  return String(value || "")
+    .split("|")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function addExoplanetHighlightOid(oid) {
+  const value = finiteInteger(oid);
+  if (value === null) return;
+  exoState.highlightOids.add(value);
+  syncHighlightOidInput();
+  renderHighlightedExoplanetList();
+  updateExoplanetUrl();
+  if (!(exoState.rows || []).some((row) => exoplanetHostOid(row) === value)) loadExoplanetData();
+  else renderExoplanetsExplorer();
+}
+
+function setExoplanetHighlightOids(oids, options = {}) {
+  exoState.highlightOids = new Set((oids || []).map(finiteInteger).filter((value) => value !== null));
+  syncHighlightOidInput();
+  renderHighlightedExoplanetList();
+  if (!options.quiet) {
+    updateExoplanetUrl();
+    loadExoplanetData();
+  }
+}
+
+function addExoplanetHighlightRowId(id) {
+  const value = String(id || "").trim();
+  if (!value) return;
+  exoState.highlightRowIds.add(value);
+  renderHighlightedExoplanetList();
+  updateExoplanetUrl();
+  if (!(exoState.rows || []).some((row) => rowId(row) === value)) loadExoplanetData();
+  else renderExoplanetsExplorer();
+}
+
+function setExoplanetHighlightRowIds(ids, options = {}) {
+  exoState.highlightRowIds = new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean));
+  renderHighlightedExoplanetList();
+  if (!options.quiet) {
+    updateExoplanetUrl();
+    loadExoplanetData();
+  }
+}
+
+function syncHighlightOidInput() {
+  if (exoEl["exo-highlight-oids"]) {
+    exoEl["exo-highlight-oids"].value = [...exoState.highlightOids].sort((a, b) => a - b).join(", ");
+  }
+}
+
+function renderHighlightedExoplanetList() {
+  if (!exoEl["exo-selected-objects"]) return;
+  const oids = [...exoState.highlightOids].sort((a, b) => a - b);
+  const rowIds = [...exoState.highlightRowIds].sort((a, b) => a.localeCompare(b));
+  const entries = [
+    ...oids.map((oid) => {
+      const rows = (exoState.rows || []).filter((row) => exoplanetHostOid(row) === oid);
+      const label = rows.length
+        ? `oid${oid}: ${exoplanetHostName(rows[0]) || "host"} (${rows.length.toLocaleString()})`
+        : `oid${oid}`;
+      return { kind: "oid", value: String(oid), label, title: "Remove highlighted host" };
+    }),
+    ...rowIds.map((id) => {
+      const row = (exoState.rows || []).find((candidate) => rowId(candidate) === id);
+      const label = row ? exoplanetSearchResultMainLabel(row) : `exoplanet: ${id}`;
+      return { kind: "row", value: id, label, title: "Remove highlighted planet" };
+    }),
+  ];
+  if (!entries.length) {
+    exoEl["exo-selected-objects"].textContent = "No objects highlighted";
+    return;
+  }
+  exoEl["exo-selected-objects"].innerHTML = entries.map((entry) => (
+    `<button type="button" data-kind="${entry.kind}" data-value="${escapeHtml(entry.value)}" title="${escapeHtml(entry.title)}">${escapeHtml(entry.label)} x</button>`
+  )).join("");
+  exoEl["exo-selected-objects"].querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.kind === "oid") exoState.highlightOids.delete(Number(button.dataset.value));
+      else exoState.highlightRowIds.delete(button.dataset.value || "");
+      syncHighlightOidInput();
+      renderHighlightedExoplanetList();
+      updateExoplanetUrl();
+      renderExoplanetsExplorer();
+    });
+  });
+}
+
 function updateExoplanetUrl() {
   const params = new URLSearchParams(window.location.search);
   params.set("x", exoEl["exo-x-axis"].value);
@@ -641,9 +1002,11 @@ function updateExoplanetUrl() {
   setParamIf(params, "show_tess_candidates", exoEl["exo-show-tess"].checked ? "1" : "0");
   setParamIf(params, "errors", exoEl["exo-error-bars"].checked ? "1" : "");
   setParamIf(params, "hover_text", exoEl["exo-hover-text"].checked ? "" : "0");
-  setParamIf(params, "filter", exoEl["exo-filter-text"].value.trim());
+  params.delete("filter");
+  params.delete("q");
   setParamIf(params, "method", exoEl["exo-filter-method"].value.trim());
-  setParamIf(params, "tess_disposition", exoEl["exo-filter-tess-disposition"].value.trim());
+  params.delete("tess_disposition");
+  params.delete("tfopwg_disp");
   setParamIf(params, "spt_range", exoEl["exo-spt-range"].value.trim());
   setParamIf(params, "use_photometric_distances", exoEl["exo-use-photometric-distances"].checked ? "1" : "");
   for (const filter of exoRangeFilters) {
@@ -651,6 +1014,18 @@ function updateExoplanetUrl() {
     setParamIf(params, filter.maxParam, validNumberText(exoEl[filter.maxId]?.value));
     setParamIf(params, `ignore_null_${filter.key}`, exoEl[filter.nullId]?.checked ? "1" : "");
   }
+  if (exoState.highlightOids.size) params.set("highlight_oids", [...exoState.highlightOids].sort((a, b) => a - b).join(","));
+  else params.delete("highlight_oids");
+  params.delete("highlight_oid");
+  params.delete("moca_oids");
+  params.delete("moca_oid");
+  params.delete("oids");
+  params.delete("oid");
+  if (exoState.highlightRowIds.size) params.set("highlight_exoplanets", [...exoState.highlightRowIds].sort((a, b) => a.localeCompare(b)).join(","));
+  else params.delete("highlight_exoplanets");
+  params.delete("highlight_planets");
+  params.delete("exoplanet_ids");
+  params.delete("planet_ids");
   params.set("max_confirmed", exoEl["exo-max-confirmed"].value || "50000");
   params.set("max_tess_candidates", exoEl["exo-max-tess"].value || "50000");
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
@@ -683,6 +1058,8 @@ function applyExoplanetDataParams(params) {
     if (maxValue) params.set(filter.maxParam, maxValue);
     if (exoEl[filter.nullId]?.checked) params.set(`ignore_null_${filter.key}`, "1");
   }
+  if (exoState.highlightOids.size) params.set("highlight_oids", [...exoState.highlightOids].sort((a, b) => a - b).join(","));
+  if (exoState.highlightRowIds.size) params.set("highlight_exoplanets", [...exoState.highlightRowIds].sort((a, b) => a.localeCompare(b)).join(","));
   return params;
 }
 
@@ -692,6 +1069,10 @@ async function clearExoplanetCache() {
   exoEl["exo-clear-cache-status"].textContent = "Clearing cache";
   try {
     const payload = await postExoplanetJson("api/exoplanets-explorer/cache/clear");
+    exoState.designationIndex = null;
+    exoState.designationIndexKey = "";
+    exoState.designationIndexPromise = null;
+    exoState.designationCacheBust = String(Date.now());
     const cleared = payload.cleared || {};
     const count = Object.values(cleared).reduce((sum, value) => sum + Number(value || 0), 0);
     exoEl["exo-clear-cache-status"].textContent = `Cleared ${count} cached entr${count === 1 ? "y" : "ies"}. Reloading.`;
@@ -760,6 +1141,31 @@ function unknownAgeMarker(options = {}) {
     opacity: options.opacity ?? 0.28,
     symbol: options.symbol || "circle",
     line: { color: "rgba(255,255,255,0.72)", width: 0.55 },
+  };
+}
+
+function tessAgeColorMarker(rows, options = {}) {
+  return {
+    color: rows.map(ageColorValue),
+    colorscale: exoAgeColorScale,
+    cmin: Math.log10(exoAgeColorTicks[0]),
+    cmax: Math.log10(exoAgeColorTicks[exoAgeColorTicks.length - 1]),
+    showscale: Boolean(options.showColorbar),
+    ...(options.showColorbar ? { colorbar: ageColorbarSpec() } : {}),
+    size: options.size || 8,
+    opacity: options.opacity ?? 0.76,
+    symbol: openMarkerSymbol(options.symbol || exoMethodSymbols.get("Transit") || "circle"),
+    line: { width: options.lineWidth || 1.35 },
+  };
+}
+
+function tessUnknownAgeMarker(symbol) {
+  return {
+    color: "#9CA3AF",
+    size: 8,
+    opacity: 0.34,
+    symbol: openMarkerSymbol(symbol || exoMethodSymbols.get("Transit") || "circle"),
+    line: { color: "#9CA3AF", width: 1.25 },
   };
 }
 
@@ -861,6 +1267,35 @@ function rowId(row) {
   return String(row.planet_id || row.exoplanet_id || `${row.row_kind}:${row.nasa_id || row.tess_candidate_id || row.rowid || ""}`);
 }
 
+function rowIsHighlighted(row) {
+  const oid = exoplanetHostOid(row);
+  return exoState.highlightRowIds.has(rowId(row)) || (oid !== null && exoState.highlightOids.has(oid));
+}
+
+function exoplanetHostOid(row) {
+  return finiteInteger(row?.moca_oid ?? row?.moca_oid_parent);
+}
+
+function exoplanetOptionRowId(row) {
+  const value = row?.value || row?.planet_id || row?.exoplanet_id || rowId(row);
+  return String(value || "").trim();
+}
+
+function exoplanetResultKind(row) {
+  const kind = String(row?.result_kind || row?.row_kind || "").trim();
+  if (kind === "host") return "host";
+  if (kind === "tess_candidate") return "tess_candidate";
+  return "confirmed_planet";
+}
+
+function exoplanetHostName(row) {
+  return row?.host_name || row?.designation_parent || row?.hostname || row?.object_designation || "";
+}
+
+function exoplanetPlanetName(row) {
+  return row?.planet_name || row?.designation_child || row?.pl_name || row?.label || "";
+}
+
 function idsFromEventPoints(points) {
   return [...new Set((points || []).map(pointRowId).filter(Boolean))];
 }
@@ -925,6 +1360,18 @@ function uniqueSorted(values) {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function methodsByDecreasingClassSize(rows) {
+  const counts = new Map();
+  for (const row of rows || []) {
+    const method = row.discoverymethod || "Unknown";
+    counts.set(method, (counts.get(method) || 0) + 1);
+  }
+  return [...counts.keys()].sort((a, b) => {
+    const countDiff = (counts.get(b) || 0) - (counts.get(a) || 0);
+    return countDiff || a.localeCompare(b);
+  });
+}
+
 function transitColor() {
   return methodColor("Transit", 0);
 }
@@ -981,6 +1428,28 @@ function finiteNumber(value) {
 function validNumberText(value) {
   const number = finiteNumber(value);
   return number === null ? "" : String(number);
+}
+
+function finiteInteger(value) {
+  const number = finiteNumber(value);
+  return number === null ? null : Math.trunc(number);
+}
+
+function parseIntegerList(raw) {
+  return String(raw || "")
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => /^[0-9]+$/.test(item))
+    .map((item) => Number(item))
+    .filter(Number.isFinite);
+}
+
+function parseTokenList(raw) {
+  return String(raw || "")
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function truthyParam(value, fallback = false) {

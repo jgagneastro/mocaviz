@@ -10667,8 +10667,8 @@ def _exoplanet_explorer_axis_key(args: Mapping[str, Any], key: str, default: str
 
 def _exoplanet_explorer_axis_pair(args: Mapping[str, Any]) -> tuple[str, str]:
     return (
-        _exoplanet_explorer_axis_key(args, "x", "orbital_period_days"),
-        _exoplanet_explorer_axis_key(args, "y", "planet_radius_rjup"),
+        _exoplanet_explorer_axis_key(args, "x", "sep_au"),
+        _exoplanet_explorer_axis_key(args, "y", "planet_mass_mjup"),
     )
 
 
@@ -11049,6 +11049,62 @@ def _exoplanet_explorer_row_matches_filters(row: Mapping[str, Any], args: Mappin
     return _exoplanet_explorer_row_matches_requested_axes(row, args)
 
 
+def _exoplanet_explorer_parse_int_list(raw: Any) -> list[int]:
+    values: list[int] = []
+    for item in re.split(r"[\s,;]+", str(raw or "")):
+        text_value = item.strip()
+        if text_value.isdigit():
+            value = int(text_value)
+            if value not in values:
+                values.append(value)
+    return values
+
+
+def _exoplanet_explorer_highlight_oids(args: Mapping[str, Any]) -> list[int]:
+    raw_values = [
+        args.get("highlight_oids"),
+        args.get("highlight_oid"),
+        args.get("moca_oids"),
+        args.get("moca_oid"),
+        args.get("oids"),
+        args.get("oid"),
+    ]
+    values: list[int] = []
+    for raw in raw_values:
+        for value in _exoplanet_explorer_parse_int_list(raw):
+            if value not in values:
+                values.append(value)
+    return values
+
+
+def _exoplanet_explorer_highlight_tokens(args: Mapping[str, Any]) -> list[str]:
+    raw_values = [
+        args.get("highlight_exoplanets"),
+        args.get("highlight_planets"),
+        args.get("exoplanet_ids"),
+        args.get("planet_ids"),
+    ]
+    values: list[str] = []
+    for raw in raw_values:
+        for item in re.split(r"[\s,;]+", str(raw or "")):
+            value = item.strip()
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def _exoplanet_explorer_highlight_prefixed_ids(args: Mapping[str, Any], prefix: str) -> list[int]:
+    values: list[int] = []
+    pattern = re.compile(rf"^{re.escape(prefix)}:(\d+)$", re.IGNORECASE)
+    for token in _exoplanet_explorer_highlight_tokens(args):
+        match = pattern.match(token)
+        if match:
+            value = int(match.group(1))
+            if value not in values:
+                values.append(value)
+    return values
+
+
 def _load_exoplanet_explorer_confirmed_from_db(
     conn,
     args: dict[str, Any],
@@ -11064,6 +11120,19 @@ def _load_exoplanet_explorer_confirmed_from_db(
     )
     include_photometric_distances = _companion_explorer_use_photometric_distances(args)
     photometric_distance_filter = "" if include_photometric_distances else "AND (parent_dist.moca_oid IS NULL OR COALESCE(parent_dist.photometric_estimate, 0) = 0)"
+    query_params = dict(common_params)
+    order_terms: list[str] = []
+    highlight_oids = _exoplanet_explorer_highlight_oids(args)
+    if highlight_oids:
+        oid_clause, oid_params = _sql_in_clause("exo_confirmed_highlight_oid", [str(oid) for oid in highlight_oids])
+        query_params.update(oid_params)
+        order_terms.append(f"(cen.moca_oid IN ({oid_clause})) DESC")
+    highlight_nasa_ids = _exoplanet_explorer_highlight_prefixed_ids(args, "nasa")
+    if highlight_nasa_ids:
+        nasa_clause, nasa_params = _sql_in_clause("exo_confirmed_highlight_nasa", [str(nasa_id) for nasa_id in highlight_nasa_ids])
+        query_params.update(nasa_params)
+        order_terms.append(f"(cen.id IN ({nasa_clause})) DESC")
+    order_terms.extend(["cen.discoverymethod", "cen.pl_name"])
     select_columns = [
         _exoplanet_explorer_sql_select("cen", columns, "id", "nasa_id"),
         _exoplanet_explorer_sql_select("cen", columns, "rowid"),
@@ -11173,9 +11242,9 @@ def _load_exoplanet_explorer_confirmed_from_db(
             AND cen.pl_name IS NOT NULL
             AND cen.moca_oid IS NOT NULL
             {photometric_distance_filter}
-        ORDER BY cen.discoverymethod, cen.pl_name
+        ORDER BY {", ".join(order_terms)}
         LIMIT {max_rows}
-    """, dict(common_params)))
+    """, query_params))
     return [_exoplanet_explorer_add_confirmed_derived(row) for row in rows]
 
 
@@ -11195,6 +11264,19 @@ def _load_exoplanet_explorer_tess_from_db(
     )
     include_photometric_distances = _companion_explorer_use_photometric_distances(args)
     photometric_distance_filter = "" if include_photometric_distances else "AND (parent_dist.moca_oid IS NULL OR COALESCE(parent_dist.photometric_estimate, 0) = 0)"
+    query_params = dict(common_params)
+    order_terms: list[str] = []
+    highlight_oids = _exoplanet_explorer_highlight_oids(args)
+    if highlight_oids:
+        oid_clause, oid_params = _sql_in_clause("exo_tess_highlight_oid", [str(oid) for oid in highlight_oids])
+        query_params.update(oid_params)
+        order_terms.append(f"(tess.moca_oid IN ({oid_clause})) DESC")
+    highlight_tess_ids = _exoplanet_explorer_highlight_prefixed_ids(args, "tess")
+    if highlight_tess_ids:
+        tess_clause, tess_params = _sql_in_clause("exo_tess_highlight_id", [str(tess_id) for tess_id in highlight_tess_ids])
+        query_params.update(tess_params)
+        order_terms.append(f"(tess.id IN ({tess_clause})) DESC")
+    order_terms.extend(["tess.toi", "tess.id"])
     select_columns = [
         _exoplanet_explorer_sql_select("tess", columns, "id", "tess_candidate_id"),
         _exoplanet_explorer_sql_select("tess", columns, "rowid"),
@@ -11278,9 +11360,9 @@ def _load_exoplanet_explorer_tess_from_db(
             ON banyan_age.moca_oid = tess.moca_oid
         WHERE tess.moca_oid IS NOT NULL
             {photometric_distance_filter}
-        ORDER BY tess.toi, tess.id
+        ORDER BY {", ".join(order_terms)}
         LIMIT {max_rows}
-    """, dict(common_params)))
+    """, query_params))
     return [_exoplanet_explorer_add_tess_derived(row) for row in rows]
 
 
@@ -11299,7 +11381,7 @@ def _load_exoplanet_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
     rows = [*confirmed, *tess]
     return {
         "axes": _exoplanet_explorer_axes_payload(),
-        "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+        "default": {"x": "sep_au", "y": "planet_mass_mjup", "xLog": True, "yLog": True},
         "rows": rows,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -11433,7 +11515,7 @@ def _mock_exoplanet_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
     rows = [*confirmed, *tess]
     return {
         "axes": _exoplanet_explorer_axes_payload(),
-        "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+        "default": {"x": "sep_au", "y": "planet_mass_mjup", "xLog": True, "yLog": True},
         "rows": rows,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -11450,6 +11532,225 @@ def _mock_exoplanet_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
+
+
+def _exoplanet_explorer_row_identifier(row: Mapping[str, Any]) -> str:
+    row_kind = str(row.get("row_kind") or row.get("result_kind") or "")
+    if row_kind == "tess_candidate" or row.get("tess_candidate_id") is not None:
+        value = row.get("tess_candidate_id")
+        return f"tess:{value}" if value is not None else ""
+    value = row.get("nasa_id")
+    return f"nasa:{value}" if value is not None else ""
+
+
+def _exoplanet_explorer_designation_options_from_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    host_options: dict[int, dict[str, Any]] = {}
+    host_counts: dict[int, int] = {}
+    planet_options: list[dict[str, Any]] = []
+    for row in rows:
+        oid = _spt_int_value(row.get("moca_oid") or row.get("moca_oid_parent"))
+        host_name = row.get("host_name") or row.get("designation_parent") or row.get("hostname") or row.get("object_designation")
+        planet_name = row.get("planet_name") or row.get("designation_child") or row.get("pl_name")
+        if oid is not None:
+            host_counts[oid] = host_counts.get(oid, 0) + 1
+            if oid not in host_options:
+                host_options[oid] = {
+                    "result_kind": "host",
+                    "value": oid,
+                    "moca_oid": oid,
+                    "moca_oid_parent": oid,
+                    "host_name": host_name,
+                    "designation_parent": host_name,
+                    "parent_designations": row.get("parent_designations"),
+                    "label": f"oid{oid}: {host_name or 'host'}",
+                }
+        identifier = _exoplanet_explorer_row_identifier(row)
+        if not identifier:
+            continue
+        row_kind = str(row.get("row_kind") or "confirmed_planet")
+        option = {
+            "result_kind": row_kind,
+            "row_kind": row_kind,
+            "value": identifier,
+            "exoplanet_id": identifier,
+            "planet_id": identifier,
+            "planet_name": planet_name,
+            "host_name": host_name,
+            "designation_parent": host_name,
+            "designation_child": planet_name,
+            "moca_oid_parent": oid,
+            "parent_designations": row.get("parent_designations"),
+            "child_designations": row.get("child_designations") or planet_name,
+            "discoverymethod": row.get("discoverymethod"),
+            "tfopwg_disp": row.get("tfopwg_disp"),
+            "nasa_id": row.get("nasa_id"),
+            "tess_candidate_id": row.get("tess_candidate_id"),
+            "toi": row.get("toi"),
+            "tid": row.get("tid"),
+        }
+        prefix = "TESS" if row_kind == "tess_candidate" else "planet"
+        option["label"] = f"{prefix}: {host_name or 'host'} -> {planet_name or 'planet'}"
+        planet_options.append(option)
+    for oid, option in host_options.items():
+        count = host_counts.get(oid, 0)
+        option["planet_count"] = count
+        option["detail_label"] = f"{count:,} row{'s' if count != 1 else ''}"
+    return [*host_options.values(), *planet_options]
+
+
+def _exoplanet_explorer_option_search_text(option: Mapping[str, Any]) -> str:
+    return " ".join(str(option.get(key) or "") for key in (
+        "label",
+        "host_name",
+        "planet_name",
+        "designation_parent",
+        "designation_child",
+        "parent_designations",
+        "child_designations",
+        "moca_oid",
+        "moca_oid_parent",
+        "value",
+        "nasa_id",
+        "tess_candidate_id",
+        "toi",
+        "tid",
+        "discoverymethod",
+        "tfopwg_disp",
+    )).lower()
+
+
+def _exoplanet_explorer_filter_options(options: Sequence[Mapping[str, Any]], query: str) -> list[dict[str, Any]]:
+    q = query.strip().lower()
+    if not q:
+        return []
+    return [dict(option) for option in options if q in _exoplanet_explorer_option_search_text(option)][:80]
+
+
+def _load_exoplanet_explorer_designation_index_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    include_confirmed = _companion_explorer_layer_flag(args, ("include_confirmed", "show_confirmed", "confirmed", "confirmed_planets"), True)
+    include_tess = _companion_explorer_layer_flag(args, ("include_tess_candidates", "show_tess_candidates", "tess_candidates", "tess"), True)
+    max_confirmed = _exoplanet_explorer_parse_limit(
+        args.get("designation_max_confirmed") or args.get("max_confirmed") or args.get("max_exoplanets"),
+        EXOPLANET_EXPLORER_DEFAULT_MAX_CONFIRMED,
+    )
+    max_tess = _exoplanet_explorer_parse_limit(
+        args.get("designation_max_tess_candidates") or args.get("max_tess_candidates") or args.get("max_tess"),
+        EXOPLANET_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES,
+    )
+    rows: list[dict[str, Any]] = []
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        alias_table_available = _db_table_exists(conn, "mechanics_all_designations")
+        if alias_table_available:
+            conn.execute(text("SET SESSION group_concat_max_len = 65535"))
+            alias_cte = """
+                all_designations AS (
+                    SELECT
+                        mad.moca_oid,
+                        GROUP_CONCAT(DISTINCT mad.designation ORDER BY mad.designation SEPARATOR ' | ') AS designations
+                    FROM mechanics_all_designations mad
+                    GROUP BY mad.moca_oid
+                )
+            """
+        else:
+            alias_cte = "all_designations AS (SELECT NULL AS moca_oid, NULL AS designations FROM DUAL WHERE 0 = 1)"
+        if include_confirmed and _db_table_exists(conn, "cat_exoplanets_nasa"):
+            confirmed_rows = _records(_read_sql(conn, f"""
+                WITH {alias_cte}
+                SELECT
+                    'confirmed_planet' AS row_kind,
+                    cen.id AS nasa_id,
+                    cen.pl_name AS planet_name,
+                    cen.hostname AS host_name,
+                    cen.moca_oid AS moca_oid_parent,
+                    host_aliases.designations AS parent_designations,
+                    cen.pl_name AS child_designations,
+                    cen.discoverymethod
+                FROM cat_exoplanets_nasa cen
+                LEFT JOIN all_designations host_aliases
+                    ON host_aliases.moca_oid = cen.moca_oid
+                WHERE COALESCE(cen.default_flag, 1) = 1
+                    AND COALESCE(cen.pl_controv_flag, 0) = 0
+                    AND cen.pl_name IS NOT NULL
+                    AND cen.moca_oid IS NOT NULL
+                ORDER BY cen.hostname, cen.pl_name
+                LIMIT {max_confirmed}
+            """))
+            confirmed_rows = _companion_explorer_filter_hidden_exoplanet_rows(conn, confirmed_rows, "planet_name")
+            rows.extend(confirmed_rows)
+        tess_table = _companion_explorer_tess_candidate_table(conn) if include_tess else None
+        if tess_table:
+            tess_columns = _db_table_columns(conn, tess_table)
+            tess_order_terms = []
+            if "toi" in tess_columns:
+                tess_order_terms.append("tess.`toi`")
+            if "id" in tess_columns:
+                tess_order_terms.append("tess.`id`")
+            tess_order_sql = ", ".join(tess_order_terms) or "tess.moca_oid"
+            tess_select_columns = [
+                "'tess_candidate' AS row_kind",
+                _exoplanet_explorer_sql_select("tess", tess_columns, "id", "tess_candidate_id"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "rowid"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "moca_oid", "moca_oid_parent"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "toi"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "ctoi_alias"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "tid"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "tfopwg_disp"),
+                _exoplanet_explorer_sql_select("tess", tess_columns, "object_designation"),
+                "host_aliases.designations AS parent_designations",
+            ]
+            tess_rows = _records(_read_sql(conn, f"""
+                WITH {alias_cte}
+                SELECT
+                    {", ".join(tess_select_columns)}
+                FROM {tess_table} tess
+                LEFT JOIN all_designations host_aliases
+                    ON host_aliases.moca_oid = tess.moca_oid
+                WHERE tess.moca_oid IS NOT NULL
+                ORDER BY {tess_order_sql}
+                LIMIT {max_tess}
+            """))
+            for row in tess_rows:
+                row["planet_name"] = _companion_explorer_tess_candidate_name(row)
+                row["host_name"] = _companion_explorer_tess_host_name(row)
+                row["child_designations"] = row.get("planet_name")
+            rows.extend(tess_rows)
+    options = _exoplanet_explorer_designation_options_from_rows(rows)
+    return {
+        "options": options,
+        "meta": {
+            "row_count": len(options),
+            "source_row_count": len(rows),
+            "confirmed_count": sum(1 for row in rows if row.get("row_kind") == "confirmed_planet"),
+            "tess_candidate_count": sum(1 for row in rows if row.get("row_kind") == "tess_candidate"),
+            "alias_table_available": alias_table_available,
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    }
+
+
+def _mock_exoplanet_explorer_designation_index(args: dict[str, Any]) -> dict[str, Any]:
+    rows = _mock_exoplanet_explorer_payload(args)["rows"]
+    options = _exoplanet_explorer_designation_options_from_rows(rows)
+    return {"options": options, "meta": {"row_count": len(options), "source_row_count": len(rows), "mock": True}}
+
+
+def _search_exoplanet_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    q = str(args.get("q") or args.get("query") or "").strip()
+    if not q:
+        return {"options": [], "meta": {"row_count": 0}}
+    payload = _load_exoplanet_explorer_designation_index_from_db(args)
+    options = _exoplanet_explorer_filter_options(payload.get("options") or [], q)
+    return {"options": options, "meta": {"row_count": len(options)}}
+
+
+def _mock_exoplanet_explorer_search(args: dict[str, Any]) -> dict[str, Any]:
+    q = str(args.get("q") or args.get("query") or "").strip()
+    if not q:
+        return {"options": [], "meta": {"row_count": 0, "mock": True}}
+    payload = _mock_exoplanet_explorer_designation_index(args)
+    options = _exoplanet_explorer_filter_options(payload.get("options") or [], q)
+    return {"options": options, "meta": {"row_count": len(options), "mock": True}}
 
 
 def _xyzuvw_covariance_key(axis1: str, axis2: str) -> str:
@@ -28941,6 +29242,54 @@ def companion_explorer_search():
         }), 500
 
 
+@app.get("/api/exoplanets-explorer/designations")
+@app.get("/api/exoplanets_explorer/designations")
+@app.get("/api/exoplanets/designations")
+@app.get("/js/api/exoplanets-explorer/designations")
+@app.get("/js/api/exoplanets_explorer/designations")
+@app.get("/js/api/exoplanets/designations")
+def exoplanets_explorer_designations():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_exoplanet_explorer_designation_index(args)
+            return _jsonify_clean_cached({"ok": True, "source": "mock", **payload}, EXOPLANET_EXPLORER_CACHE_SECONDS)
+        payload = _load_exoplanet_explorer_designation_index_from_db(args)
+        return _jsonify_clean_cached({"ok": True, "source": "MOCAdb", **payload}, EXOPLANET_EXPLORER_CACHE_SECONDS)
+    except Exception as exc:
+        return _jsonify_clean_cached({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }, 0, status=500)
+
+
+@app.get("/api/exoplanets-explorer/search")
+@app.get("/api/exoplanets_explorer/search")
+@app.get("/api/exoplanets/search")
+@app.get("/js/api/exoplanets-explorer/search")
+@app.get("/js/api/exoplanets_explorer/search")
+@app.get("/js/api/exoplanets/search")
+def exoplanets_explorer_search():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_exoplanet_explorer_search(args)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _search_exoplanet_explorer_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }), 500
+
+
 @app.get("/api/exoplanets-explorer/data")
 @app.get("/api/exoplanets_explorer/data")
 @app.get("/api/exoplanets/data")
@@ -28960,7 +29309,7 @@ def exoplanets_explorer_data():
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "axes": _exoplanet_explorer_axes_payload(),
-            "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+            "default": {"x": "sep_au", "y": "planet_mass_mjup", "xLog": True, "yLog": True},
             "rows": [],
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
