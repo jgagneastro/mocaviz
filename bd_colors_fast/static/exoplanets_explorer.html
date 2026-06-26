@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Exoplanets Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=exoplanets-explorer-20260626a">
+  <script src="static/auth_theme.js?v=dataviz-links-20260626a"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="companion-explorer-page exoplanets-explorer-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Exoplanets Explorer</div>
+      <div id="exo-status" class="status loading">Loading Exoplanets Explorer</div>
+    </header>
+
+    <main class="workspace companion-explorer-workspace exoplanets-explorer-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <label>
+            X axis
+            <select id="exo-x-axis"></select>
+          </label>
+          <label>
+            Y axis
+            <select id="exo-y-axis"></select>
+          </label>
+          <label class="checkline">
+            <input id="exo-x-log" type="checkbox" checked>
+            <span>X log</span>
+          </label>
+          <label class="checkline">
+            <input id="exo-y-log" type="checkbox" checked>
+            <span>Y log</span>
+          </label>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="exo-color-age" type="checkbox">
+            <span>Color by host age</span>
+          </label>
+          <label class="checkline">
+            <input id="exo-show-confirmed" type="checkbox" checked>
+            <span>Display confirmed planets</span>
+          </label>
+          <label class="checkline">
+            <input id="exo-show-tess" type="checkbox" checked>
+            <span>Display TESS candidates</span>
+          </label>
+          <label class="checkline">
+            <input id="exo-error-bars" type="checkbox">
+            <span>Plot error bars</span>
+          </label>
+          <label class="checkline">
+            <input id="exo-hover-text" type="checkbox" checked>
+            <span>Show hover text</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Filters</h2>
+          <label>
+            Filter by planet, host, TOI, TIC, or OID
+            <input id="exo-filter-text" type="text" value="" placeholder="All objects">
+          </label>
+          <label>
+            Filter by discovery method
+            <input id="exo-filter-method" type="text" value="" placeholder="All methods">
+          </label>
+          <label>
+            Filter by TESS disposition
+            <input id="exo-filter-tess-disposition" type="text" value="" placeholder="All dispositions">
+          </label>
+          <label>
+            Spectral range
+            <input id="exo-spt-range" type="text" value="" placeholder="All, M5-L8, L2+">
+          </label>
+          <label class="checkline">
+            <input id="exo-use-photometric-distances" type="checkbox">
+            <span>Use photometric MOCAdb distances</span>
+          </label>
+          <div class="cex-limit-grid exo-range-grid" aria-label="Range filters">
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Orbital period (days)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-period-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-period-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-orbital-period-days-null" type="checkbox">
+                <span>Ignore missing periods</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Planet mass (M<sub>Jup</sub>)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-mass-mjup-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-mass-mjup-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-planet-mass-mjup-null" type="checkbox">
+                <span>Ignore missing masses</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Host age (Myr)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-age-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-age-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-host-age-myr-null" type="checkbox">
+                <span>Ignore missing ages</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Planet radius (R<sub>Jup</sub>)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-radius-rjup-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-radius-rjup-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-planet-radius-rjup-null" type="checkbox">
+                <span>Ignore missing radii</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Host distance (pc)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-distance-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-distance-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-host-distance-pc-null" type="checkbox">
+                <span>Ignore missing distances</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Separation (AU)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-sep-au-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-sep-au-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-sep-au-null" type="checkbox">
+                <span>Ignore missing separations</span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Host T<sub>eff</sub> (K)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-host-teff-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-host-teff-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-host-teff-k-null" type="checkbox">
+                <span>Ignore missing T<sub>eff</sub></span>
+              </label>
+            </div>
+            <div class="cex-filter-control exo-range-control">
+              <label>
+                Host mass (M<sub>Sun</sub>)
+                <span class="exo-range-pair">
+                  <input id="exo-filter-host-mass-min" type="number" step="any" placeholder="Min">
+                  <input id="exo-filter-host-mass-max" type="number" step="any" placeholder="Max">
+                </span>
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="exo-filter-host-mass-msun-null" type="checkbox">
+                <span>Ignore missing host masses</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Load</h2>
+          <label>
+            Max confirmed planets
+            <input id="exo-max-confirmed" type="number" min="1" step="1000" value="50000">
+          </label>
+          <label>
+            Max TESS candidates
+            <input id="exo-max-tess" type="number" min="1" step="1000" value="50000">
+          </label>
+          <button id="exo-load" type="button">Load exoplanets</button>
+          <div class="cache-actions">
+            <button id="exo-clear-cache" type="button">Clear cache</button>
+            <span id="exo-clear-cache-status" class="cache-status"></span>
+          </div>
+        </section>
+      </aside>
+
+      <section class="visual-area companion-explorer-visual-area exoplanets-explorer-visual-area">
+        <div class="plot-frame companion-explorer-plot-frame exoplanets-explorer-plot-frame">
+          <div id="exo-plot"></div>
+          <div id="exo-plot-loader" class="plot-loader is-visible" aria-label="Loading Exoplanets Explorer">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="bd-evolution-toolbar companion-explorer-toolbar">
+          <div class="bd-evolution-summary">
+            <div id="exo-summary">No data loaded</div>
+            <div id="exo-subtitle" class="plot-hint">Selection: none</div>
+          </div>
+          <div class="export-actions companion-explorer-actions">
+            <button id="exo-clear-selection" type="button" disabled>Clear selection</button>
+            <button id="exo-export-csv" type="button" disabled>Export CSV</button>
+            <button id="exo-export-tsv" type="button" disabled>Export TSV</button>
+          </div>
+        </div>
+
+        <div class="selection-area companion-explorer-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="exo-table-title">Selected exoplanets</strong>
+              <div id="exo-table-subtitle" class="plot-hint">Click or lasso points in the plot.</div>
+            </div>
+          </div>
+          <div id="exo-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/exoplanets_explorer.js?v=exoplanets-explorer-20260626a"></script>
+</body>
+</html>

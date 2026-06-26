@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOCAdb Companion Explorer</title>
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <script src="static/auth_theme.js?v=dataviz-links-20260626a"></script>
+  <script src="plotly.min.js"></script>
+  <script src="static/plotly_export_fix.js?v=20260611a"></script>
+</head>
+<body class="companion-explorer-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">MOCAdb Companion Explorer</div>
+      <div id="cex-status" class="status loading">Loading Companion Explorer</div>
+    </header>
+
+    <main class="workspace companion-explorer-workspace">
+      <aside class="controls">
+        <section class="control-section axes-section">
+          <h2>Axes</h2>
+          <label>
+            X axis
+            <select id="cex-x-axis"></select>
+          </label>
+          <label>
+            Y axis
+            <select id="cex-y-axis"></select>
+          </label>
+          <label class="checkline">
+            <input id="cex-x-log" type="checkbox" checked>
+            <span>X log</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-y-log" type="checkbox" checked>
+            <span>Y log</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Highlight</h2>
+          <div class="designation-picker">
+            <label for="cex-companion-search">Search by designation</label>
+            <input id="cex-companion-search" type="text" autocomplete="off" placeholder="Type parent or companion designation">
+            <div id="cex-companion-results" class="designation-results" hidden></div>
+            <div id="cex-selected-companions" class="designation-selected" aria-live="polite"></div>
+          </div>
+          <details class="advanced-highlight">
+            <summary>Direct moca_cid entry</summary>
+            <label>
+              moca_cid list
+              <input id="cex-highlight-cids" type="text" value="" placeholder="3, 4, 5">
+            </label>
+          </details>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="checkline">
+            <input id="cex-color-age" type="checkbox">
+            <span>Color by parent age</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-show-exoplanets" type="checkbox" checked>
+            <span>Display confirmed NASA exoplanets</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-show-tess-candidates" type="checkbox">
+            <span>Display TESS exoplanet candidates</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-error-bars" type="checkbox">
+            <span>Plot error bars</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-hover-text" type="checkbox" checked>
+            <span>Text hoverbox</span>
+          </label>
+        </section>
+
+        <section class="control-section filters-section">
+          <h2>Sample</h2>
+          <label>
+            Spectral range
+            <input id="cex-spt-range" type="text" value="" placeholder="All, M5-L8, L2+">
+          </label>
+          <label class="range-label">
+            <span class="range-heading">
+              <span>Min CoMover probability</span>
+              <output id="cex-prob-min-value" for="cex-prob-min">50%</output>
+            </span>
+            <input id="cex-prob-min" type="range" min="0" max="100" step="1" value="50">
+          </label>
+          <label class="checkline">
+            <input id="cex-ignore-null-comover" type="checkbox">
+            <span>Ignore objects without CoMover probabilities</span>
+          </label>
+          <label class="checkline">
+            <input id="cex-use-photometric-distances" type="checkbox">
+            <span>Use photometric distances</span>
+          </label>
+          <div class="cex-limit-grid" aria-label="Maximum value filters">
+            <div class="cex-filter-control">
+              <label for="cex-filter-parent-age-myr">
+                Max parent age (Myr)
+                <input id="cex-filter-parent-age-myr" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-parent-age-myr-null" type="checkbox">
+                <span>Ignore objects with NULL parent age</span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-pmdiff-masyr">
+                Max proper motion difference (mas/yr)
+                <input id="cex-filter-pmdiff-masyr" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-pmdiff-masyr-null" type="checkbox">
+                <span>Ignore objects with NULL proper motion difference</span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-distance-diff-pc">
+                Max |distance difference| (pc)
+                <input id="cex-filter-distance-diff-pc" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-distance-diff-pc-null" type="checkbox">
+                <span>Ignore objects with NULL distance difference</span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-comover-xyz-pc">
+                Max CoMover XYZ separation (pc)
+                <input id="cex-filter-comover-xyz-pc" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-comover-xyz-pc-null" type="checkbox">
+                <span>Ignore objects with NULL CoMover XYZ separation</span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-comover-uvw-kms">
+                Max CoMover UVW separation (km/s)
+                <input id="cex-filter-comover-uvw-kms" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-comover-uvw-kms-null" type="checkbox">
+                <span>Ignore objects with NULL CoMover UVW separation</span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-comover-xyz-nsigma">
+                Max CoMover XYZ <i>N</i><sub>σ</sub>
+                <input id="cex-filter-comover-xyz-nsigma" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-comover-xyz-nsigma-null" type="checkbox">
+                <span>Ignore objects with NULL CoMover XYZ <i>N</i><sub>σ</sub></span>
+              </label>
+            </div>
+            <div class="cex-filter-control">
+              <label for="cex-filter-comover-uvw-nsigma">
+                Max CoMover UVW <i>N</i><sub>σ</sub>
+                <input id="cex-filter-comover-uvw-nsigma" type="number" min="0" step="any" placeholder="No limit">
+              </label>
+              <label class="checkline cex-null-filter">
+                <input id="cex-filter-comover-uvw-nsigma-null" type="checkbox">
+                <span>Ignore objects with NULL CoMover UVW <i>N</i><sub>σ</sub></span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Load</h2>
+          <label>
+            Max companion rows
+            <input id="cex-max-rows" type="number" min="1" step="1000" value="80000">
+          </label>
+          <button id="cex-load" type="button">Load companions</button>
+          <div class="cache-actions">
+            <button id="cex-clear-cache" type="button">Clear cache</button>
+            <span id="cex-clear-cache-status" class="cache-status"></span>
+          </div>
+        </section>
+      </aside>
+
+      <section class="visual-area companion-explorer-visual-area">
+        <div class="plot-frame companion-explorer-plot-frame">
+          <div id="cex-plot"></div>
+          <div id="cex-plot-loader" class="plot-loader is-visible" aria-label="Loading Companion Explorer">
+            <div class="plot-loader-ring"></div>
+          </div>
+        </div>
+
+        <div class="bd-evolution-toolbar companion-explorer-toolbar">
+          <div class="bd-evolution-summary">
+            <div id="cex-summary">No data loaded</div>
+            <div id="cex-subtitle" class="plot-hint">Selection: none</div>
+          </div>
+          <div class="export-actions companion-explorer-actions">
+            <button id="cex-clear-selection" type="button" disabled>Clear selection</button>
+            <button id="cex-export-csv" type="button" disabled>Export CSV</button>
+            <button id="cex-export-tsv" type="button" disabled>Export TSV</button>
+          </div>
+        </div>
+
+        <div class="selection-area companion-explorer-table-area">
+          <div class="table-toolbar">
+            <div>
+              <strong id="cex-table-title">Selected companions</strong>
+              <div id="cex-table-subtitle" class="plot-hint">Click or lasso points in the plot.</div>
+            </div>
+          </div>
+          <div id="cex-table" class="table-scroll"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="url-help companion-explorer-url-help">
+      <h2>Using URL Parameters</h2>
+      <table>
+        <thead>
+          <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>x</code>, <code>y</code></td><td>Axis keys such as <code>sep_au</code>, <code>binding_energy_erg</code>, <code>mass_ratio_q</code></td><td>Sets plotted axes.</td></tr>
+          <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>1</code> or <code>0</code></td><td>Sets logarithmic axis scaling.</td></tr>
+          <tr><td><code>spt_range</code></td><td><code>M5-L8</code>, <code>L2+</code>, or blank</td><td>Filters companion pairs where either component lies in the spectral range.</td></tr>
+          <tr><td><code>comover_probability_min</code></td><td><code>0</code>-<code>100</code></td><td>Sets the minimum CoMover probability.</td></tr>
+          <tr><td><code>ignore_null_comover</code></td><td><code>1</code> or <code>0</code></td><td>Hides companion rows with missing CoMover probabilities.</td></tr>
+          <tr><td><code>*_max</code> sample filters</td><td>Positive numbers or blank</td><td>Sets optional maximum limits for age, proper-motion difference, distance difference, XYZ/UVW separations, and XYZ/UVW sigmas. Missing row values pass.</td></tr>
+          <tr><td><code>ignore_null_*</code> sample filters</td><td><code>1</code> or <code>0</code></td><td>Hides rows with missing values for the matching textbox filter quantity.</td></tr>
+          <tr><td><code>color_age</code></td><td><code>1</code> or <code>0</code></td><td>Colors companions by adopted parent-object age.</td></tr>
+          <tr><td><code>show_exoplanets</code></td><td><code>1</code> or <code>0</code></td><td>Shows confirmed NASA exoplanets when compatible axes are selected.</td></tr>
+          <tr><td><code>show_tess_candidates</code></td><td><code>1</code> or <code>0</code></td><td>Shows TESS exoplanet candidates when axes use TESS-supported quantities.</td></tr>
+          <tr><td><code>use_photometric_distances</code></td><td><code>1</code> or <code>0</code></td><td>Includes rows whose adopted parent distance is photometric.</td></tr>
+          <tr><td><code>errors</code></td><td><code>1</code> or <code>0</code></td><td>Shows available x/y error bars.</td></tr>
+          <tr><td><code>hover_text</code></td><td><code>1</code> or <code>0</code></td><td>Shows or hides point hover text boxes.</td></tr>
+          <tr><td><code>cids</code>, <code>moca_cid</code></td><td>Comma-separated companion IDs</td><td>Highlights matching companions.</td></tr>
+          <tr><td><code>max_rows</code></td><td>Positive integer</td><td>Caps the companion query.</td></tr>
+          <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
+        </tbody>
+      </table>
+    </footer>
+  </div>
+  <script src="static/export_utils.js?v=exports-20260512"></script>
+  <script src="static/companion_explorer.js?v=companion-explorer-20260626z"></script>
+</body>
+</html>

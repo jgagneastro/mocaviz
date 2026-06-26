@@ -96,6 +96,14 @@ body.is-mocadb-team .topbar {
   gap: 4px;
 }
 
+.topbar-link-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+}
+
+.dataviz-topbar-link,
 .dataviz-home-link {
   color: #000000;
   font-size: 12px;
@@ -105,6 +113,8 @@ body.is-mocadb-team .topbar {
   opacity: 0.72;
 }
 
+.dataviz-topbar-link:hover,
+.dataviz-topbar-link:focus,
 .dataviz-home-link:hover,
 .dataviz-home-link:focus {
   opacity: 1;
@@ -116,6 +126,8 @@ body.is-mocadb-team .brand {
   color: #4f2626;
 }
 
+html.is-mocadb-team .dataviz-topbar-link,
+body.is-mocadb-team .dataviz-topbar-link,
 html.is-mocadb-team .dataviz-home-link,
 body.is-mocadb-team .dataviz-home-link {
   color: #4f2626;
@@ -324,6 +336,31 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
+.cex-limit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(37, 35, 41, .16);
+}
+
+.cex-limit-grid label {
+  margin: 0;
+}
+
+.cex-filter-control {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 2px;
+}
+
+.cex-null-filter {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .range-heading {
   display: flex;
   align-items: baseline;
@@ -462,6 +499,33 @@ body.is-mocadb-team textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.companion-explorer-page .designation-result {
+  height: auto;
+  min-height: 0;
+  padding: 9px 10px;
+  line-height: 1.28;
+  white-space: normal;
+}
+
+.companion-explorer-page .designation-result-main,
+.companion-explorer-page .designation-result-meta {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.companion-explorer-page .designation-result-main {
+  font-weight: 700;
+}
+
+.companion-explorer-page .designation-result-meta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.22;
+}
+
 .designation-result {
   cursor: pointer;
 }
@@ -562,6 +626,54 @@ body.is-mocadb-team textarea:focus {
   width: 100%;
   height: clamp(420px, 62vh, 920px);
   background: var(--plot-bg);
+}
+
+.companion-explorer-workspace {
+  grid-template-columns: 340px minmax(0, 1fr);
+  height: calc(100vh - 66px);
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.companion-explorer-visual-area {
+  display: block;
+  min-height: 0;
+  overflow: auto;
+}
+
+.companion-explorer-plot-frame {
+  justify-self: stretch;
+  width: 100%;
+  height: calc(100vh - 84px);
+  min-height: 560px;
+  max-height: none;
+}
+
+#cex-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+#exo-plot {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--plot-bg);
+}
+
+.exo-range-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.exo-range-pair input {
+  min-width: 0;
 }
 
 #plot {

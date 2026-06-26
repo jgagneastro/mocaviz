@@ -59,7 +59,7 @@ def _np_trapezoid(y: Any, x: Any) -> Any:
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-DEFAULT_HOST = "104.248.106.21"
+DEFAULT_HOST = "mocadb.ca"
 DEFAULT_USERNAME = "public"
 DEFAULT_PASSWORD = "z@nUg_2h7_%?31y88"
 DEFAULT_DBNAME = "mocadb"
@@ -446,10 +446,11 @@ def _parse_spt_label(label: str | None) -> float | None:
         return None
     label = label.strip().upper()
     classes = {"O": 0, "B": 10, "A": 20, "F": 30, "G": 40, "K": 50, "M": 60, "L": 70, "T": 80, "Y": 90}
-    if len(label) < 2 or label[0] not in classes:
+    match = re.match(r"^([OBAFGKMLTY])\s*([0-9]+(?:\.[0-9]+)?)", label)
+    if not match:
         return None
     try:
-        return classes[label[0]] + float(label[1:]) - 60
+        return classes[match.group(1)] + float(match.group(2)) - 60
     except ValueError:
         return None
 
@@ -1015,6 +1016,20 @@ def _jsonify_clean(payload: Mapping[str, Any], status: int | None = None):
     response = jsonify(_json_clean(payload))
     if status is not None:
         response.status_code = status
+    return response
+
+
+def _jsonify_clean_cached(payload: Mapping[str, Any], cache_seconds: int = 0, status: int | None = None):
+    clean = _json_clean(payload)
+    raw = json.dumps(clean, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    accepts_gzip = "gzip" in str(request.headers.get("Accept-Encoding") or "").lower()
+    body = gzip.compress(raw, compresslevel=5) if accepts_gzip and len(raw) >= 4096 else raw
+    response = Response(body, status=status or 200, mimetype="application/json")
+    response.headers["Cache-Control"] = f"private, max-age={max(0, int(cache_seconds))}" if cache_seconds > 0 else "no-store"
+    response.headers["Vary"] = "Accept-Encoding"
+    if accepts_gzip and body is not raw:
+        response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(body))
     return response
 
 
@@ -8252,6 +8267,3186 @@ def _mock_bd_evolution_payload(args: dict[str, Any]) -> dict[str, Any]:
             "query_seconds": 0,
             "mock": True,
             **track_meta,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+COMPANION_EXPLORER_DEFAULT_MAX_ROWS = int(os.environ.get("COMPANION_EXPLORER_MAX_ROWS", "80000"))
+COMPANION_EXPLORER_HARD_MAX_ROWS = int(os.environ.get("COMPANION_EXPLORER_HARD_MAX_ROWS", "200000"))
+COMPANION_EXPLORER_DEFAULT_MAX_EXOPLANETS = int(os.environ.get("COMPANION_EXPLORER_MAX_EXOPLANETS", "20000"))
+COMPANION_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES = int(os.environ.get("COMPANION_EXPLORER_MAX_TESS_CANDIDATES", "20000"))
+COMPANION_EXPLORER_CACHE_SECONDS = int(os.environ.get("COMPANION_EXPLORER_CACHE_SECONDS", "120"))
+COMPANION_EXPLORER_EARTH_MASS_TO_MSUN = 3.003489614915764e-6
+COMPANION_EXPLORER_JUPITER_MASS_TO_MSUN = 9.545880063213133e-4
+COMPANION_EXPLORER_G_CGS = 6.67430e-8
+COMPANION_EXPLORER_MSUN_G = 1.98847e33
+COMPANION_EXPLORER_AU_CM = 1.495978707e13
+COMPANION_EXPLORER_AXIS_SPECS = {
+    "sep_au": {
+        "key": "sep_au",
+        "label": "Projected Physical Separation (AU)",
+        "title": "Projected Physical Separation (AU)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "sep_au_unc",
+        "uncPos": "sep_au_unc_pos",
+        "uncNeg": "sep_au_unc_neg",
+    },
+    "sep_mas": {
+        "key": "sep_mas",
+        "label": "Projected Angular Separation (mas)",
+        "title": "Projected Angular Separation (mas)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "sep_mas_unc",
+        "uncPos": "sep_mas_unc_pos",
+        "uncNeg": "sep_mas_unc_neg",
+    },
+    "total_system_mass_msun": {
+        "key": "total_system_mass_msun",
+        "label": "Total System Mass (M_sun)",
+        "title": "Total System Mass (<i>M</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "total_system_mass_msun_unc",
+        "uncPos": "total_system_mass_msun_unc_pos",
+        "uncNeg": "total_system_mass_msun_unc_neg",
+    },
+    "mass_ratio_q": {
+        "key": "mass_ratio_q",
+        "label": "Mass Ratio Q (M_child/M_parent)",
+        "title": "Mass Ratio Q (<i>M</i><sub>child</sub>/<i>M</i><sub>parent</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "mass_ratio_q_unc",
+        "uncPos": "mass_ratio_q_unc_pos",
+        "uncNeg": "mass_ratio_q_unc_neg",
+    },
+    "binding_energy_erg": {
+        "key": "binding_energy_erg",
+        "label": "Binding Energy (erg)",
+        "title": "Binding Energy (erg)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "binding_energy_erg_unc",
+        "uncPos": "binding_energy_erg_unc_pos",
+        "uncNeg": "binding_energy_erg_unc_neg",
+    },
+    "pa_deg": {
+        "key": "pa_deg",
+        "label": "Position Angle (deg)",
+        "title": "Position Angle (deg)",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "pmdiff_masyr": {
+        "key": "pmdiff_masyr",
+        "label": "Proper Motion Difference (mas/yr)",
+        "title": "Proper Motion Difference (mas yr<sup>-1</sup>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "pmdiff_masyr_unc",
+        "exoplanetUnavailable": True,
+    },
+    "pmdiff_nsigma": {
+        "key": "pmdiff_nsigma",
+        "label": "Proper Motion Difference (N_sigma)",
+        "title": "Proper Motion Difference (<i>N</i><sub>σ</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "distance_diff_pc": {
+        "key": "distance_diff_pc",
+        "label": "Distance Difference (pc)",
+        "title": "Distance Difference (pc)",
+        "defaultLog": False,
+        "positive": False,
+        "unc": "distance_diff_pc_unc",
+        "exoplanetUnavailable": True,
+    },
+    "distance_diff_nsigma": {
+        "key": "distance_diff_nsigma",
+        "label": "Distance Difference (N_sigma)",
+        "title": "Distance Difference (<i>N</i><sub>σ</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "comover_xyz_separation_pc": {
+        "key": "comover_xyz_separation_pc",
+        "label": "CoMover XYZ Separation (pc)",
+        "title": "CoMover XYZ Separation (pc)",
+        "defaultLog": True,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "comover_xyz_separation_nsigma": {
+        "key": "comover_xyz_separation_nsigma",
+        "label": "CoMover XYZ Separation (N_sigma)",
+        "title": "CoMover XYZ Separation (<i>N</i><sub>σ</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "comover_uvw_separation_kms": {
+        "key": "comover_uvw_separation_kms",
+        "label": "CoMover UVW Separation (km/s)",
+        "title": "CoMover UVW Separation (km s<sup>-1</sup>)",
+        "defaultLog": False,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "comover_uvw_separation_nsigma": {
+        "key": "comover_uvw_separation_nsigma",
+        "label": "CoMover UVW Separation (N_sigma)",
+        "title": "CoMover UVW Separation (<i>N</i><sub>σ</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "comover_probability": {
+        "key": "comover_probability",
+        "label": "CoMover Probability (%)",
+        "title": "CoMover Probability (%)",
+        "defaultLog": False,
+        "positive": True,
+        "exoplanetUnavailable": True,
+    },
+    "system_distance_pc": {
+        "key": "system_distance_pc",
+        "label": "System Distance (pc)",
+        "title": "System Distance (pc)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "distance_pc_parent_unc",
+        "uncPos": "distance_pc_parent_unc_pos",
+        "uncNeg": "distance_pc_parent_unc_neg",
+    },
+    "parent_sptn": {
+        "key": "parent_sptn",
+        "label": "Parent Spectral Type",
+        "title": "Parent Spectral Type",
+        "defaultLog": False,
+        "positive": False,
+        "spectralTypeAxis": True,
+    },
+    "child_sptn": {
+        "key": "child_sptn",
+        "label": "Companion Spectral Type",
+        "title": "Companion Spectral Type",
+        "defaultLog": False,
+        "positive": False,
+        "spectralTypeAxis": True,
+    },
+    "mass_msun_parent": {
+        "key": "mass_msun_parent",
+        "label": "Parent Mass (M_sun)",
+        "title": "Parent Mass (<i>M</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "mass_msun_unc_parent",
+        "uncPos": "mass_msun_unc_pos_parent",
+        "uncNeg": "mass_msun_unc_neg_parent",
+    },
+    "mass_msun_child": {
+        "key": "mass_msun_child",
+        "label": "Companion Mass (M_sun)",
+        "title": "Companion Mass (<i>M</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "mass_msun_unc_child",
+        "uncPos": "mass_msun_unc_pos_child",
+        "uncNeg": "mass_msun_unc_neg_child",
+    },
+}
+COMPANION_EXPLORER_TESS_AXIS_KEYS = {"sep_au", "sep_mas", "system_distance_pc", "parent_sptn", "mass_msun_parent"}
+EXOPLANET_EXPLORER_DEFAULT_MAX_CONFIRMED = int(os.environ.get("EXOPLANET_EXPLORER_MAX_CONFIRMED", "50000"))
+EXOPLANET_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES = int(os.environ.get("EXOPLANET_EXPLORER_MAX_TESS_CANDIDATES", "50000"))
+EXOPLANET_EXPLORER_HARD_MAX_ROWS = int(os.environ.get("EXOPLANET_EXPLORER_HARD_MAX_ROWS", "200000"))
+EXOPLANET_EXPLORER_CACHE_SECONDS = int(os.environ.get("EXOPLANET_EXPLORER_CACHE_SECONDS", "120"))
+EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH = 11.209
+EXOPLANET_EXPLORER_JUPITER_MASS_TO_EARTH = 317.82838
+EXOPLANET_EXPLORER_AXIS_SPECS = {
+    "orbital_period_days": {
+        "key": "orbital_period_days",
+        "label": "Orbital Period (days)",
+        "title": "Orbital Period (days)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "orbital_period_days_unc",
+        "uncPos": "orbital_period_days_unc_pos",
+        "uncNeg": "orbital_period_days_unc_neg",
+    },
+    "sep_au": {
+        "key": "sep_au",
+        "label": "Semi-major Axis / Projected Separation (AU)",
+        "title": "Semi-major Axis / Projected Separation (AU)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "sep_au_unc",
+        "uncPos": "sep_au_unc_pos",
+        "uncNeg": "sep_au_unc_neg",
+    },
+    "sep_mas": {
+        "key": "sep_mas",
+        "label": "Angular Separation (mas)",
+        "title": "Angular Separation (mas)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "sep_mas_unc",
+        "uncPos": "sep_mas_unc_pos",
+        "uncNeg": "sep_mas_unc_neg",
+    },
+    "planet_radius_rearth": {
+        "key": "planet_radius_rearth",
+        "label": "Planet Radius (R_earth)",
+        "title": "Planet Radius (<i>R</i><sub>Earth</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "planet_radius_rearth_unc",
+        "uncPos": "planet_radius_rearth_unc_pos",
+        "uncNeg": "planet_radius_rearth_unc_neg",
+    },
+    "planet_radius_rjup": {
+        "key": "planet_radius_rjup",
+        "label": "Planet Radius (R_jup)",
+        "title": "Planet Radius (<i>R</i><sub>Jup</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "planet_radius_rjup_unc",
+        "uncPos": "planet_radius_rjup_unc_pos",
+        "uncNeg": "planet_radius_rjup_unc_neg",
+    },
+    "planet_mass_mearth": {
+        "key": "planet_mass_mearth",
+        "label": "Planet Mass (M_earth)",
+        "title": "Planet Mass (<i>M</i><sub>Earth</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "planet_mass_mearth_unc",
+        "uncPos": "planet_mass_mearth_unc_pos",
+        "uncNeg": "planet_mass_mearth_unc_neg",
+    },
+    "planet_mass_mjup": {
+        "key": "planet_mass_mjup",
+        "label": "Planet Mass (M_jup)",
+        "title": "Planet Mass (<i>M</i><sub>Jup</sub>)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "planet_mass_mjup_unc",
+        "uncPos": "planet_mass_mjup_unc_pos",
+        "uncNeg": "planet_mass_mjup_unc_neg",
+    },
+    "planet_density_gcm3": {
+        "key": "planet_density_gcm3",
+        "label": "Planet Density (g/cm^3)",
+        "title": "Planet Density (g cm<sup>-3</sup>)",
+        "defaultLog": True,
+        "positive": True,
+        "confirmedOnly": True,
+    },
+    "planet_eq_temp_k": {
+        "key": "planet_eq_temp_k",
+        "label": "Equilibrium Temperature (K)",
+        "title": "Equilibrium Temperature (K)",
+        "defaultLog": False,
+        "positive": True,
+    },
+    "planet_insolation_earth": {
+        "key": "planet_insolation_earth",
+        "label": "Insolation (Earth flux)",
+        "title": "Insolation (<i>S</i><sub>Earth</sub>)",
+        "defaultLog": True,
+        "positive": True,
+    },
+    "planet_eccentricity": {
+        "key": "planet_eccentricity",
+        "label": "Eccentricity",
+        "title": "Eccentricity",
+        "defaultLog": False,
+        "positive": False,
+        "confirmedOnly": True,
+    },
+    "planet_inclination_deg": {
+        "key": "planet_inclination_deg",
+        "label": "Orbital Inclination (deg)",
+        "title": "Orbital Inclination (deg)",
+        "defaultLog": False,
+        "positive": True,
+        "confirmedOnly": True,
+    },
+    "transit_depth": {
+        "key": "transit_depth",
+        "label": "Transit Depth",
+        "title": "Transit Depth",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "transit_depth_unc",
+        "uncPos": "transit_depth_unc_pos",
+        "uncNeg": "transit_depth_unc_neg",
+    },
+    "transit_duration_hours": {
+        "key": "transit_duration_hours",
+        "label": "Transit Duration (hours)",
+        "title": "Transit Duration (hours)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "transit_duration_hours_unc",
+        "uncPos": "transit_duration_hours_unc_pos",
+        "uncNeg": "transit_duration_hours_unc_neg",
+    },
+    "planet_star_radius_ratio": {
+        "key": "planet_star_radius_ratio",
+        "label": "Planet/Star Radius Ratio",
+        "title": "Planet/Star Radius Ratio",
+        "defaultLog": True,
+        "positive": True,
+        "confirmedOnly": True,
+    },
+    "rv_semiamplitude_ms": {
+        "key": "rv_semiamplitude_ms",
+        "label": "RV Semi-amplitude (m/s)",
+        "title": "RV Semi-amplitude (m s<sup>-1</sup>)",
+        "defaultLog": True,
+        "positive": True,
+        "confirmedOnly": True,
+    },
+    "host_distance_pc": {
+        "key": "host_distance_pc",
+        "label": "Host Distance (pc)",
+        "title": "Host Distance (pc)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "host_distance_pc_unc",
+        "uncPos": "host_distance_pc_unc_pos",
+        "uncNeg": "host_distance_pc_unc_neg",
+    },
+    "host_age_myr": {
+        "key": "host_age_myr",
+        "label": "Host Age (Myr)",
+        "title": "Host Age (Myr)",
+        "defaultLog": True,
+        "positive": True,
+        "unc": "host_age_myr_unc",
+        "uncPos": "host_age_myr_unc_pos",
+        "uncNeg": "host_age_myr_unc_neg",
+    },
+    "host_sptn": {
+        "key": "host_sptn",
+        "label": "Host Spectral Type",
+        "title": "Host Spectral Type",
+        "defaultLog": False,
+        "positive": False,
+        "spectralTypeAxis": True,
+    },
+    "host_teff_k": {
+        "key": "host_teff_k",
+        "label": "Host Effective Temperature (K)",
+        "title": "Host Effective Temperature (K)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "host_teff_k_unc",
+        "uncPos": "host_teff_k_unc_pos",
+        "uncNeg": "host_teff_k_unc_neg",
+    },
+    "host_radius_rsun": {
+        "key": "host_radius_rsun",
+        "label": "Host Radius (R_sun)",
+        "title": "Host Radius (<i>R</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "host_radius_rsun_unc",
+        "uncPos": "host_radius_rsun_unc_pos",
+        "uncNeg": "host_radius_rsun_unc_neg",
+    },
+    "host_mass_msun": {
+        "key": "host_mass_msun",
+        "label": "Host Mass (M_sun)",
+        "title": "Host Mass (<i>M</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "unc": "host_mass_msun_unc",
+        "uncPos": "host_mass_msun_unc_pos",
+        "uncNeg": "host_mass_msun_unc_neg",
+    },
+    "host_logg": {
+        "key": "host_logg",
+        "label": "Host log g",
+        "title": "Host log g",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "host_metallicity_dex": {
+        "key": "host_metallicity_dex",
+        "label": "Host Metallicity (dex)",
+        "title": "Host Metallicity (dex)",
+        "defaultLog": False,
+        "positive": False,
+        "confirmedOnly": True,
+    },
+    "host_tmag": {
+        "key": "host_tmag",
+        "label": "TESS Magnitude",
+        "title": "TESS Magnitude",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "ra_deg": {
+        "key": "ra_deg",
+        "label": "RA (deg)",
+        "title": "RA (deg)",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "dec_deg": {
+        "key": "dec_deg",
+        "label": "Dec (deg)",
+        "title": "Dec (deg)",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "pmra_masyr": {
+        "key": "pmra_masyr",
+        "label": "Proper Motion RA (mas/yr)",
+        "title": "Proper Motion RA (mas yr<sup>-1</sup>)",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "pmdec_masyr": {
+        "key": "pmdec_masyr",
+        "label": "Proper Motion Dec (mas/yr)",
+        "title": "Proper Motion Dec (mas yr<sup>-1</sup>)",
+        "defaultLog": False,
+        "positive": False,
+    },
+    "mass_ratio_q": {
+        "key": "mass_ratio_q",
+        "label": "Mass Ratio q",
+        "title": "Mass Ratio q",
+        "defaultLog": True,
+        "positive": True,
+        "confirmedOnly": True,
+        "unc": "mass_ratio_q_unc",
+        "uncPos": "mass_ratio_q_unc_pos",
+        "uncNeg": "mass_ratio_q_unc_neg",
+    },
+    "total_system_mass_msun": {
+        "key": "total_system_mass_msun",
+        "label": "Total System Mass (M_sun)",
+        "title": "Total System Mass (<i>M</i><sub>Sun</sub>)",
+        "defaultLog": False,
+        "positive": True,
+        "confirmedOnly": True,
+        "unc": "total_system_mass_msun_unc",
+        "uncPos": "total_system_mass_msun_unc_pos",
+        "uncNeg": "total_system_mass_msun_unc_neg",
+    },
+    "binding_energy_erg": {
+        "key": "binding_energy_erg",
+        "label": "Binding Energy (erg)",
+        "title": "Binding Energy (erg)",
+        "defaultLog": True,
+        "positive": True,
+        "confirmedOnly": True,
+        "unc": "binding_energy_erg_unc",
+        "uncPos": "binding_energy_erg_unc_pos",
+        "uncNeg": "binding_energy_erg_unc_neg",
+    },
+    "discovery_year": {
+        "key": "discovery_year",
+        "label": "Discovery Year",
+        "title": "Discovery Year",
+        "defaultLog": False,
+        "positive": True,
+        "confirmedOnly": True,
+    },
+}
+EXOPLANET_EXPLORER_TESS_AXIS_KEYS = {
+    "orbital_period_days",
+    "sep_au",
+    "sep_mas",
+    "planet_radius_rearth",
+    "planet_radius_rjup",
+    "planet_eq_temp_k",
+    "planet_insolation_earth",
+    "transit_depth",
+    "transit_duration_hours",
+    "host_distance_pc",
+    "host_age_myr",
+    "host_sptn",
+    "host_teff_k",
+    "host_radius_rsun",
+    "host_mass_msun",
+    "host_logg",
+    "host_tmag",
+    "ra_deg",
+    "dec_deg",
+    "pmra_masyr",
+    "pmdec_masyr",
+}
+EXOPLANET_EXPLORER_RANGE_FILTERS = (
+    {"key": "orbital_period_days", "min": "period_min", "max": "period_max"},
+    {"key": "planet_mass_mjup", "min": "mass_mjup_min", "max": "mass_mjup_max"},
+    {"key": "planet_mass_mearth", "min": "mass_mearth_min", "max": "mass_mearth_max"},
+    {"key": "host_age_myr", "min": "age_myr_min", "max": "age_myr_max"},
+    {"key": "planet_radius_rjup", "min": "radius_rjup_min", "max": "radius_rjup_max"},
+    {"key": "planet_radius_rearth", "min": "radius_rearth_min", "max": "radius_rearth_max"},
+    {"key": "host_distance_pc", "min": "distance_pc_min", "max": "distance_pc_max"},
+    {"key": "sep_au", "min": "sep_au_min", "max": "sep_au_max"},
+    {"key": "sep_mas", "min": "sep_mas_min", "max": "sep_mas_max"},
+    {"key": "host_teff_k", "min": "host_teff_min", "max": "host_teff_max"},
+    {"key": "host_mass_msun", "min": "host_mass_min", "max": "host_mass_max"},
+    {"key": "host_sptn", "min": "host_sptn_min", "max": "host_sptn_max"},
+    {"key": "planet_eq_temp_k", "min": "eq_temp_min", "max": "eq_temp_max"},
+    {"key": "planet_insolation_earth", "min": "insolation_min", "max": "insolation_max"},
+)
+COMPANION_EXPLORER_COMPANION_SELECT_COLUMNS = (
+    "moca_cid",
+    "designation_parent",
+    "designation_child",
+    "moca_oid_parent",
+    "moca_oid_child",
+    "spectral_type_parent",
+    "spectral_type_child",
+    "sep_au",
+    "sep_au_unc",
+    "sep_as",
+    "pa_deg",
+    "comover_probability",
+    "mass_ratio_q",
+    "mass_ratio_q_unc",
+    "total_system_mass_msun",
+    "total_system_mass_msun_unc",
+    "mass_msun_parent",
+    "mass_msun_unc_parent",
+    "mass_msun_child",
+    "mass_msun_unc_child",
+    "binding_energy_erg",
+    "binding_energy_erg_unc",
+    "pmdiff_masyr",
+    "pmdiff_masyr_unc",
+    "pmdiff_nsigma",
+    "distance_pc_parent",
+    "distance_pc_parent_unc",
+    "distance_pc_child",
+    "distance_pc_child_unc",
+    "distance_diff_pc",
+    "distance_diff_pc_unc",
+    "distance_diff_nsigma",
+    "comover_xyz_separation_pc",
+    "comover_xyz_separation_nsigma",
+    "comover_uvw_separation_kms",
+    "comover_uvw_separation_nsigma",
+)
+COMPANION_EXPLORER_COMPANION_AXIS_SQL = {
+    "sep_au": "sac.sep_au",
+    "sep_mas": "sac.sep_as",
+    "total_system_mass_msun": "sac.total_system_mass_msun",
+    "mass_ratio_q": "sac.mass_ratio_q",
+    "binding_energy_erg": "sac.binding_energy_erg",
+    "pa_deg": "sac.pa_deg",
+    "pmdiff_masyr": "sac.pmdiff_masyr",
+    "pmdiff_nsigma": "sac.pmdiff_nsigma",
+    "distance_diff_pc": "sac.distance_diff_pc",
+    "distance_diff_nsigma": "sac.distance_diff_nsigma",
+    "comover_xyz_separation_pc": "sac.comover_xyz_separation_pc",
+    "comover_xyz_separation_nsigma": "sac.comover_xyz_separation_nsigma",
+    "comover_uvw_separation_kms": "sac.comover_uvw_separation_kms",
+    "comover_uvw_separation_nsigma": "sac.comover_uvw_separation_nsigma",
+    "comover_probability": "sac.comover_probability",
+    "system_distance_pc": "sac.distance_pc_parent",
+    "parent_sptn": "sac.spectral_type_parent",
+    "child_sptn": "sac.spectral_type_child",
+    "mass_msun_parent": "sac.mass_msun_parent",
+    "mass_msun_child": "sac.mass_msun_child",
+}
+COMPANION_EXPLORER_QUANTITY_FILTERS = (
+    (
+        "parent_age_myr_max",
+        ("age_myr_max", "parent_age_max", "age_max"),
+        "parent_age_myr",
+        False,
+        "ignore_null_parent_age_myr",
+        ("ignore_null_age_myr", "ignore_missing_parent_age_myr", "ignore_missing_age_myr"),
+    ),
+    (
+        "pmdiff_masyr_max",
+        ("pm_diff_masyr_max",),
+        "pmdiff_masyr",
+        False,
+        "ignore_null_pmdiff_masyr",
+        ("ignore_null_pm_diff_masyr", "ignore_missing_pmdiff_masyr", "ignore_missing_pm_diff_masyr"),
+    ),
+    (
+        "distance_diff_pc_max",
+        ("dist_diff_pc_max",),
+        "distance_diff_pc",
+        True,
+        "ignore_null_distance_diff_pc",
+        ("ignore_null_dist_diff_pc", "ignore_missing_distance_diff_pc", "ignore_missing_dist_diff_pc"),
+    ),
+    (
+        "comover_xyz_separation_pc_max",
+        ("comover_xyz_sep_pc_max",),
+        "comover_xyz_separation_pc",
+        False,
+        "ignore_null_comover_xyz_separation_pc",
+        ("ignore_null_comover_xyz_sep_pc", "ignore_missing_comover_xyz_separation_pc", "ignore_missing_comover_xyz_sep_pc"),
+    ),
+    (
+        "comover_uvw_separation_kms_max",
+        ("comover_uvw_sep_kms_max",),
+        "comover_uvw_separation_kms",
+        False,
+        "ignore_null_comover_uvw_separation_kms",
+        ("ignore_null_comover_uvw_sep_kms", "ignore_missing_comover_uvw_separation_kms", "ignore_missing_comover_uvw_sep_kms"),
+    ),
+    (
+        "comover_xyz_separation_nsigma_max",
+        ("comover_xyz_sigma_max",),
+        "comover_xyz_separation_nsigma",
+        False,
+        "ignore_null_comover_xyz_separation_nsigma",
+        ("ignore_null_comover_xyz_sigma", "ignore_missing_comover_xyz_separation_nsigma", "ignore_missing_comover_xyz_sigma"),
+    ),
+    (
+        "comover_uvw_separation_nsigma_max",
+        ("comover_uvw_sigma_max",),
+        "comover_uvw_separation_nsigma",
+        False,
+        "ignore_null_comover_uvw_separation_nsigma",
+        ("ignore_null_comover_uvw_sigma", "ignore_missing_comover_uvw_separation_nsigma", "ignore_missing_comover_uvw_sigma"),
+    ),
+)
+
+
+def _companion_explorer_axes_payload() -> list[dict[str, Any]]:
+    return [copy.deepcopy(spec) for spec in COMPANION_EXPLORER_AXIS_SPECS.values()]
+
+
+def _companion_explorer_parse_max_rows(raw: Any) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = COMPANION_EXPLORER_DEFAULT_MAX_ROWS
+    return max(1, min(value, COMPANION_EXPLORER_HARD_MAX_ROWS))
+
+
+def _companion_explorer_parse_cids(args: Mapping[str, Any]) -> list[int]:
+    raw = (
+        args.get("cids")
+        or args.get("cid")
+        or args.get("moca_cids")
+        or args.get("moca_cid")
+        or args.get("highlight_cids")
+        or args.get("highlight_cid")
+        or ""
+    )
+    cids: list[int] = []
+    for item in re.split(r"[\s,;]+", str(raw or "")):
+        value = item.strip()
+        if value.isdigit():
+            cid = int(value)
+            if cid not in cids:
+                cids.append(cid)
+    return cids[:500]
+
+
+def _companion_explorer_parse_max_exoplanets(raw: Any) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = COMPANION_EXPLORER_DEFAULT_MAX_EXOPLANETS
+    return max(1, min(value, COMPANION_EXPLORER_HARD_MAX_ROWS))
+
+
+def _companion_explorer_parse_max_tess_candidates(raw: Any) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = COMPANION_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES
+    return max(1, min(value, COMPANION_EXPLORER_HARD_MAX_ROWS))
+
+
+def _companion_explorer_layer_flag(args: Mapping[str, Any], keys: Sequence[str], default: bool) -> bool:
+    for key in keys:
+        if key in args:
+            value = args.get(key)
+            if _as_false(value):
+                return False
+            if _as_bool(value):
+                return True
+    return default
+
+
+def _companion_explorer_axis_key(args: Mapping[str, Any], key: str, default: str) -> str:
+    value = str(args.get(key) or args.get(f"{key}axis") or "").strip()
+    return value if value in COMPANION_EXPLORER_AXIS_SPECS else default
+
+
+def _companion_explorer_axis_pair(args: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        _companion_explorer_axis_key(args, "x", "sep_au"),
+        _companion_explorer_axis_key(args, "y", "mass_ratio_q"),
+    )
+
+
+def _companion_explorer_axis_log(args: Mapping[str, Any], axis: str, key: str) -> bool:
+    raw = args.get(f"{axis}log") if f"{axis}log" in args else args.get(f"{axis}_log")
+    if raw is None:
+        return bool(COMPANION_EXPLORER_AXIS_SPECS.get(key, {}).get("defaultLog"))
+    return _as_bool(raw)
+
+
+def _companion_explorer_exoplanets_available_for_axes(args: Mapping[str, Any]) -> bool:
+    x_key, y_key = _companion_explorer_axis_pair(args)
+    return not any(COMPANION_EXPLORER_AXIS_SPECS.get(key, {}).get("exoplanetUnavailable") for key in (x_key, y_key))
+
+
+def _companion_explorer_tess_available_for_axes(args: Mapping[str, Any]) -> bool:
+    x_key, y_key = _companion_explorer_axis_pair(args)
+    return x_key in COMPANION_EXPLORER_TESS_AXIS_KEYS and y_key in COMPANION_EXPLORER_TESS_AXIS_KEYS
+
+
+def _companion_explorer_parse_exoplanet_ids(args: Mapping[str, Any]) -> set[str]:
+    raw = args.get("highlight_exoplanets") or args.get("exoplanet_ids") or args.get("highlight_exoplanet_ids") or ""
+    return {item.strip() for item in re.split(r"[\s,;]+", str(raw or "")) if item.strip()}
+
+
+def _companion_explorer_include_exoplanets(args: Mapping[str, Any]) -> bool:
+    highlighted = bool(_companion_explorer_parse_exoplanet_ids(args))
+    include = _companion_explorer_layer_flag(args, ("include_exoplanets", "show_exoplanets", "exoplanets"), True)
+    return (include or highlighted) and _companion_explorer_exoplanets_available_for_axes(args)
+
+
+def _companion_explorer_include_tess_candidates(args: Mapping[str, Any]) -> bool:
+    include = _companion_explorer_layer_flag(args, ("include_tess_candidates", "show_tess_candidates", "tess_candidates"), False)
+    return include and _companion_explorer_tess_available_for_axes(args)
+
+
+def _companion_explorer_use_photometric_distances(args: Mapping[str, Any]) -> bool:
+    return any(
+        _as_bool(args.get(key))
+        for key in (
+            "use_photometric_distances",
+            "include_photometric_distances",
+            "photometric_distances",
+            "photometric_distance",
+            "phot_dist",
+        )
+    )
+
+
+def _companion_explorer_not_self_pair_sql(alias: str) -> str:
+    return f"({alias}.moca_oid_parent IS NULL OR {alias}.moca_oid_child IS NULL OR {alias}.moca_oid_parent <> {alias}.moca_oid_child)"
+
+
+def _companion_explorer_exoplanet_match_key(value: Any) -> str:
+    text_value = str(value or "").strip()
+    if text_value.lower().startswith("name "):
+        text_value = text_value[5:].strip()
+    return re.sub(r"\s+", "", text_value).lower()
+
+
+def _companion_explorer_exoplanet_designation_candidates(value: Any) -> list[str]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return []
+    compact_value = re.sub(r"\s+", "", text_value)
+    candidates = [text_value, compact_value, f"NAME {text_value}", f"NAME {compact_value}"]
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
+
+def _companion_explorer_filter_hidden_exoplanet_rows(
+    conn,
+    rows: Sequence[Mapping[str, Any]],
+    name_key: str = "pl_name",
+) -> list[dict[str, Any]]:
+    row_list = [dict(row) for row in rows]
+    if not row_list or not (_db_table_exists(conn, "mechanics_all_designations") and _db_table_exists(conn, "moca_companions")):
+        return row_list
+    candidate_to_indices: dict[str, set[int]] = {}
+    candidate_values: list[str] = []
+    seen_values: set[str] = set()
+    for index, row in enumerate(row_list):
+        for candidate in _companion_explorer_exoplanet_designation_candidates(row.get(name_key)):
+            if candidate not in seen_values:
+                seen_values.add(candidate)
+                candidate_values.append(candidate)
+            candidate_to_indices.setdefault(_companion_explorer_exoplanet_match_key(candidate), set()).add(index)
+    if not candidate_values:
+        return row_list
+    hidden_indices: set[int] = set()
+    chunk_size = 800
+    for chunk_index, start in enumerate(range(0, len(candidate_values), chunk_size)):
+        chunk = candidate_values[start:start + chunk_size]
+        clause, params = _sql_in_clause(f"cex_exo_dup_{chunk_index}", chunk)
+        matches = _records(_read_sql(conn, f"""
+            SELECT DISTINCT mad.designation
+            FROM mechanics_all_designations mad
+            JOIN moca_companions mc
+                ON mc.moca_oid_child = mad.moca_oid
+                AND COALESCE(mc.ignored, 0) = 0
+            WHERE mad.designation IN ({clause})
+        """, params))
+        for match in matches:
+            hidden_indices.update(candidate_to_indices.get(_companion_explorer_exoplanet_match_key(match.get("designation")), set()))
+    return [row for index, row in enumerate(row_list) if index not in hidden_indices]
+
+
+def _companion_explorer_first_filter_value(args: Mapping[str, Any], keys: Sequence[str]) -> float | None:
+    for key in keys:
+        if key not in args:
+            continue
+        raw = args.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            return value
+    return None
+
+
+def _companion_explorer_ignore_null_filter(args: Mapping[str, Any], keys: Sequence[str]) -> bool:
+    return any(_as_bool(args.get(key)) for key in keys if key in args)
+
+
+def _companion_explorer_quantity_filter_sql_expr(key: str) -> str | None:
+    if key == "parent_age_myr":
+        return "COALESCE(obj_age.age_myr, banyan_age.age_myr)"
+    return COMPANION_EXPLORER_COMPANION_AXIS_SQL.get(key)
+
+
+def _companion_explorer_quantity_filter_row_value(row: Mapping[str, Any], key: str) -> float | None:
+    value = _spt_float(row.get(key))
+    if key == "parent_age_myr" and (value is None or value <= 0):
+        return None
+    return value
+
+
+def _companion_explorer_parse_spt_range(raw: Any) -> tuple[float, float] | None:
+    text_value = str(raw or "").strip()
+    if not text_value or text_value.lower() == "all":
+        return None
+    if text_value.endswith("+"):
+        value = _parse_spt_label(text_value[:-1])
+        return (value, math.inf) if value is not None else None
+    parts = [part.strip() for part in re.split(r"\s*[-–]\s*", text_value) if part.strip()]
+    if len(parts) >= 2:
+        first = _parse_spt_label(parts[0])
+        second = _parse_spt_label(parts[1])
+        if first is None or second is None:
+            return None
+        return min(first, second), max(first, second)
+    value = _parse_spt_label(text_value)
+    return (value - 0.5, value + 0.5) if value is not None else None
+
+
+def _companion_explorer_spt_window(args: Mapping[str, Any]) -> tuple[float, float] | None:
+    return _companion_explorer_parse_spt_range(args.get("spt_range") or args.get("spt"))
+
+
+def _companion_explorer_axis_sql_condition(key: str, log_scale: bool) -> str | None:
+    expr = COMPANION_EXPLORER_COMPANION_AXIS_SQL.get(key)
+    if not expr:
+        return None
+    if COMPANION_EXPLORER_AXIS_SPECS.get(key, {}).get("spectralTypeAxis"):
+        return f"({expr} IS NOT NULL AND {expr} <> '')"
+    if key == "mass_ratio_q":
+        return f"({expr} IS NOT NULL AND {expr} > 0)"
+    if log_scale:
+        return f"({expr} IS NOT NULL AND {expr} > 0)"
+    return f"{expr} IS NOT NULL"
+
+
+def _companion_explorer_companion_filter_sql(
+    args: Mapping[str, Any],
+    params: dict[str, Any],
+    highlight_cid_clause: str,
+) -> str:
+    clauses: list[str] = []
+    prob_min = _companion_explorer_first_filter_value(args, ("comover_probability_min", "prob_min"))
+    if prob_min is not None and prob_min > 0:
+        params["cex_prob_min"] = max(0.0, min(prob_min, 100.0))
+        if _as_bool(args.get("ignore_null_comover") or args.get("ignore_missing_comover_probability") or args.get("ignore_missing_comover")):
+            clauses.append("sac.comover_probability >= :cex_prob_min")
+        else:
+            clauses.append("(sac.comover_probability IS NULL OR sac.comover_probability >= :cex_prob_min)")
+    for index, (param, aliases, key, absolute, null_param, null_aliases) in enumerate(COMPANION_EXPLORER_QUANTITY_FILTERS):
+        limit = _companion_explorer_first_filter_value(args, (param, *aliases))
+        ignore_null = _companion_explorer_ignore_null_filter(args, (null_param, *null_aliases))
+        expr = _companion_explorer_quantity_filter_sql_expr(key)
+        if expr is None or (limit is None and not ignore_null):
+            continue
+        value_expr = f"ABS({expr})" if absolute else expr
+        if limit is None:
+            clauses.append(f"{expr} IS NOT NULL")
+            continue
+        sql_param = f"cex_filter_{index}"
+        params[sql_param] = limit
+        limit_clause = f"{value_expr} <= :{sql_param}"
+        if ignore_null:
+            clauses.append(f"({expr} IS NOT NULL AND {limit_clause})")
+        else:
+            clauses.append(f"({expr} IS NULL OR {limit_clause})")
+    x_key, y_key = _companion_explorer_axis_pair(args)
+    for axis, key in (("x", x_key), ("y", y_key)):
+        clause = _companion_explorer_axis_sql_condition(key, _companion_explorer_axis_log(args, axis, key))
+        if clause:
+            clauses.append(clause)
+    if not clauses:
+        return ""
+    inner = " AND ".join(f"({clause})" for clause in clauses)
+    if highlight_cid_clause:
+        return f"AND (sac.moca_cid IN ({highlight_cid_clause}) OR ({inner}))"
+    return f"AND {inner}"
+
+
+def _companion_explorer_value_for_axis(row: Mapping[str, Any], key: str) -> float | None:
+    return _spt_float(row.get(key))
+
+
+def _companion_explorer_row_matches_requested_axes(row: Mapping[str, Any], args: Mapping[str, Any]) -> bool:
+    x_key, y_key = _companion_explorer_axis_pair(args)
+    for axis, key in (("x", x_key), ("y", y_key)):
+        value = _companion_explorer_value_for_axis(row, key)
+        if value is None:
+            return False
+        if key == "mass_ratio_q" and not (0 <= value <= 1):
+            return False
+        if _companion_explorer_axis_log(args, axis, key) and not COMPANION_EXPLORER_AXIS_SPECS.get(key, {}).get("spectralTypeAxis") and value <= 0:
+            return False
+    return True
+
+
+def _companion_explorer_row_matches_payload_filters(
+    row: Mapping[str, Any],
+    args: Mapping[str, Any],
+    highlight_cids: set[int] | None = None,
+    highlight_exoplanet_ids: set[str] | None = None,
+) -> bool:
+    row_kind = str(row.get("row_kind") or "companion")
+    cid = _spt_int_value(row.get("moca_cid"))
+    if row_kind == "companion" and cid is not None and highlight_cids and cid in highlight_cids:
+        return True
+    exoplanet_id = str(row.get("exoplanet_id") or "").strip()
+    if row_kind == "exoplanet" and exoplanet_id and highlight_exoplanet_ids and exoplanet_id in highlight_exoplanet_ids:
+        return True
+    if row_kind == "companion":
+        prob_min = _companion_explorer_first_filter_value(args, ("comover_probability_min", "prob_min")) or 0
+        prob = _spt_float(row.get("comover_probability"))
+        if prob is not None and prob < prob_min:
+            return False
+        if prob is None and _as_bool(args.get("ignore_null_comover") or args.get("ignore_missing_comover_probability") or args.get("ignore_missing_comover")):
+            return False
+    spt_window = _companion_explorer_spt_window(args)
+    if spt_window:
+        lo, hi = spt_window
+        parent_spt = _spt_float(row.get("parent_sptn"))
+        child_spt = _spt_float(row.get("child_sptn"))
+        if not any(value is not None and lo <= value <= hi for value in (parent_spt, child_spt)):
+            return False
+    for param, aliases, key, absolute, null_param, null_aliases in COMPANION_EXPLORER_QUANTITY_FILTERS:
+        limit = _companion_explorer_first_filter_value(args, (param, *aliases))
+        ignore_null = _companion_explorer_ignore_null_filter(args, (null_param, *null_aliases))
+        if limit is None and not ignore_null:
+            continue
+        value = _companion_explorer_quantity_filter_row_value(row, key)
+        if value is None:
+            if ignore_null:
+                return False
+            continue
+        if absolute:
+            value = abs(value)
+        if limit is not None and value > limit:
+            return False
+    return _companion_explorer_row_matches_requested_axes(row, args)
+
+
+def _companion_explorer_dummy_cte(name: str, columns: Sequence[str]) -> str:
+    select_sql = ", ".join(f"NULL AS {column}" for column in columns)
+    return f"{name} AS (SELECT {select_sql} FROM DUAL WHERE 0 = 1)"
+
+
+def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    ctes: list[str] = []
+    private_db = _is_private_db(dict(args))
+    if _db_table_exists(conn, "data_distances"):
+        distance_columns = _db_table_columns(conn, "data_distances")
+        distance_order_terms = ["COALESCE(dd.photometric_estimate, 0) ASC"]
+        if private_db and "public_adopted" in distance_columns:
+            distance_order_terms.append("COALESCE(dd.public_adopted, 0) DESC")
+        else:
+            distance_order_terms.append("COALESCE(dd.adopted, 0) DESC")
+        distance_order_terms.append("dd.id DESC" if "id" in distance_columns else "dd.moca_oid")
+        distance_order_sql = ",\n                                ".join(distance_order_terms)
+        ctes.append(f"""
+            selected_distances AS (
+                SELECT
+                    moca_oid,
+                    distance_pc,
+                    distance_pc_unc,
+                    distance_pc_unc_pos,
+                    distance_pc_unc_neg,
+                    photometric_estimate
+                FROM (
+                    SELECT
+                        dd.moca_oid,
+                        dd.distance_pc,
+                        dd.distance_pc_unc,
+                        dd.distance_pc_unc_pos,
+                        dd.distance_pc_unc_neg,
+                        COALESCE(dd.photometric_estimate, 0) AS photometric_estimate,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY dd.moca_oid
+                            ORDER BY {distance_order_sql}
+                        ) AS cex_rn
+                    FROM data_distances dd
+                    WHERE dd.adopted = 1
+                        AND COALESCE(dd.ignored, 0) = 0
+                        AND dd.distance_pc IS NOT NULL
+                        AND dd.distance_pc > 0
+                ) ranked_distances
+                WHERE cex_rn = 1
+            )
+        """)
+    else:
+        ctes.append(_companion_explorer_dummy_cte(
+            "selected_distances",
+            ("moca_oid", "distance_pc", "distance_pc_unc", "distance_pc_unc_pos", "distance_pc_unc_neg", "photometric_estimate"),
+        ))
+
+    if _db_table_exists(conn, "data_spectral_types"):
+        spectral_type_columns = _db_table_columns(conn, "data_spectral_types")
+        spectral_type_order_terms = ["COALESCE(dst.photometric_estimate, 0) ASC"]
+        if private_db and "public_adopted" in spectral_type_columns:
+            spectral_type_order_terms.append("COALESCE(dst.public_adopted, 0) DESC")
+        else:
+            spectral_type_order_terms.append("COALESCE(dst.adopted, 0) DESC")
+        spectral_type_order_terms.append("dst.id DESC" if "id" in spectral_type_columns else "dst.moca_oid")
+        spectral_type_order_sql = ",\n                                ".join(spectral_type_order_terms)
+        ctes.append(f"""
+            selected_spectral_types AS (
+                SELECT
+                    moca_oid,
+                    spectral_type,
+                    spectral_type_number,
+                    photometric_estimate
+                FROM (
+                    SELECT
+                        dst.moca_oid,
+                        COALESCE(
+                            NULLIF(dst.complete_spectral_type, ''),
+                            NULLIF(dst.spectral_type, ''),
+                            NULLIF(dst.simple_spectral_type, '')
+                        ) AS spectral_type,
+                        dst.spectral_type_number,
+                        COALESCE(dst.photometric_estimate, 0) AS photometric_estimate,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY dst.moca_oid
+                            ORDER BY {spectral_type_order_sql}
+                        ) AS cex_rn
+                    FROM data_spectral_types dst
+                    WHERE dst.adopted = 1
+                        AND COALESCE(dst.ignored, 0) = 0
+                        AND COALESCE(
+                            NULLIF(dst.complete_spectral_type, ''),
+                            NULLIF(dst.spectral_type, ''),
+                            NULLIF(dst.simple_spectral_type, '')
+                        ) IS NOT NULL
+                ) ranked_spectral_types
+                WHERE cex_rn = 1
+            )
+        """)
+    else:
+        ctes.append(_companion_explorer_dummy_cte(
+            "selected_spectral_types",
+            ("moca_oid", "spectral_type", "spectral_type_number", "photometric_estimate"),
+        ))
+
+    if _db_table_exists(conn, "data_masses"):
+        mass_columns = _db_table_columns(conn, "data_masses")
+        mass_order_terms = []
+        if private_db and "public_adopted" in mass_columns:
+            mass_order_terms.append("COALESCE(dm.public_adopted, 0) DESC")
+        else:
+            mass_order_terms.append("COALESCE(dm.adopted, 0) DESC")
+        if "adopt_asis" in mass_columns:
+            mass_order_terms.append("COALESCE(dm.adopt_asis, 0) DESC")
+        mass_order_terms.append("dm.id DESC" if "id" in mass_columns else "dm.moca_oid")
+        mass_order_sql = ",\n                                ".join(mass_order_terms)
+        ctes.append(f"""
+            selected_masses AS (
+                SELECT
+                    moca_oid,
+                    mass_msun,
+                    mass_msun_unc,
+                    mass_msun_unc_pos,
+                    mass_msun_unc_neg
+                FROM (
+                    SELECT
+                        dm.moca_oid,
+                        dm.mass_msun,
+                        dm.mass_msun_unc,
+                        dm.mass_msun_unc_pos,
+                        dm.mass_msun_unc_neg,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY dm.moca_oid
+                            ORDER BY {mass_order_sql}
+                        ) AS cex_rn
+                    FROM data_masses dm
+                    WHERE dm.adopted = 1
+                        AND COALESCE(dm.ignored, 0) = 0
+                        AND dm.mass_msun IS NOT NULL
+                        AND dm.mass_msun > 0
+                ) ranked_masses
+                WHERE cex_rn = 1
+            )
+        """)
+    else:
+        ctes.append(_companion_explorer_dummy_cte(
+            "selected_masses",
+            ("moca_oid", "mass_msun", "mass_msun_unc", "mass_msun_unc_pos", "mass_msun_unc_neg"),
+        ))
+
+    if _db_table_exists(conn, "data_object_ages"):
+        ctes.append("""
+            object_age AS (
+                SELECT
+                    doa.moca_oid,
+                    MIN(doa.age_myr) AS age_myr,
+                    MIN(doa.age_myr_unc) AS age_myr_unc,
+                    MIN(doa.age_myr_unc_pos) AS age_myr_unc_pos,
+                    MIN(doa.age_myr_unc_neg) AS age_myr_unc_neg,
+                    MIN(COALESCE(doa.bibcode, doa.moca_pid, doa.origin)) AS age_source_detail
+                FROM data_object_ages doa
+                WHERE doa.adopted = 1
+                    AND COALESCE(doa.ignored, 0) = 0
+                    AND doa.age_myr IS NOT NULL
+                    AND doa.age_myr > 0
+                GROUP BY doa.moca_oid
+            )
+        """)
+    else:
+        ctes.append(_companion_explorer_dummy_cte(
+            "object_age",
+            ("moca_oid", "age_myr", "age_myr_unc", "age_myr_unc_pos", "age_myr_unc_neg", "age_source_detail"),
+        ))
+
+    banyan_tables = {
+        "calc_banyan_sigma",
+        "moca_banyan_sigma_models",
+        "data_association_ages",
+        "moca_associations",
+    }
+    if all(_db_table_exists(conn, table) for table in banyan_tables):
+        model_columns = _db_table_columns(conn, "moca_banyan_sigma_models")
+        model_adopt_filter = "COALESCE(mbsm.adopted, 0) = 1"
+        if private_db and "public_adopted" in model_columns:
+            model_adopt_filter = "(COALESCE(mbsm.adopted, 0) = 1 OR COALESCE(mbsm.public_adopted, 0) = 1)"
+        cbs_has_is_public = "is_public" in _db_table_columns(conn, "calc_banyan_sigma")
+        cbs_public_filter = ""
+        if private_db and cbs_has_is_public:
+            cbs_public_filter = "AND cbs.is_public = :cex_cbs_is_public"
+            params["cex_cbs_is_public"] = 0
+        params["cex_ya_prob_min"] = _bd_evolution_ya_prob_min(dict(args))
+        best_aid_expr = "COALESCE(NULLIF(cbs.moca_aid, ''), NULLIF(cbs.best_ya, ''))"
+        best_hyp_expr = "NULLIF(cbs.best_hyp, '')"
+        membership_expr = f"""
+            CASE
+                WHEN {best_aid_expr} IS NOT NULL
+                    AND UPPER({best_aid_expr}) <> 'FIELD'
+                    AND UPPER(COALESCE({best_hyp_expr}, {best_aid_expr})) <> 'FIELD'
+                THEN {best_aid_expr}
+                ELSE NULL
+            END
+        """
+        ignored_membership_filter = ""
+        ignored_membership_aids = _bd_evolution_ignored_membership_aids(dict(args))
+        if ignored_membership_aids:
+            ignored_clause, ignored_params = _sql_in_clause("cex_ignored_aid", [aid.upper() for aid in ignored_membership_aids])
+            params.update(ignored_params)
+            ignored_membership_filter = f"AND UPPER(bc.membership) NOT IN ({ignored_clause})"
+        ctes.append(f"""
+            active_banyan_model AS (
+                SELECT MAX(mbsm.moca_bsmdid) AS moca_bsmdid
+                FROM moca_banyan_sigma_models mbsm
+                WHERE {model_adopt_filter}
+            ),
+            banyan_candidates AS (
+                SELECT
+                    cbs.moca_oid,
+                    {membership_expr} AS membership,
+                    cbs.ya_prob,
+                    cbs.best_hyp,
+                    cbs.best_ya,
+                    cbs.observables,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cbs.moca_oid
+                        ORDER BY cbs.ya_prob DESC, cbs.id DESC
+                    ) AS cex_rn
+                FROM calc_banyan_sigma cbs
+                JOIN active_banyan_model abm
+                    ON abm.moca_bsmdid = cbs.moca_bsmdid
+                WHERE cbs.max_observables = 1
+                    AND cbs.ya_prob >= :cex_ya_prob_min
+                    {cbs_public_filter}
+            ),
+            banyan_membership_age AS (
+                SELECT
+                    bc.moca_oid,
+                    daa.age_myr,
+                    daa.age_myr_unc,
+                    daa.age_myr_unc_pos,
+                    daa.age_myr_unc_neg,
+                    bc.membership,
+                    ma.name AS membership_name,
+                    bc.ya_prob,
+                    bc.best_hyp,
+                    bc.best_ya,
+                    bc.observables
+                FROM banyan_candidates bc
+                JOIN data_association_ages daa
+                    ON daa.moca_aid = bc.membership
+                    AND daa.adopted = 1
+                    AND COALESCE(daa.ignored, 0) = 0
+                    AND daa.age_myr IS NOT NULL
+                    AND daa.age_myr > 0
+                LEFT JOIN moca_associations ma
+                    ON ma.moca_aid = bc.membership
+                WHERE bc.cex_rn = 1
+                    AND bc.membership IS NOT NULL
+                    {ignored_membership_filter}
+            )
+        """)
+    else:
+        ctes.append(_companion_explorer_dummy_cte(
+            "banyan_membership_age",
+            (
+                "moca_oid", "age_myr", "age_myr_unc", "age_myr_unc_pos", "age_myr_unc_neg",
+                "membership", "membership_name", "ya_prob", "best_hyp", "best_ya", "observables",
+            ),
+        ))
+
+    return ",\n".join(ctes), params
+
+
+def _companion_explorer_abs_float(value: Any) -> float | None:
+    number = _spt_float(value)
+    return abs(number) if number is not None and math.isfinite(number) else None
+
+
+def _companion_explorer_positive_float(value: Any) -> float | None:
+    number = _spt_float(value)
+    return number if number is not None and number > 0 else None
+
+
+def _companion_explorer_symmetric_unc(pos: float | None, neg: float | None) -> float | None:
+    values = [value for value in (pos, neg) if value is not None and math.isfinite(value)]
+    return sum(values) / len(values) if values else None
+
+
+def _companion_explorer_quadrature(values: Sequence[float | None]) -> float | None:
+    finite = [value for value in values if value is not None and math.isfinite(value)]
+    return math.sqrt(sum(value * value for value in finite)) if finite else None
+
+
+def _companion_explorer_relative(value: float | None, unc: float | None) -> float | None:
+    if value is None or value <= 0 or unc is None:
+        return None
+    return abs(unc / value)
+
+
+def _companion_explorer_normalize_mass_ratio(row: dict[str, Any]) -> None:
+    mass_ratio = _companion_explorer_positive_float(row.get("mass_ratio_q"))
+    if mass_ratio is None or mass_ratio <= 1:
+        return
+    transform = 1.0 / (mass_ratio * mass_ratio)
+    unc = _companion_explorer_abs_float(row.get("mass_ratio_q_unc"))
+    unc_pos = _companion_explorer_abs_float(row.get("mass_ratio_q_unc_pos"))
+    unc_neg = _companion_explorer_abs_float(row.get("mass_ratio_q_unc_neg"))
+    row["mass_ratio_q"] = _pythonize(1.0 / mass_ratio)
+    if unc is not None:
+        row["mass_ratio_q_unc"] = _pythonize(unc * transform)
+    if unc_pos is not None or unc_neg is not None:
+        row["mass_ratio_q_unc_pos"] = _pythonize((unc_neg if unc_neg is not None else unc) * transform) if (unc_neg is not None or unc is not None) else None
+        row["mass_ratio_q_unc_neg"] = _pythonize((unc_pos if unc_pos is not None else unc) * transform) if (unc_pos is not None or unc is not None) else None
+
+
+def _companion_explorer_nasa_planet_mass(row: Mapping[str, Any]) -> tuple[float | None, float | None, float | None, str | None]:
+    mass_earth = _companion_explorer_positive_float(row.get("pl_bmasse"))
+    if mass_earth is not None:
+        return (
+            mass_earth * COMPANION_EXPLORER_EARTH_MASS_TO_MSUN,
+            _companion_explorer_abs_float(row.get("pl_bmasseerr1")) * COMPANION_EXPLORER_EARTH_MASS_TO_MSUN
+            if _companion_explorer_abs_float(row.get("pl_bmasseerr1")) is not None else None,
+            _companion_explorer_abs_float(row.get("pl_bmasseerr2")) * COMPANION_EXPLORER_EARTH_MASS_TO_MSUN
+            if _companion_explorer_abs_float(row.get("pl_bmasseerr2")) is not None else None,
+            "pl_bmasse",
+        )
+    mass_jup = _companion_explorer_positive_float(row.get("pl_bmassj"))
+    if mass_jup is not None:
+        return (
+            mass_jup * COMPANION_EXPLORER_JUPITER_MASS_TO_MSUN,
+            _companion_explorer_abs_float(row.get("pl_bmassjerr1")) * COMPANION_EXPLORER_JUPITER_MASS_TO_MSUN
+            if _companion_explorer_abs_float(row.get("pl_bmassjerr1")) is not None else None,
+            _companion_explorer_abs_float(row.get("pl_bmassjerr2")) * COMPANION_EXPLORER_JUPITER_MASS_TO_MSUN
+            if _companion_explorer_abs_float(row.get("pl_bmassjerr2")) is not None else None,
+            "pl_bmassj",
+        )
+    return None, None, None, None
+
+
+def _companion_explorer_nasa_separation(
+    row: Mapping[str, Any],
+    total_mass_msun: float | None,
+    total_mass_unc_pos: float | None,
+    total_mass_unc_neg: float | None,
+) -> tuple[float | None, float | None, float | None, str | None]:
+    semimajor_axis = _companion_explorer_positive_float(row.get("pl_orbsmax"))
+    if semimajor_axis is not None:
+        return (
+            semimajor_axis,
+            _companion_explorer_abs_float(row.get("pl_orbsmaxerr1")),
+            _companion_explorer_abs_float(row.get("pl_orbsmaxerr2")),
+            "pl_orbsmax",
+        )
+    period_days = _companion_explorer_positive_float(row.get("pl_orbper"))
+    if period_days is None or total_mass_msun is None or total_mass_msun <= 0:
+        return None, None, None, None
+    period_years = period_days / 365.25
+    semimajor_axis = (period_years * period_years * total_mass_msun) ** (1.0 / 3.0)
+    period_unc_pos = _companion_explorer_abs_float(row.get("pl_orbpererr1"))
+    period_unc_neg = _companion_explorer_abs_float(row.get("pl_orbpererr2"))
+
+    def propagated(period_unc: float | None, mass_unc: float | None) -> float | None:
+        terms = []
+        period_rel = _companion_explorer_relative(period_days, period_unc)
+        mass_rel = _companion_explorer_relative(total_mass_msun, mass_unc)
+        if period_rel is not None:
+            terms.append((2.0 * period_rel / 3.0) ** 2)
+        if mass_rel is not None:
+            terms.append((mass_rel / 3.0) ** 2)
+        return semimajor_axis * math.sqrt(sum(terms)) if terms else None
+
+    return (
+        semimajor_axis,
+        propagated(period_unc_pos, total_mass_unc_pos),
+        propagated(period_unc_neg, total_mass_unc_neg),
+        "kepler_pl_orbper_st_mass",
+    )
+
+
+def _companion_explorer_add_derived(row: dict[str, Any]) -> dict[str, Any]:
+    row.setdefault("row_kind", "companion")
+    _companion_explorer_normalize_mass_ratio(row)
+    row["sep_mas"] = _pythonize(float(row["sep_as"]) * 1000.0) if _spt_float(row.get("sep_as")) is not None else None
+    row["system_distance_pc"] = _pythonize(row.get("distance_pc_parent"))
+    row["parent_sptn"] = _pythonize(_parse_spt_label(row.get("spectral_type_parent")))
+    row["child_sptn"] = _pythonize(_parse_spt_label(row.get("spectral_type_child")))
+    if row.get("moca_oid_parent") is not None:
+        row["parent_report_url"] = f"https://mocadb.ca/search/results?search-query=oid%28{int(row['moca_oid_parent'])}%29&search-type=star"
+    if row.get("moca_oid_child") is not None:
+        row["child_report_url"] = f"https://mocadb.ca/search/results?search-query=oid%28{int(row['moca_oid_child'])}%29&search-type=star"
+    return row
+
+
+def _companion_explorer_add_exoplanet_derived(row: dict[str, Any]) -> dict[str, Any]:
+    parent_mass = _companion_explorer_positive_float(row.get("st_mass"))
+    parent_mass_unc_pos = _companion_explorer_abs_float(row.get("st_masserr1"))
+    parent_mass_unc_neg = _companion_explorer_abs_float(row.get("st_masserr2"))
+    child_mass, child_mass_unc_pos, child_mass_unc_neg, child_mass_source = _companion_explorer_nasa_planet_mass(row)
+    total_mass = parent_mass + child_mass if parent_mass is not None and child_mass is not None else parent_mass
+    total_mass_unc_pos = _companion_explorer_quadrature((parent_mass_unc_pos, child_mass_unc_pos))
+    total_mass_unc_neg = _companion_explorer_quadrature((parent_mass_unc_neg, child_mass_unc_neg))
+    sep_au, sep_au_unc_pos, sep_au_unc_neg, sep_source = _companion_explorer_nasa_separation(
+        row,
+        total_mass,
+        total_mass_unc_pos,
+        total_mass_unc_neg,
+    )
+    distance_pc = _companion_explorer_positive_float(row.get("distance_pc_parent"))
+    distance_unc_pos = _companion_explorer_abs_float(row.get("distance_pc_parent_unc_pos")) or _companion_explorer_abs_float(row.get("distance_pc_parent_unc"))
+    distance_unc_neg = _companion_explorer_abs_float(row.get("distance_pc_parent_unc_neg")) or _companion_explorer_abs_float(row.get("distance_pc_parent_unc"))
+    sep_mas = sep_au / distance_pc * 1000.0 if sep_au is not None and distance_pc is not None else None
+
+    def angular_unc(sep_unc: float | None, dist_unc: float | None) -> float | None:
+        if sep_mas is None or sep_au is None or distance_pc is None:
+            return None
+        terms = []
+        sep_rel = _companion_explorer_relative(sep_au, sep_unc)
+        dist_rel = _companion_explorer_relative(distance_pc, dist_unc)
+        if sep_rel is not None:
+            terms.append(sep_rel * sep_rel)
+        if dist_rel is not None:
+            terms.append(dist_rel * dist_rel)
+        return sep_mas * math.sqrt(sum(terms)) if terms else None
+
+    mass_ratio = child_mass / parent_mass if child_mass is not None and parent_mass is not None and parent_mass > 0 else None
+
+    def ratio_unc(child_unc: float | None, parent_unc: float | None) -> float | None:
+        if mass_ratio is None:
+            return None
+        terms = []
+        child_rel = _companion_explorer_relative(child_mass, child_unc)
+        parent_rel = _companion_explorer_relative(parent_mass, parent_unc)
+        if child_rel is not None:
+            terms.append(child_rel * child_rel)
+        if parent_rel is not None:
+            terms.append(parent_rel * parent_rel)
+        return mass_ratio * math.sqrt(sum(terms)) if terms else None
+
+    binding_energy = None
+    binding_energy_unc_pos = None
+    binding_energy_unc_neg = None
+    if parent_mass is not None and child_mass is not None and sep_au is not None and sep_au > 0:
+        binding_energy = (
+            COMPANION_EXPLORER_G_CGS
+            * (parent_mass * COMPANION_EXPLORER_MSUN_G)
+            * (child_mass * COMPANION_EXPLORER_MSUN_G)
+            / (sep_au * COMPANION_EXPLORER_AU_CM)
+        )
+        pos_terms = [
+            _companion_explorer_relative(parent_mass, parent_mass_unc_pos),
+            _companion_explorer_relative(child_mass, child_mass_unc_pos),
+            _companion_explorer_relative(sep_au, sep_au_unc_neg),
+        ]
+        neg_terms = [
+            _companion_explorer_relative(parent_mass, parent_mass_unc_neg),
+            _companion_explorer_relative(child_mass, child_mass_unc_neg),
+            _companion_explorer_relative(sep_au, sep_au_unc_pos),
+        ]
+        binding_energy_unc_pos = binding_energy * math.sqrt(sum(value * value for value in pos_terms if value is not None)) if any(value is not None for value in pos_terms) else None
+        binding_energy_unc_neg = binding_energy * math.sqrt(sum(value * value for value in neg_terms if value is not None)) if any(value is not None for value in neg_terms) else None
+
+    spectral_type_parent = row.get("spectral_type_parent") or row.get("st_spectype")
+    out = {
+        "row_kind": "exoplanet",
+        "exoplanet_id": f"nasa:{row.get('nasa_id')}",
+        "nasa_id": _pythonize(row.get("nasa_id")),
+        "moca_cid": None,
+        "designation_parent": _pythonize(row.get("hostname")),
+        "designation_child": _pythonize(row.get("pl_name")),
+        "moca_oid_parent": _pythonize(row.get("moca_oid_parent")),
+        "moca_oid_child": None,
+        "spectral_type_parent": _pythonize(spectral_type_parent),
+        "spectral_type_child": None,
+        "parent_sptn": _pythonize(_spt_float(row.get("parent_sptn")) if _spt_float(row.get("parent_sptn")) is not None else _parse_spt_label(spectral_type_parent)),
+        "child_sptn": None,
+        "discoverymethod": _pythonize(row.get("discoverymethod") or "Unknown"),
+        "sep_au": _pythonize(sep_au),
+        "sep_au_unc": _pythonize(_companion_explorer_symmetric_unc(sep_au_unc_pos, sep_au_unc_neg)),
+        "sep_au_unc_pos": _pythonize(sep_au_unc_pos),
+        "sep_au_unc_neg": _pythonize(sep_au_unc_neg),
+        "sep_mas": _pythonize(sep_mas),
+        "sep_mas_unc": _pythonize(_companion_explorer_symmetric_unc(angular_unc(sep_au_unc_pos, distance_unc_neg), angular_unc(sep_au_unc_neg, distance_unc_pos))),
+        "sep_mas_unc_pos": _pythonize(angular_unc(sep_au_unc_pos, distance_unc_neg)),
+        "sep_mas_unc_neg": _pythonize(angular_unc(sep_au_unc_neg, distance_unc_pos)),
+        "sep_as": _pythonize(sep_mas / 1000.0 if sep_mas is not None else None),
+        "sep_source": sep_source,
+        "pa_deg": None,
+        "comover_probability": None,
+        "comover_xyz_separation_pc": None,
+        "comover_xyz_separation_nsigma": None,
+        "comover_uvw_separation_kms": None,
+        "comover_uvw_separation_nsigma": None,
+        "pmdiff_masyr": None,
+        "pmdiff_masyr_unc": None,
+        "pmdiff_nsigma": None,
+        "distance_pc_parent": _pythonize(distance_pc),
+        "distance_pc_parent_unc": _pythonize(_companion_explorer_symmetric_unc(distance_unc_pos, distance_unc_neg)),
+        "distance_pc_parent_unc_pos": _pythonize(distance_unc_pos),
+        "distance_pc_parent_unc_neg": _pythonize(distance_unc_neg),
+        "distance_pc_child": None,
+        "distance_pc_child_unc": None,
+        "distance_diff_pc": None,
+        "distance_diff_pc_unc": None,
+        "distance_diff_nsigma": None,
+        "distance_photometric_estimate": _pythonize(row.get("distance_photometric_estimate") or 0),
+        "mass_msun_parent": _pythonize(parent_mass),
+        "mass_msun_unc_parent": _pythonize(_companion_explorer_symmetric_unc(parent_mass_unc_pos, parent_mass_unc_neg)),
+        "mass_msun_unc_pos_parent": _pythonize(parent_mass_unc_pos),
+        "mass_msun_unc_neg_parent": _pythonize(parent_mass_unc_neg),
+        "mass_msun_child": _pythonize(child_mass),
+        "mass_msun_unc_child": _pythonize(_companion_explorer_symmetric_unc(child_mass_unc_pos, child_mass_unc_neg)),
+        "mass_msun_unc_pos_child": _pythonize(child_mass_unc_pos),
+        "mass_msun_unc_neg_child": _pythonize(child_mass_unc_neg),
+        "mass_source_child": child_mass_source,
+        "mass_ratio_q": _pythonize(mass_ratio),
+        "mass_ratio_q_unc": _pythonize(_companion_explorer_symmetric_unc(ratio_unc(child_mass_unc_pos, parent_mass_unc_neg), ratio_unc(child_mass_unc_neg, parent_mass_unc_pos))),
+        "mass_ratio_q_unc_pos": _pythonize(ratio_unc(child_mass_unc_pos, parent_mass_unc_neg)),
+        "mass_ratio_q_unc_neg": _pythonize(ratio_unc(child_mass_unc_neg, parent_mass_unc_pos)),
+        "total_system_mass_msun": _pythonize(total_mass),
+        "total_system_mass_msun_unc": _pythonize(_companion_explorer_symmetric_unc(total_mass_unc_pos, total_mass_unc_neg)),
+        "total_system_mass_msun_unc_pos": _pythonize(total_mass_unc_pos),
+        "total_system_mass_msun_unc_neg": _pythonize(total_mass_unc_neg),
+        "binding_energy_erg": _pythonize(binding_energy),
+        "binding_energy_erg_unc": _pythonize(_companion_explorer_symmetric_unc(binding_energy_unc_pos, binding_energy_unc_neg)),
+        "binding_energy_erg_unc_pos": _pythonize(binding_energy_unc_pos),
+        "binding_energy_erg_unc_neg": _pythonize(binding_energy_unc_neg),
+        "parent_age_myr": _pythonize(row.get("parent_age_myr")),
+        "parent_age_myr_unc": _pythonize(row.get("parent_age_myr_unc")),
+        "parent_age_myr_unc_pos": _pythonize(row.get("parent_age_myr_unc_pos")),
+        "parent_age_myr_unc_neg": _pythonize(row.get("parent_age_myr_unc_neg")),
+        "parent_age_source": _pythonize(row.get("parent_age_source")),
+        "parent_age_source_detail": _pythonize(row.get("parent_age_source_detail")),
+        "parent_age_membership": _pythonize(row.get("parent_age_membership")),
+        "parent_age_ya_prob": _pythonize(row.get("parent_age_ya_prob")),
+        "pl_orbsmax": _pythonize(row.get("pl_orbsmax")),
+        "pl_orbper": _pythonize(row.get("pl_orbper")),
+        "pl_bmasse": _pythonize(row.get("pl_bmasse")),
+        "pl_bmassj": _pythonize(row.get("pl_bmassj")),
+    }
+    if out.get("moca_oid_parent") is not None:
+        out["parent_report_url"] = f"https://mocadb.ca/search/results?search-query=oid%28{int(out['moca_oid_parent'])}%29&search-type=star"
+    return out
+
+
+def _companion_explorer_tess_candidate_table(conn) -> str | None:
+    for table_name in ("cat_exoplanet_candidates_tess", "cat_exoplanet_candidates_tess_nasa"):
+        if _db_table_exists(conn, table_name):
+            return table_name
+    return None
+
+
+def _companion_explorer_format_tess_number(value: Any) -> str | None:
+    number = _spt_float(value)
+    if number is None:
+        return None
+    return f"{number:g}"
+
+
+def _companion_explorer_tess_candidate_name(row: Mapping[str, Any]) -> str:
+    toi = _companion_explorer_format_tess_number(row.get("toi"))
+    if toi:
+        return f"TOI {toi}"
+    ctoi = _companion_explorer_format_tess_number(row.get("ctoi_alias"))
+    if ctoi:
+        return f"CTOI {ctoi}"
+    tid = row.get("tid")
+    if tid is not None:
+        return f"TIC {tid}"
+    return f"TESS candidate {row.get('tess_candidate_id') or row.get('id') or ''}".strip()
+
+
+def _companion_explorer_tess_host_name(row: Mapping[str, Any]) -> str | None:
+    designation = row.get("object_designation")
+    if designation:
+        return _pythonize(designation)
+    tid = row.get("tid")
+    return f"TIC {tid}" if tid is not None else None
+
+
+def _companion_explorer_add_tess_candidate_derived(row: dict[str, Any]) -> dict[str, Any]:
+    base = dict(row)
+    base["nasa_id"] = row.get("tess_candidate_id")
+    base["pl_name"] = _companion_explorer_tess_candidate_name(row)
+    base["hostname"] = _companion_explorer_tess_host_name(row)
+    base["discoverymethod"] = "Transit"
+    base["st_mass"] = row.get("mass_msun_parent")
+    base["st_masserr1"] = row.get("mass_msun_unc_pos_parent") or row.get("mass_msun_unc_parent")
+    base["st_masserr2"] = row.get("mass_msun_unc_neg_parent")
+    if base["st_masserr2"] is None and row.get("mass_msun_unc_parent") is not None:
+        base["st_masserr2"] = -abs(row.get("mass_msun_unc_parent"))
+    base["pl_bmasse"] = None
+    base["pl_bmasseerr1"] = None
+    base["pl_bmasseerr2"] = None
+    base["pl_bmassj"] = None
+    base["pl_bmassjerr1"] = None
+    base["pl_bmassjerr2"] = None
+    base["pl_orbsmax"] = None
+    base["pl_orbsmaxerr1"] = None
+    base["pl_orbsmaxerr2"] = None
+    out = _companion_explorer_add_exoplanet_derived(base)
+    out["row_kind"] = "tess_candidate"
+    out["exoplanet_id"] = f"tess:{row.get('tess_candidate_id')}"
+    out["nasa_id"] = None
+    out["tess_candidate_id"] = _pythonize(row.get("tess_candidate_id"))
+    out["tess_rowid"] = _pythonize(row.get("rowid"))
+    out["toi"] = _pythonize(row.get("toi"))
+    out["ctoi_alias"] = _pythonize(row.get("ctoi_alias"))
+    out["tid"] = _pythonize(row.get("tid"))
+    out["tfopwg_disp"] = _pythonize(row.get("tfopwg_disp"))
+    out["discoverymethod"] = "TESS candidate"
+    out["mass_msun_child"] = None
+    out["mass_msun_unc_child"] = None
+    out["mass_msun_unc_pos_child"] = None
+    out["mass_msun_unc_neg_child"] = None
+    out["mass_source_child"] = None
+    out["mass_ratio_q"] = None
+    out["mass_ratio_q_unc"] = None
+    out["mass_ratio_q_unc_pos"] = None
+    out["mass_ratio_q_unc_neg"] = None
+    out["total_system_mass_msun"] = None
+    out["total_system_mass_msun_unc"] = None
+    out["total_system_mass_msun_unc_pos"] = None
+    out["total_system_mass_msun_unc_neg"] = None
+    out["binding_energy_erg"] = None
+    out["binding_energy_erg_unc"] = None
+    out["binding_energy_erg_unc_pos"] = None
+    out["binding_energy_erg_unc_neg"] = None
+    return out
+
+
+def _load_companion_explorer_exoplanets_from_db(
+    conn,
+    args: dict[str, Any],
+    common_ctes: str,
+    common_params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not _db_table_exists(conn, "cat_exoplanets_nasa"):
+        return []
+    max_exoplanets = _companion_explorer_parse_max_exoplanets(args.get("max_exoplanets") or args.get("exoplanet_limit"))
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    photometric_distance_filter = "" if include_photometric_distances else "AND COALESCE(parent_dist.photometric_estimate, 0) = 0"
+    rows = _records(_read_sql(conn, f"""
+        WITH {common_ctes}
+        SELECT
+            cen.id AS nasa_id,
+            cen.pl_name,
+            cen.hostname,
+            cen.moca_oid AS moca_oid_parent,
+            cen.discoverymethod,
+            cen.st_spectype,
+            cen.st_mass,
+            cen.st_masserr1,
+            cen.st_masserr2,
+            cen.pl_bmasse,
+            cen.pl_bmasseerr1,
+            cen.pl_bmasseerr2,
+            cen.pl_bmassj,
+            cen.pl_bmassjerr1,
+            cen.pl_bmassjerr2,
+            cen.pl_orbsmax,
+            cen.pl_orbsmaxerr1,
+            cen.pl_orbsmaxerr2,
+            cen.pl_orbper,
+            cen.pl_orbpererr1,
+            cen.pl_orbpererr2,
+            parent_dist.distance_pc AS distance_pc_parent,
+            parent_dist.distance_pc_unc AS distance_pc_parent_unc,
+            parent_dist.distance_pc_unc_pos AS distance_pc_parent_unc_pos,
+            parent_dist.distance_pc_unc_neg AS distance_pc_parent_unc_neg,
+            COALESCE(parent_dist.photometric_estimate, 0) AS distance_photometric_estimate,
+            parent_spt.spectral_type AS spectral_type_parent,
+            parent_spt.spectral_type_number AS parent_sptn,
+            COALESCE(obj_age.age_myr, banyan_age.age_myr) AS parent_age_myr,
+            COALESCE(obj_age.age_myr_unc, banyan_age.age_myr_unc) AS parent_age_myr_unc,
+            COALESCE(obj_age.age_myr_unc_pos, banyan_age.age_myr_unc_pos) AS parent_age_myr_unc_pos,
+            COALESCE(obj_age.age_myr_unc_neg, banyan_age.age_myr_unc_neg) AS parent_age_myr_unc_neg,
+            CASE
+                WHEN obj_age.age_myr IS NOT NULL THEN 'object age'
+                WHEN banyan_age.age_myr IS NOT NULL THEN 'BANYAN Sigma membership age'
+                ELSE NULL
+            END AS parent_age_source,
+            CASE
+                WHEN obj_age.age_myr IS NOT NULL THEN obj_age.age_source_detail
+                WHEN banyan_age.age_myr IS NOT NULL THEN COALESCE(banyan_age.membership_name, banyan_age.membership)
+                ELSE NULL
+            END AS parent_age_source_detail,
+            banyan_age.membership AS parent_age_membership,
+            banyan_age.ya_prob AS parent_age_ya_prob
+        FROM cat_exoplanets_nasa cen
+        LEFT JOIN selected_distances parent_dist
+            ON parent_dist.moca_oid = cen.moca_oid
+        LEFT JOIN selected_spectral_types parent_spt
+            ON parent_spt.moca_oid = cen.moca_oid
+        LEFT JOIN object_age obj_age
+            ON obj_age.moca_oid = cen.moca_oid
+        LEFT JOIN banyan_membership_age banyan_age
+            ON banyan_age.moca_oid = cen.moca_oid
+        WHERE COALESCE(cen.default_flag, 1) = 1
+            AND COALESCE(cen.pl_controv_flag, 0) = 0
+            AND cen.pl_name IS NOT NULL
+            AND cen.moca_oid IS NOT NULL
+            {photometric_distance_filter}
+        ORDER BY cen.discoverymethod, cen.pl_name
+        LIMIT {max_exoplanets}
+    """, dict(common_params)))
+    rows = _companion_explorer_filter_hidden_exoplanet_rows(conn, rows, "pl_name")
+    return [_companion_explorer_add_exoplanet_derived(row) for row in rows]
+
+
+def _load_companion_explorer_tess_candidates_from_db(
+    conn,
+    args: dict[str, Any],
+    common_ctes: str,
+    common_params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    tess_table = _companion_explorer_tess_candidate_table(conn)
+    if not tess_table:
+        return []
+    max_tess = _companion_explorer_parse_max_tess_candidates(
+        args.get("max_tess_candidates") or args.get("tess_candidate_limit") or args.get("max_tess")
+    )
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    photometric_distance_filter = "" if include_photometric_distances else "AND COALESCE(parent_dist.photometric_estimate, 0) = 0"
+    rows = _records(_read_sql(conn, f"""
+        WITH {common_ctes}
+        SELECT
+            tess.id AS tess_candidate_id,
+            tess.rowid,
+            tess.toi,
+            tess.ctoi_alias,
+            tess.tid,
+            tess.tfopwg_disp,
+            tess.object_designation,
+            tess.moca_oid AS moca_oid_parent,
+            tess.pl_orbper,
+            tess.pl_orbpererr1,
+            tess.pl_orbpererr2,
+            parent_mass.mass_msun AS mass_msun_parent,
+            parent_mass.mass_msun_unc AS mass_msun_unc_parent,
+            parent_mass.mass_msun_unc_pos AS mass_msun_unc_pos_parent,
+            parent_mass.mass_msun_unc_neg AS mass_msun_unc_neg_parent,
+            parent_dist.distance_pc AS distance_pc_parent,
+            parent_dist.distance_pc_unc AS distance_pc_parent_unc,
+            parent_dist.distance_pc_unc_pos AS distance_pc_parent_unc_pos,
+            parent_dist.distance_pc_unc_neg AS distance_pc_parent_unc_neg,
+            COALESCE(parent_dist.photometric_estimate, 0) AS distance_photometric_estimate,
+            parent_spt.spectral_type AS spectral_type_parent,
+            parent_spt.spectral_type_number AS parent_sptn,
+            COALESCE(obj_age.age_myr, banyan_age.age_myr) AS parent_age_myr,
+            COALESCE(obj_age.age_myr_unc, banyan_age.age_myr_unc) AS parent_age_myr_unc,
+            COALESCE(obj_age.age_myr_unc_pos, banyan_age.age_myr_unc_pos) AS parent_age_myr_unc_pos,
+            COALESCE(obj_age.age_myr_unc_neg, banyan_age.age_myr_unc_neg) AS parent_age_myr_unc_neg,
+            CASE
+                WHEN obj_age.age_myr IS NOT NULL THEN 'object age'
+                WHEN banyan_age.age_myr IS NOT NULL THEN 'BANYAN Sigma membership age'
+                ELSE NULL
+            END AS parent_age_source,
+            CASE
+                WHEN obj_age.age_myr IS NOT NULL THEN obj_age.age_source_detail
+                WHEN banyan_age.age_myr IS NOT NULL THEN COALESCE(banyan_age.membership_name, banyan_age.membership)
+                ELSE NULL
+            END AS parent_age_source_detail,
+            banyan_age.membership AS parent_age_membership,
+            banyan_age.ya_prob AS parent_age_ya_prob
+        FROM {tess_table} tess
+        LEFT JOIN selected_masses parent_mass
+            ON parent_mass.moca_oid = tess.moca_oid
+        LEFT JOIN selected_distances parent_dist
+            ON parent_dist.moca_oid = tess.moca_oid
+        LEFT JOIN selected_spectral_types parent_spt
+            ON parent_spt.moca_oid = tess.moca_oid
+        LEFT JOIN object_age obj_age
+            ON obj_age.moca_oid = tess.moca_oid
+        LEFT JOIN banyan_membership_age banyan_age
+            ON banyan_age.moca_oid = tess.moca_oid
+        WHERE tess.moca_oid IS NOT NULL
+            {photometric_distance_filter}
+        ORDER BY tess.toi, tess.id
+        LIMIT {max_tess}
+    """, dict(common_params)))
+    return [_companion_explorer_add_tess_candidate_derived(row) for row in rows]
+
+
+def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    max_rows = _companion_explorer_parse_max_rows(args.get("max_rows") or args.get("limit"))
+    highlight_cids = _companion_explorer_parse_cids(args)
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        if not _db_table_exists(conn, "summary_all_companions"):
+            raise ValueError("summary_all_companions is not available in this database")
+        started = time.time()
+        common_ctes, common_params = _companion_explorer_common_ctes(conn, args)
+        select_columns_sql = ",\n                ".join(f"sac.{column}" for column in COMPANION_EXPLORER_COMPANION_SELECT_COLUMNS)
+        highlight_order = "sac.moca_cid"
+        params: dict[str, Any] = dict(common_params)
+        cid_clause = ""
+        if highlight_cids:
+            cid_clause, cid_params = _sql_in_clause("cex_cid", [str(cid) for cid in highlight_cids])
+            params.update(cid_params)
+            highlight_order = f"CASE WHEN sac.moca_cid IN ({cid_clause}) THEN 0 ELSE 1 END, sac.moca_cid"
+        photometric_distance_filter = "" if include_photometric_distances else "AND COALESCE(parent_dist.photometric_estimate, 0) = 0"
+        data_filter_sql = _companion_explorer_companion_filter_sql(args, params, cid_clause)
+        rows = _records(_read_sql(conn, f"""
+            WITH {common_ctes}
+            SELECT
+                {select_columns_sql},
+                NULL AS parent_designations,
+                NULL AS child_designations,
+                parent_dist.photometric_estimate AS distance_photometric_estimate,
+                parent_dist.distance_pc_unc_pos AS distance_pc_parent_unc_pos,
+                parent_dist.distance_pc_unc_neg AS distance_pc_parent_unc_neg,
+                COALESCE(obj_age.age_myr, banyan_age.age_myr) AS parent_age_myr,
+                COALESCE(obj_age.age_myr_unc, banyan_age.age_myr_unc) AS parent_age_myr_unc,
+                COALESCE(obj_age.age_myr_unc_pos, banyan_age.age_myr_unc_pos) AS parent_age_myr_unc_pos,
+                COALESCE(obj_age.age_myr_unc_neg, banyan_age.age_myr_unc_neg) AS parent_age_myr_unc_neg,
+                CASE
+                    WHEN obj_age.age_myr IS NOT NULL THEN 'object age'
+                    WHEN banyan_age.age_myr IS NOT NULL THEN 'BANYAN Sigma membership age'
+                    ELSE NULL
+                END AS parent_age_source,
+                CASE
+                    WHEN obj_age.age_myr IS NOT NULL THEN obj_age.age_source_detail
+                    WHEN banyan_age.age_myr IS NOT NULL THEN COALESCE(banyan_age.membership_name, banyan_age.membership)
+                    ELSE NULL
+                END AS parent_age_source_detail,
+                banyan_age.membership AS parent_age_membership,
+                banyan_age.ya_prob AS parent_age_ya_prob
+            FROM summary_all_companions sac
+            LEFT JOIN selected_distances parent_dist
+                ON parent_dist.moca_oid = sac.moca_oid_parent
+            LEFT JOIN object_age obj_age
+                ON obj_age.moca_oid = sac.moca_oid_parent
+            LEFT JOIN banyan_membership_age banyan_age
+                ON banyan_age.moca_oid = sac.moca_oid_parent
+            WHERE 1 = 1
+                AND {_companion_explorer_not_self_pair_sql("sac")}
+                {photometric_distance_filter}
+                {data_filter_sql}
+            ORDER BY {highlight_order}
+            LIMIT {max_rows}
+        """, params))
+        rows = [_companion_explorer_add_derived(row) for row in rows]
+        highlight_cid_set = set(highlight_cids)
+        rows = [row for row in rows if _companion_explorer_row_matches_payload_filters(row, args, highlight_cid_set)]
+        include_exoplanets = _companion_explorer_include_exoplanets(args)
+        include_tess_candidates = _companion_explorer_include_tess_candidates(args)
+        highlight_exoplanet_ids = _companion_explorer_parse_exoplanet_ids(args)
+        exoplanets = _load_companion_explorer_exoplanets_from_db(conn, args, common_ctes, common_params) if include_exoplanets else []
+        exoplanets = [row for row in exoplanets if _companion_explorer_row_matches_payload_filters(row, args, highlight_exoplanet_ids=highlight_exoplanet_ids)]
+        tess_candidates = _load_companion_explorer_tess_candidates_from_db(conn, args, common_ctes, common_params) if include_tess_candidates else []
+        tess_candidates = [row for row in tess_candidates if _companion_explorer_row_matches_payload_filters(row, args)] if include_tess_candidates else []
+        query_seconds = round(time.time() - started, 3)
+    return {
+        "axes": _companion_explorer_axes_payload(),
+        "default": {"x": "sep_au", "y": "mass_ratio_q", "xLog": True, "yLog": True},
+        "rows": rows,
+        "exoplanets": exoplanets,
+        "tess_candidates": tess_candidates,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "row_count": len(rows),
+            "exoplanet_count": len(exoplanets),
+            "tess_candidate_count": len(tess_candidates),
+            "max_rows": max_rows,
+            "truncated": len(rows) >= max_rows,
+            "highlight_cids": highlight_cids,
+            "age_count": sum(1 for row in rows if _spt_float(row.get("parent_age_myr")) is not None),
+            "exoplanet_age_count": sum(1 for row in exoplanets if _spt_float(row.get("parent_age_myr")) is not None),
+            "tess_candidate_age_count": sum(1 for row in tess_candidates if _spt_float(row.get("parent_age_myr")) is not None),
+            "use_photometric_distances": include_photometric_distances,
+            "include_exoplanets": include_exoplanets,
+            "include_tess_candidates": include_tess_candidates,
+            "server_filtered": True,
+            "query_seconds": query_seconds,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_companion_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
+    rng = np.random.default_rng(20260626)
+    rows: list[dict[str, Any]] = []
+    exoplanets: list[dict[str, Any]] = []
+    tess_candidates: list[dict[str, Any]] = []
+    parent_types = ["M4", "M7", "L1", "L5", "T2"]
+    child_types = ["M6", "L0", "L4", "T0", "T5", "Y0"]
+    for index in range(120):
+        cid = 900000 + index
+        parent_spt = parent_types[index % len(parent_types)]
+        child_spt = child_types[(index * 2) % len(child_types)]
+        dist = float(rng.uniform(8, 80))
+        sep_as = float(10 ** rng.uniform(-1.2, 2.0))
+        sep_au = sep_as * dist
+        mass_parent = float(10 ** rng.uniform(-1.1, -0.05))
+        q = float(rng.uniform(1.05, 2.4) if index % 19 == 0 else rng.uniform(0.08, 0.95))
+        mass_child = mass_parent * q
+        total_mass = mass_parent + mass_child
+        rows.append(_companion_explorer_add_derived({
+            "moca_cid": cid,
+            "designation_parent": f"Mock Parent {index:03d}",
+            "designation_child": f"Mock Companion {index:03d}",
+            "moca_oid_parent": 700000 + index,
+            "moca_oid_child": 800000 + index,
+            "spectral_type_parent": parent_spt,
+            "spectral_type_child": child_spt,
+            "sep_as": sep_as,
+            "sep_mas": sep_as * 1000.0,
+            "pa_deg": float(rng.uniform(0, 360)),
+            "comover_probability": float(rng.uniform(20, 100)),
+            "comover_xyz_separation_pc": float(sep_au / 206265.0),
+            "comover_xyz_separation_nsigma": float(10 ** rng.uniform(-0.1, 2.5)),
+            "comover_uvw_separation_kms": float(rng.uniform(0, 8)),
+            "comover_uvw_separation_nsigma": float(10 ** rng.uniform(-0.2, 2.0)),
+            "pmdiff_masyr": float(rng.uniform(0, 20)),
+            "pmdiff_masyr_unc": float(rng.uniform(0.05, 2.0)),
+            "pmdiff_nsigma": float(rng.uniform(0, 30)),
+            "distance_pc_parent": dist,
+            "distance_pc_parent_unc": float(rng.uniform(0.05, 1.5)),
+            "distance_pc_child": dist + float(rng.normal(0, 1.0)),
+            "distance_pc_child_unc": float(rng.uniform(0.05, 2.5)),
+            "distance_diff_pc": float(rng.normal(0, 1.0)),
+            "distance_diff_pc_unc": float(rng.uniform(0.08, 1.6)),
+            "distance_diff_nsigma": float(rng.uniform(0, 10)),
+            "mass_msun_parent": mass_parent,
+            "mass_msun_unc_parent": mass_parent * 0.1,
+            "mass_msun_child": mass_child,
+            "mass_msun_unc_child": mass_child * 0.15,
+            "mass_ratio_q": q,
+            "mass_ratio_q_unc": q * 0.12,
+            "total_system_mass_msun": total_mass,
+            "total_system_mass_msun_unc": total_mass * 0.12,
+            "sep_au": sep_au,
+            "sep_au_unc": sep_au * 0.08,
+            "binding_energy_erg": float(10 ** rng.uniform(39, 44)),
+            "binding_energy_erg_unc": float(10 ** rng.uniform(38.5, 43.3)),
+            "parent_age_myr": float(10 ** rng.uniform(1.0, 3.2)) if index % 4 else None,
+            "parent_age_myr_unc": float(10 ** rng.uniform(0.6, 2.0)) if index % 4 else None,
+            "parent_age_source": "mock object age" if index % 4 else None,
+        }))
+    exoplanet_methods = ["Transit", "Radial Velocity", "Imaging", "Microlensing", "Transit Timing Variations"]
+    exoplanet_parent_types = ["F8 V", "G2 V", "K4 V", "M1 V", "A5 V"]
+    for index in range(90):
+        method = exoplanet_methods[index % len(exoplanet_methods)]
+        host_mass = float(10 ** rng.uniform(-0.35, 0.25))
+        mass_earth = float(10 ** rng.uniform(0.2, 4.2))
+        distance = float(rng.uniform(5, 250))
+        if method == "Imaging":
+            semimajor_axis = float(10 ** rng.uniform(1.4, 3.0))
+        elif method == "Microlensing":
+            semimajor_axis = float(10 ** rng.uniform(-0.2, 1.0))
+        else:
+            semimajor_axis = float(10 ** rng.uniform(-2.0, 0.6))
+        exoplanets.append(_companion_explorer_add_exoplanet_derived({
+            "nasa_id": 800000 + index,
+            "pl_name": f"Mock Planet {index:03d} b",
+            "hostname": f"Mock Host {index:03d}",
+            "moca_oid_parent": 880000 + index,
+            "discoverymethod": method,
+            "st_spectype": exoplanet_parent_types[index % len(exoplanet_parent_types)],
+            "spectral_type_parent": exoplanet_parent_types[index % len(exoplanet_parent_types)],
+            "parent_sptn": _parse_spt_label(exoplanet_parent_types[index % len(exoplanet_parent_types)]),
+            "st_mass": host_mass,
+            "st_masserr1": host_mass * 0.08,
+            "st_masserr2": -host_mass * 0.07,
+            "pl_bmasse": mass_earth,
+            "pl_bmasseerr1": mass_earth * 0.22,
+            "pl_bmasseerr2": -mass_earth * 0.18,
+            "pl_bmassj": None,
+            "pl_bmassjerr1": None,
+            "pl_bmassjerr2": None,
+            "pl_orbsmax": semimajor_axis if index % 5 else None,
+            "pl_orbsmaxerr1": semimajor_axis * 0.12,
+            "pl_orbsmaxerr2": -semimajor_axis * 0.10,
+            "pl_orbper": float(365.25 * math.sqrt((semimajor_axis ** 3) / host_mass)),
+            "pl_orbpererr1": float(15 + index % 9),
+            "pl_orbpererr2": float(-(12 + index % 7)),
+            "distance_pc_parent": distance,
+            "distance_pc_parent_unc": distance * 0.03,
+            "distance_pc_parent_unc_pos": distance * 0.035,
+            "distance_pc_parent_unc_neg": distance * 0.030,
+            "distance_photometric_estimate": 1 if index % 17 == 0 else 0,
+            "parent_age_myr": float(10 ** rng.uniform(2.0, 3.8)) if index % 3 else None,
+            "parent_age_myr_unc": float(10 ** rng.uniform(1.0, 2.6)) if index % 3 else None,
+            "parent_age_source": "mock object age" if index % 3 else None,
+            "parent_age_source_detail": "mock exoplanet host age" if index % 3 else None,
+        }))
+    for index in range(70):
+        host_mass = float(10 ** rng.uniform(-0.45, 0.15))
+        period_days = float(10 ** rng.uniform(-0.25, 2.4))
+        distance = float(rng.uniform(12, 180))
+        tess_candidates.append(_companion_explorer_add_tess_candidate_derived({
+            "tess_candidate_id": 870000 + index,
+            "rowid": 870000 + index,
+            "toi": float(1000 + index + ((index % 4) + 1) / 100.0),
+            "ctoi_alias": None,
+            "tid": 500000000 + index,
+            "tfopwg_disp": ["PC", "CP", "KP"][(index // 8) % 3],
+            "object_designation": f"Mock TIC Host {index:03d}",
+            "moca_oid_parent": 890000 + index,
+            "spectral_type_parent": exoplanet_parent_types[index % len(exoplanet_parent_types)],
+            "parent_sptn": _parse_spt_label(exoplanet_parent_types[index % len(exoplanet_parent_types)]),
+            "mass_msun_parent": host_mass,
+            "mass_msun_unc_parent": host_mass * 0.10,
+            "mass_msun_unc_pos_parent": host_mass * 0.12,
+            "mass_msun_unc_neg_parent": -host_mass * 0.09,
+            "pl_orbper": period_days,
+            "pl_orbpererr1": period_days * 0.04,
+            "pl_orbpererr2": -period_days * 0.03,
+            "distance_pc_parent": distance,
+            "distance_pc_parent_unc": distance * 0.04,
+            "distance_pc_parent_unc_pos": distance * 0.045,
+            "distance_pc_parent_unc_neg": distance * 0.035,
+            "distance_photometric_estimate": 1 if index % 13 == 0 else 0,
+            "parent_age_myr": float(10 ** rng.uniform(1.5, 3.4)) if index % 4 else None,
+            "parent_age_myr_unc": float(10 ** rng.uniform(0.8, 2.2)) if index % 4 else None,
+            "parent_age_source": "mock object age" if index % 4 else None,
+            "parent_age_source_detail": "mock TESS host age" if index % 4 else None,
+        }))
+    if not _companion_explorer_use_photometric_distances(args):
+        exoplanets = [row for row in exoplanets if not int(row.get("distance_photometric_estimate") or 0)]
+        tess_candidates = [row for row in tess_candidates if not int(row.get("distance_photometric_estimate") or 0)]
+    highlight_cids = set(_companion_explorer_parse_cids(args))
+    highlight_exoplanet_ids = _companion_explorer_parse_exoplanet_ids(args)
+    rows = [row for row in rows if _companion_explorer_row_matches_payload_filters(row, args, highlight_cids)]
+    exoplanets = [row for row in exoplanets if _companion_explorer_row_matches_payload_filters(row, args, highlight_exoplanet_ids=highlight_exoplanet_ids)] if _companion_explorer_include_exoplanets(args) else []
+    tess_candidates = [row for row in tess_candidates if _companion_explorer_row_matches_payload_filters(row, args)] if _companion_explorer_include_tess_candidates(args) else []
+    return {
+        "axes": _companion_explorer_axes_payload(),
+        "default": {"x": "sep_au", "y": "mass_ratio_q", "xLog": True, "yLog": True},
+        "rows": rows,
+        "exoplanets": exoplanets,
+        "tess_candidates": tess_candidates,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "row_count": len(rows),
+            "exoplanet_count": len(exoplanets),
+            "tess_candidate_count": len(tess_candidates),
+            "max_rows": len(rows),
+            "truncated": False,
+            "highlight_cids": _companion_explorer_parse_cids(args),
+            "age_count": sum(1 for row in rows if row.get("parent_age_myr") is not None),
+            "exoplanet_age_count": sum(1 for row in exoplanets if row.get("parent_age_myr") is not None),
+            "tess_candidate_age_count": sum(1 for row in tess_candidates if row.get("parent_age_myr") is not None),
+            "use_photometric_distances": _companion_explorer_use_photometric_distances(args),
+            "include_exoplanets": _companion_explorer_include_exoplanets(args),
+            "include_tess_candidates": _companion_explorer_include_tess_candidates(args),
+            "server_filtered": True,
+            "query_seconds": 0,
+            "mock": True,
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _companion_explorer_search_label(row: Mapping[str, Any]) -> str:
+    label = (
+        f"cid{row.get('moca_cid')}: "
+        f"{row.get('designation_parent') or 'parent'} → {row.get('designation_child') or 'companion'}"
+    )
+    aliases = []
+    if row.get("parent_alias_matches"):
+        aliases.append(f"parent: {row.get('parent_alias_matches')}")
+    if row.get("child_alias_matches"):
+        aliases.append(f"child: {row.get('child_alias_matches')}")
+    return f"{label} [{'; '.join(aliases)}]" if aliases else label
+
+
+def _load_companion_explorer_designation_index_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    max_rows = _companion_explorer_parse_max_rows(
+        args.get("designation_max_rows")
+        or args.get("max_designation_rows")
+        or args.get("max_rows")
+        or COMPANION_EXPLORER_HARD_MAX_ROWS
+    )
+    include_exoplanets = _companion_explorer_layer_flag(args, ("include_exoplanets", "show_exoplanets", "exoplanets"), True)
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        if not _db_table_exists(conn, "summary_all_companions"):
+            raise ValueError("summary_all_companions is not available in this database")
+        alias_table_available = _db_table_exists(conn, "mechanics_all_designations")
+        if alias_table_available:
+            conn.execute(text("SET SESSION group_concat_max_len = 65535"))
+            alias_cte = """
+                all_designations AS (
+                    SELECT
+                        mad.moca_oid,
+                        GROUP_CONCAT(DISTINCT mad.designation ORDER BY mad.designation SEPARATOR ' | ') AS designations
+                    FROM mechanics_all_designations mad
+                    GROUP BY mad.moca_oid
+                )
+            """
+            alias_joins = """
+                LEFT JOIN all_designations parent_aliases
+                    ON parent_aliases.moca_oid = sac.moca_oid_parent
+                LEFT JOIN all_designations child_aliases
+                    ON child_aliases.moca_oid = sac.moca_oid_child
+            """
+            parent_alias_expr = "parent_aliases.designations"
+            child_alias_expr = "child_aliases.designations"
+        else:
+            alias_cte = "all_designations AS (SELECT NULL AS moca_oid, NULL AS designations FROM DUAL WHERE 0 = 1)"
+            alias_joins = ""
+            parent_alias_expr = "sac.designation_parent"
+            child_alias_expr = "sac.designation_child"
+        rows = _records(_read_sql(conn, f"""
+            WITH {alias_cte}
+            SELECT
+                sac.moca_cid,
+                sac.designation_parent,
+                sac.designation_child,
+                sac.moca_oid_parent,
+                sac.moca_oid_child,
+                {parent_alias_expr} AS parent_designations,
+                {child_alias_expr} AS child_designations
+            FROM summary_all_companions sac
+            {alias_joins}
+            WHERE {_companion_explorer_not_self_pair_sql("sac")}
+            ORDER BY sac.moca_cid
+            LIMIT {max_rows}
+        """))
+        options = [
+            {
+                **row,
+                "result_kind": "companion",
+                "value": row.get("moca_cid"),
+            }
+            for row in rows
+            if row.get("moca_cid") is not None
+        ]
+        exoplanet_options: list[dict[str, Any]] = []
+        if include_exoplanets and _db_table_exists(conn, "cat_exoplanets_nasa"):
+            exoplanet_limit = _companion_explorer_parse_max_exoplanets(args.get("max_exoplanets") or args.get("exoplanet_limit"))
+            exoplanet_alias_join = ""
+            exoplanet_parent_alias_expr = "cen.hostname"
+            if alias_table_available:
+                exoplanet_alias_join = """
+                    LEFT JOIN all_designations host_aliases
+                        ON host_aliases.moca_oid = cen.moca_oid
+                """
+                exoplanet_parent_alias_expr = "host_aliases.designations"
+            exoplanet_rows = _records(_read_sql(conn, f"""
+                WITH {alias_cte}
+                SELECT
+                    cen.id AS nasa_id,
+                    cen.pl_name,
+                    cen.hostname,
+                    cen.moca_oid AS moca_oid_parent,
+                    cen.discoverymethod,
+                    {exoplanet_parent_alias_expr} AS parent_designations
+                FROM cat_exoplanets_nasa cen
+                {exoplanet_alias_join}
+                WHERE COALESCE(cen.default_flag, 1) = 1
+                    AND COALESCE(cen.pl_controv_flag, 0) = 0
+                    AND cen.pl_name IS NOT NULL
+                ORDER BY cen.hostname, cen.pl_name
+                LIMIT {exoplanet_limit}
+            """))
+            exoplanet_rows = _companion_explorer_filter_hidden_exoplanet_rows(conn, exoplanet_rows, "pl_name")
+            for row in exoplanet_rows:
+                nasa_id = row.get("nasa_id")
+                if nasa_id is None:
+                    continue
+                exoplanet_id = f"nasa:{nasa_id}"
+                host = row.get("hostname") or "host"
+                planet = row.get("pl_name") or "planet"
+                exoplanet_options.append({
+                    "result_kind": "exoplanet",
+                    "value": exoplanet_id,
+                    "exoplanet_id": exoplanet_id,
+                    "nasa_id": nasa_id,
+                    "designation_parent": host,
+                    "designation_child": planet,
+                    "moca_oid_parent": row.get("moca_oid_parent"),
+                    "parent_designations": row.get("parent_designations"),
+                    "child_designations": planet,
+                    "discoverymethod": row.get("discoverymethod"),
+                })
+        options.extend(exoplanet_options)
+    return {
+        "options": options,
+        "meta": {
+            "row_count": len(options),
+            "companion_count": len(rows),
+            "exoplanet_count": len(exoplanet_options),
+            "alias_table_available": alias_table_available,
+            "max_rows": max_rows,
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    }
+
+
+def _search_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    q = str(args.get("q") or args.get("query") or "").strip()
+    selected_cid = _spt_int_value(args.get("cid") or args.get("moca_cid"))
+    if not q and selected_cid is None:
+        return {"options": [], "value": None, "meta": {"row_count": 0}}
+    exoplanet_rows: list[dict[str, Any]] = []
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        alias_table_available = _db_table_exists(conn, "mechanics_all_designations")
+        if alias_table_available:
+            conn.execute(text("SET SESSION group_concat_max_len = 65535"))
+        parent_alias_select = "NULL AS parent_designations"
+        child_alias_select = "NULL AS child_designations"
+        if alias_table_available:
+            parent_alias_select = """
+                (
+                    SELECT GROUP_CONCAT(DISTINCT mad_parent.designation ORDER BY mad_parent.designation SEPARATOR ' | ')
+                    FROM mechanics_all_designations mad_parent
+                    WHERE mad_parent.moca_oid = summary_all_companions.moca_oid_parent
+                ) AS parent_designations
+            """
+            child_alias_select = """
+                (
+                    SELECT GROUP_CONCAT(DISTINCT mad_child.designation ORDER BY mad_child.designation SEPARATOR ' | ')
+                    FROM mechanics_all_designations mad_child
+                    WHERE mad_child.moca_oid = summary_all_companions.moca_oid_child
+                ) AS child_designations
+            """
+        if selected_cid is not None:
+            rows = _records(_read_sql(conn, f"""
+                SELECT
+                    moca_cid,
+                    designation_parent,
+                    designation_child,
+                    moca_oid_parent,
+                    moca_oid_child,
+                    {parent_alias_select},
+                    {child_alias_select},
+                    NULL AS parent_alias_matches,
+                    NULL AS child_alias_matches
+                FROM summary_all_companions
+                WHERE moca_cid = :cid
+                    AND {_companion_explorer_not_self_pair_sql("summary_all_companions")}
+                LIMIT 1
+            """, {"cid": selected_cid}))
+        else:
+            like = f"%{q}%"
+            params = {"q": like}
+            cid_filter = ""
+            if q.isdigit():
+                params["cid"] = int(q)
+                cid_filter = "OR moca_cid = :cid"
+            if alias_table_available:
+                rows = _records(_read_sql(conn, f"""
+                WITH matched_aliases AS (
+                    SELECT
+                        mad.moca_oid,
+                        GROUP_CONCAT(DISTINCT mad.designation ORDER BY mad.designation SEPARATOR ' | ') AS matching_designations
+                    FROM mechanics_all_designations mad
+                    WHERE mad.designation LIKE :q
+                    GROUP BY mad.moca_oid
+                )
+                SELECT
+                    summary_all_companions.moca_cid,
+                    summary_all_companions.designation_parent,
+                    summary_all_companions.designation_child,
+                    summary_all_companions.moca_oid_parent,
+                    summary_all_companions.moca_oid_child,
+                    {parent_alias_select},
+                    {child_alias_select},
+                    parent_match.matching_designations AS parent_alias_matches,
+                    child_match.matching_designations AS child_alias_matches
+                FROM summary_all_companions
+                LEFT JOIN matched_aliases parent_match
+                    ON parent_match.moca_oid = summary_all_companions.moca_oid_parent
+                LEFT JOIN matched_aliases child_match
+                    ON child_match.moca_oid = summary_all_companions.moca_oid_child
+                WHERE {_companion_explorer_not_self_pair_sql("summary_all_companions")}
+                    AND (
+                        designation_parent LIKE :q
+                        OR designation_child LIKE :q
+                        OR parent_match.moca_oid IS NOT NULL
+                        OR child_match.moca_oid IS NOT NULL
+                        {cid_filter}
+                    )
+                ORDER BY moca_cid
+                LIMIT 80
+                """, params))
+            else:
+                rows = _records(_read_sql(conn, f"""
+                    SELECT
+                        moca_cid,
+                        designation_parent,
+                        designation_child,
+                        moca_oid_parent,
+                        moca_oid_child,
+                        NULL AS parent_designations,
+                        NULL AS child_designations,
+                        NULL AS parent_alias_matches,
+                        NULL AS child_alias_matches
+                    FROM summary_all_companions
+                    WHERE {_companion_explorer_not_self_pair_sql("summary_all_companions")}
+                        AND (
+                            designation_parent LIKE :q
+                            OR designation_child LIKE :q
+                            {cid_filter}
+                        )
+                    ORDER BY moca_cid
+                    LIMIT 80
+                """, params))
+            if _db_table_exists(conn, "cat_exoplanets_nasa"):
+                exo_params = {"q": like}
+                exo_id_filter = ""
+                if q.isdigit():
+                    exo_params["nasa_id"] = int(q)
+                    exo_id_filter = "OR cen.id = :nasa_id"
+                exoplanet_rows = _records(_read_sql(conn, f"""
+                    SELECT
+                        cen.id AS nasa_id,
+                        cen.pl_name,
+                        cen.hostname,
+                        cen.moca_oid AS moca_oid_parent,
+                        cen.discoverymethod
+                    FROM cat_exoplanets_nasa cen
+                    WHERE COALESCE(cen.default_flag, 1) = 1
+                        AND COALESCE(cen.pl_controv_flag, 0) = 0
+                        AND cen.pl_name IS NOT NULL
+                        AND (
+                            cen.pl_name LIKE :q
+                            OR cen.hostname LIKE :q
+                            {exo_id_filter}
+                        )
+                    ORDER BY cen.hostname, cen.pl_name
+                    LIMIT 80
+                """, exo_params))
+                exoplanet_rows = _companion_explorer_filter_hidden_exoplanet_rows(conn, exoplanet_rows, "pl_name")
+    options = [
+        {**row, "result_kind": "companion", "value": row.get("moca_cid"), "label": _companion_explorer_search_label(row)}
+        for row in rows
+        if row.get("moca_cid") is not None
+    ]
+    for row in exoplanet_rows:
+        nasa_id = row.get("nasa_id")
+        if nasa_id is None:
+            continue
+        host = row.get("hostname") or "host"
+        planet = row.get("pl_name") or "planet"
+        label = f"exoplanet: {host} -> {planet}"
+        options.append({
+            "result_kind": "exoplanet",
+            "value": f"nasa:{nasa_id}",
+            "label": label,
+            "main_label": label,
+            "detail_label": row.get("discoverymethod") or "NASA Exoplanet Archive",
+            "exoplanet_id": f"nasa:{nasa_id}",
+            "nasa_id": nasa_id,
+            "designation_parent": host,
+            "designation_child": planet,
+            "moca_oid_parent": row.get("moca_oid_parent"),
+            "discoverymethod": row.get("discoverymethod"),
+        })
+    options = options[:80]
+    return {"options": options, "value": selected_cid if selected_cid is not None and options else None, "meta": {"row_count": len(options)}}
+
+
+def _mock_companion_explorer_search(args: dict[str, Any]) -> dict[str, Any]:
+    rows = _mock_companion_explorer_payload(args)["rows"]
+    q = str(args.get("q") or args.get("query") or "").strip().lower()
+    selected_cid = _spt_int_value(args.get("cid") or args.get("moca_cid"))
+    if selected_cid is not None:
+        rows = [row for row in rows if int(row.get("moca_cid") or -1) == int(selected_cid)]
+    elif q:
+        rows = [
+            row for row in rows
+            if q in str(row.get("designation_parent") or "").lower()
+            or q in str(row.get("designation_child") or "").lower()
+            or q in str(row.get("moca_cid") or "")
+        ][:80]
+    else:
+        rows = []
+    options = [{**row, "value": row.get("moca_cid"), "label": _companion_explorer_search_label(row)} for row in rows]
+    return {"options": options, "value": selected_cid if selected_cid is not None and options else None, "meta": {"row_count": len(options)}}
+
+
+def _exoplanet_explorer_axes_payload() -> list[dict[str, Any]]:
+    return [copy.deepcopy(spec) for spec in EXOPLANET_EXPLORER_AXIS_SPECS.values()]
+
+
+def _exoplanet_explorer_parse_limit(raw: Any, default: int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, EXOPLANET_EXPLORER_HARD_MAX_ROWS))
+
+
+def _exoplanet_explorer_axis_key(args: Mapping[str, Any], key: str, default: str) -> str:
+    value = str(args.get(key) or args.get(f"{key}axis") or "").strip()
+    return value if value in EXOPLANET_EXPLORER_AXIS_SPECS else default
+
+
+def _exoplanet_explorer_axis_pair(args: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        _exoplanet_explorer_axis_key(args, "x", "orbital_period_days"),
+        _exoplanet_explorer_axis_key(args, "y", "planet_radius_rjup"),
+    )
+
+
+def _exoplanet_explorer_axis_log(args: Mapping[str, Any], axis: str, key: str) -> bool:
+    raw = args.get(f"{axis}log") if f"{axis}log" in args else args.get(f"{axis}_log")
+    if raw is None:
+        return bool(EXOPLANET_EXPLORER_AXIS_SPECS.get(key, {}).get("defaultLog"))
+    return _as_bool(raw)
+
+
+def _exoplanet_explorer_include_confirmed(args: Mapping[str, Any]) -> bool:
+    return _companion_explorer_layer_flag(args, ("include_confirmed", "show_confirmed", "confirmed", "confirmed_planets"), True)
+
+
+def _exoplanet_explorer_include_tess_candidates(args: Mapping[str, Any]) -> bool:
+    include = _companion_explorer_layer_flag(args, ("include_tess_candidates", "show_tess_candidates", "tess_candidates", "tess"), True)
+    if not include:
+        return False
+    x_key, y_key = _exoplanet_explorer_axis_pair(args)
+    return x_key in EXOPLANET_EXPLORER_TESS_AXIS_KEYS and y_key in EXOPLANET_EXPLORER_TESS_AXIS_KEYS
+
+
+def _exoplanet_explorer_sql_ref(alias: str, columns: set[str], column: str, default: str = "NULL") -> str:
+    if column not in columns:
+        return default
+    if not re.fullmatch(r"[A-Za-z0-9_]+", column):
+        raise ValueError(f"Unsafe column name: {column!r}")
+    return f"{alias}.`{column}`"
+
+
+def _exoplanet_explorer_sql_select(alias: str, columns: set[str], column: str, out_alias: str | None = None) -> str:
+    out_alias = out_alias or column
+    if not re.fullmatch(r"[A-Za-z0-9_]+", out_alias):
+        raise ValueError(f"Unsafe output alias: {out_alias!r}")
+    return f"{_exoplanet_explorer_sql_ref(alias, columns, column)} AS `{out_alias}`"
+
+
+def _exoplanet_explorer_unc_pair(row: Mapping[str, Any], pos_key: str, neg_key: str, factor: float = 1.0) -> tuple[float | None, float | None]:
+    pos = _companion_explorer_abs_float(row.get(pos_key))
+    neg = _companion_explorer_abs_float(row.get(neg_key))
+    return (
+        pos * factor if pos is not None else None,
+        neg * factor if neg is not None else None,
+    )
+
+
+def _exoplanet_explorer_quantity(
+    row: Mapping[str, Any],
+    primary_key: str,
+    primary_pos_key: str | None = None,
+    primary_neg_key: str | None = None,
+    secondary_key: str | None = None,
+    secondary_pos_key: str | None = None,
+    secondary_neg_key: str | None = None,
+    secondary_factor: float = 1.0,
+) -> tuple[float | None, float | None, float | None, str | None]:
+    primary = _companion_explorer_positive_float(row.get(primary_key))
+    if primary is not None:
+        pos, neg = _exoplanet_explorer_unc_pair(row, primary_pos_key or "", primary_neg_key or "")
+        return primary, pos, neg, primary_key
+    if secondary_key:
+        secondary = _companion_explorer_positive_float(row.get(secondary_key))
+        if secondary is not None:
+            pos, neg = _exoplanet_explorer_unc_pair(row, secondary_pos_key or "", secondary_neg_key or "", secondary_factor)
+            return secondary * secondary_factor, pos, neg, secondary_key
+    return None, None, None, None
+
+
+def _exoplanet_explorer_age_from_row(row: Mapping[str, Any], allow_nasa_fallback: bool) -> tuple[float | None, float | None, float | None, float | None, str | None, str | None]:
+    obj_age = _companion_explorer_positive_float(row.get("object_age_myr"))
+    if obj_age is not None:
+        return (
+            obj_age,
+            _companion_explorer_abs_float(row.get("object_age_myr_unc")),
+            _companion_explorer_abs_float(row.get("object_age_myr_unc_pos")),
+            _companion_explorer_abs_float(row.get("object_age_myr_unc_neg")),
+            "object age",
+            row.get("object_age_source_detail"),
+        )
+    banyan_age = _companion_explorer_positive_float(row.get("banyan_age_myr"))
+    if banyan_age is not None:
+        return (
+            banyan_age,
+            _companion_explorer_abs_float(row.get("banyan_age_myr_unc")),
+            _companion_explorer_abs_float(row.get("banyan_age_myr_unc_pos")),
+            _companion_explorer_abs_float(row.get("banyan_age_myr_unc_neg")),
+            "BANYAN Sigma membership age",
+            row.get("banyan_membership_name") or row.get("banyan_membership"),
+        )
+    nasa_age_gyr = _companion_explorer_positive_float(row.get("st_age")) if allow_nasa_fallback else None
+    if nasa_age_gyr is not None:
+        pos, neg = _exoplanet_explorer_unc_pair(row, "st_ageerr1", "st_ageerr2", 1000.0)
+        return nasa_age_gyr * 1000.0, _companion_explorer_symmetric_unc(pos, neg), pos, neg, "NASA st_age", row.get("st_refname")
+    return None, None, None, None, None, None
+
+
+def _exoplanet_explorer_prepare_companion_base(row: dict[str, Any], allow_nasa_age_fallback: bool) -> dict[str, Any]:
+    base = dict(row)
+    host_mass = _companion_explorer_positive_float(row.get("mocadb_host_mass_msun"))
+    host_mass_source = "MOCAdb adopted mass" if host_mass is not None else None
+    host_mass_unc = _companion_explorer_abs_float(row.get("mocadb_host_mass_msun_unc"))
+    host_mass_unc_pos = _companion_explorer_abs_float(row.get("mocadb_host_mass_msun_unc_pos")) or host_mass_unc
+    host_mass_unc_neg = _companion_explorer_abs_float(row.get("mocadb_host_mass_msun_unc_neg")) or host_mass_unc
+    if host_mass is None:
+        host_mass = _companion_explorer_positive_float(row.get("st_mass"))
+        host_mass_source = "NASA st_mass" if host_mass is not None else None
+        host_mass_unc_pos = _companion_explorer_abs_float(row.get("st_masserr1"))
+        host_mass_unc_neg = _companion_explorer_abs_float(row.get("st_masserr2"))
+    distance_pc = _companion_explorer_positive_float(row.get("mocadb_distance_pc"))
+    distance_source = "MOCAdb adopted distance" if distance_pc is not None else None
+    distance_unc = _companion_explorer_abs_float(row.get("mocadb_distance_pc_unc"))
+    distance_unc_pos = _companion_explorer_abs_float(row.get("mocadb_distance_pc_unc_pos")) or distance_unc
+    distance_unc_neg = _companion_explorer_abs_float(row.get("mocadb_distance_pc_unc_neg")) or distance_unc
+    if distance_pc is None:
+        distance_pc = _companion_explorer_positive_float(row.get("nasa_distance_pc"))
+        distance_source = row.get("nasa_distance_source") if distance_pc is not None else None
+        distance_unc_pos = _companion_explorer_abs_float(row.get("nasa_distance_pc_err1"))
+        distance_unc_neg = _companion_explorer_abs_float(row.get("nasa_distance_pc_err2"))
+    age, age_unc, age_unc_pos, age_unc_neg, age_source, age_source_detail = _exoplanet_explorer_age_from_row(row, allow_nasa_age_fallback)
+    spectral_type = row.get("mocadb_spectral_type") or row.get("st_spectype")
+    spectral_type_number = _spt_float(row.get("mocadb_sptn"))
+    if spectral_type_number is None:
+        spectral_type_number = _parse_spt_label(spectral_type)
+    base.update({
+        "moca_oid_parent": row.get("moca_oid_parent") or row.get("moca_oid"),
+        "st_mass": host_mass,
+        "st_masserr1": host_mass_unc_pos,
+        "st_masserr2": -host_mass_unc_neg if host_mass_unc_neg is not None else None,
+        "distance_pc_parent": distance_pc,
+        "distance_pc_parent_unc": _companion_explorer_symmetric_unc(distance_unc_pos, distance_unc_neg),
+        "distance_pc_parent_unc_pos": distance_unc_pos,
+        "distance_pc_parent_unc_neg": distance_unc_neg,
+        "distance_photometric_estimate": row.get("distance_photometric_estimate") or 0,
+        "spectral_type_parent": spectral_type,
+        "parent_sptn": spectral_type_number,
+        "parent_age_myr": age,
+        "parent_age_myr_unc": age_unc,
+        "parent_age_myr_unc_pos": age_unc_pos,
+        "parent_age_myr_unc_neg": age_unc_neg,
+        "parent_age_source": age_source,
+        "parent_age_source_detail": age_source_detail,
+        "parent_age_membership": row.get("banyan_membership"),
+        "parent_age_ya_prob": row.get("banyan_ya_prob"),
+        "host_mass_source": host_mass_source,
+        "host_distance_source": distance_source,
+    })
+    return base
+
+
+def _exoplanet_explorer_copy_common_fields(out: dict[str, Any], row: Mapping[str, Any], base: Mapping[str, Any]) -> None:
+    out["planet_id"] = out.get("exoplanet_id")
+    out["planet_name"] = out.get("designation_child")
+    out["host_name"] = out.get("designation_parent")
+    out["host_report_url"] = out.get("parent_report_url")
+    out["host_spt"] = out.get("spectral_type_parent")
+    out["host_sptn"] = out.get("parent_sptn")
+    out["host_age_myr"] = out.get("parent_age_myr")
+    out["host_age_myr_unc"] = out.get("parent_age_myr_unc")
+    out["host_age_myr_unc_pos"] = out.get("parent_age_myr_unc_pos")
+    out["host_age_myr_unc_neg"] = out.get("parent_age_myr_unc_neg")
+    out["host_age_source"] = out.get("parent_age_source")
+    out["host_age_source_detail"] = out.get("parent_age_source_detail")
+    out["host_distance_pc"] = out.get("distance_pc_parent")
+    out["host_distance_pc_unc"] = out.get("distance_pc_parent_unc")
+    out["host_distance_pc_unc_pos"] = out.get("distance_pc_parent_unc_pos")
+    out["host_distance_pc_unc_neg"] = out.get("distance_pc_parent_unc_neg")
+    out["host_distance_source"] = base.get("host_distance_source")
+    out["host_mass_msun"] = out.get("mass_msun_parent")
+    out["host_mass_msun_unc"] = out.get("mass_msun_unc_parent")
+    out["host_mass_msun_unc_pos"] = out.get("mass_msun_unc_pos_parent")
+    out["host_mass_msun_unc_neg"] = out.get("mass_msun_unc_neg_parent")
+    out["host_mass_source"] = base.get("host_mass_source")
+    out["host_teff_k"] = _pythonize(row.get("st_teff"))
+    out["host_teff_k_unc_pos"] = _pythonize(_companion_explorer_abs_float(row.get("st_tefferr1")))
+    out["host_teff_k_unc_neg"] = _pythonize(_companion_explorer_abs_float(row.get("st_tefferr2")))
+    out["host_teff_k_unc"] = _pythonize(_companion_explorer_symmetric_unc(out.get("host_teff_k_unc_pos"), out.get("host_teff_k_unc_neg")))
+    out["host_radius_rsun"] = _pythonize(row.get("st_rad"))
+    out["host_radius_rsun_unc_pos"] = _pythonize(_companion_explorer_abs_float(row.get("st_raderr1")))
+    out["host_radius_rsun_unc_neg"] = _pythonize(_companion_explorer_abs_float(row.get("st_raderr2")))
+    out["host_radius_rsun_unc"] = _pythonize(_companion_explorer_symmetric_unc(out.get("host_radius_rsun_unc_pos"), out.get("host_radius_rsun_unc_neg")))
+    out["host_logg"] = _pythonize(row.get("st_logg"))
+    out["host_metallicity_dex"] = _pythonize(row.get("st_met"))
+    out["host_tmag"] = _pythonize(row.get("host_tmag"))
+    out["ra_deg"] = _pythonize(row.get("ra"))
+    out["dec_deg"] = _pythonize(row.get("dec"))
+    out["pmra_masyr"] = _pythonize(row.get("pmra"))
+    out["pmdec_masyr"] = _pythonize(row.get("pmdec"))
+    out["orbital_period_days"] = _pythonize(row.get("pl_orbper"))
+    out["orbital_period_days_unc_pos"] = _pythonize(_companion_explorer_abs_float(row.get("pl_orbpererr1")))
+    out["orbital_period_days_unc_neg"] = _pythonize(_companion_explorer_abs_float(row.get("pl_orbpererr2")))
+    out["orbital_period_days_unc"] = _pythonize(_companion_explorer_symmetric_unc(out.get("orbital_period_days_unc_pos"), out.get("orbital_period_days_unc_neg")))
+    out["planet_eq_temp_k"] = _pythonize(row.get("pl_eqt"))
+    out["planet_insolation_earth"] = _pythonize(row.get("pl_insol"))
+    out["transit_depth"] = _pythonize(row.get("pl_trandep"))
+    out["transit_depth_unc_pos"] = _pythonize(_companion_explorer_abs_float(row.get("pl_trandeperr1")))
+    out["transit_depth_unc_neg"] = _pythonize(_companion_explorer_abs_float(row.get("pl_trandeperr2")))
+    out["transit_depth_unc"] = _pythonize(_companion_explorer_symmetric_unc(out.get("transit_depth_unc_pos"), out.get("transit_depth_unc_neg")))
+
+
+def _exoplanet_explorer_add_confirmed_derived(row: dict[str, Any]) -> dict[str, Any]:
+    base = _exoplanet_explorer_prepare_companion_base(row, allow_nasa_age_fallback=True)
+    out = _companion_explorer_add_exoplanet_derived(base)
+    out["row_kind"] = "confirmed_planet"
+    out["dataset"] = "Confirmed planets"
+    out["exoplanet_id"] = f"nasa:{row.get('nasa_id')}"
+    out["nasa_id"] = _pythonize(row.get("nasa_id"))
+    out["rowid"] = _pythonize(row.get("rowid"))
+    _exoplanet_explorer_copy_common_fields(out, row, base)
+    radius_rearth, radius_rearth_pos, radius_rearth_neg, radius_source = _exoplanet_explorer_quantity(
+        row, "pl_rade", "pl_radeerr1", "pl_radeerr2",
+        "pl_radj", "pl_radjerr1", "pl_radjerr2", EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH,
+    )
+    radius_rjup, radius_rjup_pos, radius_rjup_neg, _ = _exoplanet_explorer_quantity(
+        row, "pl_radj", "pl_radjerr1", "pl_radjerr2",
+        "pl_rade", "pl_radeerr1", "pl_radeerr2", 1.0 / EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH,
+    )
+    mass_mearth, mass_mearth_pos, mass_mearth_neg, mass_source = _exoplanet_explorer_quantity(
+        row, "pl_bmasse", "pl_bmasseerr1", "pl_bmasseerr2",
+        "pl_bmassj", "pl_bmassjerr1", "pl_bmassjerr2", EXOPLANET_EXPLORER_JUPITER_MASS_TO_EARTH,
+    )
+    mass_mjup, mass_mjup_pos, mass_mjup_neg, _ = _exoplanet_explorer_quantity(
+        row, "pl_bmassj", "pl_bmassjerr1", "pl_bmassjerr2",
+        "pl_bmasse", "pl_bmasseerr1", "pl_bmasseerr2", 1.0 / EXOPLANET_EXPLORER_JUPITER_MASS_TO_EARTH,
+    )
+    out.update({
+        "planet_radius_rearth": _pythonize(radius_rearth),
+        "planet_radius_rearth_unc": _pythonize(_companion_explorer_symmetric_unc(radius_rearth_pos, radius_rearth_neg)),
+        "planet_radius_rearth_unc_pos": _pythonize(radius_rearth_pos),
+        "planet_radius_rearth_unc_neg": _pythonize(radius_rearth_neg),
+        "planet_radius_rjup": _pythonize(radius_rjup),
+        "planet_radius_rjup_unc": _pythonize(_companion_explorer_symmetric_unc(radius_rjup_pos, radius_rjup_neg)),
+        "planet_radius_rjup_unc_pos": _pythonize(radius_rjup_pos),
+        "planet_radius_rjup_unc_neg": _pythonize(radius_rjup_neg),
+        "planet_radius_source": radius_source,
+        "planet_mass_mearth": _pythonize(mass_mearth),
+        "planet_mass_mearth_unc": _pythonize(_companion_explorer_symmetric_unc(mass_mearth_pos, mass_mearth_neg)),
+        "planet_mass_mearth_unc_pos": _pythonize(mass_mearth_pos),
+        "planet_mass_mearth_unc_neg": _pythonize(mass_mearth_neg),
+        "planet_mass_mjup": _pythonize(mass_mjup),
+        "planet_mass_mjup_unc": _pythonize(_companion_explorer_symmetric_unc(mass_mjup_pos, mass_mjup_neg)),
+        "planet_mass_mjup_unc_pos": _pythonize(mass_mjup_pos),
+        "planet_mass_mjup_unc_neg": _pythonize(mass_mjup_neg),
+        "planet_mass_source": mass_source or row.get("pl_bmassprov"),
+        "planet_density_gcm3": _pythonize(row.get("pl_dens")),
+        "planet_eccentricity": _pythonize(row.get("pl_orbeccen")),
+        "planet_inclination_deg": _pythonize(row.get("pl_orbincl")),
+        "planet_star_radius_ratio": _pythonize(row.get("pl_ratror")),
+        "rv_semiamplitude_ms": _pythonize(row.get("pl_rvamp")),
+        "transit_duration_hours": _pythonize(row.get("pl_trandur")),
+        "discovery_year": _pythonize(row.get("disc_year")),
+        "disc_facility": _pythonize(row.get("disc_facility")),
+        "disc_refname": _pythonize(row.get("disc_refname")),
+        "pl_bmassprov": _pythonize(row.get("pl_bmassprov")),
+        "pl_orbsmax": _pythonize(row.get("pl_orbsmax")),
+        "pl_rade": _pythonize(row.get("pl_rade")),
+        "pl_radj": _pythonize(row.get("pl_radj")),
+        "pl_dens": _pythonize(row.get("pl_dens")),
+        "pl_orbeccen": _pythonize(row.get("pl_orbeccen")),
+        "pl_insol": _pythonize(row.get("pl_insol")),
+        "pl_eqt": _pythonize(row.get("pl_eqt")),
+        "st_age_gyr": _pythonize(row.get("st_age")),
+    })
+    return out
+
+
+def _exoplanet_explorer_add_tess_derived(row: dict[str, Any]) -> dict[str, Any]:
+    base = _exoplanet_explorer_prepare_companion_base(row, allow_nasa_age_fallback=False)
+    base["mass_msun_parent"] = base.get("st_mass")
+    base["mass_msun_unc_parent"] = _companion_explorer_symmetric_unc(
+        _companion_explorer_abs_float(base.get("st_masserr1")),
+        _companion_explorer_abs_float(base.get("st_masserr2")),
+    )
+    base["mass_msun_unc_pos_parent"] = _companion_explorer_abs_float(base.get("st_masserr1"))
+    base["mass_msun_unc_neg_parent"] = _companion_explorer_abs_float(base.get("st_masserr2"))
+    out = _companion_explorer_add_tess_candidate_derived(base)
+    out["row_kind"] = "tess_candidate"
+    out["dataset"] = "TESS candidates"
+    out["exoplanet_id"] = f"tess:{row.get('tess_candidate_id')}"
+    out["planet_id"] = out["exoplanet_id"]
+    _exoplanet_explorer_copy_common_fields(out, row, base)
+    radius_rearth, radius_rearth_pos, radius_rearth_neg, radius_source = _exoplanet_explorer_quantity(
+        row, "pl_rade", "pl_radeerr1", "pl_radeerr2",
+    )
+    radius_rjup = radius_rearth / EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH if radius_rearth is not None else None
+    radius_rjup_pos = radius_rearth_pos / EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH if radius_rearth_pos is not None else None
+    radius_rjup_neg = radius_rearth_neg / EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH if radius_rearth_neg is not None else None
+    out.update({
+        "planet_name": out.get("designation_child"),
+        "host_name": out.get("designation_parent"),
+        "planet_radius_rearth": _pythonize(radius_rearth),
+        "planet_radius_rearth_unc": _pythonize(_companion_explorer_symmetric_unc(radius_rearth_pos, radius_rearth_neg)),
+        "planet_radius_rearth_unc_pos": _pythonize(radius_rearth_pos),
+        "planet_radius_rearth_unc_neg": _pythonize(radius_rearth_neg),
+        "planet_radius_rjup": _pythonize(radius_rjup),
+        "planet_radius_rjup_unc": _pythonize(_companion_explorer_symmetric_unc(radius_rjup_pos, radius_rjup_neg)),
+        "planet_radius_rjup_unc_pos": _pythonize(radius_rjup_pos),
+        "planet_radius_rjup_unc_neg": _pythonize(radius_rjup_neg),
+        "planet_radius_source": radius_source,
+        "planet_mass_mearth": None,
+        "planet_mass_mjup": None,
+        "planet_mass_source": None,
+        "planet_density_gcm3": None,
+        "planet_eccentricity": None,
+        "planet_inclination_deg": None,
+        "planet_star_radius_ratio": None,
+        "rv_semiamplitude_ms": None,
+        "transit_duration_hours": _pythonize(row.get("pl_trandurh")),
+        "transit_duration_hours_unc_pos": _pythonize(_companion_explorer_abs_float(row.get("pl_trandurherr1"))),
+        "transit_duration_hours_unc_neg": _pythonize(_companion_explorer_abs_float(row.get("pl_trandurherr2"))),
+        "transit_duration_hours_unc": _pythonize(_companion_explorer_symmetric_unc(_companion_explorer_abs_float(row.get("pl_trandurherr1")), _companion_explorer_abs_float(row.get("pl_trandurherr2")))),
+        "tess_candidate_id": _pythonize(row.get("tess_candidate_id")),
+        "tess_rowid": _pythonize(row.get("rowid")),
+        "toi": _pythonize(row.get("toi")),
+        "ctoi_alias": _pythonize(row.get("ctoi_alias")),
+        "tid": _pythonize(row.get("tid")),
+        "tfopwg_disp": _pythonize(row.get("tfopwg_disp")),
+        "toi_created": _pythonize(row.get("toi_created")),
+        "rowupdate": _pythonize(row.get("rowupdate")),
+    })
+    return out
+
+
+def _exoplanet_explorer_range_value(args: Mapping[str, Any], key: str) -> float | None:
+    raw = args.get(key)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _exoplanet_explorer_row_matches_ranges(row: Mapping[str, Any], args: Mapping[str, Any]) -> bool:
+    for spec in EXOPLANET_EXPLORER_RANGE_FILTERS:
+        key = str(spec["key"])
+        lo = _exoplanet_explorer_range_value(args, str(spec["min"]))
+        hi = _exoplanet_explorer_range_value(args, str(spec["max"]))
+        ignore_null = _as_bool(args.get(f"ignore_null_{key}") or args.get(f"ignore_missing_{key}"))
+        if lo is None and hi is None and not ignore_null:
+            continue
+        value = _spt_float(row.get(key))
+        if value is None:
+            return not ignore_null
+        if lo is not None and value < lo:
+            return False
+        if hi is not None and value > hi:
+            return False
+    return True
+
+
+def _exoplanet_explorer_row_matches_spt(row: Mapping[str, Any], args: Mapping[str, Any]) -> bool:
+    spt_window = _companion_explorer_spt_window(args)
+    if not spt_window:
+        return True
+    lo, hi = spt_window
+    value = _spt_float(row.get("host_sptn"))
+    return value is not None and lo <= value <= hi
+
+
+def _exoplanet_explorer_row_matches_requested_axes(row: Mapping[str, Any], args: Mapping[str, Any]) -> bool:
+    x_key, y_key = _exoplanet_explorer_axis_pair(args)
+    for axis, key in (("x", x_key), ("y", y_key)):
+        value = _spt_float(row.get(key))
+        if value is None:
+            return False
+        spec = EXOPLANET_EXPLORER_AXIS_SPECS.get(key, {})
+        if _exoplanet_explorer_axis_log(args, axis, key) and not spec.get("spectralTypeAxis") and value <= 0:
+            return False
+    return True
+
+
+def _exoplanet_explorer_row_matches_filters(row: Mapping[str, Any], args: Mapping[str, Any]) -> bool:
+    if not _exoplanet_explorer_row_matches_spt(row, args):
+        return False
+    if not _exoplanet_explorer_row_matches_ranges(row, args):
+        return False
+    return _exoplanet_explorer_row_matches_requested_axes(row, args)
+
+
+def _load_exoplanet_explorer_confirmed_from_db(
+    conn,
+    args: dict[str, Any],
+    common_ctes: str,
+    common_params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not _db_table_exists(conn, "cat_exoplanets_nasa"):
+        return []
+    columns = _db_table_columns(conn, "cat_exoplanets_nasa")
+    max_rows = _exoplanet_explorer_parse_limit(
+        args.get("max_confirmed") or args.get("max_exoplanets") or args.get("confirmed_limit"),
+        EXOPLANET_EXPLORER_DEFAULT_MAX_CONFIRMED,
+    )
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    photometric_distance_filter = "" if include_photometric_distances else "AND (parent_dist.moca_oid IS NULL OR COALESCE(parent_dist.photometric_estimate, 0) = 0)"
+    select_columns = [
+        _exoplanet_explorer_sql_select("cen", columns, "id", "nasa_id"),
+        _exoplanet_explorer_sql_select("cen", columns, "rowid"),
+        _exoplanet_explorer_sql_select("cen", columns, "moca_oid", "moca_oid_parent"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_name"),
+        _exoplanet_explorer_sql_select("cen", columns, "hostname"),
+        _exoplanet_explorer_sql_select("cen", columns, "discoverymethod"),
+        _exoplanet_explorer_sql_select("cen", columns, "disc_year"),
+        _exoplanet_explorer_sql_select("cen", columns, "disc_facility"),
+        _exoplanet_explorer_sql_select("cen", columns, "disc_refname"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_spectype"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_mass"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_masserr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_masserr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_teff"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_tefferr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_tefferr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_rad"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_raderr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_raderr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_met"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_logg"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_age"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_ageerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_ageerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "st_refname"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbper"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbpererr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbpererr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbsmax"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbsmaxerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbsmaxerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_rade"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_radeerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_radeerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_radj"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_radjerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_radjerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmasse"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmasseerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmasseerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmassj"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmassjerr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmassjerr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_bmassprov"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_dens"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbeccen"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_insol"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_eqt"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_orbincl"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_trandep"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_trandeperr1"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_trandeperr2"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_trandur"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_ratror"),
+        _exoplanet_explorer_sql_select("cen", columns, "pl_rvamp"),
+        _exoplanet_explorer_sql_select("cen", columns, "ra"),
+        _exoplanet_explorer_sql_select("cen", columns, "dec"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_pmra", "pmra"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_pmdec", "pmdec"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_tmag", "host_tmag"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_dist", "nasa_distance_pc"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_disterr1", "nasa_distance_pc_err1"),
+        _exoplanet_explorer_sql_select("cen", columns, "sy_disterr2", "nasa_distance_pc_err2"),
+        "'NASA sy_dist' AS nasa_distance_source",
+        "parent_mass.mass_msun AS mocadb_host_mass_msun",
+        "parent_mass.mass_msun_unc AS mocadb_host_mass_msun_unc",
+        "parent_mass.mass_msun_unc_pos AS mocadb_host_mass_msun_unc_pos",
+        "parent_mass.mass_msun_unc_neg AS mocadb_host_mass_msun_unc_neg",
+        "parent_dist.distance_pc AS mocadb_distance_pc",
+        "parent_dist.distance_pc_unc AS mocadb_distance_pc_unc",
+        "parent_dist.distance_pc_unc_pos AS mocadb_distance_pc_unc_pos",
+        "parent_dist.distance_pc_unc_neg AS mocadb_distance_pc_unc_neg",
+        "COALESCE(parent_dist.photometric_estimate, 0) AS distance_photometric_estimate",
+        "parent_spt.spectral_type AS mocadb_spectral_type",
+        "parent_spt.spectral_type_number AS mocadb_sptn",
+        "obj_age.age_myr AS object_age_myr",
+        "obj_age.age_myr_unc AS object_age_myr_unc",
+        "obj_age.age_myr_unc_pos AS object_age_myr_unc_pos",
+        "obj_age.age_myr_unc_neg AS object_age_myr_unc_neg",
+        "obj_age.age_source_detail AS object_age_source_detail",
+        "banyan_age.age_myr AS banyan_age_myr",
+        "banyan_age.age_myr_unc AS banyan_age_myr_unc",
+        "banyan_age.age_myr_unc_pos AS banyan_age_myr_unc_pos",
+        "banyan_age.age_myr_unc_neg AS banyan_age_myr_unc_neg",
+        "banyan_age.membership AS banyan_membership",
+        "banyan_age.membership_name AS banyan_membership_name",
+        "banyan_age.ya_prob AS banyan_ya_prob",
+    ]
+    rows = _records(_read_sql(conn, f"""
+        WITH {common_ctes}
+        SELECT
+            {", ".join(select_columns)}
+        FROM cat_exoplanets_nasa cen
+        LEFT JOIN selected_masses parent_mass
+            ON parent_mass.moca_oid = cen.moca_oid
+        LEFT JOIN selected_distances parent_dist
+            ON parent_dist.moca_oid = cen.moca_oid
+        LEFT JOIN selected_spectral_types parent_spt
+            ON parent_spt.moca_oid = cen.moca_oid
+        LEFT JOIN object_age obj_age
+            ON obj_age.moca_oid = cen.moca_oid
+        LEFT JOIN banyan_membership_age banyan_age
+            ON banyan_age.moca_oid = cen.moca_oid
+        WHERE COALESCE(cen.default_flag, 1) = 1
+            AND COALESCE(cen.pl_controv_flag, 0) = 0
+            AND cen.pl_name IS NOT NULL
+            AND cen.moca_oid IS NOT NULL
+            {photometric_distance_filter}
+        ORDER BY cen.discoverymethod, cen.pl_name
+        LIMIT {max_rows}
+    """, dict(common_params)))
+    return [_exoplanet_explorer_add_confirmed_derived(row) for row in rows]
+
+
+def _load_exoplanet_explorer_tess_from_db(
+    conn,
+    args: dict[str, Any],
+    common_ctes: str,
+    common_params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    tess_table = _companion_explorer_tess_candidate_table(conn)
+    if not tess_table:
+        return []
+    columns = _db_table_columns(conn, tess_table)
+    max_rows = _exoplanet_explorer_parse_limit(
+        args.get("max_tess_candidates") or args.get("max_tess") or args.get("tess_candidate_limit"),
+        EXOPLANET_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES,
+    )
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    photometric_distance_filter = "" if include_photometric_distances else "AND (parent_dist.moca_oid IS NULL OR COALESCE(parent_dist.photometric_estimate, 0) = 0)"
+    select_columns = [
+        _exoplanet_explorer_sql_select("tess", columns, "id", "tess_candidate_id"),
+        _exoplanet_explorer_sql_select("tess", columns, "rowid"),
+        _exoplanet_explorer_sql_select("tess", columns, "moca_oid", "moca_oid_parent"),
+        _exoplanet_explorer_sql_select("tess", columns, "toi"),
+        _exoplanet_explorer_sql_select("tess", columns, "ctoi_alias"),
+        _exoplanet_explorer_sql_select("tess", columns, "tid"),
+        _exoplanet_explorer_sql_select("tess", columns, "tfopwg_disp"),
+        _exoplanet_explorer_sql_select("tess", columns, "object_designation"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_orbper"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_orbpererr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_orbpererr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_tranmid"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandurh"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandurherr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandurherr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandep"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandeperr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_trandeperr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_rade"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_radeerr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_radeerr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_insol"),
+        _exoplanet_explorer_sql_select("tess", columns, "pl_eqt"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_tmag", "host_tmag"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_dist", "nasa_distance_pc"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_disterr1", "nasa_distance_pc_err1"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_disterr2", "nasa_distance_pc_err2"),
+        "'TESS st_dist' AS nasa_distance_source",
+        _exoplanet_explorer_sql_select("tess", columns, "st_teff"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_tefferr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_tefferr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_logg"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_rad"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_raderr1"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_raderr2"),
+        _exoplanet_explorer_sql_select("tess", columns, "ra"),
+        _exoplanet_explorer_sql_select("tess", columns, "dec"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_pmra", "pmra"),
+        _exoplanet_explorer_sql_select("tess", columns, "st_pmdec", "pmdec"),
+        _exoplanet_explorer_sql_select("tess", columns, "toi_created"),
+        _exoplanet_explorer_sql_select("tess", columns, "rowupdate"),
+        "parent_mass.mass_msun AS mocadb_host_mass_msun",
+        "parent_mass.mass_msun_unc AS mocadb_host_mass_msun_unc",
+        "parent_mass.mass_msun_unc_pos AS mocadb_host_mass_msun_unc_pos",
+        "parent_mass.mass_msun_unc_neg AS mocadb_host_mass_msun_unc_neg",
+        "parent_dist.distance_pc AS mocadb_distance_pc",
+        "parent_dist.distance_pc_unc AS mocadb_distance_pc_unc",
+        "parent_dist.distance_pc_unc_pos AS mocadb_distance_pc_unc_pos",
+        "parent_dist.distance_pc_unc_neg AS mocadb_distance_pc_unc_neg",
+        "COALESCE(parent_dist.photometric_estimate, 0) AS distance_photometric_estimate",
+        "parent_spt.spectral_type AS mocadb_spectral_type",
+        "parent_spt.spectral_type_number AS mocadb_sptn",
+        "obj_age.age_myr AS object_age_myr",
+        "obj_age.age_myr_unc AS object_age_myr_unc",
+        "obj_age.age_myr_unc_pos AS object_age_myr_unc_pos",
+        "obj_age.age_myr_unc_neg AS object_age_myr_unc_neg",
+        "obj_age.age_source_detail AS object_age_source_detail",
+        "banyan_age.age_myr AS banyan_age_myr",
+        "banyan_age.age_myr_unc AS banyan_age_myr_unc",
+        "banyan_age.age_myr_unc_pos AS banyan_age_myr_unc_pos",
+        "banyan_age.age_myr_unc_neg AS banyan_age_myr_unc_neg",
+        "banyan_age.membership AS banyan_membership",
+        "banyan_age.membership_name AS banyan_membership_name",
+        "banyan_age.ya_prob AS banyan_ya_prob",
+    ]
+    rows = _records(_read_sql(conn, f"""
+        WITH {common_ctes}
+        SELECT
+            {", ".join(select_columns)}
+        FROM {tess_table} tess
+        LEFT JOIN selected_masses parent_mass
+            ON parent_mass.moca_oid = tess.moca_oid
+        LEFT JOIN selected_distances parent_dist
+            ON parent_dist.moca_oid = tess.moca_oid
+        LEFT JOIN selected_spectral_types parent_spt
+            ON parent_spt.moca_oid = tess.moca_oid
+        LEFT JOIN object_age obj_age
+            ON obj_age.moca_oid = tess.moca_oid
+        LEFT JOIN banyan_membership_age banyan_age
+            ON banyan_age.moca_oid = tess.moca_oid
+        WHERE tess.moca_oid IS NOT NULL
+            {photometric_distance_filter}
+        ORDER BY tess.toi, tess.id
+        LIMIT {max_rows}
+    """, dict(common_params)))
+    return [_exoplanet_explorer_add_tess_derived(row) for row in rows]
+
+
+def _load_exoplanet_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    started = time.time()
+    include_confirmed = _exoplanet_explorer_include_confirmed(args)
+    include_tess = _exoplanet_explorer_include_tess_candidates(args)
+    include_photometric_distances = _companion_explorer_use_photometric_distances(args)
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        common_ctes, common_params = _companion_explorer_common_ctes(conn, args)
+        confirmed = _load_exoplanet_explorer_confirmed_from_db(conn, args, common_ctes, common_params) if include_confirmed else []
+        tess = _load_exoplanet_explorer_tess_from_db(conn, args, common_ctes, common_params) if include_tess else []
+    confirmed = [row for row in confirmed if _exoplanet_explorer_row_matches_filters(row, args)]
+    tess = [row for row in tess if _exoplanet_explorer_row_matches_filters(row, args)]
+    rows = [*confirmed, *tess]
+    return {
+        "axes": _exoplanet_explorer_axes_payload(),
+        "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+        "rows": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "row_count": len(rows),
+            "confirmed_count": len(confirmed),
+            "tess_candidate_count": len(tess),
+            "age_count": sum(1 for row in rows if _spt_float(row.get("host_age_myr")) is not None),
+            "use_photometric_distances": include_photometric_distances,
+            "include_confirmed": include_confirmed,
+            "include_tess_candidates": include_tess,
+            "query_seconds": round(time.time() - started, 3),
+        },
+        "cache": {"hit": False, "ttl_seconds": 0},
+    }
+
+
+def _mock_exoplanet_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
+    rng = np.random.default_rng(20260627)
+    methods = ["Transit", "Radial Velocity", "Imaging", "Microlensing", "Transit Timing Variations"]
+    host_types = ["F8 V", "G2 V", "K4 V", "M1 V", "M5 V", "L0"]
+    confirmed: list[dict[str, Any]] = []
+    tess: list[dict[str, Any]] = []
+    for index in range(180):
+        method = methods[index % len(methods)]
+        period_days = float(10 ** rng.uniform(-0.25, 3.1))
+        host_mass = float(10 ** rng.uniform(-0.45, 0.25))
+        radius_rearth = float(10 ** rng.uniform(-0.25, 1.35))
+        mass_earth = float(10 ** rng.uniform(0.1, 3.8)) if index % 5 else None
+        st_age = float(10 ** rng.uniform(-2.2, 0.7)) if index % 4 == 0 else None
+        confirmed.append(_exoplanet_explorer_add_confirmed_derived({
+            "nasa_id": 900000 + index,
+            "rowid": 900000 + index,
+            "pl_name": f"Mock Planet {index:03d} b",
+            "hostname": f"Mock Host {index:03d}",
+            "moca_oid_parent": 990000 + index,
+            "discoverymethod": method,
+            "disc_year": int(1995 + index % 31),
+            "disc_facility": "Mock Archive",
+            "st_spectype": host_types[index % len(host_types)],
+            "st_mass": host_mass,
+            "st_masserr1": host_mass * 0.08,
+            "st_masserr2": -host_mass * 0.07,
+            "st_teff": float(rng.uniform(2600, 6500)),
+            "st_rad": float(10 ** rng.uniform(-0.45, 0.2)),
+            "st_logg": float(rng.uniform(3.9, 5.3)),
+            "st_met": float(rng.normal(0, 0.18)),
+            "st_age": st_age,
+            "st_ageerr1": st_age * 0.25 if st_age else None,
+            "st_ageerr2": -st_age * 0.20 if st_age else None,
+            "pl_orbper": period_days,
+            "pl_orbpererr1": period_days * 0.02,
+            "pl_orbpererr2": -period_days * 0.015,
+            "pl_orbsmax": None if index % 6 == 0 else float((period_days / 365.25) ** (2.0 / 3.0) * host_mass ** (1.0 / 3.0)),
+            "pl_rade": radius_rearth,
+            "pl_radeerr1": radius_rearth * 0.10,
+            "pl_radeerr2": -radius_rearth * 0.08,
+            "pl_radj": radius_rearth / EXOPLANET_EXPLORER_JUPITER_RADIUS_TO_EARTH,
+            "pl_bmasse": mass_earth,
+            "pl_bmasseerr1": mass_earth * 0.20 if mass_earth else None,
+            "pl_bmasseerr2": -mass_earth * 0.18 if mass_earth else None,
+            "pl_dens": float(10 ** rng.uniform(-0.4, 1.0)),
+            "pl_orbeccen": float(rng.uniform(0, 0.6)),
+            "pl_insol": float(10 ** rng.uniform(-1.5, 3.5)),
+            "pl_eqt": float(rng.uniform(180, 1800)),
+            "pl_orbincl": float(rng.uniform(80, 90)),
+            "pl_trandep": float(10 ** rng.uniform(-4.0, -1.0)),
+            "pl_trandur": float(10 ** rng.uniform(-0.2, 1.2)),
+            "pl_ratror": float(10 ** rng.uniform(-2.0, -0.5)),
+            "pl_rvamp": float(10 ** rng.uniform(-1.0, 2.0)),
+            "mocadb_distance_pc": float(rng.uniform(5, 350)) if index % 7 else None,
+            "nasa_distance_pc": float(rng.uniform(8, 450)),
+            "nasa_distance_source": "NASA sy_dist",
+            "mocadb_spectral_type": host_types[index % len(host_types)] if index % 3 else None,
+            "mocadb_sptn": _parse_spt_label(host_types[index % len(host_types)]) if index % 3 else None,
+            "object_age_myr": float(10 ** rng.uniform(1.0, 3.4)) if index % 6 == 1 else None,
+            "banyan_age_myr": float(10 ** rng.uniform(1.1, 2.9)) if index % 6 == 2 else None,
+            "ra": float(rng.uniform(0, 360)),
+            "dec": float(rng.uniform(-70, 70)),
+            "pmra": float(rng.normal(0, 80)),
+            "pmdec": float(rng.normal(0, 80)),
+            "host_tmag": float(rng.uniform(6, 16)),
+        }))
+    for index in range(120):
+        period_days = float(10 ** rng.uniform(-0.25, 2.4))
+        radius_rearth = float(10 ** rng.uniform(-0.2, 1.15))
+        tess.append(_exoplanet_explorer_add_tess_derived({
+            "tess_candidate_id": 970000 + index,
+            "rowid": 970000 + index,
+            "toi": float(1000 + index + ((index % 5) + 1) / 100.0),
+            "ctoi_alias": None,
+            "tid": 600000000 + index,
+            "tfopwg_disp": ["PC", "CP", "KP", "FP"][(index // 12) % 4],
+            "object_designation": f"Mock TIC Host {index:03d}",
+            "moca_oid_parent": 980000 + index,
+            "mocadb_host_mass_msun": float(10 ** rng.uniform(-0.5, 0.15)),
+            "mocadb_host_mass_msun_unc": 0.05,
+            "pl_orbper": period_days,
+            "pl_orbpererr1": period_days * 0.03,
+            "pl_orbpererr2": -period_days * 0.025,
+            "pl_trandurh": float(10 ** rng.uniform(-0.2, 1.15)),
+            "pl_trandurherr1": 0.1,
+            "pl_trandurherr2": -0.1,
+            "pl_trandep": float(10 ** rng.uniform(-4.2, -1.4)),
+            "pl_rade": radius_rearth,
+            "pl_radeerr1": radius_rearth * 0.12,
+            "pl_radeerr2": -radius_rearth * 0.10,
+            "pl_insol": float(10 ** rng.uniform(-1.3, 3.2)),
+            "pl_eqt": float(rng.uniform(180, 1600)),
+            "host_tmag": float(rng.uniform(7, 16)),
+            "nasa_distance_pc": float(rng.uniform(15, 400)),
+            "nasa_distance_source": "TESS st_dist",
+            "st_teff": float(rng.uniform(2600, 6500)),
+            "st_logg": float(rng.uniform(4.0, 5.4)),
+            "st_rad": float(10 ** rng.uniform(-0.5, 0.2)),
+            "mocadb_spectral_type": host_types[index % len(host_types)],
+            "mocadb_sptn": _parse_spt_label(host_types[index % len(host_types)]),
+            "object_age_myr": float(10 ** rng.uniform(1.2, 3.2)) if index % 4 else None,
+            "banyan_age_myr": float(10 ** rng.uniform(1.0, 2.9)) if index % 5 == 1 else None,
+            "ra": float(rng.uniform(0, 360)),
+            "dec": float(rng.uniform(-70, 70)),
+            "pmra": float(rng.normal(0, 80)),
+            "pmdec": float(rng.normal(0, 80)),
+        }))
+    if not _exoplanet_explorer_include_confirmed(args):
+        confirmed = []
+    if not _exoplanet_explorer_include_tess_candidates(args):
+        tess = []
+    confirmed = [row for row in confirmed if _exoplanet_explorer_row_matches_filters(row, args)]
+    tess = [row for row in tess if _exoplanet_explorer_row_matches_filters(row, args)]
+    rows = [*confirmed, *tess]
+    return {
+        "axes": _exoplanet_explorer_axes_payload(),
+        "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+        "rows": rows,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": False,
+            "row_count": len(rows),
+            "confirmed_count": len(confirmed),
+            "tess_candidate_count": len(tess),
+            "age_count": sum(1 for row in rows if row.get("host_age_myr") is not None),
+            "use_photometric_distances": _companion_explorer_use_photometric_distances(args),
+            "include_confirmed": _exoplanet_explorer_include_confirmed(args),
+            "include_tess_candidates": _exoplanet_explorer_include_tess_candidates(args),
+            "query_seconds": 0,
+            "mock": True,
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -24086,6 +27281,26 @@ def bd_evolution_page():
     return send_from_directory(STATIC_DIR, "bd_evolution.html")
 
 
+@app.get("/companion-explorer")
+@app.get("/companion_explorer")
+@app.get("/companions")
+@app.get("/js/companion-explorer")
+@app.get("/js/companion_explorer")
+@app.get("/js/companions")
+def companion_explorer_page():
+    return send_from_directory(STATIC_DIR, "companion_explorer.html")
+
+
+@app.get("/exoplanets-explorer")
+@app.get("/exoplanets_explorer")
+@app.get("/exoplanets")
+@app.get("/js/exoplanets-explorer")
+@app.get("/js/exoplanets_explorer")
+@app.get("/js/exoplanets")
+def exoplanets_explorer_page():
+    return send_from_directory(STATIC_DIR, "exoplanets_explorer.html")
+
+
 @app.get("/banyan-sigma")
 @app.get("/banyan_sigma")
 @app.get("/banyansigma")
@@ -25605,6 +28820,181 @@ def bd_evolution_object_search():
             "options": [],
             "meta": {"row_count": 0},
         }), 500
+
+
+@app.get("/api/companion-explorer/data")
+@app.get("/api/companion_explorer/data")
+@app.get("/api/companions/data")
+@app.get("/js/api/companion-explorer/data")
+@app.get("/js/api/companion_explorer/data")
+@app.get("/js/api/companions/data")
+def companion_explorer_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean_cached({"ok": True, "source": "mock", **_mock_companion_explorer_payload(args)}, COMPANION_EXPLORER_CACHE_SECONDS)
+        payload = _load_companion_explorer_from_db(args)
+        return _jsonify_clean_cached({"ok": True, "source": "MOCAdb", **payload}, COMPANION_EXPLORER_CACHE_SECONDS)
+    except Exception as exc:
+        return _jsonify_clean_cached({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "axes": _companion_explorer_axes_payload(),
+            "default": {"x": "sep_au", "y": "mass_ratio_q", "xLog": True, "yLog": True},
+            "rows": [],
+            "exoplanets": [],
+            "tess_candidates": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "exoplanet_count": 0,
+                "tess_candidate_count": 0,
+                "max_rows": _companion_explorer_parse_max_rows(args.get("max_rows") or args.get("limit")),
+                "truncated": False,
+                "use_photometric_distances": _companion_explorer_use_photometric_distances(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 0, status=500)
+
+
+@app.post("/api/companion-explorer/cache/clear")
+@app.post("/api/companion_explorer/cache/clear")
+@app.post("/api/companions/cache/clear")
+@app.post("/js/api/companion-explorer/cache/clear")
+@app.post("/js/api/companion_explorer/cache/clear")
+@app.post("/js/api/companions/cache/clear")
+def companion_explorer_clear_cache():
+    table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
+    column_metadata_count = len(_DB_COLUMNS_CACHE)
+    _DB_TABLE_EXISTS_CACHE.clear()
+    _DB_COLUMNS_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {
+            "companionExplorer": 0,
+            "dbTableMetadata": table_metadata_count,
+            "dbColumnMetadata": column_metadata_count,
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    })
+
+
+@app.get("/api/companion-explorer/designations")
+@app.get("/api/companion_explorer/designations")
+@app.get("/api/companions/designations")
+@app.get("/js/api/companion-explorer/designations")
+@app.get("/js/api/companion_explorer/designations")
+@app.get("/js/api/companions/designations")
+def companion_explorer_designations():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            rows = _mock_companion_explorer_payload(args)["rows"]
+            options = [
+                {**row, "result_kind": "companion", "value": row.get("moca_cid")}
+                for row in rows
+                if row.get("moca_cid") is not None
+            ]
+            return _jsonify_clean_cached({
+                "ok": True,
+                "source": "mock",
+                "options": options,
+                "meta": {"row_count": len(options), "mock": True},
+            }, COMPANION_EXPLORER_CACHE_SECONDS)
+        payload = _load_companion_explorer_designation_index_from_db(args)
+        return _jsonify_clean_cached({"ok": True, "source": "MOCAdb", **payload}, COMPANION_EXPLORER_CACHE_SECONDS)
+    except Exception as exc:
+        return _jsonify_clean_cached({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "meta": {"row_count": 0},
+        }, 0, status=500)
+
+
+@app.get("/api/companion-explorer/search")
+@app.get("/api/companion_explorer/search")
+@app.get("/api/companions/search")
+@app.get("/js/api/companion-explorer/search")
+@app.get("/js/api/companion_explorer/search")
+@app.get("/js/api/companions/search")
+def companion_explorer_search():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            payload = _mock_companion_explorer_search(args)
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _search_companion_explorer_from_db(args)
+        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "options": [],
+            "value": None,
+            "meta": {"row_count": 0},
+        }), 500
+
+
+@app.get("/api/exoplanets-explorer/data")
+@app.get("/api/exoplanets_explorer/data")
+@app.get("/api/exoplanets/data")
+@app.get("/js/api/exoplanets-explorer/data")
+@app.get("/js/api/exoplanets_explorer/data")
+@app.get("/js/api/exoplanets/data")
+def exoplanets_explorer_data():
+    args = dict(request.args)
+    try:
+        if args.get("mock") in {"1", "true", "yes"}:
+            return _jsonify_clean_cached({"ok": True, "source": "mock", **_mock_exoplanet_explorer_payload(args)}, EXOPLANET_EXPLORER_CACHE_SECONDS)
+        payload = _load_exoplanet_explorer_from_db(args)
+        return _jsonify_clean_cached({"ok": True, "source": "MOCAdb", **payload}, EXOPLANET_EXPLORER_CACHE_SECONDS)
+    except Exception as exc:
+        return _jsonify_clean_cached({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "axes": _exoplanet_explorer_axes_payload(),
+            "default": {"x": "orbital_period_days", "y": "planet_radius_rjup", "xLog": True, "yLog": True},
+            "rows": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "row_count": 0,
+                "confirmed_count": 0,
+                "tess_candidate_count": 0,
+                "use_photometric_distances": _companion_explorer_use_photometric_distances(args),
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 0, status=500)
+
+
+@app.post("/api/exoplanets-explorer/cache/clear")
+@app.post("/api/exoplanets_explorer/cache/clear")
+@app.post("/api/exoplanets/cache/clear")
+@app.post("/js/api/exoplanets-explorer/cache/clear")
+@app.post("/js/api/exoplanets_explorer/cache/clear")
+@app.post("/js/api/exoplanets/cache/clear")
+def exoplanets_explorer_clear_cache():
+    table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
+    column_metadata_count = len(_DB_COLUMNS_CACHE)
+    _DB_TABLE_EXISTS_CACHE.clear()
+    _DB_COLUMNS_CACHE.clear()
+    return jsonify({
+        "ok": True,
+        "cleared": {
+            "exoplanetsExplorer": 0,
+            "dbTableMetadata": table_metadata_count,
+            "dbColumnMetadata": column_metadata_count,
+        },
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    })
 
 
 @app.post("/api/bd-evolution/cache/clear")
