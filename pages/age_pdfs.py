@@ -20,7 +20,7 @@ def _np_trapezoid(y, x):
 # =============================================================================
 # Database connection parameters (match spectral_typing.py)
 # =============================================================================
-default_host = '104.248.106.21'
+default_host = 'mocadb.ca'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'

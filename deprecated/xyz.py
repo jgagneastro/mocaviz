@@ -908,7 +908,7 @@ def update_aid_select_xyzpage(
 
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
-        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@mocadb.ca/'+dbase)
 
         # This is only required for CALL statements
         raw_con = engine.raw_connection()

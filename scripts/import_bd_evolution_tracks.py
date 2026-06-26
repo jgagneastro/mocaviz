@@ -15,7 +15,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 
-DEFAULT_HOST = "104.248.106.21"
+DEFAULT_HOST = "mocadb.ca"
 DEFAULT_USERNAME = "public"
 DEFAULT_PASSWORD = "z@nUg_2h7_%?31y88"
 DEFAULT_DBNAME = "mocadb"

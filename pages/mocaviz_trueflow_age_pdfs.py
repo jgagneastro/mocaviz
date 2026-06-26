@@ -36,7 +36,7 @@ AGE_AXIS_MIN_MYR = 1.0
 AGE_AXIS_MAX_MYR = 14000.0
 
 ONLINE_DB_DEFAULTS = {
-    "host": "104.248.106.21",
+    "host": "mocadb.ca",
     "username": "public",
     "password": "z@nUg_2h7_%?31y88",
     "database": "mocadb",

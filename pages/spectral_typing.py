@@ -31,7 +31,7 @@ min_chi2_val = 0.8
 # =============================================================================
 # Database connection parameters
 # =============================================================================
-default_host = '104.248.106.21'
+default_host = 'mocadb.ca'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'

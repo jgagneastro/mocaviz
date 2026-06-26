@@ -160,7 +160,7 @@ def gh_callback(clickdata, url_search, self_figure):
 
         #Substitute MOCA engine's connection if credentials are provided
         if user is not None and pwd is not None and dbase is not None:
-            engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+            engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@mocadb.ca/'+dbase)
 
             # This is only required for CALL statements
             raw_con = engine.raw_connection()
@@ -220,7 +220,7 @@ def update_gh_figure(dummy, url_search):
 
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
-        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@104.248.106.21/'+dbase)
+        engine = create_engine('mysql+pymysql://'+user+':'+pwd.replace('%','%25').replace('@','%40').replace(">","%3E").replace("#","%23").replace("_","%5F")+'@mocadb.ca/'+dbase)
 
         # This is only required for CALL statements
         raw_con = engine.raw_connection()

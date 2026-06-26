@@ -954,7 +954,7 @@ def populate_mtid_options_xupage(url_search):
         # Use user-provided creds if present; otherwise use cached vanilla list
         if user and pwd and dbase:
             moca = MocaEngine()
-            engine = create_engine('mysql+pymysql://' + user + ':' + urlquote(pwd) + '@104.248.106.21/' + dbase)
+            engine = create_engine('mysql+pymysql://' + user + ':' + urlquote(pwd) + '@mocadb.ca/' + dbase)
             moca.connection = engine.connect()
             df_mtids_local = moca.query(_MTID_QUERY)
         else:
@@ -986,7 +986,7 @@ def update_banyan_version_dropdown(url_search):
 
     # If credentials are provided, override connection
     if user and pwd and dbase:
-        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@104.248.106.21/'+dbase)
+        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@mocadb.ca/'+dbase)
         moca.connection = engine.connect()
 
     # Query available model versions
@@ -1072,7 +1072,7 @@ def update_aid_select_xupage(
 
     #Substitute MOCA engine's connection if credentials are provided
     if user is not None and pwd is not None and dbase is not None:
-        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@104.248.106.21/'+dbase)
+        engine = create_engine('mysql+pymysql://'+user+':'+urlquote(pwd)+'@mocadb.ca/'+dbase)
 
         # This is only required for CALL statements
         raw_con = engine.raw_connection()

@@ -19,7 +19,7 @@ import fnmatch
 dash.register_page(__name__, path='/bd-colors')
 
 # Default connection parameters
-default_host = '104.248.106.21'
+default_host = 'mocadb.ca'
 default_username = 'public'
 default_password = 'z@nUg_2h7_%?31y88'
 default_dbname = 'mocadb'
@@ -1153,7 +1153,7 @@ def get_connection_string(url):
     env_password = parsed_url_data.get('pwd', [None])[0]
     env_dbname = parsed_url_data.get('dbase', [None])[0]
 
-    default_host = '104.248.106.21'
+    default_host = 'mocadb.ca'
     default_username = 'public'
     default_password = 'z@nUg_2h7_%?31y88'
     default_dbname = 'mocadb'

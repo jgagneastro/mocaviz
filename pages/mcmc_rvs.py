@@ -117,7 +117,7 @@ def update_dropdown(href, url_search):
     env_username = parsed_url_data.get('user', [None])[0]
     env_password = parsed_url_data.get('pwd', [None])[0]
     env_dbname = parsed_url_data.get('dbase', [None])[0]
-    env_host = '104.248.106.21'
+    env_host = 'mocadb.ca'
 
     if env_username is None:
         return dash.no_update

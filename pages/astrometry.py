@@ -107,7 +107,7 @@ def get_engine_from_url(url_search: str):
     """Build a SQLAlchemy engine from URL query params or environment defaults."""
     parsed = _parse_url_search(url_search)
 
-    default_host = '104.248.106.21'
+    default_host = 'mocadb.ca'
     default_username = 'public'
     default_password = 'z@nUg_2h7_%?31y88'
     default_dbname = 'mocadb'
@@ -1550,7 +1550,7 @@ def update_dropdown(href, search_value, url_search):
     env_password = parsed_url_data.get('pwd', [None])[0]
     env_dbname = parsed_url_data.get('dbase', [None])[0]
 
-    default_host = '104.248.106.21'
+    default_host = 'mocadb.ca'
     default_username = 'public'
     default_password = 'z@nUg_2h7_%?31y88'
     default_dbname = 'mocadb'
