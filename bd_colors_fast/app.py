@@ -345,6 +345,7 @@ MOCA_FLOWS_RESULT_ORDER = [
 GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
 GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 10.0
+GAIA_CMD_MOCK_VETTED_MTIDS = ("BF", "HM", "CM", "LM", "AM", "R")
 GAIA_CMD_SIMPLE_BANDS = {
     "G": {"label": "G", "psid": "gaiadr3_gmag", "simple_band": "g"},
     "GBP": {"label": "G_BP", "psid": "gaiadr3_bpmag", "simple_band": "b"},
@@ -6682,6 +6683,97 @@ def _gaia_cmd_parse_oids(args: dict[str, Any]) -> list[int]:
     return oids[:100]
 
 
+def _gaia_cmd_parse_vetted_mtids(args: dict[str, Any]) -> list[str]:
+    raw = (
+        args.get("vetted_mtid")
+        or args.get("vetted_mtids")
+        or args.get("vetted_moca_mtid")
+        or args.get("vetted_moca_mtids")
+        or args.get("mmv_mtid")
+        or ""
+    )
+    mtids: list[str] = []
+    for item in str(raw or "").replace(";", ",").split(","):
+        value = item.strip()
+        if value and SAFE_ID_RE.match(value) and value not in mtids:
+            mtids.append(value)
+    return mtids[:80]
+
+
+def _gaia_cmd_class_filter(args: dict[str, Any], *keys: str) -> bool:
+    return any(_as_bool(args.get(key)) for key in keys)
+
+
+def _gaia_cmd_vetted_schema_identifier(args: dict[str, Any]) -> str:
+    schema = "mocadb_private_tables" if _is_private_db(args) else "mocadb"
+    if not SAFE_SCHEMA_RE.fullmatch(schema):
+        raise ValueError(f"Unsafe database name: {schema!r}")
+    return f"`{schema}`"
+
+
+def _gaia_cmd_private_vetted_visibility_filter(args: dict[str, Any], alias: str) -> str:
+    auth = _auth_context(args)
+    if auth.get("private_db") and auth.get("role") in MOCA_TEAM_USERS:
+        return f" AND {alias}.is_public = 0"
+    return ""
+
+
+def _gaia_cmd_vetted_mtid_select(
+    oid_alias: str,
+    aid_expr: str | None,
+    schema_sql: str,
+    visibility_filter: str,
+) -> str:
+    if not aid_expr:
+        return "NULL AS vetted_moca_mtids"
+    return (
+        "(SELECT GROUP_CONCAT(DISTINCT mmv.moca_mtid ORDER BY mmv.moca_mtid SEPARATOR ',') "
+        f"FROM {schema_sql}.mechanics_memberships_vetted mmv "
+        f"WHERE mmv.moca_oid = {oid_alias}.moca_oid "
+        f"AND mmv.moca_aid = {aid_expr}"
+        f"{visibility_filter}) AS vetted_moca_mtids"
+    )
+
+
+def _gaia_cmd_object_filter_sql(
+    alias: str,
+    selection: dict[str, Any],
+    schema_sql: str,
+    vetted_mtid_clause: str,
+    vetted_aid_expr: str | None,
+    vetted_visibility_filter: str,
+    class_x_expr: str,
+    class_y_expr: str,
+) -> str:
+    clauses: list[str] = []
+    class_x_sql = f"({class_x_expr})"
+    class_y_sql = f"({class_y_expr})"
+    if selection["vetted_mtids"]:
+        if vetted_aid_expr:
+            clauses.append(
+                "EXISTS ("
+                f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_filter "
+                f"WHERE mmv_filter.moca_oid = {alias}.moca_oid "
+                f"AND mmv_filter.moca_aid = {vetted_aid_expr} "
+                f"AND mmv_filter.moca_mtid IN ({vetted_mtid_clause})"
+                f"{vetted_visibility_filter}"
+                ")"
+            )
+        else:
+            clauses.append("0 = 1")
+    if selection["filter_giants"]:
+        clauses.append(
+            f"({alias}.moca_oid IS NULL OR {class_x_sql} IS NULL OR {class_y_sql} IS NULL "
+            f"OR COALESCE({schema_sql}.`test_giant`({class_x_sql}, {class_y_sql}), 0) = 0)"
+        )
+    if selection["filter_wd"]:
+        clauses.append(
+            f"({alias}.moca_oid IS NULL OR {class_x_sql} IS NULL OR {class_y_sql} IS NULL "
+            f"OR COALESCE({schema_sql}.`test_wd`({class_x_sql}, {class_y_sql}), 0) = 0)"
+        )
+    return "".join(f"\n                        AND {clause}" for clause in clauses)
+
+
 def _gaia_cmd_raw_column(psid: str) -> str:
     return {
         "gaiadr3_bpmag": "phot_bp_mean_mag",
@@ -6728,6 +6820,19 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
         "membership_download_floor": _gaia_cmd_membership_download_floor(args),
         "associations": _gaia_cmd_parse_aids(args),
         "highlight_oids": _gaia_cmd_parse_oids(args),
+        "vetted_mtids": _gaia_cmd_parse_vetted_mtids(args),
+        "filter_giants": _gaia_cmd_class_filter(args, "filter_giants", "exclude_giants", "no_giants"),
+        "filter_wd": _gaia_cmd_class_filter(
+            args,
+            "filter_wd",
+            "filter_wds",
+            "filter_white_dwarfs",
+            "exclude_wd",
+            "exclude_wds",
+            "exclude_white_dwarfs",
+            "no_wd",
+            "no_wds",
+        ),
     }
 
 
@@ -6750,6 +6855,9 @@ def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
         f"{selection['membership_download_floor']:.3f}",
         ",".join(selection["associations"]),
         ",".join(str(oid) for oid in selection["highlight_oids"]),
+        ",".join(selection["vetted_mtids"]),
+        str(int(selection["filter_giants"])),
+        str(int(selection["filter_wd"])),
     ])
 
 
@@ -6782,7 +6890,7 @@ def _gaia_cmd_spt_axis_sequence_id(selection: dict[str, Any]) -> str | None:
 
 
 def _load_gaia_cmd_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    cache_key = f"{_spt_db_cache_key(args)}|gaia-cmd-options"
+    cache_key = f"{_spt_db_cache_key(args)}|gaia-cmd-options-v2"
     now = time.time()
     cached = _GAIA_CMD_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -6800,11 +6908,38 @@ def _load_gaia_cmd_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         }
         for key, row in GAIA_CMD_SIMPLE_BANDS.items()
     ]
+    vetted_schema_sql = _gaia_cmd_vetted_schema_identifier(args)
+    mmv_visibility_filter = _gaia_cmd_private_vetted_visibility_filter(args, "mmv")
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        mtids = _records(_read_sql(conn, f"""
+            SELECT mt.moca_mtid, mt.name, mt.description
+            FROM moca_membership_types mt
+            WHERE EXISTS (
+                SELECT 1
+                FROM {vetted_schema_sql}.mechanics_memberships_vetted mmv
+                WHERE mmv.moca_mtid = mt.moca_mtid
+                {mmv_visibility_filter}
+                LIMIT 1
+            )
+            ORDER BY mt.level DESC, mt.moca_mtid
+        """))
+    vetted_mtid_options = [
+        {
+            "value": row.get("moca_mtid"),
+            "label": f"{row.get('moca_mtid')} - {row.get('name')}" if row.get("name") else row.get("moca_mtid"),
+            "description": row.get("description"),
+        }
+        for row in mtids
+        if row.get("moca_mtid")
+    ]
     payload = {
         "photometry": {
             "simple": simple_options,
             "advanced": [],
         },
+        "vetted_mtids": vetted_mtid_options,
+        "membership_types": vetted_mtid_options,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": _is_private_db(args),
@@ -6844,6 +6979,47 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     oid_params: dict[str, Any] = {}
     if selection["highlight_oids"]:
         oid_clause = ",".join(str(int(oid)) for oid in selection["highlight_oids"])
+    vetted_mtid_clause = "NULL"
+    vetted_mtid_params: dict[str, Any] = {}
+    if selection["vetted_mtids"]:
+        vetted_mtid_clause, vetted_mtid_params = _sql_in_clause("gcmd_vetted_mtid", selection["vetted_mtids"])
+        params.update(vetted_mtid_params)
+    vetted_schema_sql = _gaia_cmd_vetted_schema_identifier(args)
+    mmv_visibility_filter = _gaia_cmd_private_vetted_visibility_filter(args, "mmv")
+    mmv_filter_visibility_filter = _gaia_cmd_private_vetted_visibility_filter(args, "mmv_filter")
+    field_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("g", None, vetted_schema_sql, mmv_visibility_filter)
+    association_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("cbs", "cbs.moca_aid", vetted_schema_sql, mmv_visibility_filter)
+    highlight_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("g", None, vetted_schema_sql, mmv_visibility_filter)
+    field_object_filters = _gaia_cmd_object_filter_sql(
+        "g",
+        selection,
+        vetted_schema_sql,
+        vetted_mtid_clause,
+        None,
+        mmv_filter_visibility_filter,
+        "field.phot_g_mean_mag - field.phot_rp_mean_mag",
+        "field.phot_g_mean_mag - 5 * LOG10(1000 / field.parallax) + 5",
+    )
+    association_object_filters = _gaia_cmd_object_filter_sql(
+        "cbs",
+        selection,
+        vetted_schema_sql,
+        vetted_mtid_clause,
+        "cbs.moca_aid",
+        mmv_filter_visibility_filter,
+        "g.phot_g_mean_mag - g.phot_rp_mean_mag",
+        "g.phot_g_mean_mag - 5 * LOG10(dd.distance_pc) + 5",
+    )
+    highlight_object_filters = _gaia_cmd_object_filter_sql(
+        "g",
+        selection,
+        vetted_schema_sql,
+        vetted_mtid_clause,
+        None,
+        mmv_filter_visibility_filter,
+        "g.phot_g_mean_mag - g.phot_rp_mean_mag",
+        "g.phot_g_mean_mag - 5 * LOG10(COALESCE(dd.distance_pc, 1000 / g.parallax)) + 5",
+    )
     private_public_filter = "AND cbs.is_public = 0" if _is_private_db(args) else ""
     phot_extcorr_filter = {
         alias: f"AND {alias}.extinction_corrected = 1"
@@ -6892,6 +7068,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     NULL AS x_original,
                     NULL AS y_original,
                     NULL AS age_myr,
+                    {field_vetted_mtid_select},
                     CASE
                         WHEN g.moca_oid IS NULL THEN NULL
                         ELSE CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star')
@@ -6909,6 +7086,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     AND field.{x1_raw_col} IS NOT NULL
                     AND field.{x2_raw_col} IS NOT NULL
                     AND field.{y_raw_col} IS NOT NULL
+                    {field_object_filters}
                 ORDER BY field.random_index
                 LIMIT {selection["max_objects"]}
             """, params)
@@ -6952,6 +7130,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         NULL AS x_original,
                         NULL AS y_original,
                         daa.age_myr,
+                        {association_vetted_mtid_select},
                         CONCAT('https://mocadb.ca/search/results?search-query=oid%28', cbs.moca_oid, '%29&search-type=star') AS report_url
                     FROM calc_banyan_sigma cbs
                     JOIN cat_gaiadr3 g
@@ -6983,6 +7162,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         AND g.{x1_raw_col} IS NOT NULL
                         AND g.{x2_raw_col} IS NOT NULL
                         AND g.{y_raw_col} IS NOT NULL
+                        {association_object_filters}
                     ORDER BY cbs.moca_aid, cbs.moca_oid
                     LIMIT {selection["max_objects"]}
                 """
@@ -7041,6 +7221,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                             ELSE NULL
                         END AS y_original,
                         daa.age_myr,
+                        {association_vetted_mtid_select},
                         CONCAT('https://mocadb.ca/search/results?search-query=oid%28', cbs.moca_oid, '%29&search-type=star') AS report_url
                     FROM calc_banyan_sigma cbs
                     JOIN data_distances dd
@@ -7087,6 +7268,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                             LIMIT 1
                         )
                         {private_public_filter}
+                        {association_object_filters}
                     ORDER BY cbs.moca_aid, cbs.moca_oid
                     LIMIT {selection["max_objects"]}
                 """
@@ -7130,6 +7312,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         NULL AS x_original,
                         NULL AS y_original,
                         NULL AS age_myr,
+                        {highlight_vetted_mtid_select},
                         CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star') AS report_url
                     FROM cat_gaiadr3 g
                     LEFT JOIN data_distances dd
@@ -7147,6 +7330,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         AND g.{x1_raw_col} IS NOT NULL
                         AND g.{x2_raw_col} IS NOT NULL
                         AND g.{y_raw_col} IS NOT NULL
+                        {highlight_object_filters}
                 """
             else:
                 highlight_sql = f"""
@@ -7203,6 +7387,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                             ELSE NULL
                         END AS y_original,
                         NULL AS age_myr,
+                        {highlight_vetted_mtid_select},
                         CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star') AS report_url
                     FROM cat_gaiadr3 g
                     JOIN data_photometry px1
@@ -7235,6 +7420,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         ON mopc.moca_oid = g.moca_oid
                     WHERE g.moca_oid IN ({oid_clause})
                         AND COALESCE(dd.distance_pc, 1000 / g.parallax) > 0
+                        {highlight_object_filters}
                 """
             frames.append(_read_sql(conn, highlight_sql, params))
 
@@ -7399,6 +7585,19 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
         y_extinction_a = round(float(rng.uniform(0.05, 0.28)), 4) if has_mock_extinction else None
         x_original = (x1_mag + x1_extinction_a) - (x2_mag + x2_extinction_a) if has_mock_extinction else None
         y_original = (y_mag + y_extinction_a) - 5 * math.log10(dist) + 5 if has_mock_extinction else None
+        mock_vetted_mtids: list[str] = []
+        if moca_oid is not None and aid:
+            mock_vetted_mtids.append(GAIA_CMD_MOCK_VETTED_MTIDS[index % len(GAIA_CMD_MOCK_VETTED_MTIDS)])
+            if index % 24 == 0:
+                mock_vetted_mtids.append("HM")
+        mock_is_giant = index % 29 == 0
+        mock_is_wd = index % 31 == 0
+        if selection["vetted_mtids"] and not any(mtid in selection["vetted_mtids"] for mtid in mock_vetted_mtids):
+            continue
+        if selection["filter_giants"] and mock_is_giant:
+            continue
+        if selection["filter_wd"] and mock_is_wd:
+            continue
         rows.append({
             "moca_oid": moca_oid,
             "designation": f"Mock Gaia CMD star {index}",
@@ -7430,6 +7629,9 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "x_original": round(x_original, 5) if x_original is not None else None,
             "y_original": round(y_original, 5) if y_original is not None else None,
             "age_myr": round(age, 2) if age else None,
+            "vetted_moca_mtids": ",".join(dict.fromkeys(mock_vetted_mtids)),
+            "mock_is_giant": 1 if mock_is_giant else 0,
+            "mock_is_wd": 1 if mock_is_wd else 0,
             "report_url": f"https://mocadb.ca/search/results?search-query=oid%28{moca_oid}%29&search-type=star" if moca_oid else None,
         })
     sequences = []
@@ -28745,6 +28947,14 @@ def gaia_cmd_options():
                     ],
                     "advanced": [],
                 },
+                "vetted_mtids": [
+                    {"value": mtid, "label": mtid, "description": None}
+                    for mtid in GAIA_CMD_MOCK_VETTED_MTIDS
+                ],
+                "membership_types": [
+                    {"value": mtid, "label": mtid, "description": None}
+                    for mtid in GAIA_CMD_MOCK_VETTED_MTIDS
+                ],
                 "meta": {
                     "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                     "private_db": False,
@@ -28760,6 +28970,8 @@ def gaia_cmd_options():
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "photometry": {"simple": [], "advanced": []},
+            "vetted_mtids": [],
+            "membership_types": [],
             "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
             "cache": {"hit": False, "ttl_seconds": 0},
         }), 500

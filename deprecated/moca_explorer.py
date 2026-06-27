@@ -20,6 +20,10 @@ from mocapy import *
 
 initial_aids = ["ABDMG","BPMG","TWA","THA"]
 initial_mtids = ["BF","HM","CM"]
+object_class_filter_options = {
+    "filter_giants": "Filter out giants",
+    "filter_wd": "Filter out white dwarfs",
+}
 
 figure_export_config = {
   'toImageButtonOptions': {
@@ -66,6 +70,9 @@ select_memonly = [
 ]
 dfe = moca_vanilla.query("SELECT "+", ".join(select_main+select_memonly)+" FROM mocadb.summary_all_members LIMIT 0")
 dfoe = moca_vanilla.query("SELECT "+", ".join(select_main)+" FROM mocadb.summary_all_objects LIMIT 0")
+for _template_df in (dfe, dfoe):
+    if "vetted_moca_mtids" not in _template_df.columns:
+        _template_df["vetted_moca_mtids"] = pd.Series(dtype="object")
 #END OF TEMPORARY FIXES
 
 #dfoe = dfe.copy(deep=True)
@@ -88,6 +95,63 @@ CMD_SPT_AXIS_SEQUENCE_IDS = {
 df_mtids = moca_vanilla.query("SELECT moca_mtid, name, description FROM (SELECT * FROM (SELECT mt.* FROM moca_membership_types mt JOIN (SELECT DISTINCT moca_mtid FROM mocadb.summary_all_members) dm ON(dm.moca_mtid=mt.moca_mtid)) oq) oq2 ORDER BY level DESC")
 
 text_mtids = ("* **"+df_mtids["moca_mtid"]+"**: "+df_mtids["description"]).values.astype("U").tolist()
+
+def sql_quote(value):
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "''") + "'"
+
+def sql_identifier(value):
+    text = str(value or "")
+    if not re.match(r"^[A-Za-z0-9_]+$", text):
+        raise ValueError(f"Unsafe SQL identifier: {text}")
+    return "`" + text + "`"
+
+def moca_filter_schema(logged_in):
+    return "mocadb_private_tables" if logged_in else "mocadb"
+
+def prefixed_columns(alias, columns):
+    return ", ".join([f"{alias}.`{column}`" for column in columns])
+
+def vetted_mtid_column(schema, base_alias):
+    schema_sql = sql_identifier(schema)
+    return (
+        "(SELECT GROUP_CONCAT(DISTINCT mmv.moca_mtid ORDER BY mmv.moca_mtid SEPARATOR ',') "
+        f"FROM {schema_sql}.mechanics_memberships_vetted mmv "
+        f"WHERE mmv.moca_oid = {base_alias}.moca_oid) AS vetted_moca_mtids"
+    )
+
+def vetted_mtid_filter(schema, base_alias, vetted_mtid_select):
+    if not vetted_mtid_select:
+        return None
+    mtids = [str(item).strip() for item in vetted_mtid_select if str(item).strip()]
+    if not mtids:
+        return None
+    schema_sql = sql_identifier(schema)
+    mtid_list = ", ".join(sql_quote(item) for item in mtids)
+    return (
+        "EXISTS ("
+        f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_filter "
+        f"WHERE mmv_filter.moca_oid = {base_alias}.moca_oid "
+        f"AND mmv_filter.moca_mtid IN ({mtid_list})"
+        ")"
+    )
+
+def object_class_filters(schema, base_alias, selected_filters):
+    selected_filters = selected_filters or []
+    schema_sql = sql_identifier(schema)
+    class_x = f"({base_alias}.gmag - {base_alias}.rmag)"
+    class_y = f"({base_alias}.gmag - {base_alias}.dmod)"
+    clauses = []
+    if "filter_giants" in selected_filters:
+        clauses.append(
+            f"({base_alias}.gmag IS NULL OR {base_alias}.rmag IS NULL OR {base_alias}.dmod IS NULL "
+            f"OR COALESCE({schema_sql}.`test_giant`({class_x}, {class_y}), 0) = 0)"
+        )
+    if "filter_wd" in selected_filters:
+        clauses.append(
+            f"({base_alias}.gmag IS NULL OR {base_alias}.rmag IS NULL OR {base_alias}.dmod IS NULL "
+            f"OR COALESCE({schema_sql}.`test_wd`({class_x}, {class_y}), 0) = 0)"
+        )
+    return clauses
 
 # Assign color to legend
 def colormap_picker(aid_list):
@@ -1869,9 +1933,36 @@ layout = html.Div(
                                     value=None,
                                 ),
                                 html.Br(),
+                                build_graph_title("Filter by Vetted Membership Types"),
+                                dcc.Markdown(
+                                    id="vetted-mtid-instructions",
+                                    children=["Optionally keep only objects whose `mechanics_memberships_vetted.moca_mtid` contains one of these values."]
+                                    , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
+                                ),
+                                dcc.Dropdown(
+                                    id="vetted-mtid-select",
+                                    options=[
+                                        {"label": " "+i, "value": i}
+                                        for i in df_mtids["moca_mtid"].unique().tolist()
+                                    ],
+                                    multi=True,
+                                    value=None,
+                                ),
+                                html.Br(),
+                                build_graph_title("Object Class Filters"),
+                                dcc.Checklist(
+                                    id="object-class-filter-select",
+                                    options=[
+                                        {"label": " "+label, "value": value}
+                                        for value, label in object_class_filter_options.items()
+                                    ],
+                                    value=[],
+                                    labelStyle={'color': 'white'}
+                                ),
+                                html.Br(),
                                 build_graph_title("Select Individual Stars"),
                                 dcc.Markdown(
-                                    id="mtid-instructions",
+                                    id="oid-instructions",
                                     children=["Select additional stars to be included in the visualizations below. \n Only moca_oids can be used in an effort to prevent the MOCA explorer from becoming too slow; use the [MOCAdb Reports](https://mocadb.ca/search?type=star) page to resolve object names into moca_oids."]
                                     , style={"width": "100%", "color":"white", "whiteSpace": "pre-wrap"},
                                 ),
@@ -2288,17 +2379,21 @@ def update_table(
         Output("aid-select","options"),
         Output("aid-select","value"),
         Output("mtid-select","value"),
+        Output("vetted-mtid-select","value"),
+        Output("object-class-filter-select","value"),
         Output("oid-select","value"),
         ],
     inputs=[
         Input("aid-select", "value"),
         Input("mtid-select", "value"),
+        Input("vetted-mtid-select", "value"),
+        Input("object-class-filter-select", "value"),
         Input("oid-select", "value"),
     ],
     state=[State("url","search")]
 )
 def update_aid_select(
-    aid_select, mtid_select, oid_select, url_search
+    aid_select, mtid_select, vetted_mtid_select, object_class_filter_select, oid_select, url_search
 ):
     
     #print("DBQUERY callback")
@@ -2311,6 +2406,8 @@ def update_aid_select(
         if url_search == "":
             aid_select = initial_aids
             mtid_select = initial_mtids
+            vetted_mtid_select = None
+            object_class_filter_select = object_class_filter_select or []
         else:
             parsed_url = urlparse(url_search)
             parsed_url_data = parse_qs(parsed_url.query)
@@ -2324,9 +2421,23 @@ def update_aid_select(
             else:
                 if mtid_select is None:
                     mtid_select = initial_mtids
+            if 'vetted_mtid' in parsed_url_data.keys():
+                vetted_mtid_select = parsed_url_data['vetted_mtid'][0].split(',')
+            elif 'vetted_moca_mtid' in parsed_url_data.keys():
+                vetted_mtid_select = parsed_url_data['vetted_moca_mtid'][0].split(',')
+            elif vetted_mtid_select is None:
+                vetted_mtid_select = None
+            if object_class_filter_select is None:
+                object_class_filter_select = []
+            if parsed_url_data.get('filter_giants', ['0'])[0].lower() in ('1', 'true', 'yes'):
+                object_class_filter_select = sorted(set(object_class_filter_select + ['filter_giants']))
+            if parsed_url_data.get('filter_wd', ['0'])[0].lower() in ('1', 'true', 'yes'):
+                object_class_filter_select = sorted(set(object_class_filter_select + ['filter_wd']))
             #OID is always a string in the input box so do not already split it into an array
             if 'oid' in parsed_url_data.keys():
                 oid_select = parsed_url_data['oid'][0]
+    if object_class_filter_select is None:
+        object_class_filter_select = []
     
     # Read credentials
     user = None
@@ -2357,6 +2468,9 @@ def update_aid_select(
         con = engine.connect()
         moca.connection = con
 
+    logged_in = user is not None and pwd is not None and dbase is not None
+    filter_schema = moca_filter_schema(logged_in)
+
     # Query for AID list here
     df_aids = moca.query("SELECT moca_aid FROM moca_associations")
     aid_options=[
@@ -2366,15 +2480,27 @@ def update_aid_select(
     ]
 
     # Prevent app from crashing if no associations are selected
-    if len(aid_select) == 0:
+    if len(aid_select) == 0 or not mtid_select:
         df = dfe
         dfm = dfme
     else: 
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        aid_query = " OR ".join(["moca_aid='"+stri+"'" for stri in aid_select])
-        mtid_query = " OR ".join(["moca_mtid = '"+stri+"'" for stri in mtid_select])
+        aid_query = " OR ".join(["sam.moca_aid="+sql_quote(stri) for stri in aid_select])
+        mtid_query = " OR ".join(["sam.moca_mtid = "+sql_quote(stri) for stri in mtid_select])
+        where_clauses = ["("+mtid_query+")", "("+aid_query+")"]
+        vetted_clause = vetted_mtid_filter(filter_schema, "sam", vetted_mtid_select)
+        if vetted_clause:
+            where_clauses.append(vetted_clause)
+        where_clauses.extend(object_class_filters(filter_schema, "sam", object_class_filter_select))
         #TMPFIX BELOW
-        df = moca.query("SELECT "+", ".join(df_columns+df_columns_memonly)+" FROM mocadb.summary_all_members WHERE ("+mtid_query+") AND ("+aid_query+")")
+        df = moca.query(
+            "SELECT "
+            + prefixed_columns("sam", df_columns+df_columns_memonly)
+            + ", "
+            + vetted_mtid_column(filter_schema, "sam")
+            + " FROM mocadb.summary_all_members sam WHERE "
+            + " AND ".join(where_clauses)
+        )
 
         df['gr'] = df['gmag']-df['rmag']
         df['br'] = df['bmag']-df['rmag']
@@ -2389,14 +2515,29 @@ def update_aid_select(
     if oid_select is not None:
         if len(oid_select) != 0:
             oid_set = True
+    oid_values = [stri.strip() for stri in str(oid_select or "").split(',') if stri.strip()]
+    if len(oid_values) == 0:
+        oid_set = False
     
     if not oid_set:
         dfo = dfoe
     else:
         # Query the moca database to obtain a Pandas DataFrame for the specific group needed
-        oid_query = " OR ".join(["moca_oid='"+stri+"'" for stri in oid_select.split(',')])
+        oid_query = " OR ".join(["sao.moca_oid="+sql_quote(stri) for stri in oid_values])
+        where_clauses = ["("+oid_query+")"]
+        vetted_clause = vetted_mtid_filter(filter_schema, "sao", vetted_mtid_select)
+        if vetted_clause:
+            where_clauses.append(vetted_clause)
+        where_clauses.extend(object_class_filters(filter_schema, "sao", object_class_filter_select))
         #TMP FIX BELOW
-        dfo = moca.query("SELECT "+", ".join(df_columns)+" FROM mocadb.summary_all_objects WHERE ("+oid_query+")")
+        dfo = moca.query(
+            "SELECT "
+            + prefixed_columns("sao", df_columns)
+            + ", "
+            + vetted_mtid_column(filter_schema, "sao")
+            + " FROM mocadb.summary_all_objects sao WHERE "
+            + " AND ".join(where_clauses)
+        )
         dfo['gr'] = dfo['gmag']-dfo['rmag']
         dfo['br'] = dfo['bmag']-dfo['rmag']
         dfo['m_g'] = dfo['gmag']-5.0*(np.log10(1000.0/dfo['plx'].values.astype('float64'))-1)
@@ -2426,7 +2567,7 @@ def update_aid_select(
         df_ewli_seq.to_json(date_format='iso', orient='split'),
         df_asso_centers.to_json(date_format='iso', orient='split'),
         df_cmd_spt_axis.to_json(date_format='iso', orient='split')
-        ), aid_options, aid_select, mtid_select, oid_select
+        ), aid_options, aid_select, mtid_select, vetted_mtid_select, object_class_filter_select, oid_select
 
 # # Update RVTS figure
 # @dash.callback(

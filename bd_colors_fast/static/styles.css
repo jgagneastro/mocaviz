@@ -329,6 +329,17 @@ textarea {
   resize: vertical;
 }
 
+.gcmd-multiselect {
+  height: auto;
+  min-height: 0;
+  padding: 2px 0;
+  line-height: 1.2;
+}
+
+.gcmd-multiselect option {
+  padding: 2px 8px;
+}
+
 input[type="range"] {
   display: block;
   width: 100%;

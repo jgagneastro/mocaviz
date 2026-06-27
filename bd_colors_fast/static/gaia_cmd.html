@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Gaia CMD</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <link rel="stylesheet" href="static/styles.css?v=gaia-cmd-vetted-mtid-filters-20260627b">
   <script src="static/auth_theme.js?v=dataviz-links-20260626a"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
@@ -46,6 +46,18 @@
               <output id="gcmd-membership-prob-min-value" for="gcmd-membership-prob-min">90%</output>
             </span>
             <input id="gcmd-membership-prob-min" type="range" min="10" max="100" step="1" value="90">
+          </label>
+          <label>
+            Vetted membership type
+            <select id="gcmd-vetted-mtids" class="gcmd-multiselect" multiple size="5"></select>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-filter-giants" type="checkbox">
+            <span>Filter out giants</span>
+          </label>
+          <label class="checkline">
+            <input id="gcmd-filter-wd" type="checkbox">
+            <span>Filter out white dwarfs</span>
           </label>
         </section>
 
@@ -168,6 +180,8 @@
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted MOCAdb objects.</td></tr>
           <tr><td><code>ruwe</code>, <code>ruwe_max</code></td><td>Positive number, or <code>none</code></td><td>De-emphasizes objects with Gaia RUWE above the threshold. Default is <code>1.4</code>.</td></tr>
           <tr><td><code>membership_prob_min</code>, <code>ya_prob_min</code></td><td><code>10</code>-<code>100</code></td><td>Filters displayed association members by BANYAN Sigma probability in the browser. Default is <code>90</code>; the downloaded association payload is floored at <code>10</code>.</td></tr>
+          <tr><td><code>vetted_mtid</code></td><td>Comma-separated MTIDs</td><td>Requires objects to have at least one matching <code>mechanics_memberships_vetted.moca_mtid</code>.</td></tr>
+          <tr><td><code>filter_giants</code>, <code>filter_wd</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Filters out objects where <code>test_giant()</code> or <code>test_wd()</code> is true.</td></tr>
           <tr><td><code>color_age</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Colors objects with BANYAN-linked association ages by age.</td></tr>
           <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
           <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>.</td></tr>
@@ -192,6 +206,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=gaia-cmd-membership-filter-20260613a"></script>
+  <script src="static/gaia_cmd.js?v=gaia-cmd-vetted-mtid-filters-20260627b"></script>
 </body>
 </html>
