@@ -40,6 +40,14 @@
             De-emphasize RUWE above
             <input id="gcmd-ruwe" type="number" min="0" step="0.05" value="1.4">
           </label>
+          <label>
+            Gaia source quality
+            <select id="gcmd-gaia-quality">
+              <option value="off">Off</option>
+              <option value="soft">Soft</option>
+              <option value="strict">Strict</option>
+            </select>
+          </label>
           <label class="range-label">
             <span class="range-heading">
               <span>Min membership probability</span>
@@ -170,6 +178,30 @@
         requested. The membership-probability slider filters that downloaded
         association payload in the browser.
       </p>
+      <h3>Gaia Source Quality</h3>
+      <p>
+        The Gaia source-quality filter removes rows before they are sent to the
+        browser. It applies to the DR3 source-quality columns in
+        <code>cat_gaiadr3</code> and the matching 100 pc field table. When
+        adopted MOCAdb photometry is shown, the filter still uses the matched
+        Gaia DR3 source-quality row for the object.
+      </p>
+      <p>
+        <code>Off</code> preserves the default query. <code>Soft</code> rejects
+        duplicated Gaia sources, Gaia QSO/galaxy candidates, bronze
+        photometry (<code>phot_proc_mode=2</code>), low flux-significance
+        mean photometry (<code>G&lt;50</code> or <code>BP/RP&lt;10</code> in
+        flux-over-error), outlying <code>phot_bp_rp_excess_factor</code> values
+        using a color-dependent envelope, and BP/RP contaminated-transit
+        fractions above 20%. <code>Strict</code> additionally requires
+        <code>RUWE&lt;=1.4</code>, gold photometry
+        (<code>phot_proc_mode=0</code>), stronger flux-over-error limits
+        (<code>G&gt;=100</code>, <code>BP/RP&gt;=20</code>), zero BP/RP
+        contaminated transits, and conservative image-parameter diagnostics
+        (<code>ipd_frac_multi_peak&lt;=2</code>,
+        <code>ipd_frac_odd_win&lt;=10</code>, and
+        <code>ipd_gof_harmonic_amplitude&lt;=0.1</code> when present).
+      </p>
       <table>
         <thead>
           <tr><th>Parameter</th><th>Values</th><th>Effect</th></tr>
@@ -179,6 +211,7 @@
           <tr><td><code>asso</code>, <code>moca_aid</code></td><td>Comma-separated association IDs</td><td>Adds likely BANYAN Sigma members for the selected associations.</td></tr>
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted MOCAdb objects.</td></tr>
           <tr><td><code>ruwe</code>, <code>ruwe_max</code></td><td>Positive number, or <code>none</code></td><td>De-emphasizes objects with Gaia RUWE above the threshold. Default is <code>1.4</code>.</td></tr>
+          <tr><td><code>gaia_quality</code></td><td><code>off</code>, <code>soft</code>, or <code>strict</code></td><td>Applies source-quality cuts from <code>cat_gaiadr3</code> before plotting. The default is <code>off</code>.</td></tr>
           <tr><td><code>membership_prob_min</code>, <code>ya_prob_min</code></td><td><code>10</code>-<code>100</code></td><td>Filters displayed association members by BANYAN Sigma probability in the browser. Default is <code>90</code>; the downloaded association payload is floored at <code>10</code>.</td></tr>
           <tr><td><code>vetted_mtid</code></td><td>Comma-separated MTIDs</td><td>Requires objects to have at least one matching <code>mechanics_memberships_vetted.moca_mtid</code>.</td></tr>
           <tr><td><code>filter_giants</code>, <code>filter_wd</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Filters out objects where <code>test_giant()</code> or <code>test_wd()</code> is true.</td></tr>
@@ -206,6 +239,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=gaia-cmd-vetted-mtid-filters-20260627b"></script>
+  <script src="static/gaia_cmd.js?v=gaia-cmd-gaia-quality-20260627a"></script>
 </body>
 </html>

@@ -161,6 +161,7 @@ function collectGaiaCmdElements() {
     "gcmd-x2",
     "gcmd-y",
     "gcmd-ruwe",
+    "gcmd-gaia-quality",
     "gcmd-membership-prob-min",
     "gcmd-membership-prob-min-value",
     "gcmd-vetted-mtids",
@@ -204,7 +205,7 @@ function collectGaiaCmdElements() {
 
 function bindGaiaCmdControls() {
   gcmdEl["gcmd-load"].addEventListener("click", () => loadGaiaCmdData());
-  for (const id of ["gcmd-x1", "gcmd-x2", "gcmd-y", "gcmd-color-age", "gcmd-raw-gaia", "gcmd-extcorr-only", "gcmd-extcorr-vectors", "gcmd-show-sequences", "gcmd-filter-giants", "gcmd-filter-wd"]) {
+  for (const id of ["gcmd-x1", "gcmd-x2", "gcmd-y", "gcmd-gaia-quality", "gcmd-color-age", "gcmd-raw-gaia", "gcmd-extcorr-only", "gcmd-extcorr-vectors", "gcmd-show-sequences", "gcmd-filter-giants", "gcmd-filter-wd"]) {
     gcmdEl[id].addEventListener("change", () => loadGaiaCmdData());
   }
   gcmdEl["gcmd-vetted-mtids"].addEventListener("change", () => applyGaiaCmdClientFilters());
@@ -345,6 +346,8 @@ function readGaiaCmdUrlState() {
     y: normalizeGaiaCmdBand(params.get("y") || params.get("yaxis_value_1") || "gaiadr3_gmag"),
   });
   if (params.has("ruwe") || params.has("ruwe_max")) gcmdEl["gcmd-ruwe"].value = params.get("ruwe") || params.get("ruwe_max") || "";
+  const gaiaQuality = firstPresentParam(params, ["gaia_quality", "gaia_phot_quality", "phot_quality", "quality"]);
+  gcmdEl["gcmd-gaia-quality"].value = normalizeGaiaCmdQuality(gaiaQuality || "off");
   const membershipProbMin = firstPresentParam(params, ["membership_prob_min", "ya_prob_min", "min_ya_prob", "min_membership_probability"]);
   gcmdEl["gcmd-membership-prob-min"].value = String(clampGaiaCmdMembershipProb(membershipProbMin ?? gcmdDefaultMembershipProbMin));
   updateGaiaCmdMembershipProbReadout();
@@ -396,6 +399,13 @@ function normalizeGaiaCmdBand(value) {
   };
   const normalized = raw.toUpperCase().replace(/^SIMPLE:/, "");
   return aliases[normalized] || raw.toLowerCase();
+}
+
+function normalizeGaiaCmdQuality(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+  if (["soft", "standard", "recommended", "true", "yes", "1"].includes(normalized)) return "soft";
+  if (["strict", "clean", "high", "high_quality"].includes(normalized)) return "strict";
+  return "off";
 }
 
 async function loadGaiaCmdData() {
@@ -453,6 +463,9 @@ function gaiaCmdApiParams() {
   const oids = combinedHighlightOids();
   if (oids.length) params.set("oid", oids.join(","));
   if (gcmdState.selectedAids.length) params.set("asso", gcmdState.selectedAids.join(","));
+  for (const key of ["gaia_quality", "gaia_phot_quality", "phot_quality", "quality"]) params.delete(key);
+  const gaiaQuality = normalizeGaiaCmdQuality(gcmdEl["gcmd-gaia-quality"]?.value);
+  if (gaiaQuality !== "off") params.set("gaia_quality", gaiaQuality);
   if (gcmdEl["gcmd-filter-giants"].checked) params.set("filter_giants", "1");
   if (gcmdEl["gcmd-filter-wd"].checked) params.set("filter_wd", "1");
   if (gcmdEl["gcmd-color-age"].checked) params.set("color_age", "1");
@@ -480,6 +493,9 @@ function updateGaiaCmdUrl() {
   params.delete("ya_prob_min");
   params.delete("min_ya_prob");
   params.delete("min_membership_probability");
+  params.delete("gaia_phot_quality");
+  params.delete("phot_quality");
+  params.delete("quality");
   const vettedMtids = selectedGaiaCmdVettedMtids();
   if (vettedMtids.length) params.set("vetted_mtid", vettedMtids.join(","));
   params.set("membership_prob_min", String(gaiaCmdMembershipProbMin()));
@@ -1705,8 +1721,11 @@ function axisSummaryHtml(selection) {
     selection.filter_wd ? "white dwarfs filtered out" : "",
   ].filter(Boolean);
   const classFilterText = classFilters.length ? `; ${classFilters.join("; ")}` : "";
+  const quality = selection.gaia_quality && selection.gaia_quality !== "off"
+    ? `; Gaia quality ${escapeHtml(selection.gaia_quality)}`
+    : "";
   const aids = selection.associations?.length ? `${selection.associations.length} association${selection.associations.length === 1 ? "" : "s"} added` : "field stars only";
-  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${errors}${binaries}${sequences}${membership}${vetted}${classFilterText}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
+  return `${axisBandHtmlLabel(selection.x1, selection.x_label)} - ${axisBandHtmlLabel(selection.x2, selection.x2_label)} vs ${absoluteMagnitudeHtmlLabel(selection.y, selection.y_label)}; ${aids}; ${phot}${extcorr}${vectors}${errors}${binaries}${sequences}${membership}${vetted}${classFilterText}${quality}; ${ruwe}.<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function bandLabel(psid) {

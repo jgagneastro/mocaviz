@@ -346,6 +346,7 @@ GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
 GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 10.0
 GAIA_CMD_MOCK_VETTED_MTIDS = ("BF", "HM", "CM", "LM", "AM", "R")
+GAIA_CMD_QUALITY_MODES = {"off", "soft", "strict"}
 GAIA_CMD_SIMPLE_BANDS = {
     "G": {"label": "G", "psid": "gaiadr3_gmag", "simple_band": "g"},
     "GBP": {"label": "G_BP", "psid": "gaiadr3_bpmag", "simple_band": "b"},
@@ -6704,6 +6705,24 @@ def _gaia_cmd_class_filter(args: dict[str, Any], *keys: str) -> bool:
     return any(_as_bool(args.get(key)) for key in keys)
 
 
+def _gaia_cmd_quality_mode(args: dict[str, Any]) -> str:
+    raw = (
+        args.get("gaia_quality")
+        or args.get("gaia_phot_quality")
+        or args.get("phot_quality")
+        or args.get("quality")
+        or ""
+    )
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in {"", "off", "none", "no", "false", "0"}:
+        return "off"
+    if value in {"soft", "standard", "recommended", "true", "yes", "1"}:
+        return "soft"
+    if value in {"strict", "clean", "high", "high_quality"}:
+        return "strict"
+    return "off"
+
+
 def _gaia_cmd_vetted_schema_identifier(args: dict[str, Any]) -> str:
     schema = "mocadb_private_tables" if _is_private_db(args) else "mocadb"
     if not SAFE_SCHEMA_RE.fullmatch(schema):
@@ -6774,6 +6793,51 @@ def _gaia_cmd_object_filter_sql(
     return "".join(f"\n                        AND {clause}" for clause in clauses)
 
 
+def _gaia_cmd_gaia_quality_filter_sql(alias: str, mode: str) -> str:
+    if mode not in GAIA_CMD_QUALITY_MODES or mode == "off":
+        return ""
+    color_expr = f"COALESCE({alias}.bp_rp, {alias}.phot_bp_mean_mag - {alias}.phot_rp_mean_mag)"
+    excess_lower = f"1.0 + 0.015 * POW({color_expr}, 2)"
+    excess_upper = f"1.3 + 0.06 * POW({color_expr}, 2)"
+    contamination_soft = [
+        f"({alias}.phot_bp_n_contaminated_transits IS NULL OR {alias}.phot_bp_n_obs IS NULL "
+        f"OR {alias}.phot_bp_n_contaminated_transits <= 0.2 * {alias}.phot_bp_n_obs)",
+        f"({alias}.phot_rp_n_contaminated_transits IS NULL OR {alias}.phot_rp_n_obs IS NULL "
+        f"OR {alias}.phot_rp_n_contaminated_transits <= 0.2 * {alias}.phot_rp_n_obs)",
+    ]
+    common = [
+        f"COALESCE({alias}.duplicated_source, 0) = 0",
+        f"COALESCE({alias}.in_qso_candidates, 0) = 0",
+        f"COALESCE({alias}.in_galaxy_candidates, 0) = 0",
+        f"{color_expr} IS NOT NULL",
+        f"{alias}.phot_bp_rp_excess_factor BETWEEN {excess_lower} AND {excess_upper}",
+    ]
+    if mode == "soft":
+        clauses = [
+            *common,
+            f"COALESCE({alias}.phot_proc_mode, 0) <= 1",
+            f"{alias}.phot_g_mean_flux_over_error >= 50",
+            f"{alias}.phot_bp_mean_flux_over_error >= 10",
+            f"{alias}.phot_rp_mean_flux_over_error >= 10",
+            *contamination_soft,
+        ]
+    else:
+        clauses = [
+            *common,
+            f"{alias}.ruwe <= 1.4",
+            f"COALESCE({alias}.phot_proc_mode, 0) = 0",
+            f"{alias}.phot_g_mean_flux_over_error >= 100",
+            f"{alias}.phot_bp_mean_flux_over_error >= 20",
+            f"{alias}.phot_rp_mean_flux_over_error >= 20",
+            f"COALESCE({alias}.phot_bp_n_contaminated_transits, 0) = 0",
+            f"COALESCE({alias}.phot_rp_n_contaminated_transits, 0) = 0",
+            f"({alias}.ipd_frac_multi_peak IS NULL OR {alias}.ipd_frac_multi_peak <= 2)",
+            f"({alias}.ipd_frac_odd_win IS NULL OR {alias}.ipd_frac_odd_win <= 10)",
+            f"({alias}.ipd_gof_harmonic_amplitude IS NULL OR {alias}.ipd_gof_harmonic_amplitude <= 0.1)",
+        ]
+    return "".join(f"\n                        AND {clause}" for clause in clauses)
+
+
 def _gaia_cmd_raw_column(psid: str) -> str:
     return {
         "gaiadr3_bpmag": "phot_bp_mean_mag",
@@ -6821,6 +6885,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
         "associations": _gaia_cmd_parse_aids(args),
         "highlight_oids": _gaia_cmd_parse_oids(args),
         "vetted_mtids": _gaia_cmd_parse_vetted_mtids(args),
+        "gaia_quality": _gaia_cmd_quality_mode(args),
         "filter_giants": _gaia_cmd_class_filter(args, "filter_giants", "exclude_giants", "no_giants"),
         "filter_wd": _gaia_cmd_class_filter(
             args,
@@ -6856,6 +6921,7 @@ def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
         ",".join(selection["associations"]),
         ",".join(str(oid) for oid in selection["highlight_oids"]),
         ",".join(selection["vetted_mtids"]),
+        selection["gaia_quality"],
         str(int(selection["filter_giants"])),
         str(int(selection["filter_wd"])),
     ])
@@ -6990,6 +7056,9 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     field_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("g", None, vetted_schema_sql, mmv_visibility_filter)
     association_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("cbs", "cbs.moca_aid", vetted_schema_sql, mmv_visibility_filter)
     highlight_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("g", None, vetted_schema_sql, mmv_visibility_filter)
+    field_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("field", selection["gaia_quality"])
+    association_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
+    highlight_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
     field_object_filters = _gaia_cmd_object_filter_sql(
         "g",
         selection,
@@ -7086,6 +7155,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     AND field.{x1_raw_col} IS NOT NULL
                     AND field.{x2_raw_col} IS NOT NULL
                     AND field.{y_raw_col} IS NOT NULL
+                    {field_gaia_quality_filter}
                     {field_object_filters}
                 ORDER BY field.random_index
                 LIMIT {selection["max_objects"]}
@@ -7162,6 +7232,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         AND g.{x1_raw_col} IS NOT NULL
                         AND g.{x2_raw_col} IS NOT NULL
                         AND g.{y_raw_col} IS NOT NULL
+                        {association_gaia_quality_filter}
                         {association_object_filters}
                     ORDER BY cbs.moca_aid, cbs.moca_oid
                     LIMIT {selection["max_objects"]}
@@ -7268,6 +7339,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                             LIMIT 1
                         )
                         {private_public_filter}
+                        {association_gaia_quality_filter}
                         {association_object_filters}
                     ORDER BY cbs.moca_aid, cbs.moca_oid
                     LIMIT {selection["max_objects"]}
@@ -7330,6 +7402,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         AND g.{x1_raw_col} IS NOT NULL
                         AND g.{x2_raw_col} IS NOT NULL
                         AND g.{y_raw_col} IS NOT NULL
+                        {highlight_gaia_quality_filter}
                         {highlight_object_filters}
                 """
             else:
@@ -7420,6 +7493,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         ON mopc.moca_oid = g.moca_oid
                     WHERE g.moca_oid IN ({oid_clause})
                         AND COALESCE(dd.distance_pc, 1000 / g.parallax) > 0
+                        {highlight_gaia_quality_filter}
                         {highlight_object_filters}
                 """
             frames.append(_read_sql(conn, highlight_sql, params))
@@ -7593,6 +7667,10 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
         mock_is_giant = index % 29 == 0
         mock_is_wd = index % 31 == 0
         if selection["vetted_mtids"] and not any(mtid in selection["vetted_mtids"] for mtid in mock_vetted_mtids):
+            continue
+        if selection["gaia_quality"] == "soft" and index % 13 == 0:
+            continue
+        if selection["gaia_quality"] == "strict" and (index % 13 == 0 or index % 7 == 0):
             continue
         if selection["filter_giants"] and mock_is_giant:
             continue
