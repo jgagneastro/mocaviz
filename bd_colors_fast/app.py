@@ -6804,6 +6804,10 @@ def _gaia_cmd_gaia_quality_filter_sql(alias: str, mode: str) -> str:
         f"OR {alias}.phot_bp_n_contaminated_transits <= 0.2 * {alias}.phot_bp_n_obs)",
         f"({alias}.phot_rp_n_contaminated_transits IS NULL OR {alias}.phot_rp_n_obs IS NULL "
         f"OR {alias}.phot_rp_n_contaminated_transits <= 0.2 * {alias}.phot_rp_n_obs)",
+        f"({alias}.phot_bp_n_blended_transits IS NULL OR {alias}.phot_bp_n_obs IS NULL "
+        f"OR {alias}.phot_bp_n_blended_transits <= 0.2 * {alias}.phot_bp_n_obs)",
+        f"({alias}.phot_rp_n_blended_transits IS NULL OR {alias}.phot_rp_n_obs IS NULL "
+        f"OR {alias}.phot_rp_n_blended_transits <= 0.2 * {alias}.phot_rp_n_obs)",
     ]
     common = [
         f"COALESCE({alias}.duplicated_source, 0) = 0",
@@ -6831,6 +6835,8 @@ def _gaia_cmd_gaia_quality_filter_sql(alias: str, mode: str) -> str:
             f"{alias}.phot_rp_mean_flux_over_error >= 20",
             f"COALESCE({alias}.phot_bp_n_contaminated_transits, 0) = 0",
             f"COALESCE({alias}.phot_rp_n_contaminated_transits, 0) = 0",
+            f"COALESCE({alias}.phot_bp_n_blended_transits, 0) = 0",
+            f"COALESCE({alias}.phot_rp_n_blended_transits, 0) = 0",
             f"({alias}.ipd_frac_multi_peak IS NULL OR {alias}.ipd_frac_multi_peak <= 2)",
             f"({alias}.ipd_frac_odd_win IS NULL OR {alias}.ipd_frac_odd_win <= 10)",
             f"({alias}.ipd_gof_harmonic_amplitude IS NULL OR {alias}.ipd_gof_harmonic_amplitude <= 0.1)",
@@ -6904,6 +6910,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
 def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
     cfg = _db_config(args)
     return "|".join([
+        "gaia-quality-blended-v1",
         cfg["host"],
         cfg["username"],
         cfg["dbname"],

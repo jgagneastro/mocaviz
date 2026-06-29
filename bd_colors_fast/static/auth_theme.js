@@ -3,6 +3,7 @@
   const BUG_REPORT_URL = "https://github.com/mocadb/mocadb-project/issues";
   const BD_PHOTOMETRY_DISCUSSION_URL = "https://github.com/orgs/mocadb/discussions/43";
   const BD_EVOLUTION_DISCUSSION_URL = "https://github.com/orgs/mocadb/discussions/44";
+  const GAIA_CMD_DISCUSSION_URL = "https://github.com/orgs/mocadb/discussions/50";
   const BD_PHOTOMETRY_PATHS = new Set([
     "bd-colors",
     "bd_colors",
@@ -16,6 +17,13 @@
     "bd-evolution",
     "bd_evolution",
     "bd_evolution.html",
+  ]);
+  const GAIA_CMD_PATHS = new Set([
+    "gaia-cmd",
+    "gaia_cmd",
+    "stellar-gaia-cmd",
+    "stellar_gaia_cmd",
+    "gaia_cmd.html",
   ]);
   const CONNECTION_PARAM_KEYS = [
     "host",
@@ -97,9 +105,17 @@
     return document.title.trim() === "Brown Dwarf Evolution Explorer";
   }
 
+  function isGaiaCmdExplorerPage() {
+    const pathname = window.location.pathname.replace(/\/+$/, "");
+    const pageName = pathname.split("/").pop() || "";
+    if (GAIA_CMD_PATHS.has(pageName)) return true;
+    return document.title.trim() === "MOCAdb Fast Gaia CMD";
+  }
+
   function pageDiscussionUrl() {
     if (isBdPhotometryExplorerPage()) return BD_PHOTOMETRY_DISCUSSION_URL;
     if (isBdEvolutionExplorerPage()) return BD_EVOLUTION_DISCUSSION_URL;
+    if (isGaiaCmdExplorerPage()) return GAIA_CMD_DISCUSSION_URL;
     return "";
   }
 

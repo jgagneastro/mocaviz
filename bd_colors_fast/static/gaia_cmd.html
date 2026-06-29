@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Gaia CMD</title>
   <link rel="stylesheet" href="static/styles.css?v=gaia-cmd-vetted-mtid-filters-20260627b">
-  <script src="static/auth_theme.js?v=dataviz-links-20260626a"></script>
+  <script src="static/auth_theme.js?v=gaia-cmd-discussion-20260629a"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260611a"></script>
 </head>
@@ -192,12 +192,12 @@
         photometry (<code>phot_proc_mode=2</code>), low flux-significance
         mean photometry (<code>G&lt;50</code> or <code>BP/RP&lt;10</code> in
         flux-over-error), outlying <code>phot_bp_rp_excess_factor</code> values
-        using a color-dependent envelope, and BP/RP contaminated-transit
-        fractions above 20%. <code>Strict</code> additionally requires
+        using a color-dependent envelope, and BP/RP contaminated- or
+        blended-transit fractions above 20%. <code>Strict</code> additionally requires
         <code>RUWE&lt;=1.4</code>, gold photometry
         (<code>phot_proc_mode=0</code>), stronger flux-over-error limits
         (<code>G&gt;=100</code>, <code>BP/RP&gt;=20</code>), zero BP/RP
-        contaminated transits, and conservative image-parameter diagnostics
+        contaminated and blended transits, and conservative image-parameter diagnostics
         (<code>ipd_frac_multi_peak&lt;=2</code>,
         <code>ipd_frac_odd_win&lt;=10</code>, and
         <code>ipd_gof_harmonic_amplitude&lt;=0.1</code> when present).
