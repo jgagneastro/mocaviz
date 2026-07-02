@@ -17,6 +17,7 @@
   Plotly.__mocavizExportFixInstalled = true;
 
   const settlingByPlot = new WeakMap();
+  const imageWarmupByPlot = new WeakMap();
   let exportDepth = 0;
 
   function plotDiv(gd) {
@@ -87,17 +88,49 @@
     }
   }
 
-  async function warmImageExport(gd, context, args, toImageFn) {
+  function plotUsesWebGl(div) {
+    return (div?.data || []).some((trace) => {
+      const type = String(trace?.type || "scatter").toLowerCase();
+      return type.includes("gl") || type.includes("3d") || type === "surface" || type === "mesh3d";
+    });
+  }
+
+  function imageWarmupSignature(div) {
+    const traces = (div?.data || []).map((trace) => {
+      const x = Array.isArray(trace?.x) ? trace.x.length : 0;
+      const y = Array.isArray(trace?.y) ? trace.y.length : 0;
+      const z = Array.isArray(trace?.z) ? trace.z.length : 0;
+      return `${trace?.type || "scatter"}:${x}:${y}:${z}`;
+    }).join("|");
+    return `${traces};${div?.clientWidth || 0}x${div?.clientHeight || 0}`;
+  }
+
+  function compactImageOptions(div, args) {
+    const original = (args && args[1] && typeof args[1] === "object") ? args[1] : {};
+    const width = Math.max(80, Math.min(360, Number(original.width) || div?.clientWidth || 360));
+    const height = Math.max(80, Math.min(260, Number(original.height) || div?.clientHeight || 260));
+    return {
+      ...original,
+      format: "png",
+      filename: "__mocaviz_export_warmup__",
+      width,
+      height,
+      scale: 1,
+    };
+  }
+
+  async function warmImageExport(gd, context, args, toImageFn, timeoutMs) {
     if (typeof toImageFn !== "function") return;
     const div = plotDiv(gd);
     if (!div || !div._fullLayout) return;
 
     const imageArgs = Array.prototype.slice.call(args);
     imageArgs[0] = div;
+    imageArgs[1] = compactImageOptions(div, imageArgs);
     try {
       await Promise.race([
         toImageFn.apply(context, imageArgs),
-        timeout(2500),
+        timeout(timeoutMs),
       ]);
       await frame();
       await frame();
@@ -112,12 +145,40 @@
     return null;
   }
 
+  async function prewarmImageExport(gd) {
+    const div = plotDiv(gd);
+    if (!div || !div._fullLayout || !plotUsesWebGl(div)) return;
+    const signature = imageWarmupSignature(div);
+    const existing = imageWarmupByPlot.get(div);
+    if (existing?.signature === signature) {
+      await existing.promise;
+      return;
+    }
+
+    const promise = Promise.resolve().then(async () => {
+      await settlePlot(div);
+      await warmImageExport(
+        div,
+        Plotly,
+        [div, compactImageOptions(div, [div, div._context?.toImageButtonOptions || {}])],
+        originalPlotlyToImage,
+        8000,
+      );
+    });
+    imageWarmupByPlot.set(div, { signature, promise });
+    await promise;
+  }
+
   function prewarmPlot(gd) {
     const div = plotDiv(gd);
     if (!div || !div._fullLayout || settlingByPlot.has(div)) return;
     window.clearTimeout(div.__mocavizExportPrewarmTimer);
     div.__mocavizExportPrewarmTimer = window.setTimeout(() => {
-      if (div.isConnected) settlePlot(div);
+      if (div.isConnected) {
+        settlePlot(div)
+          .then(() => prewarmImageExport(div))
+          .catch(() => {});
+      }
     }, 100);
   }
 
@@ -129,7 +190,7 @@
         const args = arguments;
         return withSettledPlot(gd, async function mocavizSettledExport() {
           if (/download/i.test(key)) {
-            await warmImageExport(gd, this, args, originalToImageFor(owner));
+            await warmImageExport(gd, this, args, originalToImageFor(owner), 12000);
           }
           return original.apply(this, args);
         }, this, args);
