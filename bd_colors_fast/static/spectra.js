@@ -53,6 +53,8 @@ const speState = {
   ignoreSpecids: new Set(),
   ignoreSelectionInitialized: false,
   dragSpecid: null,
+  logTickRefreshTimer: null,
+  refreshingLogTicks: false,
 };
 
 const speEl = {};
@@ -693,6 +695,70 @@ function bindSpectraPlotEvents() {
     renderSpectraTable();
     updateSpectraIgnoreControls();
   });
+  speEl["spe-plot"].on("plotly_relayout", scheduleSpectraLogTickRefresh);
+}
+
+function scheduleSpectraLogTickRefresh(event = {}) {
+  if (speState.refreshingLogTicks) return;
+  if (!speEl["spe-xlog"]?.checked && !speEl["spe-ylog"]?.checked) return;
+  const keys = Object.keys(event || {});
+  const rangeChanged = !keys.length || keys.some((key) => (
+    /^xaxis\.(range|autorange|type)/.test(key)
+    || /^xaxis\.range\[\d+\]/.test(key)
+    || /^yaxis\.(range|autorange|type)/.test(key)
+    || /^yaxis\.range\[\d+\]/.test(key)
+  ));
+  if (!rangeChanged) return;
+  window.clearTimeout(speState.logTickRefreshTimer);
+  speState.logTickRefreshTimer = window.setTimeout(refreshSpectraLogAxisTicks, 40);
+}
+
+function refreshSpectraLogAxisTicks() {
+  const plot = speEl["spe-plot"];
+  if (!plot || typeof Plotly === "undefined" || typeof Plotly.relayout !== "function" || speState.refreshingLogTicks) return;
+  const update = {};
+  if (speEl["spe-xlog"]?.checked) {
+    const ticks = visibleSpectraLogAxisTicks(plot, "xaxis", { minTicks: 3, fallbackTickCount: 5 });
+    if (ticks.values.length) {
+      update["xaxis.tickmode"] = "array";
+      update["xaxis.tickvals"] = ticks.values;
+      update["xaxis.ticktext"] = ticks.text;
+    }
+  }
+  if (speEl["spe-ylog"]?.checked) {
+    const ticks = visibleSpectraLogAxisTicks(plot, "yaxis", { majorLabelsOnly: true, minTicks: 3, fallbackTickCount: 5 });
+    if (ticks.values.length) {
+      update["yaxis.tickmode"] = "array";
+      update["yaxis.tickvals"] = ticks.values;
+      update["yaxis.ticktext"] = ticks.text;
+    }
+  }
+  if (!Object.keys(update).length) return;
+  speState.refreshingLogTicks = true;
+  Promise.resolve(Plotly.relayout(plot, update))
+    .catch((error) => console.warn("Unable to refresh spectral log-axis ticks", error))
+    .finally(() => {
+      speState.refreshingLogTicks = false;
+    });
+}
+
+function visibleSpectraLogAxisTicks(plot, axisName, options = {}) {
+  const range = visibleSpectraLogAxisLinearRange(plot, axisName);
+  return range ? plainLogTicks(range[0], range[1], options) : { values: [], text: [] };
+}
+
+function visibleSpectraLogAxisLinearRange(plot, axisName) {
+  const layoutAxis = plot?.layout?.[axisName] || {};
+  const fullAxis = plot?._fullLayout?.[axisName] || {};
+  const axisType = fullAxis.type || layoutAxis.type;
+  const range = Array.isArray(fullAxis.range) ? fullAxis.range : layoutAxis.range;
+  if (axisType !== "log" || !Array.isArray(range) || range.length < 2) return null;
+  const lowerLog = Number(range[0]);
+  const upperLog = Number(range[1]);
+  if (!finite(lowerLog) || !finite(upperLog) || lowerLog === upperLog) return null;
+  const xmin = 10 ** Math.min(lowerLog, upperLog);
+  const xmax = 10 ** Math.max(lowerLog, upperLog);
+  return finite(xmin) && finite(xmax) && xmin > 0 && xmax > xmin ? [xmin, xmax] : null;
 }
 
 function processSpectraPayload() {
@@ -2000,10 +2066,68 @@ function plainLogTicks(xmin, xmax, options = {}) {
       if (value >= xmin && value <= xmax) ticks.push({ value, major: multiplier === 1 });
     }
   }
+  const minTicks = Number.isFinite(Number(options.minTicks)) ? Math.max(1, Number(options.minTicks)) : 3;
+  const labeledCount = options.majorLabelsOnly ? ticks.filter((tick) => tick.major).length : ticks.length;
+  if (ticks.length < minTicks || labeledCount < Math.min(2, minTicks)) {
+    const linearTicks = niceLinearTickObjects(xmin, xmax, options.fallbackTickCount || 5);
+    if (linearTicks.length) {
+      return {
+        values: linearTicks.map((tick) => tick.value),
+        text: linearTicks.map((tick) => tick.text),
+      };
+    }
+  }
   return {
     values: ticks.map((tick) => tick.value),
     text: ticks.map((tick) => options.majorLabelsOnly && !tick.major ? "" : formatPlainLogTick(tick.value)),
   };
+}
+
+function niceLinearTickObjects(xmin, xmax, targetCount = 5) {
+  if (!finite(xmin) || !finite(xmax) || xmax <= xmin) return [];
+  const count = Math.max(2, Math.min(8, Math.round(Number(targetCount) || 5)));
+  const step = niceLinearTickStep((xmax - xmin) / Math.max(1, count - 1));
+  if (!finite(step) || step <= 0) return [];
+  const start = Math.ceil((xmin - step * 1e-9) / step) * step;
+  const values = [];
+  for (let value = start; value <= xmax + step * 1e-9 && values.length < 20; value += step) {
+    const rounded = roundNiceLinearTick(value, step);
+    if (rounded >= xmin - step * 1e-8 && rounded <= xmax + step * 1e-8) values.push(rounded);
+  }
+  if (values.length < 2) {
+    values.push(roundNiceLinearTick(xmin, (xmax - xmin) / 2));
+    values.push(roundNiceLinearTick((xmin + xmax) / 2, (xmax - xmin) / 2));
+    values.push(roundNiceLinearTick(xmax, (xmax - xmin) / 2));
+  }
+  const unique = [...new Set(values)].sort((a, b) => a - b);
+  return unique.map((value) => ({ value, text: formatNiceLinearTick(value, step) }));
+}
+
+function niceLinearTickStep(rawStep) {
+  if (!finite(rawStep) || rawStep <= 0) return NaN;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  return nice * magnitude;
+}
+
+function roundNiceLinearTick(value, step) {
+  const decimals = niceLinearTickDecimals(step);
+  return Number(Number(value).toFixed(decimals));
+}
+
+function formatNiceLinearTick(value, step) {
+  if (Math.abs(value) >= 1000 && Math.abs(step) >= 1) {
+    return Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+  const decimals = niceLinearTickDecimals(step);
+  return Number(value).toFixed(decimals).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+function niceLinearTickDecimals(step) {
+  const positiveStep = Math.abs(Number(step));
+  if (!finite(positiveStep) || positiveStep <= 0 || positiveStep >= 1) return 0;
+  return Math.min(8, Math.max(0, Math.ceil(-Math.log10(positiveStep)) + 1));
 }
 
 function formatPlainLogTick(value) {
