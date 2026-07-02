@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Fast Spectral Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=spectral-explorer-logticks-20260702a">
+  <link rel="stylesheet" href="static/styles.css?v=spectral-explorer-xrange-20260702a">
   <script src="static/auth_theme.js?v=dataviz-links-20260626a"></script>
   <script src="plotly.min.js"></script>
   <script src="static/plotly_export_fix.js?v=20260702b"></script>
@@ -78,6 +78,23 @@
             Bins per micron
             <input id="spe-display-bins" type="number" value="200" min="1" max="2000" step="1" disabled>
           </label>
+          <div class="spectra-xrange-control">
+            <div class="range-heading">
+              <span>Displayed wavelength range</span>
+              <output>μm</output>
+            </div>
+            <div class="spectra-xrange-grid">
+              <label>
+                Min
+                <input id="spe-xrange-min" type="number" min="0" step="0.001" placeholder="Auto">
+              </label>
+              <label>
+                Max
+                <input id="spe-xrange-max" type="number" min="0" step="0.001" placeholder="Auto">
+              </label>
+            </div>
+            <button id="spe-reset-xrange" type="button">Reset X Range</button>
+          </div>
         </section>
 
         <section class="control-section filters-section">
@@ -159,6 +176,7 @@
           <tr><td><code>error_shade</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows a smoothed one-sigma shaded envelope around each displayed spectrum.</td></tr>
           <tr><td><code>snr</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Displays flux divided by flux uncertainty per pixel instead of spectral flux.</td></tr>
           <tr><td><code>xlog</code>, <code>ylog</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Enables logarithmic scaling for either axis.</td></tr>
+          <tr><td><code>xrange</code>, <code>xmin</code>, <code>xmax</code></td><td>Range in μm, such as <code>0.8-2.5</code></td><td>Sets the displayed wavelength range.</td></tr>
           <tr><td><code>fnu_jy</code>, <code>fnu</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Converts the display from <i>F</i><sub>λ</sub> to <i>F</i><sub>ν</sub> in Jy.</td></tr>
           <tr><td><code>normalize</code></td><td><code>0</code> disables normalization</td><td>Normalizes spectra by the selected wavelength range by default.</td></tr>
           <tr><td><code>norm</code></td><td>Range in μm, such as <code>0.95-1.35</code></td><td>Sets the normalization range.</td></tr>
@@ -184,6 +202,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectra.js?v=spectral-explorer-logticks-20260702a"></script>
+  <script src="static/spectra.js?v=spectral-explorer-xrange-20260702a"></script>
 </body>
 </html>

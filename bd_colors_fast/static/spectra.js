@@ -105,6 +105,9 @@ function collectSpectraElements() {
     "spe-decrease-resolution",
     "spe-display-bins-wrap",
     "spe-display-bins",
+    "spe-xrange-min",
+    "spe-xrange-max",
+    "spe-reset-xrange",
     "spe-normalize",
     "spe-normrange",
     "spe-reset-norm",
@@ -162,6 +165,9 @@ function readSpectraUrlState() {
     || params.get("decrease_resolution_bins")
     || String(speDefaultDisplayBinsPerMicron)
   );
+  const displayXRange = parseSpectraDisplayXRangeUrl(params);
+  speEl["spe-xrange-min"].value = displayXRange.min ?? "";
+  speEl["spe-xrange-max"].value = displayXRange.max ?? "";
   speEl["spe-normalize"].checked = !asFalse(params.get("normalize"));
   speEl["spe-normrange"].value = params.get("norm") || speDefaultNorm;
 }
@@ -210,6 +216,23 @@ function bindSpectraControls() {
   speEl["spe-display-bins"].addEventListener("input", renderDisplayBinning);
   speEl["spe-display-bins"].addEventListener("change", () => {
     updateSpectraDisplayResolutionControls();
+    renderSpectra();
+    updateSpectraUrl();
+  });
+  const renderDisplayXRange = debounce(() => {
+    renderSpectra();
+    updateSpectraUrl();
+  }, 180);
+  for (const id of ["spe-xrange-min", "spe-xrange-max"]) {
+    speEl[id].addEventListener("input", renderDisplayXRange);
+    speEl[id].addEventListener("change", () => {
+      renderSpectra();
+      updateSpectraUrl();
+    });
+  }
+  speEl["spe-reset-xrange"].addEventListener("click", () => {
+    speEl["spe-xrange-min"].value = "";
+    speEl["spe-xrange-max"].value = "";
     renderSpectra();
     updateSpectraUrl();
   });
@@ -1211,8 +1234,9 @@ function spectraLayout(processed) {
   const shapes = [];
   const annotations = [];
   const allX = processed.flatMap((spectrum) => displayedSpectrumPoints(spectrum).map((point) => point.lam));
-  const allY = spectraYAxisValues(processed, ylog);
-  const xRange = numericAxisRange(allX, { log: xlog, fallback: xlog ? [0.7, 30] : [0.7, 2.6] });
+  const autoXRange = numericAxisRange(allX, { log: xlog, fallback: xlog ? [0.7, 30] : [0.7, 2.6] });
+  const xRange = spectraDisplayXRange(autoXRange) || autoXRange;
+  const allY = spectraYAxisValues(processed, ylog, { xRange });
   const yRange = numericAxisRange(allY, { log: ylog, fallback: null, padFraction: 0.08 });
   const xmin = xRange ? xRange[0] : NaN;
   const xmax = xRange ? xRange[1] : NaN;
@@ -1304,15 +1328,28 @@ function spectraLayout(processed) {
   };
 }
 
-function spectraYAxisValues(processed, ylog) {
-  const values = processed.flatMap((spectrum) => displayedSpectrumPoints(spectrum).map((point) => point.y));
+function spectraYAxisValues(processed, ylog, options = {}) {
+  const xRange = Array.isArray(options.xRange) ? options.xRange : null;
+  const values = processed.flatMap((spectrum) => (
+    displayedSpectrumPoints(spectrum)
+      .filter((point) => spectralPointInXRange(point, xRange))
+      .map((point) => point.y)
+  ));
   if (!speEl["spe-error-shade"].checked || speEl["spe-snr"].checked) return values;
   for (const spectrum of processed) {
-    for (const segment of errorShadeSegments(spectrum.points, ylog)) {
+    const points = spectrum.points.filter((point) => spectralPointInXRange(point, xRange));
+    for (const segment of errorShadeSegments(points, ylog)) {
       values.push(...segment.y);
     }
   }
   return values;
+}
+
+function spectralPointInXRange(point, xRange) {
+  if (!xRange) return true;
+  const lam = Number(point?.lam);
+  if (!finite(lam)) return false;
+  return lam >= xRange[0] && lam <= xRange[1];
 }
 
 function featureAnnotationX(band, xlog) {
@@ -1841,6 +1878,25 @@ function updateSpectraUrl() {
   params.delete("show_ignored");
   setBoolParam(params, "xlog", speEl["spe-xlog"].checked);
   setBoolParam(params, "ylog", speEl["spe-ylog"].checked);
+  params.delete("xrange");
+  params.delete("x_range");
+  params.delete("wavelength_range");
+  params.delete("xmin");
+  params.delete("x_min");
+  params.delete("lambda_min");
+  params.delete("xmax");
+  params.delete("x_max");
+  params.delete("lambda_max");
+  const xRangeMin = parsePositiveNumber(speEl["spe-xrange-min"].value);
+  const xRangeMax = parsePositiveNumber(speEl["spe-xrange-max"].value);
+  if (xRangeMin !== null && xRangeMax !== null && xRangeMin !== xRangeMax) {
+    const lower = Math.min(xRangeMin, xRangeMax);
+    const upper = Math.max(xRangeMin, xRangeMax);
+    params.set("xrange", `${formatXRangeUrlNumber(lower)}-${formatXRangeUrlNumber(upper)}`);
+  } else {
+    if (xRangeMin !== null) params.set("xmin", formatXRangeUrlNumber(xRangeMin));
+    if (xRangeMax !== null) params.set("xmax", formatXRangeUrlNumber(xRangeMax));
+  }
   setBoolParam(params, "fnu_jy", speEl["spe-fnu"].checked);
   if (!speEl["spe-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
@@ -2023,6 +2079,49 @@ function parseNormRange(raw) {
   const b = Number(match[2]);
   if (!finite(a) || !finite(b) || a === b) return [0.95, 1.35];
   return [Math.min(a, b), Math.max(a, b)];
+}
+
+function parseSpectraDisplayXRangeUrl(params) {
+  const fromRange = parseSpectraRangeText(params.get("xrange") || params.get("x_range") || params.get("wavelength_range"));
+  const min = parsePositiveNumber(params.get("xmin") || params.get("x_min") || params.get("lambda_min")) ?? fromRange.min;
+  const max = parsePositiveNumber(params.get("xmax") || params.get("x_max") || params.get("lambda_max")) ?? fromRange.max;
+  return { min: formatXRangeControlNumber(min), max: formatXRangeControlNumber(max) };
+}
+
+function parseSpectraRangeText(raw) {
+  const values = String(raw || "")
+    .match(/\d*\.?\d+(?:e[+-]?\d+)?/gi)
+    ?.map(Number)
+    .filter((value) => finite(value) && value > 0) || [];
+  if (values.length < 2 || values[0] === values[1]) return { min: null, max: null };
+  return { min: Math.min(values[0], values[1]), max: Math.max(values[0], values[1]) };
+}
+
+function spectraDisplayXRange(autoRange = null) {
+  const min = parsePositiveNumber(speEl["spe-xrange-min"]?.value);
+  const max = parsePositiveNumber(speEl["spe-xrange-max"]?.value);
+  if (min === null && max === null) return null;
+  let lower = min ?? (Array.isArray(autoRange) ? Number(autoRange[0]) : null);
+  let upper = max ?? (Array.isArray(autoRange) ? Number(autoRange[1]) : null);
+  if (!finite(lower) || !finite(upper) || lower <= 0 || upper <= 0 || lower === upper) return null;
+  if (lower > upper && min !== null && max !== null) [lower, upper] = [upper, lower];
+  return lower < upper ? [lower, upper] : null;
+}
+
+function parsePositiveNumber(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const number = Number(value);
+  return finite(number) && number > 0 ? number : null;
+}
+
+function formatXRangeControlNumber(value) {
+  if (!finite(value) || Number(value) <= 0) return "";
+  return Number(value).toPrecision(8).replace(/\.?0+$/, "");
+}
+
+function formatXRangeUrlNumber(value) {
+  if (!finite(value) || Number(value) <= 0) return "";
+  return Number(value).toPrecision(10).replace(/\.?0+$/, "");
 }
 
 function numericAxisRange(values, options = {}) {

@@ -454,6 +454,26 @@ body.is-mocadb-team textarea:focus {
   opacity: .7;
 }
 
+.spectra-xrange-control {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(37, 35, 41, .16);
+}
+
+.spectra-xrange-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.spectra-xrange-grid label {
+  margin: 8px 0;
+}
+
+.spectra-xrange-control button {
+  width: 100%;
+}
+
 .designation-picker {
   position: relative;
   margin: 10px 0;
