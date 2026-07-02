@@ -28,6 +28,10 @@
     return new Promise((resolve) => window.requestAnimationFrame(resolve));
   }
 
+  function timeout(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
   async function ignoreFailures(promise) {
     try {
       await promise;
@@ -60,7 +64,8 @@
 
       await frame();
       await frame();
-    })();
+      await timeout(80);
+    });
 
     settlingByPlot.set(div, settle);
     try {
@@ -82,6 +87,31 @@
     }
   }
 
+  async function warmImageExport(gd, context, args, toImageFn) {
+    if (typeof toImageFn !== "function") return;
+    const div = plotDiv(gd);
+    if (!div || !div._fullLayout) return;
+
+    const imageArgs = Array.prototype.slice.call(args);
+    imageArgs[0] = div;
+    try {
+      await Promise.race([
+        toImageFn.apply(context, imageArgs),
+        timeout(2500),
+      ]);
+      await frame();
+      await frame();
+    } catch (_) {
+      // The real download should still run if a hidden warm-up export fails.
+    }
+  }
+
+  function originalToImageFor(owner) {
+    if (owner === Plotly && typeof originalPlotlyToImage === "function") return originalPlotlyToImage;
+    if (owner === Snapshot && typeof originalSnapshotToImage === "function") return originalSnapshotToImage;
+    return null;
+  }
+
   function prewarmPlot(gd) {
     const div = plotDiv(gd);
     if (!div || !div._fullLayout || settlingByPlot.has(div)) return;
@@ -96,10 +126,19 @@
     const original = owner[key];
     owner[key] = {
       [wrapperName]: function mocavizWrappedExport(gd) {
-        return withSettledPlot(gd, original, this, arguments);
+        const args = arguments;
+        return withSettledPlot(gd, async function mocavizSettledExport() {
+          if (/download/i.test(key)) {
+            await warmImageExport(gd, this, args, originalToImageFor(owner));
+          }
+          return original.apply(this, args);
+        }, this, args);
       },
     }[wrapperName];
   }
+
+  const originalPlotlyToImage = Plotly.toImage;
+  const originalSnapshotToImage = Snapshot.toImage;
 
   wrapExport(Plotly, "downloadImage", "mocavizDownloadImage");
   wrapExport(Plotly, "toImage", "mocavizToImage");
