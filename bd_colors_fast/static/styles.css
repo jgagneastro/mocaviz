@@ -1731,6 +1731,7 @@ body.is-management #spe-plot .modebar {
 }
 
 .spectra-token {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -1744,12 +1745,47 @@ body.is-management #spe-plot .modebar {
   font-size: 12px;
 }
 
+.spectra-token.is-dragging {
+  opacity: 0.42;
+}
+
+.spectra-token.is-drop-before::before,
+.spectra-token.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: #2f6fbe;
+  box-shadow: 0 0 0 2px rgba(47, 111, 190, 0.18);
+  pointer-events: none;
+}
+
+.spectra-token.is-drop-before::before {
+  top: -6px;
+}
+
+.spectra-token.is-drop-after::after {
+  bottom: -6px;
+}
+
 .spectra-token-swatch {
-  flex: 0 0 4px;
+  flex: 0 0 6px;
   align-self: stretch;
   min-height: 46px;
   border-radius: 3px;
   background: var(--swatch-color, #555555);
+}
+
+.spectra-token-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.spectra-token-drag-handle:active,
+.spectra-selected-list.is-reordering .spectra-token-drag-handle {
+  cursor: grabbing;
 }
 
 .spectra-token-body {

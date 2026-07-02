@@ -52,6 +52,7 @@ const speState = {
   authContext: { role: "", hasCredentials: false },
   ignoreSpecids: new Set(),
   ignoreSelectionInitialized: false,
+  dragSpecid: null,
 };
 
 const speEl = {};
@@ -340,6 +341,7 @@ function addSelectedSpectrum(specid, labelOrMetadata) {
 }
 
 function renderSelectedSpectra() {
+  bindSelectedSpectrumDragHandlers();
   if (!speState.selected.length) {
     speEl["spe-selected-list"].innerHTML = `<div class="plot-hint">No spectra selected</div>`;
     return;
@@ -383,8 +385,8 @@ function selectedSpectrumTokenHtml(item) {
     ? metadata.spectrum_name
     : "";
   return `
-    <div class="spectra-token" title="${escapeHtml(titleParts.join("\n"))}">
-      <span class="spectra-token-swatch" style="--swatch-color: ${escapeHtml(color)}"></span>
+    <div class="spectra-token" data-specid="${specid}" title="${escapeHtml(titleParts.join("\n"))}">
+      <span class="spectra-token-swatch spectra-token-drag-handle" draggable="true" data-specid="${specid}" title="Drag to reorder" aria-label="Drag specid ${specid} to reorder" style="--swatch-color: ${escapeHtml(color)}"></span>
       <span class="spectra-token-body">
         <span class="spectra-token-title">${escapeHtml(spectrumName(metadata, specid))}</span>
         <span class="spectra-token-meta">${escapeHtml(idParts)}</span>
@@ -394,6 +396,109 @@ function selectedSpectrumTokenHtml(item) {
       <button type="button" aria-label="Remove specid ${item.specid}" data-specid="${item.specid}">x</button>
     </div>
   `;
+}
+
+function bindSelectedSpectrumDragHandlers() {
+  const list = speEl["spe-selected-list"];
+  if (!list || list.dataset.dragBound === "1") return;
+  list.dataset.dragBound = "1";
+  list.addEventListener("dragstart", onSelectedSpectrumDragStart);
+  list.addEventListener("dragover", onSelectedSpectrumDragOver);
+  list.addEventListener("drop", onSelectedSpectrumDrop);
+  list.addEventListener("dragend", clearSelectedSpectrumDragState);
+  list.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget && list.contains(event.relatedTarget)) return;
+    clearSelectedSpectrumDropMarkers();
+  });
+}
+
+function onSelectedSpectrumDragStart(event) {
+  const handle = event.target.closest?.(".spectra-token-drag-handle");
+  if (!handle) return;
+  const token = handle.closest(".spectra-token");
+  const specid = Number(token?.dataset?.specid);
+  if (!Number.isFinite(specid)) return;
+  speState.dragSpecid = specid;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(specid));
+  }
+  requestAnimationFrame(() => {
+    token.classList.add("is-dragging");
+    speEl["spe-selected-list"]?.classList.add("is-reordering");
+  });
+}
+
+function onSelectedSpectrumDragOver(event) {
+  if (!Number.isFinite(speState.dragSpecid)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  markSelectedSpectrumDropTarget(selectedSpectrumDropPlacement(event.clientY));
+}
+
+function onSelectedSpectrumDrop(event) {
+  if (!Number.isFinite(speState.dragSpecid)) return;
+  event.preventDefault();
+  const placement = selectedSpectrumDropPlacement(event.clientY);
+  const moved = moveSelectedSpectrum(speState.dragSpecid, placement.targetSpecid, placement.position);
+  clearSelectedSpectrumDragState();
+  if (!moved) return;
+  updateSpectraUrl();
+  if (speState.payload?.spectra?.length) renderSpectra();
+  else renderSelectedSpectra();
+}
+
+function selectedSpectrumDropPlacement(clientY) {
+  const list = speEl["spe-selected-list"];
+  const tokens = Array.from(list?.querySelectorAll(".spectra-token") || [])
+    .filter((token) => Number(token.dataset.specid) !== Number(speState.dragSpecid));
+  if (!tokens.length) return { targetSpecid: null, position: "after", token: null };
+  for (const token of tokens) {
+    const rect = token.getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) {
+      return { targetSpecid: Number(token.dataset.specid), position: "before", token };
+    }
+  }
+  const token = tokens[tokens.length - 1];
+  return { targetSpecid: Number(token.dataset.specid), position: "after", token };
+}
+
+function markSelectedSpectrumDropTarget(placement) {
+  clearSelectedSpectrumDropMarkers();
+  if (!placement?.token) return;
+  placement.token.classList.add(placement.position === "before" ? "is-drop-before" : "is-drop-after");
+}
+
+function clearSelectedSpectrumDropMarkers() {
+  speEl["spe-selected-list"]?.querySelectorAll(".spectra-token").forEach((token) => {
+    token.classList.remove("is-drop-before", "is-drop-after");
+  });
+}
+
+function clearSelectedSpectrumDragState() {
+  speState.dragSpecid = null;
+  clearSelectedSpectrumDropMarkers();
+  speEl["spe-selected-list"]?.classList.remove("is-reordering");
+  speEl["spe-selected-list"]?.querySelectorAll(".spectra-token").forEach((token) => {
+    token.classList.remove("is-dragging");
+  });
+}
+
+function moveSelectedSpectrum(specid, targetSpecid, position) {
+  const fromIndex = speState.selected.findIndex((item) => Number(item.specid) === Number(specid));
+  if (fromIndex < 0) return false;
+  const moving = speState.selected[fromIndex];
+  const next = speState.selected.filter((item) => Number(item.specid) !== Number(specid));
+  let insertIndex = next.length;
+  if (targetSpecid !== null && targetSpecid !== undefined) {
+    const targetIndex = next.findIndex((item) => Number(item.specid) === Number(targetSpecid));
+    if (targetIndex >= 0) insertIndex = position === "after" ? targetIndex + 1 : targetIndex;
+  }
+  next.splice(insertIndex, 0, moving);
+  const changed = next.some((item, index) => Number(item.specid) !== Number(speState.selected[index]?.specid));
+  if (!changed) return false;
+  speState.selected = next;
+  return true;
 }
 
 function spectraMetadataFromOption(option) {
@@ -597,9 +702,16 @@ function processSpectraPayload() {
   const showSnr = speEl["spe-snr"].checked;
   const hideIgnored = speEl["spe-hide-ignored"].checked;
   const ylog = speEl["spe-ylog"].checked;
-  return (speState.payload.spectra || []).map((spectrum, index) => {
+  const selectedOrder = new Map((speState.selected || []).map((item, index) => [Number(item.specid), index]));
+  return (speState.payload.spectra || []).slice().sort((a, b) => {
+    const aSpecid = Number(a.moca_specid);
+    const bSpecid = Number(b.moca_specid);
+    const aOrder = selectedOrder.has(aSpecid) ? selectedOrder.get(aSpecid) : Number.MAX_SAFE_INTEGER;
+    const bOrder = selectedOrder.has(bSpecid) ? selectedOrder.get(bSpecid) : Number.MAX_SAFE_INTEGER;
+    return aOrder - bOrder;
+  }).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
-    const color = spectrumTraceColor(spectrum, index);
+    const color = spectraColorForSpecid(Number(spectrum.moca_specid));
     const rawRows = (spectrum.rows || []).map((row, rowIndex) => {
       const lam = wavelengthMicron(row.lam);
       const ignored = ignoredFlag(row.ignored);
@@ -676,7 +788,7 @@ function processSpectraPayload() {
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
-      name: spectrumLegendName(metadata, Number(spectrum.moca_specid)),
+      name: spectrumLegendName(metadata, Number(spectrum.moca_specid), displayPoints),
       rawRows,
       points,
       ignoredPoints,
@@ -1115,7 +1227,7 @@ function spectraLayout(processed) {
       xanchor: "left",
       x: 0,
       bgcolor: "rgba(238,238,239,0.88)",
-      font: { size: 12 },
+      font: { size: 10 },
     },
     xaxis,
     yaxis,
@@ -1417,7 +1529,7 @@ function renderSpectraIgnoreTraceChoices() {
       <label class="checkline spectra-ignore-trace-choice">
         <input type="checkbox" value="${specid}"${checked}>
         <span class="spectra-token-swatch" style="--swatch-color: ${escapeHtml(spectrum.color || spectraColorForSpecid(specid))}"></span>
-        <span>${escapeHtml(spectrumLegendName(spectrum.metadata, specid))}</span>
+        <span>${escapeHtml(spectrum.name || spectrumLegendName(spectrum.metadata, specid))}</span>
       </label>
     `;
   }).join("");
@@ -1714,14 +1826,40 @@ function spectrumName(metadata, specid) {
   return `${designation}${spt}`;
 }
 
-function spectrumLegendName(metadata, specid) {
+function spectrumLegendName(metadata, specid, points = []) {
   const oid = normalizedMocaOid(metadata?.moca_oid);
   const idText = [oid ? `oid${oid}` : "", `specid${specid}`].filter(Boolean).join(" / ");
-  return `${idText}: ${spectrumName(metadata, specid)}`;
+  const instrument = instrumentLegendLabel(metadata);
+  const wavelengthRange = wavelengthRangeLabel(points);
+  return `${idText}: ${spectrumName(metadata, specid)}${instrument ? ` [${instrument}]` : ""}${wavelengthRange ? ` ${wavelengthRange}` : ""}`;
 }
 
 function instrumentLabel(metadata) {
   return metadata?.instrument_description || metadata?.moca_instrument_description || metadata?.moca_instid || "";
+}
+
+function instrumentLegendLabel(metadata) {
+  const instrument = String(
+    metadata?.moca_instid
+    || metadata?.moca_instrument_id
+    || metadata?.instrument_name
+    || metadata?.instrument_description
+    || metadata?.moca_instrument_description
+    || ""
+  ).trim();
+  const mode = String(metadata?.instrument_mode_name || "").trim();
+  if (!instrument) return mode;
+  if (!mode || instrument.toLowerCase().includes(mode.toLowerCase())) return instrument;
+  return `${instrument} ${mode}`;
+}
+
+function wavelengthRangeLabel(points) {
+  const wavelengths = (points || []).map((point) => Number(point?.lam)).filter(finite);
+  if (!wavelengths.length) return "";
+  const minWavelength = Math.min(...wavelengths);
+  const maxWavelength = Math.max(...wavelengths);
+  if (!finite(minWavelength) || !finite(maxWavelength)) return "";
+  return `(${minWavelength.toFixed(1)}-${maxWavelength.toFixed(1)} μm)`;
 }
 
 function observationDateLabel(metadata) {
