@@ -37,19 +37,37 @@ const gcmdDefaultAssociations = [
 ];
 
 const gcmdAssociationPalette = [
-  "#0072b2",
-  "#d55e00",
-  "#009e73",
-  "#cc79a7",
-  "#e69f00",
-  "#56b4e9",
-  "#6b5b95",
-  "#8a7f2d",
-  "#b54a4a",
-  "#3d7f6f",
-  "#6f63a8",
-  "#b05f20",
+  "#ff1f1f",
+  "#006dff",
+  "#00a651",
+  "#ff00a8",
+  "#ff8c00",
+  "#00b7eb",
+  "#7a3cff",
+  "#67c600",
+  "#ff5c8a",
+  "#00a887",
+  "#f6c600",
+  "#5c9dff",
+  "#ff4d00",
+  "#33cc33",
+  "#cc33ff",
+  "#00d6d6",
 ];
+
+const gcmdAssociationSymbols = [
+  "circle",
+  "square",
+  "diamond",
+  "triangle-up",
+  "triangle-down",
+  "cross",
+  "x",
+  "triangle-left",
+  "triangle-right",
+  "star",
+];
+const gcmdAssociationSymbolThreshold = 3;
 
 const gcmdBandByPsid = {
   gaiadr1_gmag: "G",
@@ -128,6 +146,8 @@ const gcmdState = {
   loadToken: 0,
   aidSearchTimer: null,
   objectSearchTimer: null,
+  associationVisualMap: new Map(),
+  useAssociationSymbols: false,
 };
 
 const gcmdEl = {};
@@ -347,7 +367,7 @@ function readGaiaCmdUrlState() {
   });
   if (params.has("ruwe") || params.has("ruwe_max")) gcmdEl["gcmd-ruwe"].value = params.get("ruwe") || params.get("ruwe_max") || "";
   const gaiaQuality = firstPresentParam(params, ["gaia_quality", "gaia_phot_quality", "phot_quality", "quality"]);
-  gcmdEl["gcmd-gaia-quality"].value = normalizeGaiaCmdQuality(gaiaQuality || "off");
+  gcmdEl["gcmd-gaia-quality"].value = normalizeGaiaCmdQuality(gaiaQuality || "strict");
   const membershipProbMin = firstPresentParam(params, ["membership_prob_min", "ya_prob_min", "min_ya_prob", "min_membership_probability"]);
   gcmdEl["gcmd-membership-prob-min"].value = String(clampGaiaCmdMembershipProb(membershipProbMin ?? gcmdDefaultMembershipProbMin));
   updateGaiaCmdMembershipProbReadout();
@@ -356,7 +376,8 @@ function readGaiaCmdUrlState() {
   const vettedMtidParam = firstPresentParam(params, ["vetted_mtid", "vetted_mtids", "vetted_moca_mtid", "vetted_moca_mtids", "mmv_mtid"]);
   fillGaiaCmdVettedMtidSelect(parseCsv(vettedMtidParam || ""));
   gcmdEl["gcmd-filter-giants"].checked = truthyParam(params.get("filter_giants") || params.get("exclude_giants") || params.get("no_giants"));
-  gcmdEl["gcmd-filter-wd"].checked = truthyParam(params.get("filter_wd") || params.get("filter_wds") || params.get("filter_white_dwarfs") || params.get("exclude_wd") || params.get("exclude_wds") || params.get("no_wd") || params.get("no_wds"));
+  const filterWdParam = firstPresentParam(params, ["filter_wd", "filter_wds", "filter_white_dwarfs", "exclude_wd", "exclude_wds", "exclude_white_dwarfs", "no_wd", "no_wds"]);
+  gcmdEl["gcmd-filter-wd"].checked = filterWdParam === null ? true : truthyParam(filterWdParam);
   gcmdEl["gcmd-color-age"].checked = truthyParam(params.get("color_age") || params.get("color_by_age") || params.get("age"));
   gcmdEl["gcmd-raw-gaia"].checked = truthyParam(params.get("raw_gaia") || params.get("raw_photometry") || params.get("use_raw_gaia"));
   gcmdEl["gcmd-extcorr-only"].checked = truthyParam(params.get("extinction_corrected") || params.get("extcorr") || params.get("extinction_corrected_only"));
@@ -467,7 +488,7 @@ function gaiaCmdApiParams() {
   const gaiaQuality = normalizeGaiaCmdQuality(gcmdEl["gcmd-gaia-quality"]?.value);
   if (gaiaQuality !== "off") params.set("gaia_quality", gaiaQuality);
   if (gcmdEl["gcmd-filter-giants"].checked) params.set("filter_giants", "1");
-  if (gcmdEl["gcmd-filter-wd"].checked) params.set("filter_wd", "1");
+  params.set("filter_wd", gcmdEl["gcmd-filter-wd"].checked ? "1" : "0");
   if (gcmdEl["gcmd-color-age"].checked) params.set("color_age", "1");
   if (gcmdEl["gcmd-raw-gaia"].checked) params.set("raw_gaia", "1");
   if (gcmdEl["gcmd-extcorr-only"].checked) params.set("extinction_corrected", "1");
@@ -526,8 +547,17 @@ function updateGaiaCmdUrl() {
     params.delete("exclude_giants");
     params.delete("no_giants");
   }
-  if (!gcmdEl["gcmd-filter-wd"].checked) {
+  if (gcmdEl["gcmd-filter-wd"].checked) {
     params.delete("filter_wd");
+    params.delete("filter_wds");
+    params.delete("filter_white_dwarfs");
+    params.delete("exclude_wd");
+    params.delete("exclude_wds");
+    params.delete("exclude_white_dwarfs");
+    params.delete("no_wd");
+    params.delete("no_wds");
+  } else {
+    params.set("filter_wd", "0");
     params.delete("filter_wds");
     params.delete("filter_white_dwarfs");
     params.delete("exclude_wd");
@@ -870,7 +900,10 @@ function renderGaiaCmdPlot() {
   const displayRows = gaiaCmdDisplayRows();
   const nonHighlightRows = displayRows.filter((row) => !row._highlighted);
   const highlightRows = displayRows.filter((row) => row._highlighted);
+  const visibleAssociationOrder = associationOrder(nonHighlightRows);
+  updateGaiaCmdAssociationVisualMap(visibleAssociationOrder);
 
+  addSequenceTraces(traces, payload.sequences || []);
   if (colorByAge) {
     addAgeTraces(traces, nonHighlightRows, "Gaia CMD");
   } else {
@@ -879,16 +912,16 @@ function renderGaiaCmdPlot() {
       deemphasizedOpacity: 0.02,
       hover: fieldHoverEnabled(),
     });
-    for (const aid of associationOrder(nonHighlightRows)) {
+    for (const aid of visibleAssociationOrder) {
       addPlainTrace(traces, nonHighlightRows.filter((row) => row.moca_aid === aid), gaiaCmdAssociationLegendLabel(aid), colorForAssociation(aid), 6.1, `aid:${aid}`, {
         opacity: 0.84,
         deemphasizedOpacity: 0.2,
+        symbol: symbolForAssociation(aid),
       });
     }
   }
   addBinaryOverlayTrace(traces, displayRows);
   addHighlightTrace(traces, highlightRows);
-  addSequenceTraces(traces, payload.sequences || []);
   addSptAxisReferenceTrace(traces, payload.spt_axis || null, displayRows);
 
   const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, displayRows);
@@ -912,6 +945,7 @@ function addPlainTrace(traces, rows, name, color, size, legendgroup, options = {
       legendgroup,
       showlegend: true,
       hover: options.hover,
+      symbol: options.symbol,
     }));
   }
   if (deemph.length) {
@@ -923,6 +957,7 @@ function addPlainTrace(traces, rows, name, color, size, legendgroup, options = {
       legendgroup,
       showlegend: normal.length === 0,
       hover: options.hover,
+      symbol: options.symbol,
     }));
   }
 }
@@ -945,6 +980,7 @@ function markerTrace(rows, options) {
       size: options.size,
       color: options.color,
       opacity: options.opacity,
+      symbol: markerSymbolsForRows(rows, options.symbol),
       line: { width: 0, color: options.color },
     },
   };
@@ -1024,6 +1060,7 @@ function addAgeTraces(traces, rows, name) {
   addPlainTrace(traces, noAge.filter((row) => row.moca_aid), `${name} (no age)`, "#858a8d", 4.8, "no-age", {
     opacity: 0.38,
     deemphasizedOpacity: 0.07,
+    symbol: symbolForGaiaCmdRow,
   });
   const normal = withAge.filter((row) => !row._deemphasized);
   const deemph = withAge.filter((row) => row._deemphasized);
@@ -1062,6 +1099,7 @@ function ageTrace(rows, name, opacity, showScale) {
       cmax: 3.2,
       colorscale: gcmdAgeColorscale,
       opacity,
+      symbol: markerSymbolsForRows(rows, symbolForGaiaCmdRow),
       showscale: showScale,
       colorbar: showScale ? {
         title: { text: "Age", font: { size: 14 } },
@@ -1233,23 +1271,54 @@ function extinctionVectorAnnotations(rows) {
 
 function associationOrder(rows) {
   const seen = new Set();
-  const out = [];
+  const present = [];
   for (const row of rows) {
     const aid = row.moca_aid;
     if (aid && !seen.has(aid)) {
       seen.add(aid);
-      out.push(aid);
+      present.push(aid);
     }
   }
-  return out.sort();
+  const selected = (gcmdState.selectedAids || []).filter((aid) => seen.has(aid));
+  const selectedSet = new Set(selected);
+  const remaining = present.filter((aid) => !selectedSet.has(aid)).sort();
+  return [...selected, ...remaining];
+}
+
+function updateGaiaCmdAssociationVisualMap(aids) {
+  const ordered = (aids || []).filter(Boolean);
+  gcmdState.useAssociationSymbols = ordered.length > gcmdAssociationSymbolThreshold;
+  gcmdState.associationVisualMap = new Map(ordered.map((aid, index) => [
+    String(aid),
+    {
+      color: gcmdAssociationPalette[index % gcmdAssociationPalette.length],
+      symbol: gcmdState.useAssociationSymbols
+        ? gcmdAssociationSymbols[index % gcmdAssociationSymbols.length]
+        : "circle",
+    },
+  ]));
 }
 
 function colorForAssociation(aid) {
-  const suffix = String(aid || "").toLowerCase();
-  if (gcmdSequenceColors[suffix]) return gcmdSequenceColors[suffix];
-  let hash = 0;
-  for (const char of String(aid || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return gcmdAssociationPalette[hash % gcmdAssociationPalette.length];
+  const key = String(aid || "");
+  if (gcmdState.associationVisualMap?.has(key)) return gcmdState.associationVisualMap.get(key).color;
+  return gcmdAssociationPalette[0];
+}
+
+function symbolForAssociation(aid) {
+  const key = String(aid || "");
+  if (gcmdState.associationVisualMap?.has(key)) return gcmdState.associationVisualMap.get(key).symbol;
+  return "circle";
+}
+
+function symbolForGaiaCmdRow(row) {
+  return row?.moca_aid ? symbolForAssociation(row.moca_aid) : "circle";
+}
+
+function markerSymbolsForRows(rows, symbolSpec) {
+  if (typeof symbolSpec === "function") return rows.map((row) => symbolSpec(row));
+  if (Array.isArray(symbolSpec)) return symbolSpec;
+  return symbolSpec || "circle";
 }
 
 function sampleColorForGaiaRow(row) {

@@ -6701,11 +6701,16 @@ def _gaia_cmd_parse_vetted_mtids(args: dict[str, Any]) -> list[str]:
     return mtids[:80]
 
 
-def _gaia_cmd_class_filter(args: dict[str, Any], *keys: str) -> bool:
+def _gaia_cmd_class_filter(args: dict[str, Any], *keys: str, default: bool = False) -> bool:
+    if not any(key in args for key in keys):
+        return default
     return any(_as_bool(args.get(key)) for key in keys)
 
 
 def _gaia_cmd_quality_mode(args: dict[str, Any]) -> str:
+    quality_keys = ("gaia_quality", "gaia_phot_quality", "phot_quality", "quality")
+    if not any(key in args for key in quality_keys):
+        return "strict"
     raw = (
         args.get("gaia_quality")
         or args.get("gaia_phot_quality")
@@ -6720,7 +6725,7 @@ def _gaia_cmd_quality_mode(args: dict[str, Any]) -> str:
         return "soft"
     if value in {"strict", "clean", "high", "high_quality"}:
         return "strict"
-    return "off"
+    return "strict"
 
 
 def _gaia_cmd_vetted_schema_identifier(args: dict[str, Any]) -> str:
@@ -6903,6 +6908,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
             "exclude_white_dwarfs",
             "no_wd",
             "no_wds",
+            default=True,
         ),
     }
 
