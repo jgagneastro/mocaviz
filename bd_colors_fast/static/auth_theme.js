@@ -109,7 +109,7 @@
     const pathname = window.location.pathname.replace(/\/+$/, "");
     const pageName = pathname.split("/").pop() || "";
     if (GAIA_CMD_PATHS.has(pageName)) return true;
-    return document.title.trim() === "MOCAdb Fast Gaia CMD";
+    return document.title.trim() === "MOCAdb Gaia CMD";
   }
 
   function pageDiscussionUrl() {
