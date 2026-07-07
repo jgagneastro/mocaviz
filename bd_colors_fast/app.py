@@ -27843,6 +27843,22 @@ def bd_colors_fast_page():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+@app.get("/eplv-collaborations")
+@app.get("/eplv_collaborations")
+@app.get("/js/eplv-collaborations")
+@app.get("/js/eplv_collaborations")
+def eplv_collaborations_page():
+    return send_from_directory(STATIC_DIR, "eplv_collaborations.html")
+
+
+@app.get("/eplv-collaborations-globe")
+@app.get("/eplv_collaborations_globe")
+@app.get("/js/eplv-collaborations-globe")
+@app.get("/js/eplv_collaborations_globe")
+def eplv_collaborations_globe_page():
+    return send_from_directory(STATIC_DIR, "eplv_collaborations_globe.html")
+
+
 @app.get("/gaia-cmd")
 @app.get("/gaia_cmd")
 @app.get("/stellar-gaia-cmd")
