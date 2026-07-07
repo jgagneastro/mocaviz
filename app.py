@@ -1,7 +1,9 @@
 from dash import Dash, html, dcc, page_registry
+from flask import send_from_directory
 import dash
 import importlib
 import sys
+from pathlib import Path
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 #conda install python-dotenv or pip install python-dotenv
@@ -51,6 +53,17 @@ for page in page_registry.values():
 # It exposes the WSGI App using the application variable.
 # by jmcouillard using this reference : https://community.plotly.com/t/deploying-dash-app-on-a-wsgi-service/57867
 server = app.server
+
+EPLV_STATIC_DIR = Path(__file__).resolve().parent / "bd_colors_fast" / "static"
+
+@server.get("/eplv-collaborations")
+def eplv_collaborations_page():
+    return send_from_directory(EPLV_STATIC_DIR, "eplv_collaborations.html")
+
+@server.get("/eplv-collaborations-globe")
+def eplv_collaborations_globe_page():
+    return send_from_directory(EPLV_STATIC_DIR, "eplv_collaborations_globe.html")
+
 
 try:
     from bd_colors_fast.app import app as bd_colors_fast_app
