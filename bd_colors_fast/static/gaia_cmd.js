@@ -127,6 +127,7 @@ const gcmdDefaultMembershipProbMin = 90;
 const gcmdFieldPayloadCacheMax = 8;
 const gcmdAssociationPayloadCacheMax = 320;
 const gcmdHighlightPayloadCacheMax = 32;
+const gcmdDynamicTraceSlotCount = 16;
 const gcmdDefaultVettedMtids = [
   { value: "BF", label: "BF" },
   { value: "HM", label: "HM" },
@@ -151,6 +152,7 @@ const gcmdState = {
   objectSearchTimer: null,
   associationVisualMap: new Map(),
   useAssociationSymbols: false,
+  staticPlotSignature: null,
   fieldPayloadCache: new Map(),
   associationPayloadCache: new Map(),
   highlightPayloadCache: new Map(),
@@ -243,7 +245,7 @@ function bindGaiaCmdControls() {
     applyGaiaCmdClientFilters();
   });
   gcmdEl["gcmd-highlight-binaries"].addEventListener("change", () => {
-    renderGaiaCmdPlot();
+    void renderGaiaCmdPlot({ incremental: true });
     updateGaiaCmdUrl();
     if (gcmdState.payload?.selection) {
       gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(gcmdState.payload.selection);
@@ -448,6 +450,7 @@ async function loadGaiaCmdData() {
       gaiaCmdDataUrl(gaiaCmdFieldParams(params)),
       gcmdFieldPayloadCacheMax,
     );
+    const fieldWasCached = Boolean(fieldEntry.payload);
     // The association requests normally finish first. Attach a rejection handler
     // immediately so a field failure cannot become an unhandled promise while the
     // page is still waiting for those smaller payloads.
@@ -487,13 +490,16 @@ async function loadGaiaCmdData() {
       throw new Error(highlightPayload.error || "Could not load highlighted Gaia objects");
     }
     if (!fieldEntry.payload && (associationPayloads.some((payload) => payload.rows?.length) || highlightPayload?.rows?.length)) {
-      installGaiaCmdPayload(mergeGaiaCmdPayload(null, associationPayloads, highlightPayload), { partial: true });
+      await installGaiaCmdPayload(mergeGaiaCmdPayload(null, associationPayloads, highlightPayload), { partial: true });
       setGaiaCmdLoader(false);
     }
     const fieldPayload = await fieldEntry.promise;
     if (token !== gcmdState.loadToken) return;
     if (!fieldPayload.ok) throw new Error(fieldPayload.error || "Could not load the Gaia field sample");
-    installGaiaCmdPayload(mergeGaiaCmdPayload(fieldPayload, associationPayloads, highlightPayload));
+    await installGaiaCmdPayload(
+      mergeGaiaCmdPayload(fieldPayload, associationPayloads, highlightPayload),
+      { incremental: fieldWasCached },
+    );
   } catch (error) {
     if (token !== gcmdState.loadToken) return;
     setGaiaCmdStatus(error.message || String(error), "error");
@@ -526,6 +532,7 @@ function gaiaCmdFieldParams(baseParams) {
     "extinction_corrected_only", "extinction_vectors", "extcorr_vectors", "show_extinction_vectors",
   ]);
   params.set("sample_part", "field");
+  params.set("compact", "1");
   return params;
 }
 
@@ -575,12 +582,39 @@ function cachedGaiaCmdPayload(cache, url, maxEntries) {
   return entry;
 }
 
+function gaiaCmdPayloadRows(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload._expandedRows)) return payload._expandedRows;
+  const directRows = Array.isArray(payload.rows) ? payload.rows : [];
+  const fieldColumns = payload.field_columns;
+  if (!fieldColumns || typeof fieldColumns !== "object") return directRows;
+  const entries = Object.entries(fieldColumns).filter(([, values]) => Array.isArray(values));
+  const rowCount = Math.max(
+    Number(payload.meta?.row_count || 0),
+    ...entries.map(([, values]) => values.length),
+  );
+  const defaults = payload.field_defaults && typeof payload.field_defaults === "object"
+    ? payload.field_defaults
+    : {};
+  const rows = Array.from({ length: rowCount }, () => ({ ...defaults }));
+  entries.forEach(([column, values]) => {
+    for (let index = 0; index < rowCount; index += 1) {
+      rows[index][column] = values[index] ?? null;
+    }
+  });
+  Object.defineProperty(payload, "_expandedRows", {
+    value: rows,
+    configurable: true,
+  });
+  return rows;
+}
+
 function mergeGaiaCmdPayload(fieldPayload, associationPayloads, highlightPayload) {
   const dynamicPayloads = [...associationPayloads, highlightPayload].filter(Boolean);
   const basePayload = fieldPayload || dynamicPayloads[0] || { ok: true, source: "MOCAdb" };
-  const associationRows = associationPayloads.flatMap((payload) => payload.rows || []);
-  const highlightRows = highlightPayload?.rows || [];
-  const rows = [...(fieldPayload?.rows || []), ...associationRows, ...highlightRows];
+  const associationRows = associationPayloads.flatMap((payload) => gaiaCmdPayloadRows(payload));
+  const highlightRows = gaiaCmdPayloadRows(highlightPayload);
+  const rows = [...gaiaCmdPayloadRows(fieldPayload), ...associationRows, ...highlightRows];
   const allPayloads = [fieldPayload, ...dynamicPayloads].filter(Boolean);
   const selection = currentGaiaCmdSelection(fieldPayload?.selection || basePayload.selection || {});
   return {
@@ -628,7 +662,7 @@ function currentGaiaCmdSelection(baseSelection) {
   };
 }
 
-function installGaiaCmdPayload(payload, options = {}) {
+async function installGaiaCmdPayload(payload, options = {}) {
   gcmdState.payload = payload;
   const highlightOids = new Set(combinedHighlightOids().map(String));
   const ruweMax = parseRuweMax(payload.selection?.ruwe_max);
@@ -644,7 +678,7 @@ function installGaiaCmdPayload(payload, options = {}) {
     row._yError = gaiaCmdYError(row);
   });
   gcmdState.selectedRows = [];
-  renderGaiaCmdPlot();
+  await renderGaiaCmdPlot({ incremental: Boolean(options.incremental) });
   renderGaiaCmdDefaultTable();
   const cacheText = payload.cache?.hit ? " from cache" : "";
   const status = options.partial
@@ -764,7 +798,7 @@ function applyGaiaCmdClientFilters() {
   updateGaiaCmdUrl();
   const displayedKeys = new Set(gaiaCmdDisplayRows().map(rowKey));
   gcmdState.selectedRows = gcmdState.selectedRows.filter((row) => displayedKeys.has(rowKey(row)));
-  renderGaiaCmdPlot();
+  void renderGaiaCmdPlot({ incremental: true });
   if (gcmdState.selectedRows.length) {
     renderGaiaCmdSelection();
   } else {
@@ -1075,43 +1109,154 @@ function positionGaiaCmdObjectPopup() {
   popup.style.width = `${Math.max(rect.width, width)}px`;
 }
 
-function renderGaiaCmdPlot() {
+async function renderGaiaCmdPlot(options = {}) {
   const payload = gcmdState.payload || {};
-  const traces = [];
   const colorByAge = Boolean(payload.selection?.color_by_age);
   const displayRows = gaiaCmdDisplayRows();
   const nonHighlightRows = displayRows.filter((row) => !row._highlighted);
   const highlightRows = displayRows.filter((row) => row._highlighted);
+  const fieldRows = nonHighlightRows.filter((row) => !row.moca_aid);
+  const associationRows = nonHighlightRows.filter((row) => row.moca_aid);
   const visibleAssociationOrder = associationOrder(nonHighlightRows);
   updateGaiaCmdAssociationVisualMap(visibleAssociationOrder);
 
-  addSequenceTraces(traces, payload.sequences || []);
+  const staticTraces = [];
+  addSequenceTraces(staticTraces, payload.sequences || []);
   if (colorByAge) {
-    addAgeTraces(traces, nonHighlightRows, "Gaia CMD");
+    addAgeTraces(staticTraces, fieldRows, "Gaia CMD");
   } else {
-    addPlainTrace(traces, nonHighlightRows.filter((row) => !row.moca_aid), "Field", "#000000", 4.4, "field", {
+    addPlainTrace(staticTraces, fieldRows, "Field", "#000000", 4.4, "field", {
       opacity: 0.05,
       deemphasizedOpacity: 0.02,
       hover: fieldHoverEnabled(),
     });
+  }
+  addSptAxisReferenceTrace(staticTraces, payload.spt_axis || null, fieldRows.length ? fieldRows : displayRows);
+  markGaiaCmdTraceLayer(staticTraces, "static");
+
+  const dynamicTraces = [];
+  if (colorByAge) {
+    addAgeTraces(dynamicTraces, associationRows, "Gaia CMD");
+  } else {
     for (const aid of visibleAssociationOrder) {
-      addPlainTrace(traces, nonHighlightRows.filter((row) => row.moca_aid === aid), gaiaCmdAssociationLegendLabel(aid), colorForAssociation(aid), 6.1, `aid:${aid}`, {
+      addPlainTrace(dynamicTraces, associationRows.filter((row) => row.moca_aid === aid), gaiaCmdAssociationLegendLabel(aid), colorForAssociation(aid), 6.1, `aid:${aid}`, {
         opacity: 0.84,
         deemphasizedOpacity: 0.2,
         symbol: symbolForAssociation(aid),
       });
     }
   }
-  addBinaryOverlayTrace(traces, displayRows);
-  addHighlightTrace(traces, highlightRows);
-  addSptAxisReferenceTrace(traces, payload.spt_axis || null, displayRows);
+  addBinaryOverlayTrace(dynamicTraces, displayRows);
+  addHighlightTrace(dynamicTraces, highlightRows);
+  markGaiaCmdTraceLayer(dynamicTraces, "dynamic");
 
   const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, displayRows);
   if (payload.selection?.show_extinction_vectors) {
     layout.annotations = extinctionVectorAnnotations(displayRows);
   }
-  Plotly.react(gcmdEl["gcmd-plot"], traces, layout, plotConfig("mocadb_gaia_cmd"));
+  const plot = gcmdEl["gcmd-plot"];
+  const staticSignature = gaiaCmdStaticPlotSignature(payload, fieldRows);
+  const existingTraces = Array.isArray(plot.data) ? plot.data : [];
+  const canIncrementallyUpdate = Boolean(
+    options.incremental
+    && existingTraces.length
+    && gcmdState.staticPlotSignature === staticSignature
+    && !payload.selection?.show_extinction_vectors
+  );
+  if (canIncrementallyUpdate) {
+    const dynamicIndexes = existingTraces
+      .map((trace, index) => trace?.meta?.mocavizLayer === "dynamic" ? index : -1)
+      .filter((index) => index >= 0);
+    const canRestyleSlots = dynamicTraces.length <= dynamicIndexes.length
+      && dynamicTraces.every((trace, index) => existingTraces[dynamicIndexes[index]]?.type === trace.type);
+    if (canRestyleSlots) {
+      plot.dataset.updateMode = "dynamic-restyle";
+      await restyleGaiaCmdDynamicSlots(plot, dynamicIndexes, dynamicTraces);
+    } else {
+      plot.dataset.updateMode = "dynamic-traces";
+      if (dynamicIndexes.length) await Plotly.deleteTraces(plot, dynamicIndexes);
+      if (dynamicTraces.length) await Plotly.addTraces(plot, dynamicTraces);
+    }
+  } else {
+    plot.dataset.updateMode = "full-react";
+    await Plotly.react(
+      plot,
+      [...staticTraces, ...gaiaCmdDynamicSlotTraces(dynamicTraces)],
+      layout,
+      plotConfig("mocadb_gaia_cmd"),
+    );
+    gcmdState.staticPlotSignature = staticSignature;
+  }
   bindPlotEventsOnce();
+}
+
+function emptyGaiaCmdDynamicTrace() {
+  return {
+    type: "scattergl",
+    mode: "markers",
+    x: [],
+    y: [],
+    text: [],
+    customdata: [],
+    visible: false,
+    showlegend: false,
+    hoverinfo: "skip",
+    marker: { size: 1, opacity: 0 },
+    meta: { mocavizLayer: "dynamic", rowIndexes: [], emptySlot: true },
+  };
+}
+
+function gaiaCmdDynamicSlotTraces(dynamicTraces) {
+  if (dynamicTraces.length >= gcmdDynamicTraceSlotCount) return dynamicTraces;
+  return [
+    ...dynamicTraces,
+    ...Array.from(
+      { length: gcmdDynamicTraceSlotCount - dynamicTraces.length },
+      () => emptyGaiaCmdDynamicTrace(),
+    ),
+  ];
+}
+
+async function restyleGaiaCmdDynamicSlots(plot, dynamicIndexes, dynamicTraces) {
+  const slotTraces = dynamicIndexes.map((_, index) => dynamicTraces[index] || emptyGaiaCmdDynamicTrace());
+  await Plotly.restyle(plot, {
+    x: slotTraces.map((trace) => trace.x || []),
+    y: slotTraces.map((trace) => trace.y || []),
+    text: slotTraces.map((trace) => trace.text || []),
+    customdata: slotTraces.map((trace) => trace.customdata || []),
+    name: slotTraces.map((trace) => trace.name || ""),
+    legendgroup: slotTraces.map((trace) => trace.legendgroup || ""),
+    showlegend: slotTraces.map((trace) => Boolean(trace.showlegend)),
+    visible: slotTraces.map((trace) => trace.visible !== false),
+    hoverinfo: slotTraces.map((trace) => trace.hoverinfo || null),
+    hovertemplate: slotTraces.map((trace) => trace.hovertemplate || null),
+    marker: slotTraces.map((trace) => trace.marker || {}),
+    meta: slotTraces.map((trace) => trace.meta || { mocavizLayer: "dynamic" }),
+  }, dynamicIndexes);
+}
+
+function markGaiaCmdTraceLayer(traces, layer) {
+  traces.forEach((trace) => {
+    trace.meta = { ...(trace.meta || {}), mocavizLayer: layer };
+  });
+}
+
+function gaiaCmdStaticPlotSignature(payload, fieldRows) {
+  const selection = payload.selection || {};
+  return JSON.stringify({
+    loadedAt: payload.meta?.loaded_at || "",
+    fieldRows: fieldRows.length,
+    sequencePoints: (payload.sequences || []).reduce((sum, row) => sum + (row.x?.length || 0), 0),
+    sptAxis: payload.spt_axis?.moca_seqid || "",
+    x1: selection.x1,
+    x2: selection.x2,
+    y: selection.y,
+    ruweMax: selection.ruwe_max,
+    colorByAge: Boolean(selection.color_by_age),
+    fieldHover: fieldHoverEnabled(),
+    displayErrors: gaiaCmdDisplayErrors(),
+    vettedMtids: selectedGaiaCmdVettedMtids(),
+  });
 }
 
 function addPlainTrace(traces, rows, name, color, size, legendgroup, options = {}) {
@@ -1146,17 +1291,22 @@ function addPlainTrace(traces, rows, name, color, size, legendgroup, options = {
 
 function markerTrace(rows, options) {
   const errors = traceErrorBars(rows, options.errorColor || options.color, options.opacity, options.errors !== false);
+  const hoverEnabled = options.hover !== false;
+  const traceType = errors ? "scatter" : "scattergl";
+  const rowIndexes = rows.map((row) => row._plotIndex);
   return {
-    type: errors ? "scatter" : "scattergl",
+    type: traceType,
     mode: "markers",
     name: options.name,
     legendgroup: options.legendgroup,
     showlegend: options.showlegend,
     x: rows.map((row) => row.x),
     y: rows.map((row) => row.y),
-    text: rows.map((row) => hoverText(row)),
-    customdata: rows.map((row) => row._plotIndex),
-    ...(options.hover === false ? { hoverinfo: "none" } : { hovertemplate: "%{text}<extra></extra>" }),
+    meta: { rowIndexes },
+    customdata: rowIndexes,
+    ...(hoverEnabled
+      ? { text: rows.map((row) => hoverText(row)), hovertemplate: "%{text}<extra></extra>" }
+      : { hoverinfo: "none" }),
     ...(errors || {}),
     marker: {
       size: options.size,
@@ -1776,7 +1926,8 @@ function bindPlotEventsOnce() {
 }
 
 function rowFromPoint(point) {
-  const index = Number(point?.customdata);
+  const fallbackIndex = point?.data?.meta?.rowIndexes?.[point?.pointNumber];
+  const index = Number(point?.customdata ?? fallbackIndex);
   if (!Number.isInteger(index)) return null;
   return gcmdState.rows[index] || null;
 }

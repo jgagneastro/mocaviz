@@ -2,14 +2,27 @@ from __future__ import annotations
 
 import gzip
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+
+import bd_colors_fast.app as app_module
 
 from bd_colors_fast.app import (
     GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR,
+    GAIA_CMD_SEQUENCE_MAX_POINTS,
     _BoundedCache,
     _ENCODED_RESPONSE_CACHE,
     _ENCODED_RESPONSE_CACHE_LOCK,
     _gaia_cmd_cache_key,
+    _gaia_cmd_downsample_sequence,
+    _gaia_cmd_filter_field_classes,
+    _gaia_cmd_shared_cache_clear,
+    _gaia_cmd_shared_cache_load,
+    _gaia_cmd_shared_cache_store,
     _gaia_cmd_selection,
     app,
 )
@@ -107,6 +120,65 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertTrue(highlights["rows"])
         self.assertTrue(all(row.get("highlighted") for row in highlights["rows"]))
         self.assertFalse(highlights["sequences"])
+
+    def test_gaia_compact_field_payload_is_columnar(self):
+        field = decoded_json(self.client.get(
+            "/api/gaia-cmd/data?mock=1&sample_part=field&compact=1&max_objects=80"
+        ))
+        self.assertEqual(field["rows"], [])
+        self.assertEqual(field["meta"]["payload_format"], "gaia-field-columnar-v1")
+        self.assertEqual(len(field["field_columns"]["x"]), field["meta"]["row_count"])
+        self.assertLessEqual(len(field["field_columns"]), 12)
+        self.assertEqual(field["field_defaults"]["sample"], "Field")
+
+    def test_gaia_sequences_are_downsampled_with_endpoints_preserved(self):
+        values = list(range(GAIA_CMD_SEQUENCE_MAX_POINTS * 4))
+        sequence = {
+            "x": values.copy(),
+            "y": values.copy(),
+            "yerror": values.copy(),
+        }
+        result = _gaia_cmd_downsample_sequence(sequence)
+        self.assertEqual(len(result["x"]), GAIA_CMD_SEQUENCE_MAX_POINTS)
+        self.assertEqual(result["x"][0], values[0])
+        self.assertEqual(result["x"][-1], values[-1])
+
+    def test_gaia_field_class_filters_are_vectorized_and_only_apply_to_mocadb_matches(self):
+        field = pd.DataFrame([
+            {"moca_oid": 1, "x": 0.5, "y": 2.0},
+            {"moca_oid": 2, "x": 0.5, "y": 0.5},
+            {"moca_oid": None, "x": 0.5, "y": 2.0},
+        ])
+        separator = pd.DataFrame([
+            {"xdata": 0.0, "ydata": 1.0},
+            {"xdata": 1.0, "ydata": 1.0},
+        ])
+        selection = {
+            "filter_wd": True,
+            "filter_giants": False,
+            "max_objects": 10,
+        }
+        with patch.object(app_module, "_read_sql", return_value=separator):
+            result = _gaia_cmd_filter_field_classes(object(), field, selection)
+        self.assertEqual(result["moca_oid"].fillna(-1).tolist(), [2.0, -1.0])
+
+    def test_gaia_shared_cache_survives_process_local_cache_boundaries(self):
+        payload = {
+            "selection": {"sample_part": "field"},
+            "rows": [],
+            "field_columns": {"x": [1.0], "y": [2.0]},
+            "meta": {"row_count": 1},
+            "cache": {"hit": False, "ttl_seconds": 900},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(app_module, "GAIA_CMD_SHARED_CACHE_DIR", Path(directory)):
+                _gaia_cmd_shared_cache_store("field-key", payload)
+                loaded = _gaia_cmd_shared_cache_load("field-key")
+                self.assertIsNotNone(loaded)
+                self.assertTrue(loaded["cache"]["hit"])
+                self.assertTrue(loaded["cache"]["shared"])
+                self.assertEqual(loaded["field_columns"]["x"], [1.0])
+                self.assertEqual(_gaia_cmd_shared_cache_clear(), 1)
 
     def test_moca_explorer_returns_only_active_view_columns(self):
         cmd = decoded_json(self.client.get(

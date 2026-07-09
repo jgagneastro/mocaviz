@@ -539,6 +539,38 @@ MOCA_FLOWS_RESULT_ORDER = [
 GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
 GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 50.0
+GAIA_CMD_SEQUENCE_MAX_POINTS = max(32, int(os.environ.get("GAIA_CMD_SEQUENCE_MAX_POINTS", "256")))
+GAIA_CMD_FIELD_OVERSAMPLE_FRACTION = max(
+    0.0,
+    min(1.0, float(os.environ.get("GAIA_CMD_FIELD_OVERSAMPLE_FRACTION", "0.05"))),
+)
+GAIA_CMD_SHARED_CACHE_MAX_ENTRIES = max(
+    1,
+    int(os.environ.get("GAIA_CMD_SHARED_CACHE_MAX_ENTRIES", "64")),
+)
+_GAIA_CMD_SHARED_CACHE_DIR_RAW = os.environ.get(
+    "GAIA_CMD_SHARED_CACHE_DIR",
+    "/tmp/mocaviz-gaia-cmd-cache",
+).strip()
+GAIA_CMD_SHARED_CACHE_DIR = (
+    Path(_GAIA_CMD_SHARED_CACHE_DIR_RAW).expanduser()
+    if _GAIA_CMD_SHARED_CACHE_DIR_RAW
+    else None
+)
+GAIA_CMD_FIELD_COMPACT_COLUMNS = (
+    "moca_oid",
+    "designation",
+    "source_id",
+    "is_binary",
+    "ruwe",
+    "distance_pc",
+    "distance_pc_unc",
+    "x1_mag",
+    "x2_mag",
+    "y_mag",
+    "x",
+    "y",
+)
 GAIA_CMD_MOCK_VETTED_MTIDS = ("BF", "HM", "CM", "LM", "AM", "R")
 GAIA_CMD_QUALITY_MODES = {"off", "soft", "strict"}
 GAIA_CMD_SIMPLE_BANDS = {
@@ -7137,7 +7169,183 @@ def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
         selection["gaia_quality"],
         str(int(selection["filter_giants"])),
         str(int(selection["filter_wd"])),
+        str(int(_as_bool(args.get("compact") or args.get("compact_field")))),
     ])
+
+
+def _gaia_cmd_shared_cache_path(cache_key: str) -> Path | None:
+    if GAIA_CMD_SHARED_CACHE_DIR is None:
+        return None
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+    return GAIA_CMD_SHARED_CACHE_DIR / f"gaia-{digest}.json.gz"
+
+
+def _gaia_cmd_shared_cache_load(cache_key: str) -> dict[str, Any] | None:
+    cache_path = _gaia_cmd_shared_cache_path(cache_key)
+    if cache_path is None:
+        return None
+    try:
+        stat = cache_path.stat()
+        if time.time() - stat.st_mtime >= CACHE_SECONDS:
+            cache_path.unlink(missing_ok=True)
+            return None
+        payload = json.loads(gzip.decompress(cache_path.read_bytes()))
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload["cache"] = {
+        "hit": True,
+        "shared": True,
+        "ttl_seconds": max(0, int(CACHE_SECONDS - (time.time() - stat.st_mtime))),
+    }
+    payload.setdefault("meta", {})["shared_cache_hit"] = True
+    return payload
+
+
+def _gaia_cmd_shared_cache_store(cache_key: str, payload: dict[str, Any]) -> None:
+    cache_path = _gaia_cmd_shared_cache_path(cache_key)
+    if cache_path is None:
+        return
+    temp_path: Path | None = None
+    try:
+        cache_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            cache_path.parent.chmod(0o700)
+        except OSError:
+            pass
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        compressed = gzip.compress(encoded, compresslevel=5)
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        temp_path.write_bytes(compressed)
+        temp_path.chmod(0o600)
+        os.replace(temp_path, cache_path)
+        cache_files = sorted(
+            cache_path.parent.glob("gaia-*.json.gz"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for stale_path in cache_files[GAIA_CMD_SHARED_CACHE_MAX_ENTRIES:]:
+            stale_path.unlink(missing_ok=True)
+    except (OSError, TypeError, ValueError):
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _gaia_cmd_shared_cache_clear() -> int:
+    if GAIA_CMD_SHARED_CACHE_DIR is None:
+        return 0
+    cleared = 0
+    try:
+        for cache_path in GAIA_CMD_SHARED_CACHE_DIR.glob("gaia-*.json.gz"):
+            cache_path.unlink(missing_ok=True)
+            cleared += 1
+    except OSError:
+        pass
+    return cleared
+
+
+def _gaia_cmd_compact_field_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return payload
+    selection = payload.get("selection") or {}
+    payload["field_columns"] = {
+        column: [row.get(column) for row in rows]
+        for column in GAIA_CMD_FIELD_COMPACT_COLUMNS
+    }
+    payload["field_defaults"] = {
+        "sample": "Field",
+        "moca_aid": None,
+        "ya_prob": None,
+        "highlighted": 0,
+        "vetted_moca_mtids": None,
+        "photometry_source": payload.get("meta", {}).get("field_table"),
+        "x1_psid": selection.get("x1"),
+        "x2_psid": selection.get("x2"),
+        "y_psid": selection.get("y"),
+    }
+    payload["rows"] = []
+    payload.setdefault("meta", {})["payload_format"] = "gaia-field-columnar-v1"
+    payload["meta"]["field_column_count"] = len(GAIA_CMD_FIELD_COMPACT_COLUMNS)
+    return payload
+
+
+def _gaia_cmd_downsample_sequence(item: dict[str, Any]) -> dict[str, Any]:
+    x_values = item.get("x") or []
+    if len(x_values) <= GAIA_CMD_SEQUENCE_MAX_POINTS:
+        return item
+    indices = np.linspace(
+        0,
+        len(x_values) - 1,
+        GAIA_CMD_SEQUENCE_MAX_POINTS,
+        dtype=int,
+    )
+    unique_indices = np.unique(indices).tolist()
+    for key in ("x", "y", "yerror"):
+        values = item.get(key) or []
+        item[key] = [values[index] for index in unique_indices if index < len(values)]
+    return item
+
+
+def _gaia_cmd_filter_field_classes(
+    conn: Any,
+    field_df: pd.DataFrame,
+    selection: dict[str, Any],
+) -> pd.DataFrame:
+    if field_df.empty or not (selection["filter_wd"] or selection["filter_giants"]):
+        return field_df.head(selection["max_objects"]).reset_index(drop=True)
+    if not {"moca_oid", "x", "y"}.issubset(field_df.columns):
+        return field_df.head(selection["max_objects"]).reset_index(drop=True)
+
+    result = field_df.copy()
+    x_values = pd.to_numeric(result["x"], errors="coerce").to_numpy(dtype=float)
+    y_values = pd.to_numeric(result["y"], errors="coerce").to_numpy(dtype=float)
+    matched_mocadb = result["moca_oid"].notna().to_numpy(dtype=bool)
+    finite = matched_mocadb & np.isfinite(x_values) & np.isfinite(y_values)
+    excluded = np.zeros(len(result), dtype=bool)
+    separator_specs = []
+    if selection["filter_wd"]:
+        separator_specs.append(("grp_mg_gaiadr3_wd_separator", "above"))
+    if selection["filter_giants"]:
+        separator_specs.append(("grp_mg_gaiadr3_giant_separator", "below"))
+
+    for sequence_id, direction in separator_specs:
+        separator_df = _read_sql(conn, """
+            SELECT xdata, ydata
+            FROM data_astro_sequences
+            WHERE moca_seqid = :sequence_id
+                AND xdata IS NOT NULL
+                AND ydata IS NOT NULL
+            ORDER BY xdata
+        """, {"sequence_id": sequence_id})
+        if separator_df.empty:
+            continue
+        separator_df = separator_df.drop_duplicates(subset=["xdata"], keep="last")
+        separator_x = pd.to_numeric(separator_df["xdata"], errors="coerce").to_numpy(dtype=float)
+        separator_y = pd.to_numeric(separator_df["ydata"], errors="coerce").to_numpy(dtype=float)
+        separator_finite = np.isfinite(separator_x) & np.isfinite(separator_y)
+        separator_x = separator_x[separator_finite]
+        separator_y = separator_y[separator_finite]
+        if separator_x.size < 2:
+            continue
+        in_domain = finite & (x_values >= separator_x[0]) & (x_values <= separator_x[-1])
+        interpolated = np.interp(x_values, separator_x, separator_y)
+        if direction == "above":
+            excluded |= in_domain & (y_values > interpolated)
+        else:
+            excluded |= in_domain & (y_values < interpolated)
+
+    return result.loc[~excluded].head(selection["max_objects"]).reset_index(drop=True)
 
 
 def _gaia_cmd_band_key(psid: str) -> str | None:
@@ -7239,6 +7447,10 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         payload = copy.deepcopy(cached[1])
         payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
         return payload
+    shared_payload = _gaia_cmd_shared_cache_load(cache_key)
+    if shared_payload is not None:
+        _GAIA_CMD_CACHE[cache_key] = (now, copy.deepcopy(shared_payload))
+        return shared_payload
 
     params: dict[str, Any] = {
         "x1_psid": selection["x1"],
@@ -7249,6 +7461,27 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     x1_raw_col = _gaia_cmd_raw_column(selection["x1"])
     x2_raw_col = _gaia_cmd_raw_column(selection["x2"])
     y_raw_col = _gaia_cmd_raw_column(selection["y"])
+    field_candidate_limit = min(
+        GAIA_CMD_HARD_MAX_OBJECTS,
+        selection["max_objects"] + max(
+            256,
+            int(math.ceil(selection["max_objects"] * GAIA_CMD_FIELD_OVERSAMPLE_FRACTION)),
+        ),
+    )
+    field_projection_columns = list(dict.fromkeys((
+        "source_id",
+        "designation",
+        "parallax",
+        "parallax_error",
+        "ruwe",
+        "random_index",
+        x1_raw_col,
+        x2_raw_col,
+        y_raw_col,
+    )))
+    field_projection_sql = ",\n                        ".join(
+        f"field.{column}" for column in field_projection_columns
+    )
     aid_clause = "NULL"
     aid_params: dict[str, Any] = {}
     if selection["associations"]:
@@ -7272,9 +7505,14 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     field_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("field", selection["gaia_quality"])
     association_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
     highlight_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
+    field_sql_selection = {
+        **selection,
+        "filter_giants": False,
+        "filter_wd": False,
+    }
     field_object_filters = _gaia_cmd_object_filter_sql(
         "g",
-        selection,
+        field_sql_selection,
         vetted_schema_sql,
         vetted_mtid_clause,
         None,
@@ -7307,6 +7545,9 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         alias: f"AND {alias}.extinction_corrected = 1"
         for alias in ("px1", "px2", "py")
     } if selection["extinction_corrected_only"] else {alias: "" for alias in ("px1", "px2", "py")}
+    compact_field_requested = selection["sample_part"] == "field" and _as_bool(
+        args.get("compact") or args.get("compact_field")
+    )
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
         started = time.time()
@@ -7314,8 +7555,27 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         field_table = "pcat_gaiadr3_100pc_field" if _is_private_db(args) else "cat_gaiadr3_100pc_field"
         field_table_available = _db_table_exists(conn, field_table)
         if field_table_available and selection["sample_part"] in {"all", "field"}:
-            field_df = _read_sql(conn, f"""
-                SELECT
+            if compact_field_requested:
+                field_select_sql = f"""
+                    g.moca_oid,
+                    COALESCE(mo.designation, field.designation) AS designation,
+                    field.source_id,
+                    CASE
+                        WHEN mopc.all_prop_confidences LIKE '%multiple_system:C%'
+                            OR mopc.all_prop_confidences LIKE '%multiple_system:Y%'
+                        THEN 1 ELSE 0
+                    END AS is_binary,
+                    field.ruwe,
+                    1000 / field.parallax AS distance_pc,
+                    1000 * field.parallax_error / (field.parallax * field.parallax) AS distance_pc_unc,
+                    field.{x1_raw_col} AS x1_mag,
+                    field.{x2_raw_col} AS x2_mag,
+                    field.{y_raw_col} AS y_mag,
+                    field.{x1_raw_col} - field.{x2_raw_col} AS x,
+                    field.{y_raw_col} - 5 * LOG10(1000 / field.parallax) + 5 AS y
+                """
+            else:
+                field_select_sql = f"""
                     g.moca_oid,
                     COALESCE(mo.designation, field.designation) AS designation,
                     field.source_id,
@@ -7355,24 +7615,36 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                         WHEN g.moca_oid IS NULL THEN NULL
                         ELSE CONCAT('https://mocadb.ca/search/results?search-query=oid%28', g.moca_oid, '%29&search-type=star')
                     END AS report_url
-                FROM {field_table} field
+                """
+            field_df = _read_sql(conn, f"""
+                SELECT
+                    {field_select_sql}
+                FROM (
+                    SELECT
+                        {field_projection_sql}
+                    FROM {field_table} field
+                    WHERE field.parallax IS NOT NULL
+                        AND field.parallax > 0
+                        AND (field.ruwe IS NULL OR field.ruwe < 1.4)
+                        AND field.{x1_raw_col} IS NOT NULL
+                        AND field.{x2_raw_col} IS NOT NULL
+                        AND field.{y_raw_col} IS NOT NULL
+                        {field_gaia_quality_filter}
+                    ORDER BY field.random_index
+                    LIMIT {field_candidate_limit}
+                ) field
                 LEFT JOIN cat_gaiadr3 g
                     ON g.source_id = field.source_id
                 LEFT JOIN moca_objects mo
                     ON mo.moca_oid = g.moca_oid
                 LEFT JOIN mechanics_object_properties_combined mopc
                     ON mopc.moca_oid = g.moca_oid
-                WHERE field.parallax IS NOT NULL
-                    AND field.parallax > 0
-                    AND (field.ruwe IS NULL OR field.ruwe < 1.4)
-                    AND field.{x1_raw_col} IS NOT NULL
-                    AND field.{x2_raw_col} IS NOT NULL
-                    AND field.{y_raw_col} IS NOT NULL
-                    {field_gaia_quality_filter}
+                WHERE 1 = 1
                     {field_object_filters}
                 ORDER BY field.random_index
-                LIMIT {selection["max_objects"]}
+                LIMIT {field_candidate_limit}
             """, params)
+            field_df = _gaia_cmd_filter_field_classes(conn, field_df, selection)
             frames.append(field_df)
 
         if selection["associations"] and selection["sample_part"] in {"all", "associations"}:
@@ -7776,7 +8048,10 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 item["x"].append(round(float(row["xdata"]), 5) if row.get("xdata") is not None else None)
                 item["y"].append(round(float(row["ydata"]), 5) if row.get("ydata") is not None else None)
                 item["yerror"].append(round(float(row["yerror"]), 5) if row.get("yerror") is not None else None)
-            sequences = list(by_seqid.values())
+            sequences = [
+                _gaia_cmd_downsample_sequence(item)
+                for item in by_seqid.values()
+            ]
 
         spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection) if include_static_layers else None
         if spt_axis_seqid:
@@ -7847,7 +8122,12 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
+    if selection["sample_part"] == "field" and _as_bool(
+        args.get("compact") or args.get("compact_field")
+    ):
+        payload = _gaia_cmd_compact_field_payload(payload)
     _GAIA_CMD_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _gaia_cmd_shared_cache_store(cache_key, payload)
     return payload
 
 
@@ -7959,7 +8239,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "sptn": sptn.round(4).tolist(),
             "color": color.round(4).tolist(),
         }
-    return {
+    payload = {
         "selection": selection,
         "rows": rows,
         "sequences": sequences,
@@ -7978,6 +8258,11 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
+    if selection["sample_part"] == "field" and _as_bool(
+        args.get("compact") or args.get("compact_field")
+    ):
+        payload = _gaia_cmd_compact_field_payload(payload)
+    return payload
 
 
 def _parse_xyzuvw_csv_ids(raw: Any, default: tuple[str, ...] = ()) -> list[str]:
@@ -29890,9 +30175,10 @@ def gaia_cmd_data():
 def gaia_cmd_clear_cache():
     gaia_count = len(_GAIA_CMD_CACHE)
     _GAIA_CMD_CACHE.clear()
+    shared_count = _gaia_cmd_shared_cache_clear()
     return jsonify({
         "ok": True,
-        "cleared": {"gaiaCmd": gaia_count},
+        "cleared": {"gaiaCmd": gaia_count, "gaiaCmdShared": shared_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -31510,6 +31796,7 @@ def clear_cache():
     xyzuvw_count = len(_XYZUVW_CACHE)
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
+    gaia_cmd_shared_count = _gaia_cmd_shared_cache_clear()
     moca_explorer_count = len(_MOCA_EXPLORER_CACHE)
     group_hierarchy_count = len(_GROUP_HIERARCHY_CACHE)
     legacy_rv_count = len(_LEGACY_RV_CACHE)
@@ -31557,6 +31844,7 @@ def clear_cache():
             "xyzuvw": xyzuvw_count,
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
+            "gaiaCmdShared": gaia_cmd_shared_count,
             "mocaExplorer": moca_explorer_count,
             **bd_evolution_counts,
             "groupHierarchy": group_hierarchy_count,
