@@ -15,11 +15,12 @@ import time
 import traceback
 import types
 import zlib
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote_plus
 
@@ -66,6 +67,7 @@ DEFAULT_DBNAME = "mocadb"
 MOCA_TEAM_USERS = {"collaborators", "management"}
 
 CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_CACHE_SECONDS", "900"))
+VERSIONED_STATIC_CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_STATIC_CACHE_SECONDS", "31536000"))
 BROAD_QUERY_MAX_OBJECTS = 5000
 OPTIONAL_QUERY_MAX_OBJECTS = max(1, int(os.environ.get("BD_COLORS_FAST_OPTIONAL_MAX_OBJECTS", str(BROAD_QUERY_MAX_OBJECTS))))
 SELECTED_OID_JOIN_THRESHOLD = max(1, int(os.environ.get("BD_COLORS_FAST_SELECTED_OID_JOIN_THRESHOLD", "1000")))
@@ -82,6 +84,20 @@ DEFAULT_AXIS_SPECS = {
 }
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+
+
+@app.after_request
+def _cache_versioned_static_assets(response: Response) -> Response:
+    if (
+        request.method == "GET"
+        and request.args.get("v")
+        and (request.path.startswith("/static/") or request.path.startswith("/js/static/"))
+    ):
+        response.headers["Cache-Control"] = (
+            f"public, max-age={max(0, VERSIONED_STATIC_CACHE_SECONDS)}, immutable"
+        )
+    return response
+
 
 _BOOTSTRAP_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FEATURE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -106,12 +122,18 @@ _RVBAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RVBAM_ARRAY_CACHE: dict[str, tuple[float, np.ndarray]] = {}
 _RETRIEVAL_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BANYAN_SIGMA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_BD_EVOLUTION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_BD_EVOLUTION_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_BD_EVOLUTION_TRACK_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_BD_EVOLUTION_CACHE_LOCK = Lock()
+_BD_EVOLUTION_TRACK_CACHE_LOCK = Lock()
+_BD_EVOLUTION_INFLIGHT: dict[str, Event] = {}
+_BD_EVOLUTION_TRACK_INFLIGHT: dict[str, Event] = {}
 _BANYAN_HYPOTHESES_CACHE: dict[str, Any] | None = None
 _BANYAN_LNP_LOCK = Lock()
 _DB_TABLE_EXISTS_CACHE: dict[tuple[str, str, str, str, str], bool] = {}
 _DB_COLUMNS_CACHE: dict[tuple[str, str, str, str, str], set[str]] = {}
 _PLOTLY_JS: str | None = None
+_PLOTLY_JS_GZIP: bytes | None = None
 
 SPT_WV_MIN = 0.52
 SPT_WV_MAX = 20.0
@@ -161,6 +183,9 @@ MOCA_EXPLORER_DEFAULT_MAX_OBJECTS = int(os.environ.get("MOCA_EXPLORER_MAX_OBJECT
 MOCA_EXPLORER_HARD_MAX_OBJECTS = int(os.environ.get("MOCA_EXPLORER_HARD_MAX_OBJECTS", "250000"))
 BD_EVOLUTION_DEFAULT_MAX_OBJECTS = int(os.environ.get("BD_EVOLUTION_MAX_OBJECTS", "120000"))
 BD_EVOLUTION_HARD_MAX_OBJECTS = int(os.environ.get("BD_EVOLUTION_HARD_MAX_OBJECTS", "300000"))
+BD_EVOLUTION_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("BD_EVOLUTION_CACHE_MAX_ENTRIES", "16")))
+BD_EVOLUTION_TRACK_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("BD_EVOLUTION_TRACK_CACHE_MAX_ENTRIES", "4")))
+BD_EVOLUTION_CLIENT_CACHE_SECONDS = max(0, int(os.environ.get("BD_EVOLUTION_CLIENT_CACHE_SECONDS", "60")))
 BD_EVOLUTION_DEFAULT_YA_PROB_MIN = float(os.environ.get("BD_EVOLUTION_YA_PROB_MIN", "80"))
 BD_EVOLUTION_DEFAULT_IGNORED_MEMBERSHIP_AIDS = tuple(
     value.strip().upper()
@@ -172,7 +197,7 @@ BD_EVOLUTION_TRACK_CSV = Path(os.environ.get(
     str(BASE_DIR / "data" / "moca_stitched.csv"),
 ))
 BD_EVOLUTION_TRACK_NAME = "Sonora Diamondback + MOCAdb empirical extension"
-BD_EVOLUTION_CACHE_SCHEMA = "bd-evolution-v7"
+BD_EVOLUTION_CACHE_SCHEMA = "bd-evolution-v8-split-tracks"
 BD_EVOLUTION_MSUN_TO_MJUP = 1047.5654817267318
 BD_EVOLUTION_RJUP_TO_RSUN = 0.10045
 BD_EVOLUTION_MODEL_MIN_AGE_MYR = 2.0
@@ -944,6 +969,7 @@ def _cache_key(args: dict[str, Any]) -> str:
     limit = _object_limit(args, spt_min, _include_photometric_spt(args))
     return "|".join([
         cfg["host"],
+        cfg["port"],
         cfg["username"],
         cfg["dbname"],
         str(spt_min),
@@ -4339,6 +4365,7 @@ def _spt_push_comments(body: Mapping[str, Any], standard_row: Mapping[str, Any])
 
 
 def _clear_spectral_type_write_caches() -> dict[str, int]:
+    bd_evolution_counts = _bd_evolution_clear_caches()
     counts = {
         "bootstrap": len(_BOOTSTRAP_CACHE),
         "features": len(_FEATURE_CACHE),
@@ -4351,7 +4378,7 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
         "spectralIndexExplorer": len(_SPECTRAL_INDEX_EXPLORER_CACHE),
         "gaiaCmd": len(_GAIA_CMD_CACHE),
         "mocaExplorer": len(_MOCA_EXPLORER_CACHE),
-        "bdEvolution": len(_BD_EVOLUTION_CACHE),
+        **bd_evolution_counts,
     }
     _BOOTSTRAP_CACHE.clear()
     _FEATURE_CACHE.clear()
@@ -4364,7 +4391,6 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
     _SPECTRAL_INDEX_EXPLORER_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
     _MOCA_EXPLORER_CACHE.clear()
-    _BD_EVOLUTION_CACHE.clear()
     return counts
 
 
@@ -7998,8 +8024,8 @@ def _bd_evolution_load_tracks_from_db(conn) -> list[dict[str, Any]]:
         JOIN data_astro_sequences das
             ON das.moca_seqid = ms.moca_seqid
         WHERE ms.moca_seqid IN ({seq_clause})
-            AND COALESCE(ms.ignored, 0) = 0
-            AND COALESCE(das.ignored, 0) = 0
+            AND ms.ignored = 0
+            AND das.ignored = 0
             AND das.xdata IS NOT NULL
             AND das.ydata IS NOT NULL
         ORDER BY ms.moca_seqid, das.zdata, das.xdata
@@ -8145,6 +8171,7 @@ def _bd_evolution_cache_key(args: dict[str, Any], max_objects: int) -> str:
     highlight_oids = _highlight_oids(args)
     return "|".join([
         cfg["host"],
+        cfg["port"],
         cfg["username"],
         cfg["dbname"],
         BD_EVOLUTION_CACHE_SCHEMA,
@@ -8156,20 +8183,80 @@ def _bd_evolution_cache_key(args: dict[str, Any], max_objects: int) -> str:
         str(_bd_evolution_remove_companions(args)),
         ",".join(ignored_membership_aids),
         ",".join(str(oid) for oid in highlight_oids),
+    ])
+
+
+def _bd_evolution_track_cache_key(args: dict[str, Any]) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        cfg["host"],
+        cfg["port"],
+        cfg["username"],
+        cfg["dbname"],
+        BD_EVOLUTION_CACHE_SCHEMA,
+        "mock" if args.get("mock") in {"1", "true", "yes"} else "database",
         _bd_evolution_track_csv_stamp(),
     ])
 
 
-def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    max_objects = _bd_evolution_parse_max_objects(args.get("max_objects") or args.get("limit"))
-    cache_key = _bd_evolution_cache_key(args, max_objects)
-    now = time.time()
-    cached = _BD_EVOLUTION_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+def _bd_evolution_cache_wait_or_reserve(
+    cache: OrderedDict[str, tuple[float, dict[str, Any]]],
+    cache_lock: Lock,
+    inflight: dict[str, Event],
+    cache_key: str,
+) -> tuple[dict[str, Any] | None, bool]:
+    while True:
+        now = time.time()
+        with cache_lock:
+            for key, (stamp, _payload) in list(cache.items()):
+                if now - stamp >= CACHE_SECONDS:
+                    cache.pop(key, None)
+            cached = cache.pop(cache_key, None)
+            if cached is not None:
+                cache[cache_key] = cached
+                payload = copy.deepcopy(cached[1])
+                payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+                return payload, False
+            pending = inflight.get(cache_key)
+            if pending is None:
+                inflight[cache_key] = Event()
+                return None, True
+        pending.wait()
 
+
+def _bd_evolution_cache_publish(
+    cache: OrderedDict[str, tuple[float, dict[str, Any]]],
+    cache_lock: Lock,
+    inflight: dict[str, Event],
+    cache_key: str,
+    payload: dict[str, Any] | None,
+    max_entries: int,
+) -> None:
+    with cache_lock:
+        if payload is not None:
+            cache.pop(cache_key, None)
+            cache[cache_key] = (time.time(), copy.deepcopy(payload))
+            while len(cache) > max_entries:
+                cache.popitem(last=False)
+        pending = inflight.pop(cache_key, None)
+    if pending is not None:
+        pending.set()
+
+
+def _bd_evolution_clear_caches() -> dict[str, int]:
+    with _BD_EVOLUTION_CACHE_LOCK:
+        object_count = len(_BD_EVOLUTION_CACHE)
+        _BD_EVOLUTION_CACHE.clear()
+    with _BD_EVOLUTION_TRACK_CACHE_LOCK:
+        track_count = len(_BD_EVOLUTION_TRACK_CACHE)
+        _BD_EVOLUTION_TRACK_CACHE.clear()
+    return {
+        "bdEvolution": object_count,
+        "bdEvolutionTracks": track_count,
+    }
+
+
+def _build_bd_evolution_from_db(args: dict[str, Any], max_objects: int) -> dict[str, Any]:
     private_db = _is_private_db(args)
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
@@ -8194,7 +8281,7 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     SELECT 1
                     FROM moca_companions mc_flag
                     WHERE mc_flag.moca_oid_child = mo.moca_oid
-                        AND COALESCE(mc_flag.ignored, 0) = 0
+                        AND mc_flag.ignored = 0
                     LIMIT 1
                 ) THEN 1 ELSE 0 END
             """
@@ -8204,7 +8291,7 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
                     SELECT 1
                     FROM moca_companions mc
                     WHERE mc.moca_oid_child = mo.moca_oid
-                        AND COALESCE(mc.ignored, 0) = 0
+                        AND mc.ignored = 0
                     LIMIT 1
                 )
             """
@@ -8214,14 +8301,14 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             LEFT JOIN data_logg logg
                 ON logg.moca_oid = mo.moca_oid
                 AND logg.adopted = 1
-                AND COALESCE(logg.ignored, 0) = 0
+                AND logg.ignored = 0
         """ if logg_table_available else ""
         cbs_has_is_public = "is_public" in _db_table_columns(conn, "calc_banyan_sigma")
         model_columns = _db_table_columns(conn, "moca_banyan_sigma_models")
         model_adopt_filter = (
-            "(COALESCE(mbsm.adopted, 0) = 1 OR COALESCE(mbsm.public_adopted, 0) = 1)"
+            "(mbsm.adopted = 1 OR mbsm.public_adopted = 1)"
             if "public_adopted" in model_columns
-            else "COALESCE(mbsm.adopted, 0) = 1"
+            else "mbsm.adopted = 1"
         )
         cbs_public_filter = "AND cbs.is_public = :cbs_is_public" if private_db and cbs_has_is_public else ""
         params: dict[str, Any] = {**spt_params, "ya_prob_min": ya_prob_min}
@@ -8230,10 +8317,10 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             params.update(highlight_oid_params)
             target_oid_predicate = f"mo.moca_oid IN ({highlight_oid_clause})"
             spt_clause = f"({spt_clause} OR {target_oid_predicate})"
-            highlight_order = f"CASE WHEN {target_oid_predicate} THEN 0 ELSE 1 END, mo.moca_oid"
+            order_sql = f"ORDER BY CASE WHEN {target_oid_predicate} THEN 0 ELSE 1 END, mo.moca_oid"
         else:
             target_oid_predicate = "0 = 1"
-            highlight_order = "mo.moca_oid"
+            order_sql = ""
         if private_db and cbs_has_is_public:
             params["cbs_is_public"] = 0
         active_model_rows = _records(_read_sql(conn, f"""
@@ -8324,20 +8411,20 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             LEFT JOIN data_teff teff
                 ON teff.moca_oid = mo.moca_oid
                 AND teff.adopted = 1
-                AND COALESCE(teff.ignored, 0) = 0
+                AND teff.ignored = 0
             LEFT JOIN data_masses mass
                 ON mass.moca_oid = mo.moca_oid
                 AND mass.adopted = 1
-                AND COALESCE(mass.ignored, 0) = 0
+                AND mass.ignored = 0
             {logg_join_sql}
             LEFT JOIN data_radii radius
                 ON radius.moca_oid = mo.moca_oid
                 AND radius.adopted = 1
-                AND COALESCE(radius.ignored, 0) = 0
+                AND radius.ignored = 0
             LEFT JOIN data_object_ages obj_age
                 ON obj_age.moca_oid = mo.moca_oid
                 AND obj_age.adopted = 1
-                AND COALESCE(obj_age.ignored, 0) = 0
+                AND obj_age.ignored = 0
                 AND obj_age.age_myr > 0
             LEFT JOIN calc_banyan_sigma cbs
                 ON cbs.moca_oid = mo.moca_oid
@@ -8350,21 +8437,20 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             LEFT JOIN data_association_ages assoc_age
                 ON assoc_age.moca_aid = {membership_aid_expr}
                 AND assoc_age.adopted = 1
-                AND COALESCE(assoc_age.ignored, 0) = 0
+                AND assoc_age.ignored = 0
                 AND assoc_age.age_myr > 0
             LEFT JOIN moca_associations ma
                 ON ma.moca_aid = {membership_aid_expr}
             WHERE spt.adopted = 1
-                AND COALESCE(spt.ignored, 0) = 0
-                AND COALESCE(spt.photometric_estimate, 0) = 0
+                AND spt.ignored = 0
+                AND spt.photometric_estimate = 0
                 AND {spt_clause}
                 AND COALESCE(obj_age.age_myr, assoc_age.age_myr) IS NOT NULL
                 {ignored_membership_filter}
                 {companion_filter}
-            ORDER BY {highlight_order}
+            {order_sql}
             LIMIT {max_objects}
         """, params)
-        tracks, track_meta = _bd_evolution_load_tracks(conn)
         query_seconds = round(time.time() - started, 3)
 
     rows_df = _bd_evolution_add_derived_columns(rows_df)
@@ -8385,6 +8471,15 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
         highlight_mask = rows_df["moca_oid"].isin(highlight_oids) if highlight_oids and "moca_oid" in rows_df.columns else pd.Series(False, index=rows_df.index)
         membership_text = rows_df["membership"].fillna("").astype(str).str.upper()
         rows_df = rows_df.loc[highlight_mask | ~membership_text.isin(ignored_membership_aids)].copy()
+    rows_df = rows_df.drop(columns=[
+        "age_myr_unc_pos",
+        "age_myr_unc_neg",
+        "banyan_observables",
+        "best_hyp",
+        "best_ya",
+        "complete_spectral_type",
+        "membership_name",
+    ], errors="ignore")
     rows = _records(rows_df)
     object_age_count = sum(1 for row in rows if row.get("age_source") == "object age")
     membership_age_count = sum(1 for row in rows if row.get("age_source") == "BANYAN Sigma membership age")
@@ -8392,7 +8487,6 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "axes": _bd_evolution_axes_payload(),
         "default": {"x": "age_myr", "y": "teff_k", "xLog": True, "yLog": False},
         "rows": rows,
-        "tracks": tracks,
         "sptAxis": copy.deepcopy(BD_EVOLUTION_SPT_AXIS),
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -8413,11 +8507,99 @@ def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "companion_count": sum(1 for row in rows if row.get("is_companion")),
             "logg_table_available": logg_table_available,
             "query_seconds": query_seconds,
-            **track_meta,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _BD_EVOLUTION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _load_bd_evolution_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    max_objects = _bd_evolution_parse_max_objects(args.get("max_objects") or args.get("limit"))
+    cache_key = _bd_evolution_cache_key(args, max_objects)
+    cached, owner = _bd_evolution_cache_wait_or_reserve(
+        _BD_EVOLUTION_CACHE,
+        _BD_EVOLUTION_CACHE_LOCK,
+        _BD_EVOLUTION_INFLIGHT,
+        cache_key,
+    )
+    if not owner:
+        return cached or {}
+    try:
+        payload = _build_bd_evolution_from_db(args, max_objects)
+    except Exception:
+        _bd_evolution_cache_publish(
+            _BD_EVOLUTION_CACHE,
+            _BD_EVOLUTION_CACHE_LOCK,
+            _BD_EVOLUTION_INFLIGHT,
+            cache_key,
+            None,
+            BD_EVOLUTION_CACHE_MAX_ENTRIES,
+        )
+        raise
+    _bd_evolution_cache_publish(
+        _BD_EVOLUTION_CACHE,
+        _BD_EVOLUTION_CACHE_LOCK,
+        _BD_EVOLUTION_INFLIGHT,
+        cache_key,
+        payload,
+        BD_EVOLUTION_CACHE_MAX_ENTRIES,
+    )
+    return payload
+
+
+def _build_bd_evolution_tracks_payload(args: dict[str, Any]) -> dict[str, Any]:
+    started = time.time()
+    if args.get("mock") in {"1", "true", "yes"}:
+        tracks, track_meta = _bd_evolution_load_tracks(None)
+        source = "mock"
+    else:
+        engine = _engine(_connection_string(args))
+        with engine.connect() as conn:
+            tracks, track_meta = _bd_evolution_load_tracks(conn)
+        source = "MOCAdb"
+    return {
+        "tracks": tracks,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": _is_private_db(args),
+            "track_query_seconds": round(time.time() - started, 3),
+            **track_meta,
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "source": source,
+    }
+
+
+def _load_bd_evolution_tracks_payload(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = _bd_evolution_track_cache_key(args)
+    cached, owner = _bd_evolution_cache_wait_or_reserve(
+        _BD_EVOLUTION_TRACK_CACHE,
+        _BD_EVOLUTION_TRACK_CACHE_LOCK,
+        _BD_EVOLUTION_TRACK_INFLIGHT,
+        cache_key,
+    )
+    if not owner:
+        return cached or {}
+    try:
+        payload = _build_bd_evolution_tracks_payload(args)
+    except Exception:
+        _bd_evolution_cache_publish(
+            _BD_EVOLUTION_TRACK_CACHE,
+            _BD_EVOLUTION_TRACK_CACHE_LOCK,
+            _BD_EVOLUTION_TRACK_INFLIGHT,
+            cache_key,
+            None,
+            BD_EVOLUTION_TRACK_CACHE_MAX_ENTRIES,
+        )
+        raise
+    _bd_evolution_cache_publish(
+        _BD_EVOLUTION_TRACK_CACHE,
+        _BD_EVOLUTION_TRACK_CACHE_LOCK,
+        _BD_EVOLUTION_TRACK_INFLIGHT,
+        cache_key,
+        payload,
+        BD_EVOLUTION_TRACK_CACHE_MAX_ENTRIES,
+    )
     return payload
 
 
@@ -8531,6 +8713,15 @@ def _mock_bd_evolution_payload(args: dict[str, Any]) -> dict[str, Any]:
     if remove_companions and not rows_df.empty and "is_companion" in rows_df.columns:
         companion_flag = pd.to_numeric(rows_df["is_companion"], errors="coerce").fillna(0)
         rows_df = rows_df.loc[companion_flag <= 0].copy()
+    rows_df = rows_df.drop(columns=[
+        "age_myr_unc_pos",
+        "age_myr_unc_neg",
+        "banyan_observables",
+        "best_hyp",
+        "best_ya",
+        "complete_spectral_type",
+        "membership_name",
+    ], errors="ignore")
     truncated = len(rows_df) > max_objects
     rows_df = rows_df.head(max_objects)
     rows_out = _records(rows_df)
@@ -12750,24 +12941,39 @@ def _search_gaia_cmd_objects_from_db(args: dict[str, Any], query: str) -> dict[s
                     AND mo.moca_oid = :search_int
                 UNION ALL
                 SELECT
-                    mo.moca_oid,
-                    mo.designation AS canonical_designation,
-                    mo.designation AS matched_designation,
+                    canonical_matches.moca_oid,
+                    canonical_matches.canonical_designation,
+                    canonical_matches.matched_designation,
                     1 AS match_rank
-                FROM moca_objects mo
-                WHERE mo.designation LIKE :prefix
+                FROM (
+                    SELECT
+                        mo.moca_oid,
+                        mo.designation AS canonical_designation,
+                        mo.designation AS matched_designation
+                    FROM moca_objects mo
+                    WHERE mo.designation LIKE :prefix
+                    ORDER BY mo.designation, mo.moca_oid
+                    LIMIT 80
+                ) canonical_matches
                 UNION ALL
                 SELECT
-                    mad.moca_oid,
-                    mo.designation AS canonical_designation,
-                    mad.designation AS matched_designation,
-                    2 AS match_rank
-                FROM mechanics_all_designations mad
-                LEFT JOIN moca_objects mo
-                    ON mo.moca_oid = mad.moca_oid
-                WHERE mad.designation IS NOT NULL
-                    AND mad.designation <> ''
-                    AND mad.designation LIKE :prefix
+                    prefix_matches.moca_oid,
+                    prefix_matches.canonical_designation,
+                    prefix_matches.matched_designation,
+                    prefix_matches.match_rank
+                FROM (
+                    SELECT
+                        mad.moca_oid,
+                        mo.designation AS canonical_designation,
+                        mad.designation AS matched_designation,
+                        CASE WHEN mad.designation = mo.designation THEN 1 ELSE 2 END AS match_rank
+                    FROM mechanics_all_designations mad
+                    JOIN moca_objects mo
+                        ON mo.moca_oid = mad.moca_oid
+                    WHERE mad.designation LIKE :prefix
+                    ORDER BY mad.designation, mad.moca_oid
+                    LIMIT 160
+                ) prefix_matches
             ) matches
             WHERE matches.moca_oid IS NOT NULL
             ORDER BY matches.match_rank, matches.matched_designation, matches.moca_oid
@@ -28107,12 +28313,28 @@ def retrieval_explorer_page():
 @app.get("/plotly.min.js")
 @app.get("/js/plotly.min.js")
 def plotly_js():
-    global _PLOTLY_JS
+    global _PLOTLY_JS, _PLOTLY_JS_GZIP
     if _PLOTLY_JS is None:
         from plotly.offline import get_plotlyjs
 
         _PLOTLY_JS = get_plotlyjs()
-    return Response(_PLOTLY_JS, mimetype="application/javascript")
+    raw = _PLOTLY_JS.encode("utf-8")
+    accepts_gzip = "gzip" in str(request.headers.get("Accept-Encoding") or "").lower()
+    if accepts_gzip and _PLOTLY_JS_GZIP is None:
+        _PLOTLY_JS_GZIP = gzip.compress(raw, compresslevel=6)
+    body = _PLOTLY_JS_GZIP if accepts_gzip else raw
+    response = Response(body, mimetype="application/javascript")
+    if request.args.get("v"):
+        response.headers["Cache-Control"] = (
+            f"public, max-age={max(0, VERSIONED_STATIC_CACHE_SECONDS)}, immutable"
+        )
+    else:
+        response.headers["Cache-Control"] = "public, max-age=3600"
+    response.headers["Vary"] = "Accept-Encoding"
+    response.headers["Content-Length"] = str(len(body))
+    if accepts_gzip:
+        response.headers["Content-Encoding"] = "gzip"
+    return response
 
 
 @app.get("/js/static/<path:filename>")
@@ -29377,11 +29599,24 @@ def bd_evolution_data():
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_bd_evolution_payload(args)})
-        payload = _load_bd_evolution_from_db(args)
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+            payload = _mock_bd_evolution_payload(args)
+            source = "mock"
+        else:
+            payload = _load_bd_evolution_from_db(args)
+            source = "MOCAdb"
+        include_tracks = args.get("include_tracks") is None or _as_bool(args.get("include_tracks"))
+        if include_tracks and "tracks" not in payload:
+            track_payload = _load_bd_evolution_tracks_payload(args)
+            payload["tracks"] = track_payload.get("tracks") or []
+            payload.setdefault("meta", {}).update(track_payload.get("meta") or {})
+        elif not include_tracks:
+            payload.pop("tracks", None)
+        return _jsonify_clean_cached(
+            {"ok": True, "source": source, **payload},
+            BD_EVOLUTION_CLIENT_CACHE_SECONDS,
+        )
     except Exception as exc:
-        return jsonify({
+        return _jsonify_clean_cached({
             "ok": False,
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
@@ -29400,7 +29635,37 @@ def bd_evolution_data():
                 "max_objects": _bd_evolution_parse_max_objects(args.get("max_objects") or args.get("limit")),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }, 0, 500)
+
+
+@app.get("/api/bd-evolution/tracks")
+@app.get("/api/bd_evolution/tracks")
+@app.get("/api/brown-dwarf-evolution/tracks")
+@app.get("/api/brown_dwarf_evolution/tracks")
+@app.get("/js/api/bd-evolution/tracks")
+@app.get("/js/api/bd_evolution/tracks")
+@app.get("/js/api/brown-dwarf-evolution/tracks")
+@app.get("/js/api/brown_dwarf_evolution/tracks")
+def bd_evolution_tracks():
+    args = dict(request.args)
+    try:
+        payload = _load_bd_evolution_tracks_payload(args)
+        return _jsonify_clean_cached(
+            {"ok": True, **payload},
+            CACHE_SECONDS,
+        )
+    except Exception as exc:
+        return _jsonify_clean_cached({
+            "ok": False,
+            "source": "none",
+            "error": f"{type(exc).__name__}: {exc}",
+            "tracks": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "track_count": 0,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }, 0, 500)
 
 
 @app.get("/api/bd-evolution/search")
@@ -29429,17 +29694,23 @@ def bd_evolution_object_search():
                     or q in str(row["moca_oid"])
                     or q in str(row["designation"]).lower()
                 ]
-            return jsonify({"ok": True, "source": "mock", "options": options[:80], "meta": {"row_count": len(options[:80])}})
+            return _jsonify_clean_cached(
+                {"ok": True, "source": "mock", "options": options[:80], "meta": {"row_count": len(options[:80])}},
+                BD_EVOLUTION_CLIENT_CACHE_SECONDS,
+            )
         payload = _search_gaia_cmd_objects_from_db(args, query)
-        return jsonify({"ok": True, "source": "MOCAdb", **payload})
+        return _jsonify_clean_cached(
+            {"ok": True, "source": "MOCAdb", **payload},
+            BD_EVOLUTION_CLIENT_CACHE_SECONDS,
+        )
     except Exception as exc:
-        return jsonify({
+        return _jsonify_clean_cached({
             "ok": False,
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "options": [],
             "meta": {"row_count": 0},
-        }), 500
+        }, 0, 500)
 
 
 @app.get("/api/companion-explorer/data")
@@ -29674,11 +29945,9 @@ def exoplanets_explorer_clear_cache():
 @app.post("/js/api/brown-dwarf-evolution/cache/clear")
 @app.post("/js/api/brown_dwarf_evolution/cache/clear")
 def bd_evolution_clear_cache():
-    count = len(_BD_EVOLUTION_CACHE)
-    _BD_EVOLUTION_CACHE.clear()
     return jsonify({
         "ok": True,
-        "cleared": {"bdEvolution": count},
+        "cleared": _bd_evolution_clear_caches(),
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -30737,6 +31006,7 @@ def astrometry_clear_cache():
 
 @app.post("/api/cache/clear")
 def clear_cache():
+    bd_evolution_counts = _bd_evolution_clear_caches()
     bootstrap_count = len(_BOOTSTRAP_CACHE)
     feature_count = len(_FEATURE_CACHE)
     bdphot_static_rows_count = len(_BDPHOT_STATIC_ROWS_CACHE)
@@ -30752,7 +31022,6 @@ def clear_cache():
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
     moca_explorer_count = len(_MOCA_EXPLORER_CACHE)
-    bd_evolution_count = len(_BD_EVOLUTION_CACHE)
     group_hierarchy_count = len(_GROUP_HIERARCHY_CACHE)
     legacy_rv_count = len(_LEGACY_RV_CACHE)
     moranta26_rotation_count = len(_MORANTA26_ROTATION_CACHE)
@@ -30775,7 +31044,6 @@ def clear_cache():
     _TRUEFLOW_AGE_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
     _MOCA_EXPLORER_CACHE.clear()
-    _BD_EVOLUTION_CACHE.clear()
     _GROUP_HIERARCHY_CACHE.clear()
     _LEGACY_RV_CACHE.clear()
     _MORANTA26_ROTATION_CACHE.clear()
@@ -30801,7 +31069,7 @@ def clear_cache():
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
             "mocaExplorer": moca_explorer_count,
-            "bdEvolution": bd_evolution_count,
+            **bd_evolution_counts,
             "groupHierarchy": group_hierarchy_count,
             "legacyRadialVelocities": legacy_rv_count,
             "moranta26Rotation": moranta26_rotation_count,

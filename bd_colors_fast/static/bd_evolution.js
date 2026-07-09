@@ -54,9 +54,13 @@ const BDE_ISOTHERM_TARGET_TEFF_K = [
 const BDE_MASS_RADIUS_SMOOTH_PASSES = 2;
 const BDE_MASS_RADIUS_SMOOTH_MIN_CORRECTION_RJUP = 0.018;
 const BDE_MASS_RADIUS_SMOOTH_MAX_CORRECTION_RJUP = 0.11;
+const BDE_OBJECT_WEBGL_THRESHOLD = 5000;
+const BDE_MAX_RENDERED_ISO_AGE_TRACKS = 120;
+const BDE_TRACK_WEBGL_TRACE_THRESHOLD = 240;
 const bdeTrackModelOptions = [
   { key: "sonora_diamondback_mocadb", label: "Sonora Diamondback + MOCAdb empirical extension" },
 ];
+const bdeTrackGroupRangeCache = new WeakMap();
 const bdeObservableSymbols = [
   { key: "pm", label: "μ", symbol: "circle", securityRank: 0 },
   { key: "pm_rv", label: "μ,RV", symbol: "diamond", securityRank: 1 },
@@ -92,7 +96,7 @@ const bdeDefaultSptAxis = [
 const bdeExportColumns = [
   "designation", "moca_oid", "spt", "sptn", "age_myr", "age_myr_unc",
   "age_source", "age_source_detail", "membership", "ya_prob", "observables",
-  "banyan_observables", "banyan_distance_id", "banyan_distance_photometric", "is_companion",
+  "banyan_distance_id", "banyan_distance_photometric", "is_companion",
   "teff_k", "teff_k_unc", "mass_mjup", "mass_mjup_unc", "mass_msun", "logg",
   "logg_unc", "radius_rjup", "radius_rjup_unc", "radius_rsun", "radius_rsun_unc", "report_url",
 ];
@@ -116,7 +120,17 @@ const bdeState = {
   sptReloadTimer: null,
   objectSearchTimer: null,
   objectSearchToken: 0,
+  objectSearchController: null,
+  plotRenderTimer: null,
+  clientFilterTimer: null,
   tracksDefaultInitialized: false,
+  trackRequestKey: null,
+  trackMeta: {},
+  rowsRevision: 0,
+  tracksRevision: 0,
+  displayRowsCache: null,
+  trackGroupsCache: new Map(),
+  cacheBust: null,
   companionsHiddenByLegend: false,
   legendVisibility: new Map(),
 };
@@ -185,7 +199,7 @@ function bindBdEvolutionControls() {
   });
   bdeEl["bde-age-jitter"].addEventListener("input", () => {
     updateBdEvolutionUrl();
-    renderBdEvolutionPlot();
+    scheduleBdEvolutionPlotRender();
   });
   bdeEl["bde-spt-range"].addEventListener("input", () => {
     updateBdEvolutionUrl();
@@ -203,7 +217,7 @@ function bindBdEvolutionControls() {
   bdeEl["bde-ya-prob-min"].addEventListener("change", () => loadBdEvolutionData());
   bdeEl["bde-ignore-aids"].addEventListener("input", () => {
     updateBdEvolutionUrl();
-    applyBdEvolutionClientFilters();
+    scheduleBdEvolutionClientFilters();
   });
   bdeEl["bde-ignore-aids"].addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -220,7 +234,8 @@ function bindBdEvolutionControls() {
   bdeEl["bde-object-search"].addEventListener("input", () => {
     const value = bdeEl["bde-object-search"].value.trim();
     clearTimeout(bdeState.objectSearchTimer);
-    bdeState.objectSearchTimer = setTimeout(() => searchBdEvolutionObjects(value), 220);
+    bdeState.objectSearchController?.abort();
+    bdeState.objectSearchTimer = setTimeout(() => searchBdEvolutionObjects(value), 350);
   });
   bdeEl["bde-object-search"].addEventListener("focus", () => {
     const value = bdeEl["bde-object-search"].value.trim();
@@ -345,14 +360,37 @@ async function loadBdEvolutionData() {
   setBdEvolutionLoading(true);
   setBdEvolutionStatus("Loading Brown Dwarf Evolution Explorer", "loading");
   try {
-    const payload = await fetchJsonUrl(bdeAppUrl(`api/bd-evolution/data?${dataParams().toString()}`));
+    const trackRequest = bdEvolutionTrackRequest();
+    const shouldLoadTracks = bdeState.trackRequestKey !== trackRequest.key || !bdeState.tracks.length;
+    const [payload, trackPayload] = await Promise.all([
+      fetchJsonUrl(bdeAppUrl(`api/bd-evolution/data?${dataParams().toString()}`)),
+      shouldLoadTracks
+        ? fetchJsonUrl(bdeAppUrl(`api/bd-evolution/tracks?${trackRequest.params.toString()}`))
+        : Promise.resolve(null),
+    ]);
     if (token !== bdeState.loadToken) return;
     if (!payload.ok) throw new Error(payload.error || "MOCAdb query failed");
+    if (trackPayload && !trackPayload.ok) throw new Error(trackPayload.error || "Model-track query failed");
     bdeState.payload = payload;
     bdeState.axes = payload.axes || { ...bdeFallbackAxes };
     bdeState.sptAxis = payload.sptAxis?.length ? payload.sptAxis : [...bdeDefaultSptAxis];
-    bdeState.rows = (payload.rows || []).map(enrichBdEvolutionRow).sort(compareBdEvolutionRows);
-    bdeState.tracks = (payload.tracks || []).map(enrichBdEvolutionTrackRow);
+    const highlightedOids = bdEvolutionHighlightedOidSet();
+    bdeState.rows = (payload.rows || [])
+      .map((row) => enrichBdEvolutionRow(row, highlightedOids))
+      .sort(compareBdEvolutionRows);
+    bdeState.rowsRevision += 1;
+    if (trackPayload) {
+      bdeState.tracks = (trackPayload.tracks || []).map(enrichBdEvolutionTrackRow);
+      bdeState.trackMeta = trackPayload.meta || {};
+      bdeState.trackRequestKey = trackRequest.key;
+      bdeState.tracksRevision += 1;
+    } else if (payload.tracks?.length) {
+      bdeState.tracks = payload.tracks.map(enrichBdEvolutionTrackRow);
+      bdeState.trackMeta = payload.meta || {};
+      bdeState.trackRequestKey = trackRequest.key;
+      bdeState.tracksRevision += 1;
+    }
+    invalidateBdEvolutionDerivedCaches();
     populateBdEvolutionAxisSelects();
     populateBdEvolutionTrackSelect();
     readBdEvolutionUrlState();
@@ -368,6 +406,7 @@ async function loadBdEvolutionData() {
     updateBdEvolutionSummary();
     updateBdEvolutionUrl();
     updateBdEvolutionLoadedStatus();
+    bdeState.cacheBust = null;
   } catch (error) {
     if (token !== bdeState.loadToken) return;
     bdeState.payload = null;
@@ -390,11 +429,21 @@ function dataParams() {
   const sptRange = (bdeEl["bde-spt-range"].value || BDE_DEFAULT_SPT_RANGE).trim();
   params.set("spt_range", sptRange || BDE_DEFAULT_SPT_RANGE);
   params.set("track_model", bdeEl["bde-track-model"].value || BDE_DEFAULT_TRACK_MODEL);
+  params.set("include_tracks", "0");
   params.set("ya_prob_min", String(bdEvolutionYaProbMin()));
   const highlightOids = bdEvolutionHighlightedOids();
   if (highlightOids.length) params.set("moca_oid", highlightOids.join(","));
   params.set("ignore_aids", bdEvolutionIgnoredMembershipAidsText());
+  if (bdeState.cacheBust) params.set("_bde_cache_bust", String(bdeState.cacheBust));
   return params;
+}
+
+function bdEvolutionTrackRequest() {
+  const keyParams = connectionParams();
+  keyParams.set("track_model", bdeEl["bde-track-model"].value || BDE_DEFAULT_TRACK_MODEL);
+  const params = new URLSearchParams(keyParams);
+  if (bdeState.cacheBust) params.set("_bde_cache_bust", String(bdeState.cacheBust));
+  return { key: keyParams.toString(), params };
 }
 
 function connectionParams() {
@@ -471,9 +520,9 @@ function bdEvolutionObservableSpec(key) {
   return bdeObservableSymbols.find((item) => item.key === key) || bdeObservableSymbols[bdeObservableSymbols.length - 1];
 }
 
-function enrichBdEvolutionRow(row) {
+function enrichBdEvolutionRow(row, highlightedOids = bdEvolutionHighlightedOidSet()) {
   const oid = coerceMocaOid(row.moca_oid);
-  const highlighted = oid !== null && bdEvolutionHighlightedOidSet().has(oid);
+  const highlighted = oid !== null && highlightedOids.has(oid);
   const age = finiteNumber(row.age_myr);
   const jitterSeed = `${oid ?? row.designation ?? ""}|${row.spt ?? ""}|${age ?? ""}`;
   const radiusRsun = finiteNumber(row.radius_rsun);
@@ -559,7 +608,7 @@ function buildBdEvolutionObjectTraces(rows, xKey, yKey, hover) {
   return bdeObservableSymbols
     .map((spec) => grouped.get(spec.key))
     .filter(Boolean)
-    .flatMap((group) => buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover));
+    .flatMap((group) => buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover, rows.length));
 }
 
 function bdEvolutionSecurityRank(group) {
@@ -592,7 +641,7 @@ function bdEvolutionClassMarkerSize(group, selected = false) {
   return baseSize * securityMultiplier * (BDE_SYMBOL_SIZE_MULTIPLIERS[group?.symbol] || 1);
 }
 
-function buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover) {
+function buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover, totalRows) {
   const companionRows = group.rows.filter(bdEvolutionIsCompanion);
   const objectRows = group.rows.filter((row) => !bdEvolutionIsCompanion(row));
   const traces = [];
@@ -601,6 +650,7 @@ function buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover) {
       edgeColor: BDE_MARKER_EDGE_COLOR,
       showlegend: true,
       traceKind: "object",
+      useWebgl: totalRows > BDE_OBJECT_WEBGL_THRESHOLD,
     }));
   } else if (companionRows.length) {
     traces.push(buildBdEvolutionObjectTrace({ ...group, rows: [] }, xKey, yKey, false, {
@@ -615,6 +665,7 @@ function buildBdEvolutionObjectTraceSet(group, xKey, yKey, hover) {
       edgeColor: BDE_COMPANION_EDGE_COLOR,
       showlegend: false,
       traceKind: "companion",
+      useWebgl: totalRows > BDE_OBJECT_WEBGL_THRESHOLD,
       visible: bdeState.companionsHiddenByLegend ? "legendonly" : undefined,
     }));
   }
@@ -628,7 +679,7 @@ function buildBdEvolutionObjectTrace(group, xKey, yKey, hover, options = {}) {
   const markerSize = bdEvolutionClassMarkerSize(group, false);
   const selectedMarkerSize = bdEvolutionClassMarkerSize(group, true);
   return {
-    type: rows.length > 25000 ? "scattergl" : "scatter",
+    type: options.useWebgl || rows.length > 25000 ? "scattergl" : "scatter",
     mode: "markers",
     name: group.label,
     x: legendOnly ? [null] : rows.map((row) => plotValue(row, xKey, true)),
@@ -639,7 +690,7 @@ function buildBdEvolutionObjectTrace(group, xKey, yKey, hover, options = {}) {
     marker: {
       color: markerColor,
       symbol: group.symbol,
-      size: legendOnly ? markerSize : rows.map((row) => bdeState.selectedOids.has(row._oid) ? selectedMarkerSize : markerSize),
+      size: markerSize,
       opacity: 0.88,
       line: { color: options.edgeColor || BDE_MARKER_EDGE_COLOR, width: 1.4 },
     },
@@ -666,7 +717,7 @@ function buildBdEvolutionHighlightedTrace(rows, xKey, yKey, hover) {
     selectedpoints: selectedPointIndices(rows),
     marker: {
       symbol: "circle-open",
-      size: rows.map((row) => bdeState.selectedOids.has(row._oid) ? 28 : 24),
+      size: 24,
       color: BDE_HIGHLIGHT_HALO_COLOR,
       line: { color: BDE_HIGHLIGHT_EDGE_COLOR, width: 2.8 },
     },
@@ -684,20 +735,33 @@ function bdEvolutionIsCompanion(row) {
   return finiteNumber(row?.is_companion) > 0;
 }
 
+function invalidateBdEvolutionDerivedCaches() {
+  bdeState.displayRowsCache = null;
+  bdeState.trackGroupsCache.clear();
+}
+
+function bdEvolutionFilteredRowsSnapshot() {
+  const ignoredText = bdEvolutionIgnoredMembershipAidsText();
+  const removeCompanions = Boolean(bdeEl["bde-remove-companions"]?.checked);
+  const cacheKey = `${bdeState.rowsRevision}|${ignoredText}|${removeCompanions ? 1 : 0}`;
+  if (bdeState.displayRowsCache?.key === cacheKey) return bdeState.displayRowsCache;
+  const ignoredAids = new Set(ignoredText.split(",").filter(Boolean));
+  const afterIgnored = bdeState.rows.filter((row) => (
+    row._highlighted || !ignoredAids.has(String(row.membership || "").toUpperCase())
+  ));
+  const display = removeCompanions
+    ? afterIgnored.filter((row) => row._highlighted || !bdEvolutionIsCompanion(row))
+    : afterIgnored;
+  bdeState.displayRowsCache = { key: cacheKey, afterIgnored, display };
+  return bdeState.displayRowsCache;
+}
+
 function bdEvolutionDisplayRows() {
-  const ignoredAids = bdEvolutionIgnoredMembershipAids();
-  return bdeState.rows.filter((row) => {
-    if (row._highlighted) return true;
-    if (ignoredAids.includes(String(row.membership || "").toUpperCase())) return false;
-    if (bdeEl["bde-remove-companions"]?.checked && bdEvolutionIsCompanion(row)) return false;
-    return true;
-  });
+  return bdEvolutionFilteredRowsSnapshot().display;
 }
 
 function bdEvolutionRowsAfterIgnoredGroups() {
-  const ignoredAids = bdEvolutionIgnoredMembershipAids();
-  if (!ignoredAids.length) return bdeState.rows;
-  return bdeState.rows.filter((row) => row._highlighted || !ignoredAids.includes(String(row.membership || "").toUpperCase()));
+  return bdEvolutionFilteredRowsSnapshot().afterIgnored;
 }
 
 function buildBdEvolutionCompanionLegendTrace() {
@@ -727,12 +791,16 @@ function buildBdEvolutionTrackTraces(xKey, yKey, xLog, yLog, hover) {
   if (groupingMode === "isotherm") {
     return withColorbar(buildBdEvolutionIsothermTraces(groups, xKey, yKey, hover));
   }
+  const renderedGroups = groupingMode === "iso_age"
+    ? evenlySpacedItems(groups, BDE_MAX_RENDERED_ISO_AGE_TRACKS)
+    : groups;
   const massBoundaryKeys = groupingMode === "iso_mass" ? bdEvolutionBoundaryMassKeys(groups) : new Set();
-  const traces = groups.map((group) => {
+  const traceType = renderedGroups.length > BDE_TRACK_WEBGL_TRACE_THRESHOLD ? "scattergl" : "scatter";
+  const traces = renderedGroups.map((group) => {
     const style = bdEvolutionTrackStyle(group, groups, massBoundaryKeys);
     const label = group.label;
     return {
-      type: "scatter",
+      type: traceType,
       mode: "lines",
       name: label,
       legendgroup: "tracks",
@@ -751,11 +819,12 @@ function buildBdEvolutionTrackTraces(xKey, yKey, xLog, yLog, hover) {
 }
 
 function buildBdEvolutionIsothermTraces(groups, xKey, yKey, hover) {
+  const traceType = groups.length > BDE_TRACK_WEBGL_TRACE_THRESHOLD ? "scattergl" : "scatter";
   return groups.map((group) => {
     const style = bdEvolutionIsothermStyle(group, groups);
     const label = group.label;
     return {
-      type: "scatter",
+      type: traceType,
       mode: "lines",
       name: label,
       legendgroup: "tracks",
@@ -854,9 +923,14 @@ function bdEvolutionTrackColorScale(groupingMode) {
 }
 
 function bdEvolutionTrackGroups(xKey, yKey, xLog, yLog) {
+  const cacheKey = `${bdeState.tracksRevision}|${xKey}|${yKey}|${xLog ? 1 : 0}|${yLog ? 1 : 0}`;
+  const cached = bdeState.trackGroupsCache.get(cacheKey);
+  if (cached) return cached;
   const groupingMode = bdEvolutionTrackGroupingMode(xKey, yKey);
   if (groupingMode === "isotherm") {
-    return { groupingMode, groups: buildBdEvolutionIsothermGroups(xKey, yKey, xLog, yLog) };
+    const result = { groupingMode, groups: buildBdEvolutionIsothermGroups(xKey, yKey, xLog, yLog) };
+    bdeState.trackGroupsCache.set(cacheKey, result);
+    return result;
   }
   const grouped = new Map();
   for (const row of bdeState.tracks || []) {
@@ -876,7 +950,9 @@ function bdEvolutionTrackGroups(xKey, yKey, xLog, yLog) {
       ),
     }))
     .sort((a, b) => a.sortValue - b.sortValue);
-  return { groupingMode, groups };
+  const result = { groupingMode, groups };
+  bdeState.trackGroupsCache.set(cacheKey, result);
+  return result;
 }
 
 function bdEvolutionCleanModelTrackRows(rows, groupingMode, xKey, yKey) {
@@ -1115,19 +1191,16 @@ function bdEvolutionTrackStyle(group, groups, massBoundaryKeys) {
   if (massBoundaryKeys.has(group.key)) {
     return { color: "#000000", width: 3, opacity: 0.92 };
   }
+  const range = bdEvolutionTrackGroupValueRange(groups);
   return {
-    color: bdEvolutionTerrainColor(group.sortValue, groups.map((item) => item.sortValue)),
+    color: bdEvolutionTerrainColor(group.sortValue, range),
     width: 1.25,
     opacity: 0.66,
   };
 }
 
 function bdEvolutionIsothermStyle(group, groups) {
-  const values = groups
-    .map((item) => finiteNumber(item.sortValue))
-    .filter((value) => value !== null);
-  const minValue = values.length ? Math.min(...values) : group.sortValue;
-  const maxValue = values.length ? Math.max(...values) : group.sortValue;
+  const { minValue, maxValue } = bdEvolutionTrackGroupValueRange(groups, group.sortValue);
   const span = maxValue - minValue;
   const fraction = span > 0 ? (group.sortValue - minValue) / span : 0.5;
   return {
@@ -1135,6 +1208,20 @@ function bdEvolutionIsothermStyle(group, groups) {
     width: 1.65,
     opacity: 0.82,
   };
+}
+
+function bdEvolutionTrackGroupValueRange(groups, fallback = 0) {
+  const cached = bdeTrackGroupRangeCache.get(groups);
+  if (cached) return cached;
+  const values = groups
+    .map((item) => finiteNumber(item.sortValue))
+    .filter((value) => value !== null);
+  const range = {
+    minValue: values.length ? Math.min(...values) : fallback,
+    maxValue: values.length ? Math.max(...values) : fallback,
+  };
+  bdeTrackGroupRangeCache.set(groups, range);
+  return range;
 }
 
 function bdEvolutionBoundaryMassKeys(groups) {
@@ -1369,11 +1456,10 @@ function bdEvolutionMassKey(mass) {
   return mass === null ? "" : Number(mass).toFixed(6);
 }
 
-function bdEvolutionTerrainColor(value, values) {
-  const finiteValues = (values || []).filter(Number.isFinite);
-  if (!Number.isFinite(value) || !finiteValues.length) return terrainRgb(0.5);
-  const minValue = Math.min(...finiteValues);
-  const maxValue = Math.max(...finiteValues);
+function bdEvolutionTerrainColor(value, range) {
+  const minValue = finiteNumber(range?.minValue);
+  const maxValue = finiteNumber(range?.maxValue);
+  if (!Number.isFinite(value) || minValue === null || maxValue === null) return terrainRgb(0.5);
   const t = maxValue > minValue ? (value - minValue) / (maxValue - minValue) : 0.5;
   return terrainRgb(Math.max(0, Math.min(1, t)));
 }
@@ -1742,14 +1828,14 @@ function applyBdEvolutionSelection(oids, nativeEvent = null, mode = "range") {
   } else {
     bdeState.selectedOids = new Set(clean);
   }
-  renderBdEvolutionPlot();
+  if (!updateBdEvolutionSelectionPlot()) renderBdEvolutionPlot();
   renderBdEvolutionTable();
   updateBdEvolutionSummary();
 }
 
 function clearBdEvolutionSelection() {
   bdeState.selectedOids = new Set();
-  renderBdEvolutionPlot();
+  if (!updateBdEvolutionSelectionPlot()) renderBdEvolutionPlot();
   renderBdEvolutionTable();
   updateBdEvolutionSummary();
 }
@@ -1763,6 +1849,38 @@ function selectedPointIndices(rows) {
   return indices;
 }
 
+function updateBdEvolutionSelectionPlot() {
+  const plot = bdeEl["bde-plot"];
+  const traces = plot?.data || [];
+  if (!traces.length || typeof Plotly === "undefined" || typeof Plotly.restyle !== "function") return false;
+  const traceIndices = [];
+  const selectedValues = [];
+  const unselectedOpacities = [];
+  traces.forEach((trace, index) => {
+    const role = bdEvolutionTraceRole(trace);
+    if (role !== "object" && role !== "target-oid") return;
+    const customdata = Array.isArray(trace.customdata) ? trace.customdata : [];
+    const selected = [];
+    customdata.forEach((value, pointIndex) => {
+      const oid = coerceMocaOid(value);
+      if (oid !== null && bdeState.selectedOids.has(oid)) selected.push(pointIndex);
+    });
+    traceIndices.push(index);
+    selectedValues.push(bdeState.selectedOids.size ? selected : null);
+    unselectedOpacities.push(
+      role === "target-oid"
+        ? (bdeState.selectedOids.size ? 0.55 : 1)
+        : (bdeState.selectedOids.size ? 0.24 : 0.88),
+    );
+  });
+  if (!traceIndices.length) return false;
+  Plotly.restyle(plot, {
+    selectedpoints: selectedValues,
+    "unselected.marker.opacity": unselectedOpacities,
+  }, traceIndices);
+  return true;
+}
+
 function pruneBdEvolutionSelection() {
   if (!bdeState.selectedOids.size) return;
   const loaded = new Set(bdEvolutionDisplayRows().map((row) => row._oid).filter((oid) => oid !== null));
@@ -1774,7 +1892,7 @@ function renderBdEvolutionTable() {
   const maxRows = 900;
   const shown = rows.slice(0, maxRows);
   bdeEl["bde-table-title"].textContent = bdeState.selectedOids.size
-    ? `${bdeState.selectedOids.size.toLocaleString()} selected objects`
+    ? `${bdeState.selectedOids.size.toLocaleString()} selected object${bdeState.selectedOids.size === 1 ? "" : "s"}`
     : "Selected objects";
   bdeEl["bde-table-subtitle"].textContent = shown.length
     ? (rows.length > maxRows ? `Showing ${maxRows.toLocaleString()} of ${rows.length.toLocaleString()} selected rows.` : `${rows.length.toLocaleString()} selected rows.`)
@@ -1839,19 +1957,26 @@ function renderBdEvolutionHighlightList() {
 async function searchBdEvolutionObjects(query) {
   query = String(query || "").trim();
   const token = ++bdeState.objectSearchToken;
+  bdeState.objectSearchController?.abort();
+  bdeState.objectSearchController = null;
   if (!query) {
     bdeEl["bde-object-results"].hidden = true;
     return;
   }
-  if (query.replace(/\s+/g, "").length < 2 && !/^\d+$/.test(query)) {
-    bdeEl["bde-object-results"].innerHTML = `<div class="designation-result-note">Type at least 2 characters.</div>`;
+  if (query.replace(/\s+/g, "").length < 3 && !/^\d+$/.test(query)) {
+    bdeEl["bde-object-results"].innerHTML = `<div class="designation-result-note">Type at least 3 characters.</div>`;
     bdeEl["bde-object-results"].hidden = false;
     return;
   }
   const params = connectionParams();
   params.set("q", query);
+  const controller = new AbortController();
+  bdeState.objectSearchController = controller;
   try {
-    const payload = await fetchJsonUrl(bdeAppUrl(`api/bd-evolution/search?${params.toString()}`));
+    const payload = await fetchJsonUrl(
+      bdeAppUrl(`api/bd-evolution/search?${params.toString()}`),
+      { signal: controller.signal },
+    );
     if (token !== bdeState.objectSearchToken) return;
     const results = (payload.options || []).filter((result) => coerceMocaOid(result.moca_oid ?? result.value) !== null);
     if (!results.length) {
@@ -1879,9 +2004,12 @@ async function searchBdEvolutionObjects(query) {
     });
     bdeEl["bde-object-results"].hidden = false;
   } catch (error) {
+    if (error?.name === "AbortError") return;
     if (token !== bdeState.objectSearchToken) return;
     bdeEl["bde-object-results"].innerHTML = `<div class="designation-result-note">${htmlEscape(error.message || "Search failed")}</div>`;
     bdeEl["bde-object-results"].hidden = false;
+  } finally {
+    if (bdeState.objectSearchController === controller) bdeState.objectSearchController = null;
   }
 }
 
@@ -1901,6 +2029,9 @@ function selectBdEvolutionHighlightObject(result) {
 }
 
 function applyBdEvolutionClientFilters() {
+  clearTimeout(bdeState.clientFilterTimer);
+  bdeState.clientFilterTimer = null;
+  invalidateBdEvolutionDerivedCaches();
   pruneBdEvolutionSelection();
   renderBdEvolutionPlot();
   renderBdEvolutionTable();
@@ -1933,7 +2064,7 @@ function updateBdEvolutionSummary() {
   const ignoredGroups = ignoredAids.length ? `, ${hiddenIgnoredCount.toLocaleString()} ${ignoredAids.join(",")} rows hidden` : "";
   const yaProbMin = Number.isFinite(Number(meta.ya_prob_min)) ? Number(meta.ya_prob_min) : bdEvolutionYaProbMin();
   const yaProbCut = `YA >= ${formatCell(yaProbMin)}%`;
-  const tracks = Number(meta.track_count || bdeState.tracks.length || 0).toLocaleString();
+  const tracks = Number(bdeState.trackMeta.track_count || meta.track_count || bdeState.tracks.length || 0).toLocaleString();
   const sptRange = meta.spt_range || bdeEl["bde-spt-range"].value || BDE_DEFAULT_SPT_RANGE;
   const objectAgeCount = displayRows.filter((row) => row.age_source === "object age").length;
   const membershipAgeCount = displayRows.filter((row) => row.age_source === "BANYAN Sigma membership age").length;
@@ -1991,7 +2122,15 @@ async function clearBdEvolutionCache() {
   bdeEl["bde-clear-cache-status"].textContent = "Clearing cache";
   try {
     const payload = await fetchJsonUrl(bdeAppUrl("api/bd-evolution/cache/clear"), { method: "POST" });
-    bdeEl["bde-clear-cache-status"].textContent = `Cleared ${payload.cleared?.bdEvolution ?? 0} entries.`;
+    bdeState.cacheBust = Date.now();
+    bdeState.trackRequestKey = null;
+    bdeState.trackMeta = {};
+    bdeState.tracks = [];
+    bdeState.tracksRevision += 1;
+    invalidateBdEvolutionDerivedCaches();
+    const objectCount = payload.cleared?.bdEvolution ?? 0;
+    const trackCount = payload.cleared?.bdEvolutionTracks ?? 0;
+    bdeEl["bde-clear-cache-status"].textContent = `Cleared ${objectCount} object and ${trackCount} track entries.`;
   } catch (error) {
     bdeEl["bde-clear-cache-status"].classList.add("error");
     bdeEl["bde-clear-cache-status"].textContent = error.message;
@@ -2138,6 +2277,19 @@ function deterministicUnit(seed) {
 function scheduleBdEvolutionReload() {
   clearTimeout(bdeState.sptReloadTimer);
   bdeState.sptReloadTimer = setTimeout(() => loadBdEvolutionData(), 550);
+}
+
+function scheduleBdEvolutionPlotRender() {
+  clearTimeout(bdeState.plotRenderTimer);
+  bdeState.plotRenderTimer = setTimeout(() => {
+    bdeState.plotRenderTimer = null;
+    renderBdEvolutionPlot();
+  }, 60);
+}
+
+function scheduleBdEvolutionClientFilters() {
+  clearTimeout(bdeState.clientFilterTimer);
+  bdeState.clientFilterTimer = setTimeout(() => applyBdEvolutionClientFilters(), 120);
 }
 
 function sourceColor(row) {

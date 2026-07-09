@@ -51,10 +51,16 @@ async function main() {
     const page = await browser.newPage({ viewport: { width, height } });
     let dataRequests = 0;
     const dataRequestUrls = [];
+    let trackRequests = 0;
+    const trackRequestUrls = [];
     page.on("request", (request) => {
       if (request.url().includes("/api/bd-evolution/data")) {
         dataRequests += 1;
         dataRequestUrls.push(request.url());
+      }
+      if (request.url().includes("/api/bd-evolution/tracks")) {
+        trackRequests += 1;
+        trackRequestUrls.push(request.url());
       }
     });
 
@@ -68,6 +74,7 @@ async function main() {
     const checkbox = page.locator("#bde-remove-companions");
     const initialChecked = await checkbox.isChecked();
     const initialRequests = dataRequests;
+    const initialTrackRequests = trackRequests;
     const initialSummary = await page.locator("#bde-summary").textContent();
 
     await checkbox.setChecked(true);
@@ -112,6 +119,40 @@ async function main() {
         }));
     });
 
+    const selectionCheck = await page.evaluate(async () => {
+      const plot = document.querySelector("#bde-plot");
+      const objectTrace = (plot?.data || []).find((trace) => (
+        trace.meta?.bdeRole === "object"
+        && Array.isArray(trace.customdata)
+        && trace.customdata.some((value) => Number.isFinite(Number(value)))
+      ));
+      const oid = objectTrace?.customdata?.map(Number).find(Number.isFinite);
+      if (!Number.isFinite(oid)) return { skipped: true, reason: "No selectable object trace." };
+      const originalReact = Plotly.react;
+      const originalRestyle = Plotly.restyle;
+      let reactCalls = 0;
+      let restyleCalls = 0;
+      Plotly.react = (...args) => {
+        reactCalls += 1;
+        return originalReact.apply(Plotly, args);
+      };
+      Plotly.restyle = (...args) => {
+        restyleCalls += 1;
+        return originalRestyle.apply(Plotly, args);
+      };
+      try {
+        applyBdEvolutionSelection([oid], null, "click");
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const selectedTitle = document.querySelector("#bde-table-title")?.textContent || "";
+        clearBdEvolutionSelection();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { skipped: false, oid, reactCalls, restyleCalls, selectedTitle };
+      } finally {
+        Plotly.react = originalReact;
+        Plotly.restyle = originalRestyle;
+      }
+    });
+
     const failures = [];
     if (!afterCheck) failures.push("Remove companions did not stay checked after checking.");
     if (afterUncheck) failures.push("Remove companions re-checked itself after unchecking.");
@@ -119,6 +160,11 @@ async function main() {
     if (afterUncheckRequests !== initialRequests) failures.push("Unchecking Remove companions triggered an API data request.");
     if (afterClearIgnoreRequests !== initialRequests) failures.push("Clearing Ignore groups triggered an API data request.");
     if (afterRestoreIgnoreRequests !== initialRequests) failures.push("Restoring Ignore groups triggered an API data request.");
+    if (initialTrackRequests < 1) failures.push("The split model-track endpoint was not requested during initial load.");
+    if (trackRequests !== initialTrackRequests) failures.push("Client-only filters unexpectedly reloaded model tracks.");
+    if (!selectionCheck.skipped && selectionCheck.reactCalls !== 0) failures.push("Selection rebuilt the full Plotly figure.");
+    if (!selectionCheck.skipped && selectionCheck.restyleCalls < 2) failures.push("Selection did not use Plotly.restyle for select and clear.");
+    if (!selectionCheck.skipped && !selectionCheck.selectedTitle.includes("1 selected object")) failures.push("Selection did not update the selected-object table.");
 
     const badClassLegendEdges = traces.filter((trace) => (
       trace.role === "object"
@@ -201,7 +247,11 @@ async function main() {
       clearedIgnoreSummary,
       restoredIgnoreSummary,
       dataRequestUrls,
+      initialTrackRequests,
+      trackRequests,
+      trackRequestUrls,
       traces,
+      selectionCheck,
       targetCheck,
     };
     console.log(JSON.stringify(result, null, 2));
