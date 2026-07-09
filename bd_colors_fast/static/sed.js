@@ -950,6 +950,7 @@ function bindSedPlotEvents() {
     renderSedTable();
   });
   sedEl["sed-plot"].on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(sedEl["sed-plot"], event)) return;
     const selection = plotSelectionFromEvent(event);
     sedState.selectedSpectrumKeys = selection.spectrumKeys;
     sedState.selectedSpectrumRows = selection.spectrumRows;

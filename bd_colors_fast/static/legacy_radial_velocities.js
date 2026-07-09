@@ -357,6 +357,7 @@ function bindLegacyRvPlotEvents() {
   if (lrvState.eventsBound || !lrvEl["lrv-plot"]?.on) return;
   lrvState.eventsBound = true;
   lrvEl["lrv-plot"].on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(lrvEl["lrv-plot"], event)) return;
     const points = event?.points || [];
     if (!points.length) return;
     lrvState.selectedIds = new Set(points.map((point) => String(point.customdata)).filter(Boolean));

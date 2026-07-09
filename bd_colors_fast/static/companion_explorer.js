@@ -958,6 +958,7 @@ function bindCompanionPlotEvents() {
     if (keys.length) applyCompanionSelection(keys.slice(0, 1), event?.event || null);
   });
   plot.on?.("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(plot, event)) return;
     applyCompanionSelection(selectionKeysFromEventPoints(event?.points || []), event?.event || null);
   });
   plot.on?.("plotly_deselect", () => clearCompanionSelection());

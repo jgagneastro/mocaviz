@@ -122,8 +122,11 @@ const gcmdDefaultXRangeByColor = {
   bprp: [0, 4.5],
   grp: [-0.05, 1.8],
 };
-const gcmdMembershipDownloadFloor = 10;
+const gcmdMembershipDownloadFloor = 50;
 const gcmdDefaultMembershipProbMin = 90;
+const gcmdFieldPayloadCacheMax = 8;
+const gcmdAssociationPayloadCacheMax = 320;
+const gcmdHighlightPayloadCacheMax = 32;
 const gcmdDefaultVettedMtids = [
   { value: "BF", label: "BF" },
   { value: "HM", label: "HM" },
@@ -148,6 +151,9 @@ const gcmdState = {
   objectSearchTimer: null,
   associationVisualMap: new Map(),
   useAssociationSymbols: false,
+  fieldPayloadCache: new Map(),
+  associationPayloadCache: new Map(),
+  highlightPayloadCache: new Map(),
 };
 
 const gcmdEl = {};
@@ -437,31 +443,57 @@ async function loadGaiaCmdData() {
   gcmdEl["gcmd-load"].disabled = true;
   const params = gaiaCmdApiParams();
   try {
-    const payload = await fetchJsonUrl(gcmdAppUrl(`api/gaia-cmd/data?${params.toString()}`));
+    const fieldEntry = cachedGaiaCmdPayload(
+      gcmdState.fieldPayloadCache,
+      gaiaCmdDataUrl(gaiaCmdFieldParams(params)),
+      gcmdFieldPayloadCacheMax,
+    );
+    // The association requests normally finish first. Attach a rejection handler
+    // immediately so a field failure cannot become an unhandled promise while the
+    // page is still waiting for those smaller payloads.
+    fieldEntry.promise.catch(() => null);
+    const associationEntries = gcmdState.selectedAids.map((aid) => cachedGaiaCmdPayload(
+      gcmdState.associationPayloadCache,
+      gaiaCmdDataUrl(gaiaCmdAssociationParams(params, aid)),
+      gcmdAssociationPayloadCacheMax,
+    ));
+    const highlightParams = gaiaCmdHighlightParams(params);
+    const highlightEntry = combinedHighlightOids().length
+      ? cachedGaiaCmdPayload(
+        gcmdState.highlightPayloadCache,
+        gaiaCmdDataUrl(highlightParams),
+        gcmdHighlightPayloadCacheMax,
+      )
+      : null;
+    const newAssociationCount = associationEntries.filter((entry) => !entry.payload).length;
+    if (fieldEntry.payload) {
+      setGaiaCmdLoader(false);
+      const pendingText = newAssociationCount
+        ? `Loading ${newAssociationCount} new association${newAssociationCount === 1 ? "" : "s"}; field sample and existing associations retained`
+        : "Updating Gaia CMD from cached field and association samples";
+      setGaiaCmdStatus(pendingText, "loading");
+    }
+
+    const associationPayloads = await Promise.all(associationEntries.map((entry) => entry.promise));
+    const highlightPayload = highlightEntry ? await highlightEntry.promise : null;
     if (token !== gcmdState.loadToken) return;
-    if (!payload.ok) throw new Error(payload.error || "Could not load Gaia CMD");
-    gcmdState.payload = payload;
-    const highlightOids = new Set(combinedHighlightOids().map(String));
-    const ruweMax = parseRuweMax(payload.selection?.ruwe_max);
-    gcmdState.rows = (payload.rows || []).filter((row) => finite(row.x) && finite(row.y));
-    gcmdState.rows.forEach((row, index) => {
-      row._plotIndex = index;
-      row._sample = row.moca_aid || row.sample || "Field";
-      row._highlighted = Number(row.highlighted || 0) === 1 || (row.moca_oid !== null && row.moca_oid !== undefined && highlightOids.has(String(Math.trunc(Number(row.moca_oid)))));
-      row._deemphasized = ruweMax !== null && finite(row.ruwe) && Number(row.ruwe) > ruweMax;
-      row._isBinary = Number(row.is_binary || 0) === 1;
-      row._vettedMtidSet = new Set(parseCsv(row.vetted_moca_mtids || "").map(String));
-      row._xError = gaiaCmdXError(row);
-      row._yError = gaiaCmdYError(row);
-    });
-    gcmdState.selectedRows = [];
-    renderGaiaCmdPlot();
-    renderGaiaCmdDefaultTable();
-    const cacheText = payload.cache?.hit ? " from cache" : "";
-    setGaiaCmdStatus(`${gcmdState.rows.length.toLocaleString()} Gaia CMD objects loaded${cacheText}`, "");
-    updateGaiaCmdSummary();
-    gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(payload.selection);
-    setGaiaCmdExportDisabled(gaiaCmdDisplayRows().length === 0);
+    const failedAssociation = associationPayloads.find((payload) => !payload.ok);
+    if (failedAssociation) {
+      await fieldEntry.promise.catch(() => null);
+      throw new Error(failedAssociation.error || "Could not load a Gaia association sample");
+    }
+    if (highlightPayload && !highlightPayload.ok) {
+      await fieldEntry.promise.catch(() => null);
+      throw new Error(highlightPayload.error || "Could not load highlighted Gaia objects");
+    }
+    if (!fieldEntry.payload && (associationPayloads.some((payload) => payload.rows?.length) || highlightPayload?.rows?.length)) {
+      installGaiaCmdPayload(mergeGaiaCmdPayload(null, associationPayloads, highlightPayload), { partial: true });
+      setGaiaCmdLoader(false);
+    }
+    const fieldPayload = await fieldEntry.promise;
+    if (token !== gcmdState.loadToken) return;
+    if (!fieldPayload.ok) throw new Error(fieldPayload.error || "Could not load the Gaia field sample");
+    installGaiaCmdPayload(mergeGaiaCmdPayload(fieldPayload, associationPayloads, highlightPayload));
   } catch (error) {
     if (token !== gcmdState.loadToken) return;
     setGaiaCmdStatus(error.message || String(error), "error");
@@ -472,6 +504,156 @@ async function loadGaiaCmdData() {
       gcmdEl["gcmd-load"].disabled = false;
     }
   }
+}
+
+function gaiaCmdDataUrl(params) {
+  return gcmdAppUrl(`api/gaia-cmd/data?${params.toString()}`);
+}
+
+function deleteGaiaCmdParams(params, keys) {
+  keys.forEach((key) => params.delete(key));
+  return params;
+}
+
+function gaiaCmdFieldParams(baseParams) {
+  const params = new URLSearchParams(baseParams);
+  deleteGaiaCmdParams(params, [
+    "asso", "association", "associations", "moca_aid", "aid",
+    "oid", "oids", "moca_oid", "moca_oids", "highlight_oid", "highlight_oids",
+    "membership_download_floor", "download_membership_prob_min", "download_ya_prob_min",
+    "ruwe", "ruwe_max", "color_age", "color_by_age", "age", "raw_gaia", "raw_photometry",
+    "use_raw_gaia", "use_raw_gaia_photometry", "extinction_corrected", "extcorr",
+    "extinction_corrected_only", "extinction_vectors", "extcorr_vectors", "show_extinction_vectors",
+  ]);
+  params.set("sample_part", "field");
+  return params;
+}
+
+function gaiaCmdAssociationParams(baseParams, aid) {
+  const params = new URLSearchParams(baseParams);
+  deleteGaiaCmdParams(params, [
+    "oid", "oids", "moca_oid", "moca_oids", "highlight_oid", "highlight_oids",
+    "ruwe", "ruwe_max", "color_age", "color_by_age", "age", "sequences",
+    "display_sequences", "age_sequences", "show_sequences", "extinction_vectors",
+    "extcorr_vectors", "show_extinction_vectors",
+  ]);
+  params.set("asso", aid);
+  params.set("sample_part", "associations");
+  return params;
+}
+
+function gaiaCmdHighlightParams(baseParams) {
+  const params = new URLSearchParams(baseParams);
+  deleteGaiaCmdParams(params, [
+    "asso", "association", "associations", "moca_aid", "aid",
+    "membership_download_floor", "download_membership_prob_min", "download_ya_prob_min",
+    "ruwe", "ruwe_max", "color_age", "color_by_age", "age", "sequences",
+    "display_sequences", "age_sequences", "show_sequences", "extinction_vectors",
+    "extcorr_vectors", "show_extinction_vectors",
+  ]);
+  params.set("sample_part", "highlights");
+  return params;
+}
+
+function cachedGaiaCmdPayload(cache, url, maxEntries) {
+  const existing = cache.get(url);
+  if (existing) {
+    cache.delete(url);
+    cache.set(url, existing);
+    return existing;
+  }
+  const entry = { payload: null, promise: null };
+  entry.promise = fetchJsonUrl(url).then((payload) => {
+    entry.payload = payload;
+    return payload;
+  }).catch((error) => {
+    if (cache.get(url) === entry) cache.delete(url);
+    throw error;
+  });
+  cache.set(url, entry);
+  while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
+  return entry;
+}
+
+function mergeGaiaCmdPayload(fieldPayload, associationPayloads, highlightPayload) {
+  const dynamicPayloads = [...associationPayloads, highlightPayload].filter(Boolean);
+  const basePayload = fieldPayload || dynamicPayloads[0] || { ok: true, source: "MOCAdb" };
+  const associationRows = associationPayloads.flatMap((payload) => payload.rows || []);
+  const highlightRows = highlightPayload?.rows || [];
+  const rows = [...(fieldPayload?.rows || []), ...associationRows, ...highlightRows];
+  const allPayloads = [fieldPayload, ...dynamicPayloads].filter(Boolean);
+  const selection = currentGaiaCmdSelection(fieldPayload?.selection || basePayload.selection || {});
+  return {
+    ...basePayload,
+    selection,
+    rows,
+    sequences: fieldPayload?.sequences || [],
+    spt_axis: fieldPayload?.spt_axis || null,
+    meta: {
+      ...(fieldPayload?.meta || basePayload.meta || {}),
+      row_count: rows.length,
+      field_row_count: Number(fieldPayload?.meta?.row_count || 0),
+      association_row_count: associationRows.length,
+      highlight_row_count: highlightRows.length,
+      query_seconds: Math.max(0, ...allPayloads.map((payload) => Number(payload.meta?.query_seconds || 0))),
+      split_payload: true,
+      per_association_payloads: true,
+    },
+    cache: {
+      hit: allPayloads.length > 0 && allPayloads.every((payload) => Boolean(payload.cache?.hit)),
+      ttl_seconds: allPayloads.length
+        ? Math.min(...allPayloads.map((payload) => Number(payload.cache?.ttl_seconds || 0)))
+        : 0,
+    },
+  };
+}
+
+function currentGaiaCmdSelection(baseSelection) {
+  return {
+    ...baseSelection,
+    ruwe_max: parseRuweMax(gcmdEl["gcmd-ruwe"].value),
+    color_by_age: gcmdEl["gcmd-color-age"].checked,
+    raw_gaia: gcmdEl["gcmd-raw-gaia"].checked,
+    extinction_corrected_only: gcmdEl["gcmd-extcorr-only"].checked,
+    show_extinction_vectors: gcmdEl["gcmd-extcorr-vectors"].checked,
+    show_sequences: gcmdEl["gcmd-show-sequences"].checked,
+    sample_part: "all",
+    membership_download_floor: gcmdMembershipDownloadFloor,
+    associations: [...gcmdState.selectedAids],
+    highlight_oids: combinedHighlightOids(),
+    vetted_mtids: selectedGaiaCmdVettedMtids(),
+    gaia_quality: normalizeGaiaCmdQuality(gcmdEl["gcmd-gaia-quality"]?.value),
+    filter_giants: gcmdEl["gcmd-filter-giants"].checked,
+    filter_wd: gcmdEl["gcmd-filter-wd"].checked,
+  };
+}
+
+function installGaiaCmdPayload(payload, options = {}) {
+  gcmdState.payload = payload;
+  const highlightOids = new Set(combinedHighlightOids().map(String));
+  const ruweMax = parseRuweMax(payload.selection?.ruwe_max);
+  gcmdState.rows = (payload.rows || []).filter((row) => finite(row.x) && finite(row.y));
+  gcmdState.rows.forEach((row, index) => {
+    row._plotIndex = index;
+    row._sample = row.moca_aid || row.sample || "Field";
+    row._highlighted = Number(row.highlighted || 0) === 1 || (row.moca_oid !== null && row.moca_oid !== undefined && highlightOids.has(String(Math.trunc(Number(row.moca_oid)))));
+    row._deemphasized = ruweMax !== null && finite(row.ruwe) && Number(row.ruwe) > ruweMax;
+    row._isBinary = Number(row.is_binary || 0) === 1;
+    row._vettedMtidSet = new Set(parseCsv(row.vetted_moca_mtids || "").map(String));
+    row._xError = gaiaCmdXError(row);
+    row._yError = gaiaCmdYError(row);
+  });
+  gcmdState.selectedRows = [];
+  renderGaiaCmdPlot();
+  renderGaiaCmdDefaultTable();
+  const cacheText = payload.cache?.hit ? " from cache" : "";
+  const status = options.partial
+    ? `${gcmdState.rows.length.toLocaleString()} association objects loaded${cacheText}; loading the field sample`
+    : `${gcmdState.rows.length.toLocaleString()} Gaia CMD objects loaded${cacheText}`;
+  setGaiaCmdStatus(status, options.partial ? "loading" : "");
+  updateGaiaCmdSummary();
+  gcmdEl["gcmd-hint"].innerHTML = axisSummaryHtml(payload.selection);
+  setGaiaCmdExportDisabled(gaiaCmdDisplayRows().length === 0);
 }
 
 function gaiaCmdApiParams() {
@@ -1582,6 +1764,7 @@ function bindPlotEventsOnce() {
     renderGaiaCmdSelection();
   });
   plot.on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(plot, event)) return;
     const rows = (event?.points || []).map(rowFromPoint).filter(Boolean);
     gcmdState.selectedRows = uniqueRows(rows);
     renderGaiaCmdSelection();
@@ -1761,6 +1944,9 @@ function setGaiaCmdExportDisabled(disabled) {
 }
 
 async function clearGaiaCmdCache() {
+  gcmdState.fieldPayloadCache.clear();
+  gcmdState.associationPayloadCache.clear();
+  gcmdState.highlightPayloadCache.clear();
   gcmdEl["gcmd-clear-cache-status"].textContent = "Clearing cache";
   gcmdEl["gcmd-clear-cache-status"].classList.remove("error");
   try {

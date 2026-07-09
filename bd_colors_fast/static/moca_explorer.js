@@ -116,11 +116,12 @@ function bindMocaExplorerControls() {
   mexEl["mex-max-objects"].addEventListener("change", () => loadMocaExplorerData());
   for (const id of [
     "mex-hover", "mex-cmd-field", "mex-cmd-sequences", "mex-cmd-br",
-    "mex-models", "mex-assmem", "mex-asscen", "mex-science-sequences",
+    "mex-models", "mex-asscen", "mex-science-sequences",
     "mex-science-log", "mex-science-br",
   ]) {
     mexEl[id].addEventListener("change", () => renderMocaExplorerPlot());
   }
+  mexEl["mex-assmem"].addEventListener("change", () => loadMocaExplorerData());
   mexEl["mex-viewbar"].querySelectorAll("button[data-view]").forEach((button) => {
     button.addEventListener("click", () => setMocaExplorerView(button.dataset.view));
   });
@@ -173,6 +174,12 @@ function readMocaExplorerUrlState() {
   mexEl["mex-highlight-oids"].value = oids.join(",");
   const maxObjects = first("max_objects", "limit");
   if (maxObjects) mexEl["mex-max-objects"].value = maxObjects;
+  mexEl["mex-assmem"].checked = ["1", "true", "yes", "on"].includes(first("assumed_membership", "assmem").toLowerCase());
+  const requestedView = first("view");
+  if (mexViewSpecs[requestedView]) mexState.activeView = requestedView;
+  mexEl["mex-viewbar"].querySelectorAll("button[data-view]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.view === mexState.activeView);
+  });
 }
 
 function defaultAids() {
@@ -368,6 +375,8 @@ async function loadMocaExplorerData() {
 
 function dataParams() {
   const params = connectionParams();
+  params.set("view", mexState.activeView);
+  if (mexEl["mex-assmem"].checked) params.set("assumed_membership", "1");
   if (mexState.selectedAids.length) params.set("asso", mexState.selectedAids.join(","));
   if (mexState.selectedMtids.length) params.set("mtid", mexState.selectedMtids.join(","));
   const oids = selectedHighlightOids();
@@ -388,7 +397,7 @@ function connectionParams() {
 
 function updateMocaExplorerUrl() {
   const params = new URLSearchParams(window.location.search);
-  for (const key of ["asso", "moca_aid", "aid", "mtid", "moca_mtid", "oid", "oids", "moca_oid", "moca_oids", "max_objects", "limit"]) {
+  for (const key of ["asso", "moca_aid", "aid", "mtid", "moca_mtid", "oid", "oids", "moca_oid", "moca_oids", "max_objects", "limit", "view", "assumed_membership", "assmem"]) {
     params.delete(key);
   }
   if (mexState.selectedAids.length) params.set("asso", mexState.selectedAids.join(","));
@@ -397,6 +406,8 @@ function updateMocaExplorerUrl() {
   if (oids.length) params.set("oid", oids.join(","));
   const maxObjects = Number(mexEl["mex-max-objects"].value);
   if (Number.isFinite(maxObjects) && maxObjects > 0) params.set("max_objects", String(Math.floor(maxObjects)));
+  params.set("view", mexState.activeView);
+  if (mexEl["mex-assmem"].checked) params.set("assumed_membership", "1");
   const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
   window.history.replaceState({}, "", next);
 }
@@ -423,11 +434,13 @@ function enrichMocaExplorerRow(row, rowType, index) {
 
 function setMocaExplorerView(view) {
   if (!mexViewSpecs[view]) return;
+  if (mexState.activeView === view && mexState.payload?.selection?.view === view) return;
   mexState.activeView = view;
   mexEl["mex-viewbar"].querySelectorAll("button[data-view]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.view === view);
   });
-  renderMocaExplorerPlot();
+  updateMocaExplorerUrl();
+  loadMocaExplorerData();
 }
 
 function renderMocaExplorerPlot() {
@@ -468,6 +481,7 @@ function bindPlotSelectionEvents() {
   plot.on?.("plotly_selected", (event) => {
     const spec = mexViewSpecs[mexState.activeView] || mexViewSpecs.cmd;
     if (spec.type === "3d") return;
+    if (window.MocaPlotlySelection?.isDegenerate(plot, event)) return;
     const oids = selectedOidsFromEventPoints(event?.points || []);
     applyMocaExplorerSelection(oids, event?.event || null, "range");
   });

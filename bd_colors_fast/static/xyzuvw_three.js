@@ -102,6 +102,7 @@ const xuvState = {
 };
 
 const xuvEl = {};
+let xuvAnimationFrame = null;
 
 const xuvAppBaseUrl = new URL("../", import.meta.url).toString();
 
@@ -215,7 +216,8 @@ function setupThreeScene() {
     .filter((panel) => panel.container)
     .map((panel) => setupThreePanel(panel));
   xuvState.three = xuvState.threePanels[0] || xuvState.three;
-  animateThree();
+  document.addEventListener("visibilitychange", refreshThreeAnimation);
+  refreshThreeAnimation();
 }
 
 function setupThreePanel(panelDef) {
@@ -293,6 +295,7 @@ function setupThreePanel(panelDef) {
     pointTexture: createPointTexture(),
     cameraInitialized: false,
     lastCameraAxes: "",
+    isVisible: true,
   };
   panel.raycaster.params.Points.threshold = 5;
 
@@ -314,6 +317,13 @@ function setupThreePanel(panelDef) {
   const resize = () => resizeThree(panel);
   panel.resizeObserver = new ResizeObserver(resize);
   panel.resizeObserver.observe(container);
+  if ("IntersectionObserver" in window) {
+    panel.intersectionObserver = new IntersectionObserver((entries) => {
+      panel.isVisible = entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0);
+      refreshThreeAnimation();
+    }, { rootMargin: "120px 0px", threshold: 0.01 });
+    panel.intersectionObserver.observe(container);
+  }
   window.addEventListener("resize", debounce(resize, 100));
   resizeThree(panel);
   return panel;
@@ -350,8 +360,10 @@ function forEachThreePanel(callback) {
 }
 
 function animateThree() {
-  requestAnimationFrame(animateThree);
+  xuvAnimationFrame = null;
+  if (document.hidden) return;
   for (const panel of activeThreePanels()) {
+    if (!panel.isVisible) continue;
     withThreePanel(panel, () => {
       const { scene, camera, renderer, labelRenderer, controls } = panel;
       if (!scene || !camera || !renderer) return;
@@ -362,6 +374,20 @@ function animateThree() {
       labelRenderer.render(scene, camera);
     });
   }
+  if (shouldAnimateThree()) xuvAnimationFrame = requestAnimationFrame(animateThree);
+}
+
+function shouldAnimateThree() {
+  return !document.hidden && activeThreePanels().some((panel) => panel.isVisible !== false);
+}
+
+function refreshThreeAnimation() {
+  if (!shouldAnimateThree()) {
+    if (xuvAnimationFrame !== null) cancelAnimationFrame(xuvAnimationFrame);
+    xuvAnimationFrame = null;
+    return;
+  }
+  if (xuvAnimationFrame === null) xuvAnimationFrame = requestAnimationFrame(animateThree);
 }
 
 function ensureGalaxyBackground() {
@@ -2509,7 +2535,7 @@ async function buildFrozenStandaloneHtml(snapshot) {
     galaxyDataUrl,
   ] = await Promise.all([
     fetchFrozenAssetText("static/styles.css"),
-    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=xyz-three-uvw-cap-20260514"),
+    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=opt-audit-20260709a"),
     fetchFrozenAssetText("static/vendor/three/three.module.min.js"),
     fetchFrozenAssetText("static/vendor/three/controls/OrbitControls.js"),
     fetchFrozenAssetText("static/vendor/three/renderers/CSS2DRenderer.js"),

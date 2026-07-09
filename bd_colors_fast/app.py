@@ -46,7 +46,7 @@ for _BANYAN_SIGMA_SRC in _BANYAN_SIGMA_SRC_CANDIDATES:
 
 import numpy as np
 import pandas as pd
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory
 from sqlalchemy import bindparam, create_engine, text
 
 
@@ -68,6 +68,17 @@ MOCA_TEAM_USERS = {"collaborators", "management"}
 
 CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_CACHE_SECONDS", "900"))
 VERSIONED_STATIC_CACHE_SECONDS = int(os.environ.get("BD_COLORS_FAST_STATIC_CACHE_SECONDS", "31536000"))
+PAGE_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("BD_COLORS_FAST_CACHE_MAX_ENTRIES", "32")))
+METADATA_CACHE_MAX_ENTRIES = max(32, int(os.environ.get("BD_COLORS_FAST_METADATA_CACHE_MAX_ENTRIES", "512")))
+ENCODED_RESPONSE_CACHE_SECONDS = max(0, int(os.environ.get("BD_COLORS_FAST_RESPONSE_CACHE_SECONDS", "60")))
+ENCODED_RESPONSE_CACHE_MAX_ENTRIES = max(
+    1,
+    int(os.environ.get("BD_COLORS_FAST_RESPONSE_CACHE_MAX_ENTRIES", "128")),
+)
+ENCODED_RESPONSE_CACHE_MIN_BYTES = max(
+    0,
+    int(os.environ.get("BD_COLORS_FAST_RESPONSE_CACHE_MIN_BYTES", "4096")),
+)
 BROAD_QUERY_MAX_OBJECTS = 5000
 OPTIONAL_QUERY_MAX_OBJECTS = max(1, int(os.environ.get("BD_COLORS_FAST_OPTIONAL_MAX_OBJECTS", str(BROAD_QUERY_MAX_OBJECTS))))
 SELECTED_OID_JOIN_THRESHOLD = max(1, int(os.environ.get("BD_COLORS_FAST_SELECTED_OID_JOIN_THRESHOLD", "1000")))
@@ -83,11 +94,115 @@ DEFAULT_AXIS_SPECS = {
     "y": ("absolute_magnitude", "simple:J", ""),
 }
 
+
+class _BoundedCache(OrderedDict):
+    """Small LRU mapping compatible with the page caches' existing dict API."""
+
+    def __init__(self, max_entries: int) -> None:
+        super().__init__()
+        self.max_entries = max(1, int(max_entries))
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        try:
+            value = super().__getitem__(key)
+        except KeyError:
+            return default
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_entries:
+            self.popitem(last=False)
+
+
+_ENCODED_RESPONSE_CACHE: OrderedDict[
+    str,
+    tuple[float, int, list[tuple[str, str]], bytes],
+] = OrderedDict()
+_ENCODED_RESPONSE_CACHE_LOCK = Lock()
+_ENCODED_RESPONSE_INFLIGHT: dict[str, Event] = {}
+
+
+def _is_cacheable_api_request() -> bool:
+    return (
+        request.method == "GET"
+        and ENCODED_RESPONSE_CACHE_SECONDS > 0
+        and (request.path.startswith("/api/") or request.path.startswith("/js/api/"))
+    )
+
+
+def _encoded_response_cache_key() -> str:
+    material = "\n".join((
+        request.path,
+        request.query_string.decode("utf-8", errors="replace"),
+        request.headers.get("Accept-Encoding", ""),
+        request.headers.get("Authorization", ""),
+        request.headers.get("Cookie", ""),
+    ))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _cached_response(entry: tuple[float, int, list[tuple[str, str]], bytes]) -> Response:
+    _expires_at, status, headers, body = entry
+    response = Response(body, status=status)
+    for name, value in headers:
+        response.headers[name] = value
+    response.headers["X-MOCA-Response-Cache"] = "HIT"
+    return response
+
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
 
+@app.before_request
+def _reuse_encoded_api_response() -> Response | None:
+    if not _is_cacheable_api_request():
+        return None
+
+    cache_key = _encoded_response_cache_key()
+    wait_event: Event | None = None
+    now = time.time()
+    with _ENCODED_RESPONSE_CACHE_LOCK:
+        cached = _ENCODED_RESPONSE_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            _ENCODED_RESPONSE_CACHE.move_to_end(cache_key)
+            g.encoded_response_replayed = True
+            return _cached_response(cached)
+        if cached is not None:
+            _ENCODED_RESPONSE_CACHE.pop(cache_key, None)
+        wait_event = _ENCODED_RESPONSE_INFLIGHT.get(cache_key)
+        if wait_event is None:
+            _ENCODED_RESPONSE_INFLIGHT[cache_key] = Event()
+            g.encoded_response_cache_key = cache_key
+            g.encoded_response_cache_owner = True
+            return None
+
+    # Coalesce simultaneous identical requests, but never wait indefinitely for
+    # a failed/terminated worker.
+    wait_event.wait(timeout=30.0)
+    with _ENCODED_RESPONSE_CACHE_LOCK:
+        cached = _ENCODED_RESPONSE_CACHE.get(cache_key)
+        if cached is not None and cached[0] > time.time():
+            _ENCODED_RESPONSE_CACHE.move_to_end(cache_key)
+            g.encoded_response_replayed = True
+            return _cached_response(cached)
+        if cache_key not in _ENCODED_RESPONSE_INFLIGHT:
+            _ENCODED_RESPONSE_INFLIGHT[cache_key] = Event()
+            g.encoded_response_cache_key = cache_key
+            g.encoded_response_cache_owner = True
+    return None
+
+
+def _release_encoded_response_inflight(cache_key: str) -> None:
+    with _ENCODED_RESPONSE_CACHE_LOCK:
+        event = _ENCODED_RESPONSE_INFLIGHT.pop(cache_key, None)
+        if event is not None:
+            event.set()
+
+
 @app.after_request
-def _cache_versioned_static_assets(response: Response) -> Response:
+def _optimize_http_response(response: Response) -> Response:
     if (
         request.method == "GET"
         and request.args.get("v")
@@ -96,32 +211,86 @@ def _cache_versioned_static_assets(response: Response) -> Response:
         response.headers["Cache-Control"] = (
             f"public, max-age={max(0, VERSIONED_STATIC_CACHE_SECONDS)}, immutable"
         )
+
+    is_api_json = (
+        request.method == "GET"
+        and response.status_code == 200
+        and response.mimetype == "application/json"
+        and (request.path.startswith("/api/") or request.path.startswith("/js/api/"))
+    )
+    if is_api_json:
+        response.headers.setdefault(
+            "Cache-Control",
+            f"private, max-age={max(0, ENCODED_RESPONSE_CACHE_SECONDS)}",
+        )
+        response.vary.add("Accept-Encoding")
+        if (
+            "gzip" in request.headers.get("Accept-Encoding", "").lower()
+            and not response.headers.get("Content-Encoding")
+        ):
+            body = response.get_data()
+            if len(body) >= ENCODED_RESPONSE_CACHE_MIN_BYTES:
+                compressed = gzip.compress(body, compresslevel=5)
+                if len(compressed) < len(body):
+                    response.set_data(compressed)
+                    response.headers["Content-Encoding"] = "gzip"
+                    response.headers["Content-Length"] = str(len(compressed))
+
+    cache_key = getattr(g, "encoded_response_cache_key", None)
+    if cache_key and getattr(g, "encoded_response_cache_owner", False):
+        try:
+            if is_api_json and not response.is_streamed:
+                excluded_headers = {"date", "server", "x-moca-response-cache"}
+                headers = [
+                    (name, value)
+                    for name, value in response.headers.items()
+                    if name.lower() not in excluded_headers
+                ]
+                entry = (
+                    time.time() + ENCODED_RESPONSE_CACHE_SECONDS,
+                    response.status_code,
+                    headers,
+                    response.get_data(),
+                )
+                with _ENCODED_RESPONSE_CACHE_LOCK:
+                    _ENCODED_RESPONSE_CACHE[cache_key] = entry
+                    _ENCODED_RESPONSE_CACHE.move_to_end(cache_key)
+                    while len(_ENCODED_RESPONSE_CACHE) > ENCODED_RESPONSE_CACHE_MAX_ENTRIES:
+                        _ENCODED_RESPONSE_CACHE.popitem(last=False)
+                response.headers["X-MOCA-Response-Cache"] = "MISS"
+        finally:
+            _release_encoded_response_inflight(cache_key)
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and response.status_code < 400:
+        with _ENCODED_RESPONSE_CACHE_LOCK:
+            _ENCODED_RESPONSE_CACHE.clear()
     return response
 
 
-_BOOTSTRAP_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_FEATURE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_BDPHOT_STATIC_ROWS_CACHE: dict[tuple[str, str, str, str, str], tuple[float, list[dict[str, Any]]]] = {}
-_SPT_GRID_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SPT_SPECTRUM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SPT_COMPARE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SPT_STANDARD_PROCESS_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
-_ASTROMETRY_OBJECT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SPECTRA_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SPECTRAL_INDEX_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SED_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SED_TEMPLATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_XYZUVW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_TRUEFLOW_AGE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_GAIA_CMD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_MOCA_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_GROUP_HIERARCHY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_LEGACY_RV_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_MORANTA26_ROTATION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_RVBAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_RVBAM_ARRAY_CACHE: dict[str, tuple[float, np.ndarray]] = {}
-_RETRIEVAL_EXPLORER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_BANYAN_SIGMA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_BOOTSTRAP_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_FEATURE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_BDPHOT_STATIC_ROWS_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPT_GRID_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPT_SPECTRUM_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPT_COMPARE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPT_STANDARD_PROCESS_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_ASTROMETRY_OBJECT_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPECTRA_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SPECTRAL_INDEX_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SED_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_SED_TEMPLATE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_XYZUVW_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_TRUEFLOW_AGE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_GAIA_CMD_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_MOCA_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_GROUP_HIERARCHY_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_LEGACY_RV_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_MORANTA26_ROTATION_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_RVBAM_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_RVBAM_ARRAY_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_RETRIEVAL_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_RETRIEVAL_CONDENSATION_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_BANYAN_SIGMA_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _BD_EVOLUTION_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _BD_EVOLUTION_TRACK_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _BD_EVOLUTION_CACHE_LOCK = Lock()
@@ -130,8 +299,8 @@ _BD_EVOLUTION_INFLIGHT: dict[str, Event] = {}
 _BD_EVOLUTION_TRACK_INFLIGHT: dict[str, Event] = {}
 _BANYAN_HYPOTHESES_CACHE: dict[str, Any] | None = None
 _BANYAN_LNP_LOCK = Lock()
-_DB_TABLE_EXISTS_CACHE: dict[tuple[str, str, str, str, str], bool] = {}
-_DB_COLUMNS_CACHE: dict[tuple[str, str, str, str, str], set[str]] = {}
+_DB_TABLE_EXISTS_CACHE = _BoundedCache(METADATA_CACHE_MAX_ENTRIES)
+_DB_COLUMNS_CACHE = _BoundedCache(METADATA_CACHE_MAX_ENTRIES)
 _PLOTLY_JS: str | None = None
 _PLOTLY_JS_GZIP: bytes | None = None
 
@@ -369,7 +538,7 @@ MOCA_FLOWS_RESULT_ORDER = [
 ]
 GAIA_CMD_DEFAULT_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_MAX_OBJECTS", "20000"))
 GAIA_CMD_HARD_MAX_OBJECTS = int(os.environ.get("GAIA_CMD_FAST_HARD_MAX_OBJECTS", "1000000"))
-GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 10.0
+GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR = 50.0
 GAIA_CMD_MOCK_VETTED_MTIDS = ("BF", "HM", "CM", "LM", "AM", "R")
 GAIA_CMD_QUALITY_MODES = {"off", "soft", "strict"}
 GAIA_CMD_SIMPLE_BANDS = {
@@ -6904,6 +7073,9 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
         _as_false(args.get(key))
         for key in ("sequences", "display_sequences", "age_sequences", "show_sequences")
     )
+    sample_part = str(args.get("sample_part") or "all").strip().lower()
+    if sample_part not in {"all", "field", "associations", "highlights"}:
+        sample_part = "all"
     return {
         "x1": x1,
         "x2": x2,
@@ -6918,6 +7090,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
         "extinction_corrected_only": extinction_corrected_only,
         "show_extinction_vectors": show_extinction_vectors,
         "show_sequences": show_sequences,
+        "sample_part": sample_part,
         "membership_download_floor": _gaia_cmd_membership_download_floor(args),
         "associations": _gaia_cmd_parse_aids(args),
         "highlight_oids": _gaia_cmd_parse_oids(args),
@@ -6942,7 +7115,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
 def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
     cfg = _db_config(args)
     return "|".join([
-        "gaia-quality-blended-v1",
+        "gaia-split-samples-v3",
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
@@ -6956,9 +7129,10 @@ def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
         str(int(selection["extinction_corrected_only"])),
         str(int(selection["show_extinction_vectors"])),
         str(int(selection["show_sequences"])),
+        selection["sample_part"],
         f"{selection['membership_download_floor']:.3f}",
-        ",".join(selection["associations"]),
-        ",".join(str(oid) for oid in selection["highlight_oids"]),
+        ",".join(selection["associations"]) if selection["sample_part"] in {"all", "associations"} else "",
+        ",".join(str(oid) for oid in selection["highlight_oids"]) if selection["sample_part"] in {"all", "highlights"} else "",
         ",".join(selection["vetted_mtids"]),
         selection["gaia_quality"],
         str(int(selection["filter_giants"])),
@@ -7139,7 +7313,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
         frames: list[pd.DataFrame] = []
         field_table = "pcat_gaiadr3_100pc_field" if _is_private_db(args) else "cat_gaiadr3_100pc_field"
         field_table_available = _db_table_exists(conn, field_table)
-        if field_table_available:
+        if field_table_available and selection["sample_part"] in {"all", "field"}:
             field_df = _read_sql(conn, f"""
                 SELECT
                     g.moca_oid,
@@ -7201,7 +7375,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
             """, params)
             frames.append(field_df)
 
-        if selection["associations"]:
+        if selection["associations"] and selection["sample_part"] in {"all", "associations"}:
             if selection["raw_gaia"]:
                 association_sql = f"""
                     SELECT
@@ -7385,7 +7559,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 """
             frames.append(_read_sql(conn, association_sql, params))
 
-        if selection["highlight_oids"]:
+        if selection["highlight_oids"] and selection["sample_part"] in {"all", "highlights"}:
             if selection["raw_gaia"]:
                 highlight_sql = f"""
                     SELECT
@@ -7563,7 +7737,8 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
             if column in rows_df.columns:
                 rows_df[column] = pd.to_numeric(rows_df[column], errors="coerce").round(digits)
 
-        seqids = _gaia_cmd_sequence_ids(selection)
+        include_static_layers = selection["sample_part"] in {"all", "field"}
+        seqids = _gaia_cmd_sequence_ids(selection) if include_static_layers else []
         sequences: list[dict[str, Any]] = []
         spt_axis: dict[str, Any] | None = None
         if seqids:
@@ -7603,7 +7778,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 item["yerror"].append(round(float(row["yerror"]), 5) if row.get("yerror") is not None else None)
             sequences = list(by_seqid.values())
 
-        spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection)
+        spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection) if include_static_layers else None
         if spt_axis_seqid:
             spt_axis_rows = _records(_read_sql(conn, """
                 SELECT
@@ -7668,6 +7843,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "query_seconds": query_seconds,
             "field_table": field_table,
             "field_table_available": field_table_available,
+            "sample_part": selection["sample_part"],
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -7715,7 +7891,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             continue
         if selection["filter_wd"] and mock_is_wd:
             continue
-        rows.append({
+        row = {
             "moca_oid": moca_oid,
             "designation": f"Mock Gaia CMD star {index}",
             "source_id": str(6000000000000000000 + index),
@@ -7750,14 +7926,24 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "mock_is_giant": 1 if mock_is_giant else 0,
             "mock_is_wd": 1 if mock_is_wd else 0,
             "report_url": f"https://mocadb.ca/search/results?search-query=oid%28{moca_oid}%29&search-type=star" if moca_oid else None,
-        })
+        }
+        is_association_row = bool(aid)
+        is_highlight_row = bool(row["highlighted"])
+        if selection["sample_part"] == "field" and (is_association_row or is_highlight_row):
+            continue
+        if selection["sample_part"] == "associations" and not is_association_row:
+            continue
+        if selection["sample_part"] == "highlights" and not is_highlight_row:
+            continue
+        rows.append(row)
     sequences = []
-    for seqid in _gaia_cmd_sequence_ids(selection):
+    include_static_layers = selection["sample_part"] in {"all", "field"}
+    for seqid in (_gaia_cmd_sequence_ids(selection) if include_static_layers else []):
         x = np.linspace(-0.1, 4.7, 120)
         offset = {"field": 0.0, "mel5": -0.7, "abdmg": -0.45, "tha": -0.55, "bpmg": -0.6, "twa": -0.75, "etac": -0.8}.get(seqid.rsplit("_", 1)[-1], 0.0)
         y = 2.2 + 3.1 * x + 0.65 * x * x + offset
         sequences.append({"moca_seqid": seqid, "name": seqid, "x": x.round(4).tolist(), "y": y.round(4).tolist(), "yerror": [None] * len(x)})
-    spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection)
+    spt_axis_seqid = _gaia_cmd_spt_axis_sequence_id(selection) if include_static_layers else None
     spt_axis = None
     if spt_axis_seqid:
         sptn = np.linspace(-35, 5, 161)
@@ -7788,6 +7974,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "truncated": False,
             "max_objects": selection["max_objects"],
             "query_seconds": 0,
+            "sample_part": selection["sample_part"],
         },
         "cache": {"hit": False, "ttl_seconds": 0},
     }
@@ -13014,6 +13201,9 @@ def _moca_explorer_parse_max_objects(raw: Any) -> int:
 
 
 def _moca_explorer_selection(args: dict[str, Any]) -> dict[str, Any]:
+    view = str(args.get("view") or "cmd").strip()
+    if view not in {"cmd", "xyz", "uvw", "projections", "prot", "gaiaAct", "ewha", "ewli"}:
+        view = "cmd"
     return {
         "aids": _parse_xyzuvw_csv_ids(
             args.get("asso") or args.get("association") or args.get("moca_aid") or args.get("aid"),
@@ -13022,6 +13212,8 @@ def _moca_explorer_selection(args: dict[str, Any]) -> dict[str, Any]:
         "mtids": _parse_xyzuvw_csv_ids(args.get("mtid") or args.get("moca_mtid"), MOCA_EXPLORER_DEFAULT_MTIDS)[:80],
         "oids": _parse_xyzuvw_oids(args.get("oid") or args.get("oids") or args.get("moca_oid") or args.get("moca_oids")),
         "max_objects": _moca_explorer_parse_max_objects(args.get("max_objects") or args.get("limit")),
+        "view": view,
+        "assumed_membership": _as_bool(args.get("assumed_membership") or args.get("assmem")),
     }
 
 
@@ -13031,11 +13223,13 @@ def _moca_explorer_cache_key(args: dict[str, Any], selection: dict[str, Any]) ->
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
-        "moca-explorer-v3-ew-base-tables",
+        "moca-explorer-v4-active-view",
         ",".join(selection["aids"]),
         ",".join(selection["mtids"]),
         ",".join(str(oid) for oid in selection["oids"]),
         str(selection["max_objects"]),
+        selection["view"],
+        str(int(selection["assumed_membership"])),
     ])
 
 
@@ -13527,6 +13721,285 @@ def _load_moca_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
+    _MOCA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _moca_explorer_trim_payload_for_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the row fields and overlays used by the requested view."""
+    selection = payload.get("selection") or {}
+    view = selection.get("view") or "cmd"
+    core = {"designation", "moca_aid", "moca_mtid", "spt", "moca_oid", "report_url"}
+    view_columns = {
+        "cmd": {"gmag", "bmag", "rmag", "plx", "dmod", "dr3_ruwe", "gr", "br", "m_g", "m_r"},
+        "xyz": {"x", "y", "z", "x_opt", "y_opt", "z_opt"},
+        "uvw": {"u", "v", "w", "u_opt", "v_opt", "w_opt"},
+        "projections": {
+            "x", "y", "z", "u", "v", "w",
+            "x_opt", "y_opt", "z_opt", "u_opt", "v_opt", "w_opt",
+        },
+        "prot": {"gmag", "bmag", "rmag", "gr", "br", "prot_days"},
+        "gaiaAct": {"gmag", "bmag", "rmag", "gr", "br", "gaia_act"},
+        "ewha": {"gmag", "bmag", "rmag", "gr", "br", "ewha"},
+        "ewli": {"gmag", "bmag", "rmag", "gr", "br", "ewli"},
+    }
+    allowed = core | view_columns.get(view, view_columns["cmd"])
+    for key in ("members", "objects"):
+        payload[key] = [
+            {column: value for column, value in row.items() if column in allowed}
+            for row in (payload.get(key) or [])
+        ]
+
+    spatial = view in {"xyz", "uvw", "projections"}
+    if not spatial:
+        payload["models"] = []
+        payload["labels"] = []
+    sequence_key = {
+        "cmd": {"cmd", "cmdField"},
+        "prot": {"prot"},
+        "gaiaAct": {"gaiaAct"},
+        "ewha": {"ewha"},
+        "ewli": {"ewli"},
+    }.get(view, set())
+    payload["sequences"] = {
+        key: value
+        for key, value in (payload.get("sequences") or {}).items()
+        if key in sequence_key
+    }
+    if view != "cmd":
+        payload["sptAxis"] = []
+    return payload
+
+
+def _load_moca_explorer_active_view_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    """Query only tables and columns needed by the currently visible panel."""
+    selection = _moca_explorer_selection(args)
+    cache_key = _moca_explorer_cache_key(args, selection)
+    now = time.time()
+    cached = _MOCA_EXPLORER_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
+        return payload
+
+    view = selection["view"]
+    spatial = view in {"xyz", "uvw", "projections"}
+    aid_clause, aid_params = _sql_in_clause("mex_aid", selection["aids"])
+    mtid_clause, mtid_params = _sql_in_clause("mex_mtid", selection["mtids"])
+    params: dict[str, Any] = {**aid_params, **mtid_params}
+    private_db = _is_private_db(args)
+    xyz_public_filter = "AND xyz.is_public = 0" if private_db else ""
+    uvw_public_filter = "AND uvw.is_public = 0" if private_db else ""
+    cbs_public_filter = "AND cbs.is_public = 0" if private_db else ""
+
+    def view_query_parts(oid_expr: str, member: bool) -> tuple[list[str], list[str]]:
+        select_columns: list[str] = []
+        joins: list[str] = []
+        if view == "cmd" or view in {"prot", "gaiaAct", "ewha", "ewli"}:
+            select_columns.extend([
+                "COALESCE(pg.magnitude, dr3.phot_g_mean_mag) AS gmag",
+                "COALESCE(pb.magnitude, dr3.phot_bp_mean_mag) AS bmag",
+                "COALESCE(pr.magnitude, dr3.phot_rp_mean_mag) AS rmag",
+            ])
+            joins.extend([
+                f"LEFT JOIN cat_gaiadr3 dr3 ON dr3.moca_oid = {oid_expr}",
+                f"LEFT JOIN data_photometry pg ON pg.moca_oid = {oid_expr} AND pg.moca_psid = 'gaiadr3_gmag' AND pg.adopted = 1 AND COALESCE(pg.ignored, 0) = 0",
+                f"LEFT JOIN data_photometry pb ON pb.moca_oid = {oid_expr} AND pb.moca_psid = 'gaiadr3_bpmag' AND pb.adopted = 1 AND COALESCE(pb.ignored, 0) = 0",
+                f"LEFT JOIN data_photometry pr ON pr.moca_oid = {oid_expr} AND pr.moca_psid = 'gaiadr3_rpmag' AND pr.adopted = 1 AND COALESCE(pr.ignored, 0) = 0",
+            ])
+        if view == "cmd":
+            select_columns.extend([
+                "COALESCE(dplx.parallax_mas, dr3.parallax) AS plx",
+                "COALESCE(dd.dmod, dplx.dmod) AS dmod",
+                "COALESCE(dr3.ruwe, dplx.ruwe, dd.plx_ruwe) AS dr3_ruwe",
+            ])
+            joins.extend([
+                f"LEFT JOIN data_parallaxes dplx ON dplx.moca_oid = {oid_expr} AND dplx.adopted = 1 AND COALESCE(dplx.ignored, 0) = 0",
+                f"LEFT JOIN data_distances dd ON dd.moca_oid = {oid_expr} AND dd.adopted = 1 AND dd.photometric_estimate = 0 AND COALESCE(dd.ignored, 0) = 0",
+            ])
+        if view in {"xyz", "projections"}:
+            select_columns.extend(["xyz.x_pc AS x", "xyz.y_pc AS y", "xyz.z_pc AS z"])
+            joins.append(
+                f"LEFT JOIN calc_xyz xyz ON xyz.moca_oid = {oid_expr} AND COALESCE(xyz.ignored, 0) = 0 {xyz_public_filter}"
+            )
+        if view in {"uvw", "projections"}:
+            uvw_table = "calc_uvw" if member else "calc_uvw_raw"
+            aid_match = "AND uvw.moca_aid = mmp.moca_aid" if member else ""
+            select_columns.extend(["uvw.u_kms AS u", "uvw.v_kms AS v", "uvw.w_kms AS w"])
+            joins.append(
+                f"LEFT JOIN {uvw_table} uvw ON uvw.moca_oid = {oid_expr} {aid_match} AND COALESCE(uvw.ignored, 0) = 0 {uvw_public_filter}"
+            )
+        if spatial and member and selection["assumed_membership"]:
+            axes = ("x", "y", "z") if view == "xyz" else (("u", "v", "w") if view == "uvw" else ("x", "y", "z", "u", "v", "w"))
+            select_columns.extend([f"cbsd.{axis}_opt" for axis in axes])
+            joins.extend([
+                (
+                    f"LEFT JOIN calc_banyan_sigma cbs ON cbs.moca_oid = {oid_expr} "
+                    "AND cbs.moca_bsmdid = (SELECT moca_bsmdid FROM moca_banyan_sigma_models WHERE adopted = 1 ORDER BY moca_bsmdid DESC LIMIT 1) "
+                    f"AND cbs.max_observables = 1 {cbs_public_filter}"
+                ),
+                "LEFT JOIN calc_banyan_sigma_details cbsd ON cbsd.cbs_id = cbs.id AND cbsd.moca_aid = mmp.moca_aid",
+            ])
+        if view == "prot":
+            select_columns.append("drp.prot_days")
+            joins.append(
+                f"LEFT JOIN data_rotation_periods drp ON drp.moca_oid = {oid_expr} AND drp.adopted = 1 AND COALESCE(drp.ignored, 0) = 0"
+            )
+        if view == "gaiaAct":
+            select_columns.append("gap.activityindex_espcs AS gaia_act")
+            joins.append(f"LEFT JOIN cat_gaiadr3_astrophysical_parameters gap ON gap.moca_oid = {oid_expr}")
+        if view in {"ewli", "ewha"}:
+            alias = "li" if view == "ewli" else "ha"
+            aggregation = "MAX" if view == "ewli" else "MIN"
+            spids = "'li', 'li_lowres'" if view == "ewli" else "'halpha', 'h_alpha', 'ha'"
+            scale = "1000 * " if view == "ewli" else ""
+            select_columns.append(f"{scale}{alias}.ew_angstrom AS {view}")
+            joins.append(f"""
+                LEFT JOIN (
+                    SELECT cew.moca_oid, {aggregation}(cew.ew_angstrom) AS ew_angstrom
+                    FROM calc_equivalent_widths_combined cew
+                    WHERE cew.moca_spid IN ({spids}) AND COALESCE(cew.ignored, 0) = 0
+                    GROUP BY cew.moca_oid
+                ) {alias} ON {alias}.moca_oid = {oid_expr}
+            """)
+        return select_columns, joins
+
+    engine = _engine(_connection_string(args))
+    with engine.connect() as conn:
+        started = time.time()
+        if selection["aids"] and selection["mtids"]:
+            extra_select, extra_joins = view_query_parts("mmp.moca_oid", True)
+            members_df = _read_sql(conn, f"""
+                SELECT
+                    mo.designation,
+                    mmp.moca_aid,
+                    mmp.moca_mtid,
+                    cspt.spectral_type AS spt,
+                    mmp.moca_oid
+                    {',' if extra_select else ''} {', '.join(extra_select)}
+                FROM mechanics_memberships_propagated mmp
+                JOIN moca_objects mo ON mo.moca_oid = mmp.moca_oid
+                LEFT JOIN data_spectral_types cspt
+                    ON cspt.moca_oid = mmp.moca_oid
+                    AND cspt.adopted = 1
+                    AND COALESCE(cspt.ignored, 0) = 0
+                {' '.join(extra_joins)}
+                WHERE mmp.moca_aid IN ({aid_clause})
+                    AND mmp.moca_mtid IN ({mtid_clause})
+                ORDER BY mmp.moca_aid, mmp.moca_mtid, cspt.spectral_type_number, mmp.moca_oid
+                LIMIT {selection['max_objects']}
+            """, params)
+        else:
+            members_df = pd.DataFrame()
+
+        if selection["oids"]:
+            oid_clause = ",".join(str(int(oid)) for oid in selection["oids"])
+            extra_select, extra_joins = view_query_parts("mo.moca_oid", False)
+            objects_df = _read_sql(conn, f"""
+                SELECT
+                    mo.designation,
+                    'N/A' AS moca_aid,
+                    'N/A' AS moca_mtid,
+                    cspt.spectral_type AS spt,
+                    mo.moca_oid
+                    {',' if extra_select else ''} {', '.join(extra_select)}
+                FROM moca_objects mo
+                LEFT JOIN data_spectral_types cspt
+                    ON cspt.moca_oid = mo.moca_oid
+                    AND cspt.adopted = 1
+                    AND COALESCE(cspt.ignored, 0) = 0
+                {' '.join(extra_joins)}
+                WHERE mo.moca_oid IN ({oid_clause})
+                ORDER BY FIELD(mo.moca_oid, {oid_clause})
+            """, params)
+        else:
+            objects_df = pd.DataFrame()
+
+        if spatial and selection["aids"]:
+            aid_model_clause, aid_model_params = _sql_in_clause("model_aid", selection["aids"])
+            model_axes = (
+                ("x", "y", "z")
+                if view == "xyz"
+                else (("u", "v", "w") if view == "uvw" else ("x", "y", "z", "u", "v", "w"))
+            )
+            model_columns = ["moca_aid", "moca_bsmdid", "coeff_index"]
+            model_columns.extend(f"{axis}_cen" for axis in model_axes)
+            model_columns.extend(
+                f"{model_axes[left]}{model_axes[right]}_covar"
+                for left in range(len(model_axes))
+                for right in range(left, len(model_axes))
+            )
+            model_select = ", ".join(f"dbs2.{column}" for column in model_columns)
+            models_df = _read_sql(conn, f"""
+                SELECT {model_select}
+                FROM data_banyan_sigma_models dbs2
+                JOIN (
+                    SELECT MAX(dbs.moca_bsmdid) AS moca_bsmdid, dbs.moca_aid
+                    FROM data_banyan_sigma_models dbs
+                    JOIN moca_banyan_sigma_models mbsm ON mbsm.moca_bsmdid = dbs.moca_bsmdid
+                    WHERE mbsm.adopted = 1 AND dbs.moca_aid IN ({aid_model_clause})
+                    GROUP BY dbs.moca_aid
+                ) adopted_models
+                    ON adopted_models.moca_aid = dbs2.moca_aid
+                    AND adopted_models.moca_bsmdid = dbs2.moca_bsmdid
+                ORDER BY dbs2.moca_aid, dbs2.coeff_index
+            """, aid_model_params)
+        else:
+            models_df = pd.DataFrame()
+
+        sequence_tools = {
+            "cmd": {
+                "cmd": "moca_explorer_gaiadr3_mg_gr",
+                "cmdField": "moca_explorer_gaiadr3_mg_gr_fieldscatter",
+            },
+            "prot": {"prot": "moca_explorer_prot_br"},
+            "gaiaAct": {"gaiaAct": "moca_explorer_gaiadr3_act_br"},
+            "ewha": {"ewha": "moca_explorer_ewha_br"},
+            "ewli": {"ewli": "moca_explorer_ewli_br"},
+        }.get(view, {})
+        sequences = {
+            key: _moca_explorer_dataviz_sequences(conn, tool)
+            for key, tool in sequence_tools.items()
+        }
+        labels = (
+            [
+                row
+                for row in _moca_explorer_association_labels(conn)
+                if row.get("moca_aid") in selection["aids"]
+            ]
+            if spatial
+            else []
+        )
+        spt_axis = _moca_explorer_spt_axis(conn) if view == "cmd" else []
+        query_seconds = round(time.time() - started, 3)
+
+    members_df = _moca_explorer_add_derived_columns(members_df)
+    objects_df = _moca_explorer_add_derived_columns(objects_df)
+    payload = _moca_explorer_trim_payload_for_view({
+        "selection": selection,
+        "members": _records(members_df),
+        "objects": _records(objects_df),
+        "models": _records(models_df),
+        "sequences": sequences,
+        "labels": labels,
+        "sptAxis": spt_axis,
+        "meta": {
+            "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "private_db": private_db,
+            "member_count": int(len(members_df)),
+            "object_count": int(len(objects_df)),
+            "model_count": int(len(models_df)),
+            "sequence_count": sum(len(value) for value in sequences.values()),
+            "label_count": len(labels),
+            "spt_axis_count": len(spt_axis),
+            "truncated": int(len(members_df)) >= selection["max_objects"],
+            "max_objects": selection["max_objects"],
+            "query_seconds": query_seconds,
+            "active_view": view,
+            "legacy_source": "deprecated/moca_explorer.py",
+        },
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+    })
     _MOCA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
     return payload
 
@@ -25000,6 +25473,12 @@ MORANTA26_LITERATURE_TOLERANCE = 0.15
 MORANTA26_MIN_PERIOD_DAYS = 0.05
 MORANTA26_MAX_PERIOD_DAYS = 30.0
 MORANTA26_KV_RE = re.compile(r"(?:^|;\s*)([A-Za-z0-9_]+)=([^;]*)")
+MORANTA26_CLIENT_COLUMNS = {
+    "prot_id", "moca_oid", "star_key", "source_id", "cluster", "m",
+    "pipeline", "sector", "source_moca_tplcid", "prot", "lit_prot",
+    "category", "selected", "revised", "quality", "ignored", "prob_all",
+    "report_url",
+}
 
 
 def _moranta26_cache_key(args: dict[str, Any], *parts: Any) -> str:
@@ -25122,7 +25601,11 @@ def _moranta26_normalize_catalog_df(df: pd.DataFrame) -> list[dict[str, Any]]:
         row["prob_all"] = _moranta26_prob_all(row)
         row["has_literature_period"] = row["lit_prot"] is not None and row["lit_prot"] > 0
         row["has_light_curve"] = source_moca_tplcid is not None
-        rows.append({key: _pythonize(value) for key, value in row.items()})
+        rows.append({
+            key: _pythonize(value)
+            for key, value in row.items()
+            if key in MORANTA26_CLIENT_COLUMNS
+        })
     rows.sort(key=lambda row: (
         str(row.get("cluster") or ""),
         row.get("moca_oid") if row.get("moca_oid") is not None else 10**18,
@@ -25136,7 +25619,7 @@ def _moranta26_normalize_catalog_df(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    cache_key = _moranta26_cache_key(args, "catalog", "include-ignored-v1")
+    cache_key = _moranta26_cache_key(args, "catalog", "compact-v2")
     now = time.time()
     cached = _MORANTA26_ROTATION_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
@@ -25147,7 +25630,6 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
     engine = _engine(_connection_string(args))
     schema = _db_schema_identifier(args)
     private_db = _is_private_db(args)
-    visibility_columns = "rp.is_public,\n                rp.rls," if private_db else "1 AS is_public,\n                'public' AS rls,"
     visibility_filter = "\n                AND rp.is_public = 1\n                AND rp.rls = 'public'" if private_db else ""
     with engine.connect() as conn:
         started = time.time()
@@ -25156,20 +25638,12 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 rp.id AS prot_id,
                 rp.moca_oid,
                 rp.prot_days AS prot,
-                rp.prot_days_unc,
                 rp.prot_flags,
                 rp.quality,
-                rp.multiple_periods,
                 rp.prot_index AS m,
-                rp.ls_power,
                 rp.ignored,
-                {visibility_columns}
-                rp.publication_comments,
                 rp.comments,
-                g.source_id,
-                g.phot_g_mean_mag,
-                (g.phot_bp_mean_mag - g.phot_rp_mean_mag) AS bp_rp,
-                (g.phot_g_mean_mag - g.phot_rp_mean_mag) AS grp
+                g.source_id
             FROM {schema}.data_rotation_periods AS rp
             LEFT JOIN {schema}.cat_gaiadr3 AS g
                 ON g.moca_oid = rp.moca_oid
@@ -25213,7 +25687,7 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "null_moca_oid_count": sum(1 for row in rows if row.get("moca_oid") is None),
             "light_curve_link_count": sum(1 for row in rows if row.get("source_moca_tplcid") is not None),
             "light_curve_tables_available": light_curve_tables_available,
-            "literature_period_count": sum(1 for row in rows if row.get("has_literature_period")),
+            "literature_period_count": sum(1 for row in rows if (row.get("lit_prot") or 0) > 0),
             "query_seconds": query_seconds,
             "include_ignored": True,
             "ignored_filter_note": "Mora26 dataviz intentionally includes data_rotation_periods rows with ignored=1 so all source m values can be explored.",
@@ -25435,8 +25909,12 @@ def _mock_moranta26_catalog() -> dict[str, Any]:
                         "has_light_curve": True,
                     })
                     prot_id += 1
+    compact_rows = [
+        {key: value for key, value in row.items() if key in MORANTA26_CLIENT_COLUMNS}
+        for row in rows
+    ]
     return {
-        "rows": rows,
+        "rows": compact_rows,
         "options": {
             "clusters": clusters,
             "lambdas": lambdas,
@@ -25453,7 +25931,7 @@ def _mock_moranta26_catalog() -> dict[str, Any]:
             "ignored_row_count": sum(1 for row in rows if row.get("ignored")),
             "null_moca_oid_count": 0,
             "light_curve_link_count": len(rows),
-            "literature_period_count": sum(1 for row in rows if row.get("has_literature_period")),
+            "literature_period_count": sum(1 for row in rows if (row.get("lit_prot") or 0) > 0),
             "include_ignored": True,
             "mock": True,
         },
@@ -27503,7 +27981,11 @@ def _retrieval_adoption_order_terms(alias: str, columns: set[str]) -> list[str]:
     return terms
 
 
-def _load_retrieval_condensation_curves_from_db(conn) -> list[dict[str, Any]]:
+def _load_retrieval_condensation_curves_from_db(conn, cache_key: str) -> list[dict[str, Any]]:
+    now = time.time()
+    cached = _RETRIEVAL_CONDENSATION_CACHE.get(cache_key)
+    if cached and now - cached[0] < CACHE_SECONDS:
+        return copy.deepcopy(cached[1])
     if not all(_db_table_exists(conn, table) for table in RETRIEVAL_EXPLORER_CONDENSATION_TABLES):
         return []
     curve_cols = _db_table_columns(conn, "data_condensation_curves")
@@ -27644,6 +28126,7 @@ def _load_retrieval_condensation_curves_from_db(conn) -> list[dict[str, Any]]:
         if len(curve["points"]) >= 2:
             curves.append(curve)
     curves.sort(key=lambda curve: str(curve.get("curve_label") or curve.get("moca_ccurveid") or ""))
+    _RETRIEVAL_CONDENSATION_CACHE[cache_key] = (now, copy.deepcopy(curves))
     return curves
 
 
@@ -27926,7 +28409,10 @@ def _load_retrieval_atmosphere_from_db(args: dict[str, Any], atmosphere_id: int)
                 LIMIT 100
             """, {"moca_oid": moca_oid}))
             sibling_atmospheres = _retrieval_search_rows_to_options(sibling_rows)
-        condensation_curves = _load_retrieval_condensation_curves_from_db(conn)
+        condensation_curves = _load_retrieval_condensation_curves_from_db(
+            conn,
+            _retrieval_cache_key(args, "condensation-curves-v1"),
+        )
 
     temp_profiles = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "TEMP_K"]
     contribution_rows = [row for row in profile_rows if str(row.get("moca_atpqid") or "") == "CONTRIB_FUNC"]
@@ -28457,10 +28943,12 @@ def retrieval_explorer_object_fundamentals(moca_oid: int, moca_pid: str):
 @app.post("/js/api/retrieval_explorer/cache/clear")
 def retrieval_explorer_clear_cache():
     count = len(_RETRIEVAL_EXPLORER_CACHE)
+    condensation_count = len(_RETRIEVAL_CONDENSATION_CACHE)
     _RETRIEVAL_EXPLORER_CACHE.clear()
+    _RETRIEVAL_CONDENSATION_CACHE.clear()
     return jsonify({
         "ok": True,
-        "cleared": {"retrievalExplorer": count},
+        "cleared": {"retrievalExplorer": count, "retrievalCondensationCurves": condensation_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -29543,8 +30031,9 @@ def moca_explorer_data():
     args = dict(request.args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            return jsonify({"ok": True, "source": "mock", **_mock_moca_explorer_payload(args)})
-        payload = _load_moca_explorer_from_db(args)
+            payload = _moca_explorer_trim_payload_for_view(_mock_moca_explorer_payload(args))
+            return jsonify({"ok": True, "source": "mock", **payload})
+        payload = _load_moca_explorer_active_view_from_db(args)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return jsonify({

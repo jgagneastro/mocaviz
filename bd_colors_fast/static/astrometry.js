@@ -1641,7 +1641,10 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
     plotEl.removeAllListeners("plotly_click");
     plotEl.removeAllListeners("plotly_deselect");
   }
-  plotEl.on("plotly_selected", (event) => handleAstrometrySelection(event));
+  plotEl.on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(plotEl, event)) return;
+    handleAstrometrySelection(event);
+  });
   plotEl.on("plotly_click", (event) => handleAstrometryClick(event));
   plotEl.on("plotly_deselect", () => handleAstrometryDeselect());
 }

@@ -1527,6 +1527,7 @@ function bindXyzuvwPlotEvents(plotEl = xuvEl["xuv-plot"], panelKey = "main", axe
     selectXyzuvwPlotRows((event?.points || []).map((point) => point.customdata));
   });
   plotEl.on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(plotEl, event)) return;
     selectXyzuvwPlotRows((event?.points || []).map((point) => point.customdata));
   });
   plotEl.on("plotly_deselect", () => {

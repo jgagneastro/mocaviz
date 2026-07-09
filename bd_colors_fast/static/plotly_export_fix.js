@@ -4,6 +4,64 @@
   const Plotly = window.Plotly;
   if (!Plotly || Plotly.__mocavizExportFixInstalled) return;
 
+  function selectionPixel(axis, value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return Number.NaN;
+    try {
+      if (typeof axis?.d2p === "function") return Number(axis.d2p(numeric));
+    } catch (_) {
+      // Fall through to the range approximation.
+    }
+    if (!Array.isArray(axis?.range) || axis.range.length !== 2 || !Number.isFinite(Number(axis?._length))) {
+      return Number.NaN;
+    }
+    const scaled = axis.type === "log" && numeric > 0 ? Math.log10(numeric) : numeric;
+    const start = Number(axis.range[0]);
+    const end = Number(axis.range[1]);
+    return Number.isFinite(scaled) && Number.isFinite(start) && Number.isFinite(end) && end !== start
+      ? (scaled - start) * Number(axis._length) / (end - start)
+      : Number.NaN;
+  }
+
+  function isDegenerateSelection(plot, event, minSpanPx = 6, minAreaPx2 = 24) {
+    const xAxis = plot?._fullLayout?.xaxis;
+    const yAxis = plot?._fullLayout?.yaxis;
+    const xRange = event?.range?.x;
+    const yRange = event?.range?.y;
+    if (Array.isArray(xRange) && xRange.length >= 2 && Array.isArray(yRange) && yRange.length >= 2) {
+      const pixels = [
+        selectionPixel(xAxis, xRange[0]), selectionPixel(xAxis, xRange[1]),
+        selectionPixel(yAxis, yRange[0]), selectionPixel(yAxis, yRange[1]),
+      ];
+      if (pixels.every(Number.isFinite)) {
+        return Math.abs(pixels[1] - pixels[0]) < minSpanPx
+          || Math.abs(pixels[3] - pixels[2]) < minSpanPx;
+      }
+    }
+    const lassoX = event?.lassoPoints?.x;
+    const lassoY = event?.lassoPoints?.y;
+    if (!Array.isArray(lassoX) && !Array.isArray(lassoY)) return false;
+    if (!Array.isArray(lassoX) || !Array.isArray(lassoY)) return true;
+    const points = [];
+    for (let index = 0; index < Math.min(lassoX.length, lassoY.length); index += 1) {
+      const x = selectionPixel(xAxis, lassoX[index]);
+      const y = selectionPixel(yAxis, lassoY[index]);
+      if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+    }
+    if (points.length < 3) return true;
+    const xs = points.map((point) => point[0]);
+    const ys = points.map((point) => point[1]);
+    if (Math.max(...xs) - Math.min(...xs) < minSpanPx || Math.max(...ys) - Math.min(...ys) < minSpanPx) return true;
+    let twiceArea = 0;
+    points.forEach((point, index) => {
+      const next = points[(index + 1) % points.length];
+      twiceArea += point[0] * next[1] - next[0] * point[1];
+    });
+    return Math.abs(twiceArea) / 2 < minAreaPx2;
+  }
+
+  window.MocaPlotlySelection = Object.freeze({ isDegenerate: isDegenerateSelection });
+
   const Snapshot = Plotly.Snapshot || {};
   if (
     typeof Plotly.downloadImage !== "function" &&

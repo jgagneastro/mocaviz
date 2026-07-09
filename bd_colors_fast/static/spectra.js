@@ -713,6 +713,7 @@ function bindSpectraPlotEvents() {
     updateSpectraIgnoreControls();
   });
   speEl["spe-plot"].on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(speEl["spe-plot"], event)) return;
     const points = event?.points || [];
     speState.selectedPoints = uniqueSpectralPlotPoints(points.map(pointFromPlotly).filter(Boolean));
     renderSpectraTable();

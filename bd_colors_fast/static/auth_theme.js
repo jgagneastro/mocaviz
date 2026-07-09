@@ -46,6 +46,41 @@
     private_db: readUrlPrivateDb(),
     source: "url",
   };
+  const nativeFetch = window.fetch.bind(window);
+  const latestSearchRequests = new Map();
+
+  // Search boxes across the explorers are debounced independently. Cancel the
+  // superseded network request as well, while making older callers resolve to
+  // the newest response so their existing error UI never flashes AbortError.
+  window.fetch = function mocavizCoordinatedFetch(input, init = {}) {
+    const method = String(init?.method || (input instanceof Request ? input.method : "GET") || "GET").toUpperCase();
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, window.location.href);
+    if (method !== "GET" || !url.pathname.includes("/search")) {
+      return nativeFetch(input, init);
+    }
+
+    const key = url.pathname;
+    const previous = latestSearchRequests.get(key);
+    if (previous) previous.controller.abort();
+    const controller = new AbortController();
+    if (init?.signal) {
+      if (init.signal.aborted) controller.abort();
+      else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+    const entry = { controller, promise: null };
+    const rawPromise = nativeFetch(input, { ...init, signal: controller.signal });
+    entry.promise = rawPromise.catch((error) => {
+      if (error?.name === "AbortError") {
+        const replacement = latestSearchRequests.get(key);
+        if (replacement && replacement !== entry) return replacement.promise;
+      }
+      throw error;
+    }).finally(() => {
+      if (latestSearchRequests.get(key) === entry) latestSearchRequests.delete(key);
+    });
+    latestSearchRequests.set(key, entry);
+    return entry.promise;
+  };
 
   function authAppUrl(path) {
     return new URL(String(path || "").replace(/^\/+/, ""), authBaseUrl).toString();

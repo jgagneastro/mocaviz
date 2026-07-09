@@ -8,6 +8,7 @@ const frozenState = {
   hiddenAids: new Set(sceneData.hiddenAids || []),
   selectedOid: sceneData.selectedOid || "",
 };
+let frozenAnimationFrame = null;
 
 const cleanSceneBackground = "#08090c";
 const cleanCircleColor = "#00a8ff";
@@ -29,7 +30,8 @@ function initFrozenScene() {
   renderSummary();
   renderFrozenTable();
   document.getElementById("xuv-recenter-sun")?.addEventListener("click", recenterAllPanelsOnSun);
-  requestAnimationFrame(animateFrozenScene);
+  document.addEventListener("visibilitychange", refreshFrozenAnimation);
+  refreshFrozenAnimation();
 }
 
 function setupFrozenPanel(panelData) {
@@ -101,6 +103,7 @@ function setupFrozenPanel(panelData) {
     pointerDown: null,
     pointTexture: createPointTexture(),
     galaxyMesh: null,
+    isVisible: true,
   };
   panel.raycaster.params.Points.threshold = 5;
 
@@ -134,6 +137,13 @@ function setupFrozenPanel(panelData) {
 
   const resize = () => resizePanel(panel);
   new ResizeObserver(resize).observe(container);
+  if ("IntersectionObserver" in window) {
+    panel.intersectionObserver = new IntersectionObserver((entries) => {
+      panel.isVisible = entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0);
+      refreshFrozenAnimation();
+    }, { rootMargin: "120px 0px", threshold: 0.01 });
+    panel.intersectionObserver.observe(container);
+  }
   window.addEventListener("resize", debounce(resize, 100));
   resize();
   return panel;
@@ -150,13 +160,29 @@ function resizePanel(panel) {
 }
 
 function animateFrozenScene() {
-  requestAnimationFrame(animateFrozenScene);
+  frozenAnimationFrame = null;
+  if (document.hidden) return;
   frozenState.panels.forEach((panel) => {
+    if (!panel.isVisible) return;
     panel.controls.update();
     updateGalaxyBackground(panel);
     panel.renderer.render(panel.scene, panel.camera);
     panel.labelRenderer.render(panel.scene, panel.camera);
   });
+  if (shouldAnimateFrozenScene()) frozenAnimationFrame = requestAnimationFrame(animateFrozenScene);
+}
+
+function shouldAnimateFrozenScene() {
+  return !document.hidden && frozenState.panels.some((panel) => panel.isVisible !== false);
+}
+
+function refreshFrozenAnimation() {
+  if (!shouldAnimateFrozenScene()) {
+    if (frozenAnimationFrame !== null) cancelAnimationFrame(frozenAnimationFrame);
+    frozenAnimationFrame = null;
+    return;
+  }
+  if (frozenAnimationFrame === null) frozenAnimationFrame = requestAnimationFrame(animateFrozenScene);
 }
 
 function addGalaxyBackground(panel) {

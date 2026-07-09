@@ -3327,6 +3327,7 @@ function bindPlotEvents() {
     el.plot.removeAllListeners("plotly_relayout");
   }
   el.plot.on("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(el.plot, event)) return;
     state.selectedOids = event?.points?.map((point) => Number(point.customdata)).filter(Number.isFinite) || [];
     renderTable(state.selectedOids);
     updateSelectedPointMarker();

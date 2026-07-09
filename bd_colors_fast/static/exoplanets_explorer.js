@@ -615,6 +615,7 @@ function bindExoplanetPlotEvents() {
     refreshSelectionUi();
   });
   plot.on?.("plotly_selected", (event) => {
+    if (window.MocaPlotlySelection?.isDegenerate(plot, event)) return;
     const ids = idsFromEventPoints(event?.points || []);
     if (!ids.length) return;
     if (!event?.event?.shiftKey && !event?.event?.metaKey && !event?.event?.ctrlKey) exoState.selectedIds.clear();

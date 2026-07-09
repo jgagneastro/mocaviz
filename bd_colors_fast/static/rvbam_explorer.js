@@ -2056,6 +2056,7 @@ function rebindPlotlyEvent(plot, eventName, handler) {
 }
 
 function handleRvbamPlotSelected(event) {
+  if (window.MocaPlotlySelection?.isDegenerate(rvbEl["rvb-segment-plot"], event)) return;
   const ids = rvbamSegmentIdsFromPlotEvent(event);
   if (!ids.size) return;
   rvbState.selectedIds = ids.size ? ids : null;
