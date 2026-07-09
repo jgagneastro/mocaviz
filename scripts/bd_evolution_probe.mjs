@@ -153,6 +153,77 @@ async function main() {
       }
     });
 
+    const degenerateSelectionCheck = await page.evaluate(async () => {
+      const plot = document.querySelector("#bde-plot");
+      const objectTrace = (plot?.data || []).find((trace) => (
+        trace.meta?.bdeRole === "object"
+        && Array.isArray(trace.customdata)
+        && trace.customdata.some((value) => Number.isFinite(Number(value)))
+      ));
+      const pointIndex = objectTrace?.customdata?.findIndex((value) => Number.isFinite(Number(value))) ?? -1;
+      const oid = Number(objectTrace?.customdata?.[pointIndex]);
+      const x0 = Number(objectTrace?.x?.[pointIndex]);
+      const y0 = Number(objectTrace?.y?.[pointIndex]);
+      if (![oid, x0, y0].every(Number.isFinite) || typeof plot?.emit !== "function") {
+        return { skipped: true, reason: "No selectable object point or Plotly emitter." };
+      }
+      const x1 = x0 > 0 ? x0 * 1.5 : x0 + 1;
+      const epsilonY = Math.max(Math.abs(y0), 1) * 1e-12;
+      const lassoEvent = {
+        points: [{ customdata: oid, data: objectTrace }],
+        lassoPoints: {
+          x: [x0, x1, x1, x0],
+          y: [y0, y0 + epsilonY, y0 + epsilonY * 2, y0],
+        },
+        event: {},
+      };
+      const normalRangeEvent = {
+        points: [{ customdata: oid, data: objectTrace }],
+        range: {
+          x: [x0 > 0 ? x0 / 1.5 : x0 - 1, x1],
+          y: [y0 - 500, y0 + 500],
+        },
+        event: {},
+      };
+      const rangeEvent = {
+        points: [{ customdata: oid, data: objectTrace }],
+        range: { x: [x0, x1], y: [y0, y0 + epsilonY] },
+        event: {},
+      };
+      const lassoRejected = bdEvolutionSelectionIsDegenerate(lassoEvent);
+      const rangeRejected = bdEvolutionSelectionIsDegenerate(rangeEvent);
+      applyBdEvolutionSelection([oid], null, "click");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const originalRestyle = Plotly.restyle;
+      let restyleCalls = 0;
+      Plotly.restyle = (...args) => {
+        restyleCalls += 1;
+        return originalRestyle.apply(Plotly, args);
+      };
+      const started = performance.now();
+      try {
+        plot.emit("plotly_selected", lassoEvent);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const degenerateRestyleCalls = restyleCalls;
+        const degenerateTitle = document.querySelector("#bde-table-title")?.textContent || "";
+        restyleCalls = 0;
+        plot.emit("plotly_selected", normalRangeEvent);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return {
+          skipped: false,
+          lassoRejected,
+          rangeRejected,
+          degenerateRestyleCalls,
+          normalRestyleCalls: restyleCalls,
+          elapsedMs: Math.round(performance.now() - started),
+          degenerateTitle,
+          normalTitle: document.querySelector("#bde-table-title")?.textContent || "",
+        };
+      } finally {
+        Plotly.restyle = originalRestyle;
+      }
+    });
+
     const failures = [];
     if (!afterCheck) failures.push("Remove companions did not stay checked after checking.");
     if (afterUncheck) failures.push("Remove companions re-checked itself after unchecking.");
@@ -165,6 +236,12 @@ async function main() {
     if (!selectionCheck.skipped && selectionCheck.reactCalls !== 0) failures.push("Selection rebuilt the full Plotly figure.");
     if (!selectionCheck.skipped && selectionCheck.restyleCalls < 2) failures.push("Selection did not use Plotly.restyle for select and clear.");
     if (!selectionCheck.skipped && !selectionCheck.selectedTitle.includes("1 selected object")) failures.push("Selection did not update the selected-object table.");
+    if (!degenerateSelectionCheck.skipped && !degenerateSelectionCheck.lassoRejected) failures.push("Near-zero-area lasso selection was not rejected.");
+    if (!degenerateSelectionCheck.skipped && !degenerateSelectionCheck.rangeRejected) failures.push("Near-zero-height box selection was not rejected.");
+    if (!degenerateSelectionCheck.skipped && degenerateSelectionCheck.degenerateRestyleCalls !== 0) failures.push("Degenerate selection re-entered Plotly.restyle.");
+    if (!degenerateSelectionCheck.skipped && degenerateSelectionCheck.degenerateTitle !== "Selected objects") failures.push("Degenerate selection did not clear application selection state.");
+    if (!degenerateSelectionCheck.skipped && degenerateSelectionCheck.normalRestyleCalls < 1) failures.push("Normal Plotly range selection did not restyle the selected points.");
+    if (!degenerateSelectionCheck.skipped && !degenerateSelectionCheck.normalTitle.includes("1 selected object")) failures.push("Normal Plotly range selection did not update application selection state.");
 
     const badClassLegendEdges = traces.filter((trace) => (
       trace.role === "object"
@@ -252,6 +329,7 @@ async function main() {
       trackRequestUrls,
       traces,
       selectionCheck,
+      degenerateSelectionCheck,
       targetCheck,
     };
     console.log(JSON.stringify(result, null, 2));

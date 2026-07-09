@@ -57,6 +57,8 @@ const BDE_MASS_RADIUS_SMOOTH_MAX_CORRECTION_RJUP = 0.11;
 const BDE_OBJECT_WEBGL_THRESHOLD = 5000;
 const BDE_MAX_RENDERED_ISO_AGE_TRACKS = 120;
 const BDE_TRACK_WEBGL_TRACE_THRESHOLD = 240;
+const BDE_MIN_SELECTION_SPAN_PX = 6;
+const BDE_MIN_LASSO_AREA_PX2 = 24;
 const bdeTrackModelOptions = [
   { key: "sonora_diamondback_mocadb", label: "Sonora Diamondback + MOCAdb empirical extension" },
 ];
@@ -123,6 +125,7 @@ const bdeState = {
   objectSearchController: null,
   plotRenderTimer: null,
   clientFilterTimer: null,
+  selectionEventFrame: null,
   tracksDefaultInitialized: false,
   trackRequestKey: null,
   trackMeta: {},
@@ -1634,6 +1637,10 @@ function spectralTypeAxis(orientation, mainAxis) {
 
 function clearBdEvolutionPlotEvents() {
   const plot = bdeEl["bde-plot"];
+  if (bdeState.selectionEventFrame !== null) {
+    window.cancelAnimationFrame(bdeState.selectionEventFrame);
+    bdeState.selectionEventFrame = null;
+  }
   plot.removeAllListeners?.("plotly_selected");
   plot.removeAllListeners?.("plotly_deselect");
   plot.removeAllListeners?.("plotly_click");
@@ -1650,11 +1657,10 @@ function bindBdEvolutionPlotEvents() {
     applyBdEvolutionSelection(oids.slice(0, 1), event?.event || null, "click");
   });
   plot.on?.("plotly_selected", (event) => {
-    const oids = selectedOidsFromEventPoints(event?.points || []);
-    applyBdEvolutionSelection(oids, event?.event || null, "range");
+    queueBdEvolutionPlotSelection(event);
   });
   plot.on?.("plotly_deselect", () => {
-    clearBdEvolutionSelection();
+    queueBdEvolutionPlotDeselection();
   });
   plot.on?.("plotly_legendclick", (event) => handleBdEvolutionLegendClick(event));
   plot.on?.("plotly_legenddoubleclick", (event) => handleBdEvolutionLegendDoubleClick(event));
@@ -1803,10 +1809,119 @@ function bdEvolutionTraceVisibilityCaptureKey(trace) {
 function selectedOidsFromEventPoints(points) {
   const oids = [];
   for (const point of points || []) {
+    const role = bdEvolutionTraceRole(point?.data);
+    if (role !== "object" && role !== "target-oid") continue;
     const oid = coerceMocaOid(point.customdata);
     if (oid !== null) oids.push(oid);
   }
   return uniqueNumbers(oids);
+}
+
+function queueBdEvolutionPlotSelection(event) {
+  const oids = selectedOidsFromEventPoints(event?.points || []);
+  const modifiers = bdEvolutionSelectionModifiers(event?.event);
+  const degenerate = bdEvolutionSelectionIsDegenerate(event);
+  scheduleBdEvolutionSelectionEvent(() => {
+    if (degenerate || !oids.length) {
+      clearBdEvolutionSelection({ syncPlot: false });
+      return;
+    }
+    applyBdEvolutionSelection(oids, modifiers, "range");
+  });
+}
+
+function queueBdEvolutionPlotDeselection() {
+  scheduleBdEvolutionSelectionEvent(() => {
+    clearBdEvolutionSelection({ syncPlot: false });
+  });
+}
+
+function scheduleBdEvolutionSelectionEvent(callback) {
+  if (bdeState.selectionEventFrame !== null) {
+    window.cancelAnimationFrame(bdeState.selectionEventFrame);
+  }
+  bdeState.selectionEventFrame = window.requestAnimationFrame(() => {
+    bdeState.selectionEventFrame = null;
+    callback();
+  });
+}
+
+function bdEvolutionSelectionModifiers(nativeEvent) {
+  return {
+    shiftKey: Boolean(nativeEvent?.shiftKey),
+    ctrlKey: Boolean(nativeEvent?.ctrlKey),
+    metaKey: Boolean(nativeEvent?.metaKey),
+  };
+}
+
+function bdEvolutionSelectionIsDegenerate(event) {
+  const plot = bdeEl["bde-plot"];
+  const xAxis = plot?._fullLayout?.xaxis;
+  const yAxis = plot?._fullLayout?.yaxis;
+  const xRange = event?.range?.x;
+  const yRange = event?.range?.y;
+  if (Array.isArray(xRange) && xRange.length >= 2 && Array.isArray(yRange) && yRange.length >= 2) {
+    const x0 = bdEvolutionSelectionPixel(xAxis, xRange[0]);
+    const x1 = bdEvolutionSelectionPixel(xAxis, xRange[1]);
+    const y0 = bdEvolutionSelectionPixel(yAxis, yRange[0]);
+    const y1 = bdEvolutionSelectionPixel(yAxis, yRange[1]);
+    if ([x0, x1, y0, y1].every(Number.isFinite)) {
+      return Math.abs(x1 - x0) < BDE_MIN_SELECTION_SPAN_PX
+        || Math.abs(y1 - y0) < BDE_MIN_SELECTION_SPAN_PX;
+    }
+  }
+
+  const lassoX = event?.lassoPoints?.x;
+  const lassoY = event?.lassoPoints?.y;
+  if (!Array.isArray(lassoX) || !Array.isArray(lassoY)) return false;
+  const count = Math.min(lassoX.length, lassoY.length);
+  if (count < 3) return true;
+  const points = [];
+  for (let index = 0; index < count; index += 1) {
+    const x = bdEvolutionSelectionPixel(xAxis, lassoX[index]);
+    const y = bdEvolutionSelectionPixel(yAxis, lassoY[index]);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+  }
+  if (points.length < 3) return true;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (width < BDE_MIN_SELECTION_SPAN_PX || height < BDE_MIN_SELECTION_SPAN_PX) return true;
+  let twiceArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    twiceArea += current[0] * next[1] - next[0] * current[1];
+  }
+  return Math.abs(twiceArea) / 2 < BDE_MIN_LASSO_AREA_PX2;
+}
+
+function bdEvolutionSelectionPixel(axis, value) {
+  const numeric = finiteNumber(value);
+  if (numeric === null) return Number.NaN;
+  try {
+    if (typeof axis?.d2p === "function") return Number(axis.d2p(numeric));
+  } catch (_error) {
+    // Fall through to a range-based approximation for unusual Plotly axis states.
+  }
+  if (!Array.isArray(axis?.range) || axis.range.length !== 2 || !Number.isFinite(Number(axis?._length))) {
+    return Number.NaN;
+  }
+  const scaled = axis.type === "log" && numeric > 0 ? Math.log10(numeric) : numeric;
+  const start = Number(axis.range[0]);
+  const end = Number(axis.range[1]);
+  return Number.isFinite(scaled) && Number.isFinite(start) && Number.isFinite(end) && end !== start
+    ? (scaled - start) * Number(axis._length) / (end - start)
+    : Number.NaN;
 }
 
 function applyBdEvolutionSelection(oids, nativeEvent = null, mode = "range") {
@@ -1833,9 +1948,9 @@ function applyBdEvolutionSelection(oids, nativeEvent = null, mode = "range") {
   updateBdEvolutionSummary();
 }
 
-function clearBdEvolutionSelection() {
+function clearBdEvolutionSelection(options = {}) {
   bdeState.selectedOids = new Set();
-  if (!updateBdEvolutionSelectionPlot()) renderBdEvolutionPlot();
+  if (options.syncPlot !== false && !updateBdEvolutionSelectionPlot()) renderBdEvolutionPlot();
   renderBdEvolutionTable();
   updateBdEvolutionSummary();
 }
