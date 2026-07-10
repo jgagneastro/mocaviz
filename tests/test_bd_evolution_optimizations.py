@@ -4,6 +4,8 @@ import gzip
 import json
 import unittest
 
+import bd_colors_fast.app as app_module
+
 from bd_colors_fast.app import app
 
 
@@ -43,6 +45,22 @@ class BdEvolutionOptimizationTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertGreater(len(payload["tracks"]), 0)
         self.assertEqual(payload["meta"]["track_count"], len(payload["tracks"]))
+
+    def test_js_mount_api_routes_and_non_json_guard(self):
+        script = (app_module.STATIC_DIR / "bd_evolution.js").read_text(encoding="utf-8")
+        url_helper = script.split("function bdeAppUrl(path)", 1)[1].split(
+            "async function initBdEvolution",
+            1,
+        )[0]
+        self.assertIn("new URL(normalized, bdeAppBaseUrl)", url_helper)
+        self.assertNotIn("window.location.origin", url_helper)
+        self.assertIn('if (!payload || typeof payload !== "object")', script)
+        self.assertIn("Expected a JSON response", script)
+
+        data_response = self.client.get("/js/api/bd-evolution/data?mock=1&include_tracks=0")
+        tracks_response = self.client.get("/js/api/bd-evolution/tracks?mock=1")
+        self.assertTrue(decoded_json(data_response)["ok"])
+        self.assertTrue(decoded_json(tracks_response)["ok"])
 
     def test_legacy_data_response_still_includes_tracks(self):
         response = self.client.get("/api/bd-evolution/data?mock=1&max_objects=20")

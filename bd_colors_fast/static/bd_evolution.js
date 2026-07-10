@@ -149,7 +149,7 @@ const bdeAppBaseUrl = (() => {
 
 function bdeAppUrl(path) {
   const normalized = String(path || "").replace(/^\/+/, "");
-  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : bdeAppBaseUrl).toString();
+  return new URL(normalized, bdeAppBaseUrl).toString();
 }
 
 async function initBdEvolution() {
@@ -2462,6 +2462,10 @@ async function fetchJsonUrl(url, options = {}) {
   }
   if (!response.ok || payload?.ok === false) {
     throw new Error(payload?.error || `${response.status} ${response.statusText}`);
+  }
+  if (!payload || typeof payload !== "object") {
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    throw new Error(`Expected a JSON response from ${new URL(url).pathname}; received ${contentType}`);
   }
   return payload;
 }
