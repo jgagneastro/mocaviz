@@ -126,7 +126,8 @@ const cexAppBaseUrl = (() => {
 })();
 
 function cexAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), cexAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : cexAppBaseUrl).toString();
 }
 
 async function initCompanionExplorer() {

@@ -75,7 +75,8 @@ const sptAppBaseUrl = (() => {
 })();
 
 function sptAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), sptAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : sptAppBaseUrl).toString();
 }
 
 function picklesGridSortParts(grid) {

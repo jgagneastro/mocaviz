@@ -90,7 +90,8 @@ const xuvAppBaseUrl = (() => {
 })();
 
 function xuvAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), xuvAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : xuvAppBaseUrl).toString();
 }
 
 async function initXyzuvw() {

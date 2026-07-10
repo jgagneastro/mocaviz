@@ -24,6 +24,11 @@ from bd_colors_fast.app import (
     _gaia_cmd_shared_cache_load,
     _gaia_cmd_shared_cache_store,
     _gaia_cmd_selection,
+    _page_payload_cache_get,
+    _page_payload_cache_store,
+    _parse_xyzuvw_selection,
+    _shared_page_cache_clear,
+    _xyzuvw_payload_from_base,
     app,
 )
 
@@ -179,6 +184,57 @@ class JsPageOptimizationTests(unittest.TestCase):
                 self.assertTrue(loaded["cache"]["shared"])
                 self.assertEqual(loaded["field_columns"]["x"], [1.0])
                 self.assertEqual(_gaia_cmd_shared_cache_clear(), 1)
+
+    def test_shared_page_cache_survives_process_local_cache_boundaries(self):
+        payload = {
+            "rows": [{"value": 1}],
+            "meta": {"row_count": 1},
+            "cache": {"hit": False, "ttl_seconds": 900},
+        }
+        local_cache = _BoundedCache(2)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(app_module, "SHARED_PAGE_CACHE_DIR", Path(directory)):
+                _page_payload_cache_store(local_cache, "test-page", "payload-key", payload)
+                local_cache.clear()
+                loaded = _page_payload_cache_get(local_cache, "test-page", "payload-key")
+                self.assertIsNotNone(loaded)
+                self.assertTrue(loaded["cache"]["hit"])
+                self.assertTrue(loaded["cache"]["shared"])
+                self.assertEqual(loaded["rows"], [{"value": 1}])
+                self.assertEqual(_shared_page_cache_clear("test-page"), 1)
+
+    def test_companion_common_ctes_do_not_rank_globally_unique_adopted_rows(self):
+        table_columns = {
+            "moca_banyan_sigma_models": {"moca_bsmdid", "adopted", "public_adopted"},
+            "calc_banyan_sigma": {"moca_oid", "moca_bsmdid", "max_observables", "is_public"},
+        }
+        with (
+            patch.object(app_module, "_db_table_exists", return_value=True),
+            patch.object(app_module, "_db_table_columns", side_effect=lambda _conn, table: table_columns.get(table, set())),
+        ):
+            sql, _params = app_module._companion_explorer_common_ctes(object(), {})
+        self.assertNotIn("ROW_NUMBER()", sql)
+        self.assertIn("STRAIGHT_JOIN data_distances dd", sql)
+        self.assertIn("STRAIGHT_JOIN data_spectral_types dst", sql)
+        self.assertIn("STRAIGHT_JOIN data_masses dm", sql)
+
+    def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
+        selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
+        base = {
+            "members": [],
+            "models": [],
+            "objects": [],
+            "meta": {"member_count": 0, "model_count": 0, "object_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 900},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(app_module, "SHARED_PAGE_CACHE_DIR", Path(directory)):
+                payload = _xyzuvw_payload_from_base(selection, base, "dual-test", 1.0)
+                app_module._XYZUVW_CACHE.clear()
+        self.assertTrue(payload["selection"]["dual"])
+        self.assertEqual(set(payload["modelSurfacesByAxes"]), {"xyz", "uvw"})
+        self.assertEqual(payload["modelSurfacesByAxes"]["xyz"], [])
+        self.assertEqual(payload["modelSurfacesByAxes"]["uvw"], [])
 
     def test_moca_explorer_returns_only_active_view_columns(self):
         cmd = decoded_json(self.client.get(

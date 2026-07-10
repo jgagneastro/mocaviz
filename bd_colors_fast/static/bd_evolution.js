@@ -148,7 +148,8 @@ const bdeAppBaseUrl = (() => {
 })();
 
 function bdeAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), bdeAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : bdeAppBaseUrl).toString();
 }
 
 async function initBdEvolution() {

@@ -27,7 +27,6 @@ const pages = [
   ["MOCA Flows", "/js/moca-flows"],
   ["RVBAM Explorer", "/js/rvbam-explorer"],
   ["Moranta Rotation", "/js/moranta26-rotation"],
-  ["Legacy Radial Velocities JS", "/js/legacy-radial-velocities"],
 ];
 
 function median(values) {

@@ -62,16 +62,18 @@ const mexAppBaseUrl = (() => {
 })();
 
 function mexAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), mexAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : mexAppBaseUrl).toString();
 }
 
 async function initMocaExplorer() {
   collectMocaExplorerElements();
   bindMocaExplorerControls();
-  await loadMocaExplorerOptions();
   readMocaExplorerUrlState();
   renderMocaExplorerSelections();
+  const optionsPromise = loadMocaExplorerOptions();
   await loadMocaExplorerData();
+  await optionsPromise;
 }
 
 function collectMocaExplorerElements() {

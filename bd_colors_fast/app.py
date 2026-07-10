@@ -79,6 +79,19 @@ ENCODED_RESPONSE_CACHE_MIN_BYTES = max(
     0,
     int(os.environ.get("BD_COLORS_FAST_RESPONSE_CACHE_MIN_BYTES", "4096")),
 )
+SHARED_PAGE_CACHE_MAX_ENTRIES = max(
+    1,
+    int(os.environ.get("MOCAVIZ_SHARED_PAGE_CACHE_MAX_ENTRIES", "192")),
+)
+_SHARED_PAGE_CACHE_DIR_RAW = os.environ.get(
+    "MOCAVIZ_SHARED_PAGE_CACHE_DIR",
+    str(Path(tempfile.gettempdir()) / "mocaviz-shared-page-cache"),
+).strip()
+SHARED_PAGE_CACHE_DIR = (
+    None
+    if _SHARED_PAGE_CACHE_DIR_RAW.lower() in {"", "0", "false", "none", "off"}
+    else Path(_SHARED_PAGE_CACHE_DIR_RAW).expanduser()
+)
 BROAD_QUERY_MAX_OBJECTS = 5000
 OPTIONAL_QUERY_MAX_OBJECTS = max(1, int(os.environ.get("BD_COLORS_FAST_OPTIONAL_MAX_OBJECTS", str(BROAD_QUERY_MAX_OBJECTS))))
 SELECTED_OID_JOIN_THRESHOLD = max(1, int(os.environ.get("BD_COLORS_FAST_SELECTED_OID_JOIN_THRESHOLD", "1000")))
@@ -280,6 +293,7 @@ _SPECTRAL_INDEX_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _SED_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _SED_TEMPLATE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _XYZUVW_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_XYZUVW_BASE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _TRUEFLOW_AGE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _GAIA_CMD_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _MOCA_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
@@ -291,6 +305,8 @@ _RVBAM_ARRAY_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _RETRIEVAL_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _RETRIEVAL_CONDENSATION_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _BANYAN_SIGMA_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_COMPANION_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_EXOPLANET_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _BD_EVOLUTION_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _BD_EVOLUTION_TRACK_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _BD_EVOLUTION_CACHE_LOCK = Lock()
@@ -458,7 +474,7 @@ BANYAN_SIGMA_PARALLAX_RANGE_MIN_UPPER_PC = float(
 )
 XYZUVW_C_VALUE = 8.0
 XYZUVW_MAX_OBJECTS = int(os.environ.get("XYZUVW_FAST_MAX_OBJECTS", "60000"))
-XYZUVW_MODEL_GRID_POINTS = int(os.environ.get("XYZUVW_FAST_MODEL_GRID_POINTS", "100"))
+XYZUVW_MODEL_GRID_POINTS = int(os.environ.get("XYZUVW_FAST_MODEL_GRID_POINTS", "64"))
 XYZUVW_MODEL_SIGMA_SCALE = float(os.environ.get("XYZUVW_FAST_MODEL_SIGMA_SCALE", "5"))
 XYZUVW_MODEL_CONTOURS = (
     ("99%", 0.99, 0.07),
@@ -1222,6 +1238,10 @@ def _records(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _json_clean(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     if isinstance(value, Mapping):
         return {str(key): _json_clean(item) for key, item in value.items()}
     if isinstance(value, np.ndarray):
@@ -1260,6 +1280,149 @@ def _jsonify_clean_cached(payload: Mapping[str, Any], cache_seconds: int = 0, st
         response.headers["Content-Encoding"] = "gzip"
     response.headers["Content-Length"] = str(len(body))
     return response
+
+
+def _shared_page_cache_namespace(namespace: str) -> str:
+    safe = re.sub(r"[^a-z0-9_-]+", "-", str(namespace or "page").strip().lower()).strip("-")
+    return safe or "page"
+
+
+def _shared_page_cache_path(namespace: str, cache_key: str) -> Path | None:
+    if SHARED_PAGE_CACHE_DIR is None:
+        return None
+    digest = hashlib.sha256(str(cache_key).encode("utf-8")).hexdigest()
+    return SHARED_PAGE_CACHE_DIR / f"{_shared_page_cache_namespace(namespace)}-{digest}.json.gz"
+
+
+def _shared_page_cache_load(
+    namespace: str,
+    cache_key: str,
+    ttl_seconds: int = CACHE_SECONDS,
+) -> tuple[dict[str, Any], float] | None:
+    cache_path = _shared_page_cache_path(namespace, cache_key)
+    if cache_path is None or ttl_seconds <= 0:
+        return None
+    try:
+        stat = cache_path.stat()
+        age = time.time() - stat.st_mtime
+        if age >= ttl_seconds:
+            cache_path.unlink(missing_ok=True)
+            return None
+        payload = json.loads(gzip.decompress(cache_path.read_bytes()))
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload["cache"] = {
+        "hit": True,
+        "shared": True,
+        "ttl_seconds": max(0, int(ttl_seconds - age)),
+    }
+    payload.setdefault("meta", {})["shared_cache_hit"] = True
+    return payload, stat.st_mtime
+
+
+def _shared_page_cache_store(namespace: str, cache_key: str, payload: Mapping[str, Any]) -> None:
+    cache_path = _shared_page_cache_path(namespace, cache_key)
+    if cache_path is None:
+        return
+    temp_path: Path | None = None
+    try:
+        cache_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            cache_path.parent.chmod(0o700)
+        except OSError:
+            pass
+        encoded = json.dumps(
+            _json_clean(payload),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        compressed = gzip.compress(encoded, compresslevel=5)
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        temp_path.write_bytes(compressed)
+        temp_path.chmod(0o600)
+        os.replace(temp_path, cache_path)
+        cache_files = sorted(
+            cache_path.parent.glob("*.json.gz"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for stale_path in cache_files[SHARED_PAGE_CACHE_MAX_ENTRIES:]:
+            stale_path.unlink(missing_ok=True)
+    except (OSError, TypeError, ValueError):
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _shared_page_cache_clear(namespace: str | None = None) -> int:
+    if SHARED_PAGE_CACHE_DIR is None:
+        return 0
+    pattern = f"{_shared_page_cache_namespace(namespace)}-*.json.gz" if namespace else "*.json.gz"
+    cleared = 0
+    try:
+        for cache_path in SHARED_PAGE_CACHE_DIR.glob(pattern):
+            cache_path.unlink(missing_ok=True)
+            cleared += 1
+    except OSError:
+        pass
+    return cleared
+
+
+def _page_payload_cache_get(
+    local_cache: _BoundedCache,
+    namespace: str,
+    cache_key: str,
+    ttl_seconds: int = CACHE_SECONDS,
+) -> dict[str, Any] | None:
+    now = time.time()
+    cached = local_cache.get(cache_key)
+    if cached and now - cached[0] < ttl_seconds:
+        payload = copy.deepcopy(cached[1])
+        payload["cache"] = {
+            "hit": True,
+            "shared": bool(payload.get("cache", {}).get("shared")),
+            "ttl_seconds": max(0, int(ttl_seconds - (now - cached[0]))),
+        }
+        return payload
+    shared = _shared_page_cache_load(namespace, cache_key, ttl_seconds)
+    if shared is None:
+        return None
+    payload, stored_at = shared
+    local_cache[cache_key] = (stored_at, copy.deepcopy(payload))
+    return payload
+
+
+def _page_payload_cache_store(
+    local_cache: _BoundedCache,
+    namespace: str,
+    cache_key: str,
+    payload: Mapping[str, Any],
+    stored_at: float | None = None,
+) -> None:
+    clean_payload = _json_clean(payload)
+    timestamp = float(stored_at if stored_at is not None else time.time())
+    local_cache[cache_key] = (timestamp, copy.deepcopy(clean_payload))
+    _shared_page_cache_store(namespace, cache_key, clean_payload)
+
+
+def _request_payload_cache_key(args: Mapping[str, Any], namespace: str) -> str:
+    ignored = {"pwd", "password", "passwd", "mock"}
+    normalized = {
+        str(key): str(value)
+        for key, value in args.items()
+        if str(key).lower() not in ignored
+    }
+    return "|".join([
+        _spt_db_cache_key(dict(args)),
+        namespace,
+        json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    ])
 
 
 def _read_sql(conn, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
@@ -3817,11 +3980,13 @@ def _precompute_spt_comparison(
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
     cache_key = f"{_spt_db_cache_key(args)}|compare|source:{standards_source}|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
-    cached = _SPT_COMPARE_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _SPT_COMPARE_CACHE,
+        "spectral-typing-compare",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     grid_payload = _load_spt_grid_from_db(
         args,
@@ -4159,7 +4324,13 @@ def _precompute_spt_comparison(
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _SPT_COMPARE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _SPT_COMPARE_CACHE,
+        "spectral-typing-compare",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -4579,6 +4750,7 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
         "spectralIndexExplorer": len(_SPECTRAL_INDEX_EXPLORER_CACHE),
         "gaiaCmd": len(_GAIA_CMD_CACHE),
         "mocaExplorer": len(_MOCA_EXPLORER_CACHE),
+        "sharedPagePayloads": _shared_page_cache_clear(),
         **bd_evolution_counts,
     }
     _BOOTSTRAP_CACHE.clear()
@@ -8319,6 +8491,7 @@ def _parse_xyzuvw_selection(args: dict[str, Any]) -> dict[str, Any]:
     bsmdid = bsmdid_raw if bsmdid_raw == "latest" or bsmdid_raw.isdigit() else "latest"
     return {
         "axes": axes,
+        "dual": _as_bool(args.get("dual") or args.get("both_axes")),
         "aids": aids,
         "mtids": mtids,
         "oids": oids,
@@ -10235,47 +10408,66 @@ def _companion_explorer_dummy_cte(name: str, columns: Sequence[str]) -> str:
     return f"{name} AS (SELECT {select_sql} FROM DUAL WHERE 0 = 1)"
 
 
-def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+def _companion_explorer_common_ctes(
+    conn,
+    args: Mapping[str, Any],
+    *,
+    include_companion_rows: bool = True,
+    include_overlay_rows: bool | None = None,
+) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {}
     ctes: list[str] = []
     private_db = _is_private_db(dict(args))
+    relevant_oid_queries: list[str] = []
+    if include_companion_rows and _db_table_exists(conn, "summary_all_companions"):
+        relevant_oid_queries.append(
+            "SELECT DISTINCT sac.moca_oid_parent AS moca_oid FROM summary_all_companions sac WHERE sac.moca_oid_parent IS NOT NULL"
+        )
+    if include_overlay_rows is None:
+        include_overlay_rows = (
+            _companion_explorer_include_exoplanets(args)
+            if include_companion_rows
+            else _exoplanet_explorer_include_confirmed(args)
+        )
+    include_confirmed = bool(include_overlay_rows)
+    if include_confirmed and _db_table_exists(conn, "cat_exoplanets_nasa"):
+        relevant_oid_queries.append(
+            "SELECT DISTINCT cen.moca_oid FROM cat_exoplanets_nasa cen WHERE cen.moca_oid IS NOT NULL"
+        )
+    include_tess = bool(include_overlay_rows) and (
+        _companion_explorer_include_tess_candidates(args)
+        or _exoplanet_explorer_include_tess_candidates(args)
+    )
+    tess_table = _companion_explorer_tess_candidate_table(conn) if include_tess else None
+    if tess_table:
+        relevant_oid_queries.append(
+            f"SELECT DISTINCT tess.moca_oid FROM {tess_table} tess WHERE tess.moca_oid IS NOT NULL"
+        )
+    relevant_oid_sql = "\n                UNION\n                ".join(relevant_oid_queries)
+    if not relevant_oid_sql:
+        relevant_oid_sql = "SELECT NULL AS moca_oid FROM DUAL WHERE 0 = 1"
+    ctes.append(f"""
+        relevant_oids AS (
+            {relevant_oid_sql}
+        )
+    """)
     if _db_table_exists(conn, "data_distances"):
-        distance_columns = _db_table_columns(conn, "data_distances")
-        distance_order_terms = ["COALESCE(dd.photometric_estimate, 0) ASC"]
-        if private_db and "public_adopted" in distance_columns:
-            distance_order_terms.append("COALESCE(dd.public_adopted, 0) DESC")
-        else:
-            distance_order_terms.append("COALESCE(dd.adopted, 0) DESC")
-        distance_order_terms.append("dd.id DESC" if "id" in distance_columns else "dd.moca_oid")
-        distance_order_sql = ",\n                                ".join(distance_order_terms)
-        ctes.append(f"""
+        ctes.append("""
             selected_distances AS (
                 SELECT
-                    moca_oid,
-                    distance_pc,
-                    distance_pc_unc,
-                    distance_pc_unc_pos,
-                    distance_pc_unc_neg,
-                    photometric_estimate
-                FROM (
-                    SELECT
-                        dd.moca_oid,
-                        dd.distance_pc,
-                        dd.distance_pc_unc,
-                        dd.distance_pc_unc_pos,
-                        dd.distance_pc_unc_neg,
-                        COALESCE(dd.photometric_estimate, 0) AS photometric_estimate,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY dd.moca_oid
-                            ORDER BY {distance_order_sql}
-                        ) AS cex_rn
-                    FROM data_distances dd
-                    WHERE dd.adopted = 1
-                        AND COALESCE(dd.ignored, 0) = 0
-                        AND dd.distance_pc IS NOT NULL
-                        AND dd.distance_pc > 0
-                ) ranked_distances
-                WHERE cex_rn = 1
+                    dd.moca_oid,
+                    dd.distance_pc,
+                    dd.distance_pc_unc,
+                    dd.distance_pc_unc_pos,
+                    dd.distance_pc_unc_neg,
+                    COALESCE(dd.photometric_estimate, 0) AS photometric_estimate
+                FROM relevant_oids ro
+                STRAIGHT_JOIN data_distances dd
+                    ON dd.moca_oid = ro.moca_oid
+                WHERE dd.adopted = 1
+                    AND COALESCE(dd.ignored, 0) = 0
+                    AND dd.distance_pc IS NOT NULL
+                    AND dd.distance_pc > 0
             )
         """)
     else:
@@ -10285,45 +10477,40 @@ def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str,
         ))
 
     if _db_table_exists(conn, "data_spectral_types"):
-        spectral_type_columns = _db_table_columns(conn, "data_spectral_types")
-        spectral_type_order_terms = ["COALESCE(dst.photometric_estimate, 0) ASC"]
-        if private_db and "public_adopted" in spectral_type_columns:
-            spectral_type_order_terms.append("COALESCE(dst.public_adopted, 0) DESC")
-        else:
-            spectral_type_order_terms.append("COALESCE(dst.adopted, 0) DESC")
-        spectral_type_order_terms.append("dst.id DESC" if "id" in spectral_type_columns else "dst.moca_oid")
-        spectral_type_order_sql = ",\n                                ".join(spectral_type_order_terms)
-        ctes.append(f"""
+        ctes.append("""
             selected_spectral_types AS (
                 SELECT
-                    moca_oid,
-                    spectral_type,
-                    spectral_type_number,
-                    photometric_estimate
-                FROM (
-                    SELECT
-                        dst.moca_oid,
-                        COALESCE(
-                            NULLIF(dst.complete_spectral_type, ''),
-                            NULLIF(dst.spectral_type, ''),
-                            NULLIF(dst.simple_spectral_type, '')
-                        ) AS spectral_type,
-                        dst.spectral_type_number,
-                        COALESCE(dst.photometric_estimate, 0) AS photometric_estimate,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY dst.moca_oid
-                            ORDER BY {spectral_type_order_sql}
-                        ) AS cex_rn
-                    FROM data_spectral_types dst
-                    WHERE dst.adopted = 1
-                        AND COALESCE(dst.ignored, 0) = 0
-                        AND COALESCE(
-                            NULLIF(dst.complete_spectral_type, ''),
-                            NULLIF(dst.spectral_type, ''),
-                            NULLIF(dst.simple_spectral_type, '')
-                        ) IS NOT NULL
-                ) ranked_spectral_types
-                WHERE cex_rn = 1
+                    dst.moca_oid,
+                    COALESCE(
+                        NULLIF(dst.complete_spectral_type, ''),
+                        NULLIF(dst.spectral_type, ''),
+                        NULLIF(dst.simple_spectral_type, '')
+                    ) AS spectral_type,
+                    dst.spectral_type_number,
+                    COALESCE(dst.photometric_estimate, 0) AS photometric_estimate
+                FROM relevant_oids ro
+                STRAIGHT_JOIN data_spectral_types dst
+                    ON dst.moca_oid = ro.moca_oid
+                WHERE dst.adopted = 1
+                    AND COALESCE(dst.ignored, 0) = 0
+                    AND COALESCE(
+                        NULLIF(dst.complete_spectral_type, ''),
+                        NULLIF(dst.spectral_type, ''),
+                        NULLIF(dst.simple_spectral_type, '')
+                    ) IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM data_spectral_types newer_dst
+                        WHERE newer_dst.moca_oid = dst.moca_oid
+                            AND newer_dst.adopted = 1
+                            AND COALESCE(newer_dst.ignored, 0) = 0
+                            AND COALESCE(
+                                NULLIF(newer_dst.complete_spectral_type, ''),
+                                NULLIF(newer_dst.spectral_type, ''),
+                                NULLIF(newer_dst.simple_spectral_type, '')
+                            ) IS NOT NULL
+                            AND newer_dst.id > dst.id
+                    )
             )
         """)
     else:
@@ -10333,42 +10520,21 @@ def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str,
         ))
 
     if _db_table_exists(conn, "data_masses"):
-        mass_columns = _db_table_columns(conn, "data_masses")
-        mass_order_terms = []
-        if private_db and "public_adopted" in mass_columns:
-            mass_order_terms.append("COALESCE(dm.public_adopted, 0) DESC")
-        else:
-            mass_order_terms.append("COALESCE(dm.adopted, 0) DESC")
-        if "adopt_asis" in mass_columns:
-            mass_order_terms.append("COALESCE(dm.adopt_asis, 0) DESC")
-        mass_order_terms.append("dm.id DESC" if "id" in mass_columns else "dm.moca_oid")
-        mass_order_sql = ",\n                                ".join(mass_order_terms)
-        ctes.append(f"""
+        ctes.append("""
             selected_masses AS (
                 SELECT
-                    moca_oid,
-                    mass_msun,
-                    mass_msun_unc,
-                    mass_msun_unc_pos,
-                    mass_msun_unc_neg
-                FROM (
-                    SELECT
-                        dm.moca_oid,
-                        dm.mass_msun,
-                        dm.mass_msun_unc,
-                        dm.mass_msun_unc_pos,
-                        dm.mass_msun_unc_neg,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY dm.moca_oid
-                            ORDER BY {mass_order_sql}
-                        ) AS cex_rn
-                    FROM data_masses dm
-                    WHERE dm.adopted = 1
-                        AND COALESCE(dm.ignored, 0) = 0
-                        AND dm.mass_msun IS NOT NULL
-                        AND dm.mass_msun > 0
-                ) ranked_masses
-                WHERE cex_rn = 1
+                    dm.moca_oid,
+                    dm.mass_msun,
+                    dm.mass_msun_unc,
+                    dm.mass_msun_unc_pos,
+                    dm.mass_msun_unc_neg
+                FROM relevant_oids ro
+                STRAIGHT_JOIN data_masses dm
+                    ON dm.moca_oid = ro.moca_oid
+                WHERE dm.adopted = 1
+                    AND COALESCE(dm.ignored, 0) = 0
+                    AND dm.mass_msun IS NOT NULL
+                    AND dm.mass_msun > 0
             )
         """)
     else:
@@ -10382,17 +10548,18 @@ def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str,
             object_age AS (
                 SELECT
                     doa.moca_oid,
-                    MIN(doa.age_myr) AS age_myr,
-                    MIN(doa.age_myr_unc) AS age_myr_unc,
-                    MIN(doa.age_myr_unc_pos) AS age_myr_unc_pos,
-                    MIN(doa.age_myr_unc_neg) AS age_myr_unc_neg,
-                    MIN(COALESCE(doa.bibcode, doa.moca_pid, doa.origin)) AS age_source_detail
-                FROM data_object_ages doa
+                    doa.age_myr,
+                    doa.age_myr_unc,
+                    doa.age_myr_unc_pos,
+                    doa.age_myr_unc_neg,
+                    COALESCE(doa.bibcode, doa.moca_pid, doa.origin) AS age_source_detail
+                FROM relevant_oids ro
+                STRAIGHT_JOIN data_object_ages doa
+                    ON doa.moca_oid = ro.moca_oid
                 WHERE doa.adopted = 1
                     AND COALESCE(doa.ignored, 0) = 0
                     AND doa.age_myr IS NOT NULL
                     AND doa.age_myr > 0
-                GROUP BY doa.moca_oid
             )
         """)
     else:
@@ -10448,12 +10615,10 @@ def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str,
                     cbs.ya_prob,
                     cbs.best_hyp,
                     cbs.best_ya,
-                    cbs.observables,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cbs.moca_oid
-                        ORDER BY cbs.ya_prob DESC, cbs.id DESC
-                    ) AS cex_rn
-                FROM calc_banyan_sigma cbs
+                    cbs.observables
+                FROM relevant_oids ro
+                STRAIGHT_JOIN calc_banyan_sigma cbs
+                    ON cbs.moca_oid = ro.moca_oid
                 JOIN active_banyan_model abm
                     ON abm.moca_bsmdid = cbs.moca_bsmdid
                 WHERE cbs.max_observables = 1
@@ -10482,8 +10647,7 @@ def _companion_explorer_common_ctes(conn, args: Mapping[str, Any]) -> tuple[str,
                     AND daa.age_myr > 0
                 LEFT JOIN moca_associations ma
                     ON ma.moca_aid = bc.membership
-                WHERE bc.cex_rn = 1
-                    AND bc.membership IS NOT NULL
+                WHERE bc.membership IS NOT NULL
                     {ignored_membership_filter}
             )
         """)
@@ -11010,6 +11174,14 @@ def _load_companion_explorer_tess_candidates_from_db(
 
 
 def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = _request_payload_cache_key(args, "companion-explorer-data-v2")
+    cached = _page_payload_cache_get(
+        _COMPANION_EXPLORER_CACHE,
+        "companion-explorer",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
     max_rows = _companion_explorer_parse_max_rows(args.get("max_rows") or args.get("limit"))
     highlight_cids = _companion_explorer_parse_cids(args)
     include_photometric_distances = _companion_explorer_use_photometric_distances(args)
@@ -11018,7 +11190,11 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
         if not _db_table_exists(conn, "summary_all_companions"):
             raise ValueError("summary_all_companions is not available in this database")
         started = time.time()
-        common_ctes, common_params = _companion_explorer_common_ctes(conn, args)
+        common_ctes, common_params = _companion_explorer_common_ctes(
+            conn,
+            args,
+            include_overlay_rows=False,
+        )
         select_columns_sql = ",\n                ".join(f"sac.{column}" for column in COMPANION_EXPLORER_COMPANION_SELECT_COLUMNS)
         highlight_order = "sac.moca_cid"
         params: dict[str, Any] = dict(common_params)
@@ -11074,12 +11250,21 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
         include_exoplanets = _companion_explorer_include_exoplanets(args)
         include_tess_candidates = _companion_explorer_include_tess_candidates(args)
         highlight_exoplanet_ids = _companion_explorer_parse_exoplanet_ids(args)
-        exoplanets = _load_companion_explorer_exoplanets_from_db(conn, args, common_ctes, common_params) if include_exoplanets else []
+        overlay_ctes = common_ctes
+        overlay_params = common_params
+        if include_exoplanets or include_tess_candidates:
+            overlay_ctes, overlay_params = _companion_explorer_common_ctes(
+                conn,
+                args,
+                include_companion_rows=False,
+                include_overlay_rows=True,
+            )
+        exoplanets = _load_companion_explorer_exoplanets_from_db(conn, args, overlay_ctes, overlay_params) if include_exoplanets else []
         exoplanets = [row for row in exoplanets if _companion_explorer_row_matches_payload_filters(row, args, highlight_exoplanet_ids=highlight_exoplanet_ids)]
-        tess_candidates = _load_companion_explorer_tess_candidates_from_db(conn, args, common_ctes, common_params) if include_tess_candidates else []
+        tess_candidates = _load_companion_explorer_tess_candidates_from_db(conn, args, overlay_ctes, overlay_params) if include_tess_candidates else []
         tess_candidates = [row for row in tess_candidates if _companion_explorer_row_matches_payload_filters(row, args)] if include_tess_candidates else []
         query_seconds = round(time.time() - started, 3)
-    return {
+    payload = {
         "axes": _companion_explorer_axes_payload(),
         "default": {"x": "sep_au", "y": "mass_ratio_q", "xLog": True, "yLog": True},
         "rows": rows,
@@ -11103,8 +11288,15 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "server_filtered": True,
             "query_seconds": query_seconds,
         },
-        "cache": {"hit": False, "ttl_seconds": 0},
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
+    _page_payload_cache_store(
+        _COMPANION_EXPLORER_CACHE,
+        "companion-explorer",
+        cache_key,
+        payload,
+    )
+    return payload
 
 
 def _mock_companion_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
@@ -12323,19 +12515,31 @@ def _load_exoplanet_explorer_tess_from_db(
 
 
 def _load_exoplanet_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
+    cache_key = _request_payload_cache_key(args, "exoplanets-explorer-data-v2")
+    cached = _page_payload_cache_get(
+        _EXOPLANET_EXPLORER_CACHE,
+        "exoplanets-explorer",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
     started = time.time()
     include_confirmed = _exoplanet_explorer_include_confirmed(args)
     include_tess = _exoplanet_explorer_include_tess_candidates(args)
     include_photometric_distances = _companion_explorer_use_photometric_distances(args)
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
-        common_ctes, common_params = _companion_explorer_common_ctes(conn, args)
+        common_ctes, common_params = _companion_explorer_common_ctes(
+            conn,
+            args,
+            include_companion_rows=False,
+        )
         confirmed = _load_exoplanet_explorer_confirmed_from_db(conn, args, common_ctes, common_params) if include_confirmed else []
         tess = _load_exoplanet_explorer_tess_from_db(conn, args, common_ctes, common_params) if include_tess else []
     confirmed = [row for row in confirmed if _exoplanet_explorer_row_matches_filters(row, args)]
     tess = [row for row in tess if _exoplanet_explorer_row_matches_filters(row, args)]
     rows = [*confirmed, *tess]
-    return {
+    payload = {
         "axes": _exoplanet_explorer_axes_payload(),
         "default": {"x": "sep_au", "y": "planet_mass_mjup", "xLog": True, "yLog": True},
         "rows": rows,
@@ -12351,8 +12555,15 @@ def _load_exoplanet_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "include_tess_candidates": include_tess,
             "query_seconds": round(time.time() - started, 3),
         },
-        "cache": {"hit": False, "ttl_seconds": 0},
+        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
+    _page_payload_cache_store(
+        _EXOPLANET_EXPLORER_CACHE,
+        "exoplanets-explorer",
+        cache_key,
+        payload,
+    )
+    return payload
 
 
 def _mock_exoplanet_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
@@ -12721,8 +12932,9 @@ def _xyzuvw_db_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
-        "folded-subgroups-v1",
+        "folded-subgroups-v2",
         "".join(selection["axes"]),
+        str(int(selection.get("dual", False))),
         ",".join(selection["aids"]),
         ",".join(selection["mtids"]),
         ",".join(str(oid) for oid in selection["oids"]),
@@ -12736,16 +12948,35 @@ def _xyzuvw_db_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str
     ])
 
 
+def _xyzuvw_base_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
+    cfg = _db_config(args)
+    return "|".join([
+        cfg["host"],
+        cfg["username"],
+        cfg["dbname"],
+        "folded-subgroups-base-v2",
+        ",".join(selection["aids"]),
+        ",".join(selection["mtids"]),
+        ",".join(str(oid) for oid in selection["oids"]),
+        str(selection["bsmdid"]),
+        str(int(selection["likely"])),
+        str(int(selection["subgroups"])),
+        str(int("errors" in selection["checkboxes"])),
+    ])
+
+
 def _load_xyzuvw_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     selection = _parse_xyzuvw_selection(args)
     option_aids = list(dict.fromkeys([*selection["aids"], *XYZUVW_DEFAULT_AIDS]))
     cache_key = f"{_spt_db_cache_key(args)}|xyzuvw-options|{','.join(option_aids)}"
     now = time.time()
-    cached = _XYZUVW_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _XYZUVW_CACHE,
+        "xyzuvw-view",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     aid_clause, aid_params = _sql_in_clause("option_aid", option_aids)
     engine = _engine(_connection_string(args))
@@ -12797,7 +13028,13 @@ def _load_xyzuvw_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _XYZUVW_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _XYZUVW_CACHE,
+        "xyzuvw-view",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -13095,15 +13332,104 @@ def _xyzuvw_model_surfaces(models: list[dict[str, Any]], axes: list[str]) -> lis
     return surfaces
 
 
+def _xyzuvw_payload_from_base(
+    selection: dict[str, Any],
+    base_payload: Mapping[str, Any],
+    cache_key: str,
+    stored_at: float,
+) -> dict[str, Any]:
+    surface_started = time.time()
+    members = copy.deepcopy(list(base_payload.get("members") or []))
+    models = copy.deepcopy(list(base_payload.get("models") or []))
+    objects = copy.deepcopy(list(base_payload.get("objects") or []))
+    surfaces_by_axes: dict[str, list[dict[str, Any]]] = {}
+    if "models" in selection["checkboxes"]:
+        if selection.get("dual"):
+            surfaces_by_axes = {"xyz": [], "uvw": []}
+            if models:
+                surfaces_by_axes = {
+                    "xyz": _xyzuvw_model_surfaces(models, ["x", "y", "z"]),
+                    "uvw": _xyzuvw_model_surfaces(models, ["u", "v", "w"]),
+                }
+            # The dual client reads the axis-keyed collections directly. Avoid
+            # serializing the XYZ meshes a second time in modelSurfaces.
+            model_surfaces = []
+        else:
+            model_surfaces = _xyzuvw_model_surfaces(models, selection["axes"]) if models else []
+    else:
+        model_surfaces = []
+
+    labels = []
+    if selection["labels"] and members:
+        by_aid: dict[str, list[dict[str, Any]]] = {}
+        for row in members:
+            by_aid.setdefault(str(row.get("moca_aid")), []).append(row)
+        for aid, rows in by_aid.items():
+            label_row: dict[str, Any] = {"moca_aid": aid}
+            for axis in ("x", "y", "z", "u", "v", "w"):
+                finite_values = [
+                    float(row[axis])
+                    for row in rows
+                    if row.get(axis) is not None and math.isfinite(float(row[axis]))
+                ]
+                label_row[axis] = float(np.nanmedian(finite_values)) if finite_values else None
+            labels.append(label_row)
+
+    base_cache = base_payload.get("cache") or {}
+    meta = copy.deepcopy(dict(base_payload.get("meta") or {}))
+    meta.update({
+        "model_surface_count": sum(len(rows) for rows in surfaces_by_axes.values()) if surfaces_by_axes else len(model_surfaces),
+        "base_cache_hit": bool(base_cache.get("hit")),
+        "base_shared_cache_hit": bool(base_cache.get("shared")),
+        "surface_seconds": round(time.time() - surface_started, 3),
+    })
+    payload = {
+        "selection": selection,
+        "members": members,
+        "models": models,
+        "modelSurfaces": model_surfaces,
+        "modelSurfacesByAxes": surfaces_by_axes,
+        "objects": objects,
+        "labels": labels,
+        "meta": meta,
+        "cache": {
+            "hit": bool(base_cache.get("hit")),
+            "shared": bool(base_cache.get("shared")),
+            "ttl_seconds": int(base_cache.get("ttl_seconds") or CACHE_SECONDS),
+        },
+    }
+    _page_payload_cache_store(
+        _XYZUVW_CACHE,
+        "xyzuvw-view",
+        cache_key,
+        payload,
+        stored_at=stored_at,
+    )
+    return payload
+
+
 def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
     selection = _parse_xyzuvw_selection(args)
     cache_key = _xyzuvw_db_cache_key(args, selection)
     now = time.time()
-    cached = _XYZUVW_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _XYZUVW_CACHE,
+        "xyzuvw-view",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
+
+    base_cache_key = _xyzuvw_base_cache_key(args, selection)
+    base_payload = _page_payload_cache_get(
+        _XYZUVW_BASE_CACHE,
+        "xyzuvw-base",
+        base_cache_key,
+    )
+    if base_payload is not None:
+        return _xyzuvw_payload_from_base(selection, base_payload, cache_key, now)
+
+    query_started = time.time()
 
     aid_clause, aid_params = _sql_in_clause("aid", selection["aids"])
     mtid_clause, mtid_params = _sql_in_clause("mtid", selection["mtids"])
@@ -13118,8 +13444,9 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
     if include_covariances:
         spatial_covariances = {"xx_covar", "yy_covar", "zz_covar", "xy_covar", "xz_covar", "yz_covar"}
         requested_covariances = []
-        for axis_index, axis1 in enumerate(selection["axes"]):
-            for axis2 in selection["axes"][axis_index:]:
+        covariance_axes = ["x", "y", "z", "u", "v", "w"]
+        for axis_index, axis1 in enumerate(covariance_axes):
+            for axis2 in covariance_axes[axis_index:]:
                 key = _xyzuvw_covariance_key(axis1, axis2)
                 if key not in requested_covariances:
                     requested_covariances.append(key)
@@ -13309,47 +13636,31 @@ def _load_xyzuvw_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 ORDER BY FIELD(mo.moca_oid, {oid_clause})
             """)
 
-    members = _records(members_df)
-    models = _records(models_df)
-    model_surfaces = _xyzuvw_model_surfaces(models, selection["axes"]) if "models" in selection["checkboxes"] else []
-    labels = []
-    if selection["labels"] and members:
-        by_aid: dict[str, list[dict[str, Any]]] = {}
-        for row in members:
-            by_aid.setdefault(str(row.get("moca_aid")), []).append(row)
-        for aid, rows in by_aid.items():
-            label_row: dict[str, Any] = {"moca_aid": aid}
-            for axis in ("x", "y", "z", "u", "v", "w"):
-                finite_values = [
-                    float(row[axis])
-                    for row in rows
-                    if row.get(axis) is not None and math.isfinite(float(row[axis]))
-                ]
-                label_row[axis] = float(np.nanmedian(finite_values)) if finite_values else None
-            labels.append(label_row)
-
-    payload = {
-        "selection": selection,
-        "members": members,
-        "models": models,
-        "modelSurfaces": model_surfaces,
+    base_payload = {
+        "members": _records(members_df),
+        "models": _records(models_df),
         "objects": _records(objects_df),
-        "labels": labels,
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": _is_private_db(args),
-            "member_count": len(members),
-            "model_count": len(models),
-            "model_surface_count": len(model_surfaces),
+            "member_count": int(len(members_df)),
+            "model_count": int(len(models_df)),
             "object_count": int(len(objects_df)),
             "truncated": int(len(members_df)) >= XYZUVW_MAX_OBJECTS,
             "max_objects": XYZUVW_MAX_OBJECTS,
             "c_value": XYZUVW_C_VALUE,
+            "query_seconds": round(time.time() - query_started, 3),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _XYZUVW_CACHE[cache_key] = (now, copy.deepcopy(payload))
-    return payload
+    _page_payload_cache_store(
+        _XYZUVW_BASE_CACHE,
+        "xyzuvw-base",
+        base_cache_key,
+        base_payload,
+        stored_at=now,
+    )
+    return _xyzuvw_payload_from_base(selection, base_payload, cache_key, now)
 
 
 def _search_xyzuvw_objects_from_db(args: dict[str, Any], query: str) -> dict[str, Any]:
@@ -13651,11 +13962,13 @@ def _load_moca_explorer_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     selection = _moca_explorer_selection(args)
     cache_key = f"{_spt_db_cache_key(args)}|moca-explorer-options-v2|{','.join(selection['aids'])}"
     now = time.time()
-    cached = _MOCA_EXPLORER_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
@@ -13704,7 +14017,13 @@ def _load_moca_explorer_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _MOCA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -13712,11 +14031,13 @@ def _load_moca_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
     selection = _moca_explorer_selection(args)
     cache_key = _moca_explorer_cache_key(args, selection)
     now = time.time()
-    cached = _MOCA_EXPLORER_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     aid_clause, aid_params = _sql_in_clause("mex_aid", selection["aids"])
     mtid_clause, mtid_params = _sql_in_clause("mex_mtid", selection["mtids"])
@@ -14006,7 +14327,13 @@ def _load_moca_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _MOCA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -14061,11 +14388,13 @@ def _load_moca_explorer_active_view_from_db(args: dict[str, Any]) -> dict[str, A
     selection = _moca_explorer_selection(args)
     cache_key = _moca_explorer_cache_key(args, selection)
     now = time.time()
-    cached = _MOCA_EXPLORER_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     view = selection["view"]
     spatial = view in {"xyz", "uvw", "projections"}
@@ -14285,7 +14614,13 @@ def _load_moca_explorer_active_view_from_db(args: dict[str, Any]) -> dict[str, A
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     })
-    _MOCA_EXPLORER_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _MOCA_EXPLORER_CACHE,
+        "moca-explorer",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -16232,11 +16567,13 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     scope = "association"
     cache_key = f"{_tfage_cache_key(args, scope, 'options')}|options-counts-v1"
     now = time.time()
-    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     engine = _engine(_tfage_connection_string(args, scope))
     associations: list[dict[str, Any]] = []
@@ -16280,7 +16617,13 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -16288,11 +16631,13 @@ def _load_mflows_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
     scope = "association"
     cache_key = f"{_tfage_cache_key(args, scope, 'options')}|mflows-options-counts-v2"
     now = time.time()
-    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     started = time.time()
     engine = _engine(_tfage_connection_string(args, scope))
@@ -16331,7 +16676,13 @@ def _load_mflows_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -16398,11 +16749,13 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     allow_likelihood_fallback = bool(load_posteriors and not _tfage_has_explicit_curve_role(args))
     cache_key = _tfage_cache_key(args, scope, target)
     now = time.time()
-    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
     if target in (None, ""):
         return {
             "selection": {"scope": scope, "target": None, "curve_role": curve_role, "load_posteriors": load_posteriors},
@@ -16487,7 +16840,13 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -17251,11 +17610,13 @@ def _load_mflows_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         str(int(show_measurements)),
     ])
     now = time.time()
-    cached = _TRUEFLOW_AGE_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     started_total = time.time()
     timings: dict[str, float] = {}
@@ -17331,7 +17692,13 @@ def _load_mflows_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
             )
             payload.setdefault("meta", {}).setdefault("timings", {}).update(timings)
             payload["meta"]["timings"]["mflows_total"] = round(time.time() - started_total, 3)
-            _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+            _page_payload_cache_store(
+                _TRUEFLOW_AGE_CACHE,
+                "trueflow-age",
+                cache_key,
+                payload,
+                stored_at=now,
+            )
             return payload
 
     def load_age_rows_and_curves(load_engine) -> tuple[pd.DataFrame, list[_TfAgeCurve], dict[str, float]]:
@@ -17427,7 +17794,13 @@ def _load_mflows_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     payload = _mflows_payload_from_tfage(args, tf_payload)
     payload.setdefault("meta", {}).setdefault("timings", {}).update(timings)
     payload["meta"]["timings"]["mflows_total"] = round(time.time() - started_total, 3)
-    _TRUEFLOW_AGE_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _TRUEFLOW_AGE_CACHE,
+        "trueflow-age",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -25906,11 +26279,13 @@ def _moranta26_normalize_catalog_df(df: pd.DataFrame) -> list[dict[str, Any]]:
 def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
     cache_key = _moranta26_cache_key(args, "catalog", "compact-v2")
     now = time.time()
-    cached = _MORANTA26_ROTATION_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _MORANTA26_ROTATION_CACHE,
+        "moranta26-rotation",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     engine = _engine(_connection_string(args))
     schema = _db_schema_identifier(args)
@@ -25979,7 +26354,13 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _MORANTA26_ROTATION_CACHE,
+        "moranta26-rotation",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -26041,11 +26422,13 @@ def _moranta26_periodogram_records(rows: list[dict[str, Any]], *, max_points: in
 def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> dict[str, Any]:
     cache_key = _moranta26_cache_key(args, "lightcurve", photseqid)
     now = time.time()
-    cached = _MORANTA26_ROTATION_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _MORANTA26_ROTATION_CACHE,
+        "moranta26-rotation",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     engine = _engine(_connection_string(args))
     schema = _db_schema_identifier(args)
@@ -26076,7 +26459,13 @@ def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> 
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
-            _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+            _page_payload_cache_store(
+                _MORANTA26_ROTATION_CACHE,
+                "moranta26-rotation",
+                cache_key,
+                payload,
+                stored_at=now,
+            )
             return payload
         header_rows = _records(_read_sql(conn, f"""
             SELECT
@@ -26123,7 +26512,13 @@ def _load_moranta26_lightcurve_from_db(args: dict[str, Any], photseqid: int) -> 
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _MORANTA26_ROTATION_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _MORANTA26_ROTATION_CACHE,
+        "moranta26-rotation",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -26370,11 +26765,13 @@ def _group_hierarchy_relationships(conn) -> list[dict[str, Any]]:
 def _load_group_hierarchy_from_db(args: dict[str, Any]) -> dict[str, Any]:
     cache_key = _group_hierarchy_cache_key(args)
     now = time.time()
-    cached = _GROUP_HIERARCHY_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _GROUP_HIERARCHY_CACHE,
+        "group-hierarchy",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
@@ -26476,7 +26873,13 @@ def _load_group_hierarchy_from_db(args: dict[str, Any]) -> dict[str, Any]:
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _GROUP_HIERARCHY_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _GROUP_HIERARCHY_CACHE,
+        "group-hierarchy",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -29705,6 +30108,7 @@ def spectral_typing_clear_cache():
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
     _SPT_STANDARD_PROCESS_CACHE.clear()
+    shared_count = _shared_page_cache_clear("spectral-typing-compare")
     return jsonify({
         "ok": True,
         "cleared": {
@@ -29712,6 +30116,7 @@ def spectral_typing_clear_cache():
             "spectralTypingSpectra": spectrum_count,
             "spectralTypingComparisons": compare_count,
             "spectralTypingProcessedStandards": standard_process_count,
+            "spectralTypingComparisonsShared": shared_count,
         },
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
@@ -30219,9 +30624,10 @@ def group_hierarchy_catalog():
 def group_hierarchy_clear_cache():
     group_count = len(_GROUP_HIERARCHY_CACHE)
     _GROUP_HIERARCHY_CACHE.clear()
+    shared_count = _shared_page_cache_clear("group-hierarchy")
     return jsonify({
         "ok": True,
-        "cleared": {"groupHierarchy": group_count},
+        "cleared": {"groupHierarchy": group_count, "groupHierarchyShared": shared_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -30355,9 +30761,10 @@ def moca_explorer_data():
 def moca_explorer_clear_cache():
     moca_explorer_count = len(_MOCA_EXPLORER_CACHE)
     _MOCA_EXPLORER_CACHE.clear()
+    shared_count = _shared_page_cache_clear("moca-explorer")
     return jsonify({
         "ok": True,
-        "cleared": {"mocaExplorer": moca_explorer_count},
+        "cleared": {"mocaExplorer": moca_explorer_count, "mocaExplorerShared": shared_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -30531,14 +30938,18 @@ def companion_explorer_data():
 @app.post("/js/api/companion_explorer/cache/clear")
 @app.post("/js/api/companions/cache/clear")
 def companion_explorer_clear_cache():
+    companion_count = len(_COMPANION_EXPLORER_CACHE)
     table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
     column_metadata_count = len(_DB_COLUMNS_CACHE)
+    _COMPANION_EXPLORER_CACHE.clear()
+    shared_count = _shared_page_cache_clear("companion-explorer")
     _DB_TABLE_EXISTS_CACHE.clear()
     _DB_COLUMNS_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
-            "companionExplorer": 0,
+            "companionExplorer": companion_count,
+            "companionExplorerShared": shared_count,
             "dbTableMetadata": table_metadata_count,
             "dbColumnMetadata": column_metadata_count,
         },
@@ -30694,14 +31105,18 @@ def exoplanets_explorer_data():
 @app.post("/js/api/exoplanets_explorer/cache/clear")
 @app.post("/js/api/exoplanets/cache/clear")
 def exoplanets_explorer_clear_cache():
+    exoplanets_count = len(_EXOPLANET_EXPLORER_CACHE)
     table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
     column_metadata_count = len(_DB_COLUMNS_CACHE)
+    _EXOPLANET_EXPLORER_CACHE.clear()
+    shared_count = _shared_page_cache_clear("exoplanets-explorer")
     _DB_TABLE_EXISTS_CACHE.clear()
     _DB_COLUMNS_CACHE.clear()
     return jsonify({
         "ok": True,
         "cleared": {
-            "exoplanetsExplorer": 0,
+            "exoplanetsExplorer": exoplanets_count,
+            "exoplanetsExplorerShared": shared_count,
             "dbTableMetadata": table_metadata_count,
             "dbColumnMetadata": column_metadata_count,
         },
@@ -31003,10 +31418,17 @@ def xyzuvw_data():
 @app.post("/api/xyzuvw/cache/clear")
 def xyzuvw_clear_cache():
     xyzuvw_count = len(_XYZUVW_CACHE)
+    xyzuvw_base_count = len(_XYZUVW_BASE_CACHE)
     _XYZUVW_CACHE.clear()
+    _XYZUVW_BASE_CACHE.clear()
+    shared_count = _shared_page_cache_clear("xyzuvw-view") + _shared_page_cache_clear("xyzuvw-base")
     return jsonify({
         "ok": True,
-        "cleared": {"xyzuvw": xyzuvw_count},
+        "cleared": {
+            "xyzuvw": xyzuvw_count,
+            "xyzuvwBase": xyzuvw_base_count,
+            "xyzuvwShared": shared_count,
+        },
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -31170,9 +31592,10 @@ def trueflow_age_pdfs_data():
 def trueflow_age_pdfs_clear_cache():
     age_count = len(_TRUEFLOW_AGE_CACHE)
     _TRUEFLOW_AGE_CACHE.clear()
+    shared_count = _shared_page_cache_clear("trueflow-age")
     return jsonify({
         "ok": True,
-        "cleared": {"trueflowAgePdfs": age_count},
+        "cleared": {"trueflowAgePdfs": age_count, "trueflowAgePdfsShared": shared_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -31312,9 +31735,10 @@ def moranta26_rotation_lightcurve(photseqid: int):
 def moranta26_rotation_clear_cache():
     moranta_count = len(_MORANTA26_ROTATION_CACHE)
     _MORANTA26_ROTATION_CACHE.clear()
+    shared_count = _shared_page_cache_clear("moranta26-rotation")
     return jsonify({
         "ok": True,
-        "cleared": {"moranta26Rotation": moranta_count},
+        "cleared": {"moranta26Rotation": moranta_count, "moranta26RotationShared": shared_count},
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -31794,6 +32218,7 @@ def clear_cache():
     sed_explorer_count = len(_SED_EXPLORER_CACHE)
     sed_template_count = len(_SED_TEMPLATE_CACHE)
     xyzuvw_count = len(_XYZUVW_CACHE)
+    xyzuvw_base_count = len(_XYZUVW_BASE_CACHE)
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
     gaia_cmd_shared_count = _gaia_cmd_shared_cache_clear()
@@ -31803,6 +32228,9 @@ def clear_cache():
     moranta26_rotation_count = len(_MORANTA26_ROTATION_CACHE)
     rvbam_count = len(_RVBAM_CACHE)
     rvbam_array_count = len(_RVBAM_ARRAY_CACHE)
+    companion_count = len(_COMPANION_EXPLORER_CACHE)
+    exoplanets_count = len(_EXOPLANET_EXPLORER_CACHE)
+    shared_page_count = _shared_page_cache_clear()
     table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
     column_metadata_count = len(_DB_COLUMNS_CACHE)
     _BOOTSTRAP_CACHE.clear()
@@ -31817,6 +32245,7 @@ def clear_cache():
     _SED_EXPLORER_CACHE.clear()
     _SED_TEMPLATE_CACHE.clear()
     _XYZUVW_CACHE.clear()
+    _XYZUVW_BASE_CACHE.clear()
     _TRUEFLOW_AGE_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
     _MOCA_EXPLORER_CACHE.clear()
@@ -31825,6 +32254,8 @@ def clear_cache():
     _MORANTA26_ROTATION_CACHE.clear()
     _RVBAM_CACHE.clear()
     _RVBAM_ARRAY_CACHE.clear()
+    _COMPANION_EXPLORER_CACHE.clear()
+    _EXOPLANET_EXPLORER_CACHE.clear()
     _DB_TABLE_EXISTS_CACHE.clear()
     _DB_COLUMNS_CACHE.clear()
     return jsonify({
@@ -31842,6 +32273,7 @@ def clear_cache():
             "sedExplorer": sed_explorer_count,
             "sedTemplates": sed_template_count,
             "xyzuvw": xyzuvw_count,
+            "xyzuvwBase": xyzuvw_base_count,
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
             "gaiaCmdShared": gaia_cmd_shared_count,
@@ -31852,6 +32284,9 @@ def clear_cache():
             "moranta26Rotation": moranta26_rotation_count,
             "rvbamExplorer": rvbam_count,
             "rvbamPayloadArrays": rvbam_array_count,
+            "companionExplorer": companion_count,
+            "exoplanetsExplorer": exoplanets_count,
+            "sharedPagePayloads": shared_page_count,
             "dbTableMetadata": table_metadata_count,
             "dbColumnMetadata": column_metadata_count,
         },

@@ -35,7 +35,8 @@ const m26AppBaseUrl = (() => {
 })();
 
 function m26AppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), m26AppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : m26AppBaseUrl).toString();
 }
 
 async function initMoranta26Rotation() {

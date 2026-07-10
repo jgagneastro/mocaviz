@@ -69,7 +69,8 @@ const speAppBaseUrl = (() => {
 })();
 
 function speAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), speAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : speAppBaseUrl).toString();
 }
 
 async function initSpectraExplorer() {

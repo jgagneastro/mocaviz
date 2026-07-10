@@ -42,7 +42,8 @@ const sedAppBaseUrl = (() => {
 })();
 
 function sedAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), sedAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : sedAppBaseUrl).toString();
 }
 
 async function initSedExplorer() {

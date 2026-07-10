@@ -137,7 +137,8 @@ const exoAppBaseUrl = (() => {
 })();
 
 function exoAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), exoAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : exoAppBaseUrl).toString();
 }
 
 async function initExoplanetsExplorer() {

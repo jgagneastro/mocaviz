@@ -109,7 +109,8 @@ const xuvAppBaseUrl = new URL("../", import.meta.url).toString();
 document.addEventListener("DOMContentLoaded", initXyzuvwThree);
 
 function xuvAppUrl(path) {
-  return new URL(String(path || "").replace(/^\/+/, ""), xuvAppBaseUrl).toString();
+  const normalized = String(path || "").replace(/^\/+/, "");
+  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : xuvAppBaseUrl).toString();
 }
 
 async function initXyzuvwThree() {
@@ -609,12 +610,14 @@ async function loadXyzuvwData() {
     const token = ++xuvState.loadToken;
     setXyzuvwLoading(true);
     setXyzuvwStatus("Loading XYZ/UVW data", "loading");
-    const fetches = xuvThreeDualPanelDefs.map(async (panel) => {
-      const params = buildXyzuvwParams(panel.axes);
-      const payload = await fetchJsonUrl(xuvAppUrl(`api/xyzuvw/data?${params.toString()}`));
-      return [panel.key, payload];
-    });
-    const entries = await Promise.all(fetches);
+    const params = buildXyzuvwParams(["x", "y", "z"]);
+    params.set("dual", "1");
+    const payload = await fetchJsonUrl(xuvAppUrl(`api/xyzuvw/data?${params.toString()}`));
+    const entries = xuvThreeDualPanelDefs.map((panel) => [panel.key, {
+      ...payload,
+      selection: { ...(payload.selection || {}), axes: panel.axes, dual: true },
+      modelSurfaces: payload.modelSurfacesByAxes?.[panel.key] || [],
+    }]);
     if (token !== xuvState.loadToken) return;
     xuvState.panelPayloads = Object.fromEntries(entries);
     const failed = entries.find(([, payload]) => !payload.ok);
