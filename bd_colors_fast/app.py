@@ -16,6 +16,7 @@ import traceback
 import types
 import zlib
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -294,9 +295,11 @@ _SED_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _SED_TEMPLATE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _XYZUVW_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _XYZUVW_BASE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_XYZUVW_SURFACE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _TRUEFLOW_AGE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _GAIA_CMD_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _MOCA_EXPLORER_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
+_MOCA_EXPLORER_REFERENCE_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _GROUP_HIERARCHY_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _LEGACY_RV_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
 _MORANTA26_ROTATION_CACHE = _BoundedCache(PAGE_CACHE_MAX_ENTRIES)
@@ -474,7 +477,7 @@ BANYAN_SIGMA_PARALLAX_RANGE_MIN_UPPER_PC = float(
 )
 XYZUVW_C_VALUE = 8.0
 XYZUVW_MAX_OBJECTS = int(os.environ.get("XYZUVW_FAST_MAX_OBJECTS", "60000"))
-XYZUVW_MODEL_GRID_POINTS = int(os.environ.get("XYZUVW_FAST_MODEL_GRID_POINTS", "64"))
+XYZUVW_MODEL_GRID_POINTS = int(os.environ.get("XYZUVW_FAST_MODEL_GRID_POINTS", "48"))
 XYZUVW_MODEL_SIGMA_SCALE = float(os.environ.get("XYZUVW_FAST_MODEL_SIGMA_SCALE", "5"))
 XYZUVW_MODEL_CONTOURS = (
     ("99%", 0.99, 0.07),
@@ -483,6 +486,9 @@ XYZUVW_MODEL_CONTOURS = (
 )
 TRUEFLOW_AGE_DEFAULT_OID = int(os.environ.get("TRUEFLOW_AGE_DEFAULT_OID", "11266"))
 TRUEFLOW_AGE_CACHE_SCHEMA = "object-fallback-v1"
+TRUEFLOW_AGE_CACHE_SECONDS = int(os.environ.get("TRUEFLOW_AGE_CACHE_SECONDS", "3600"))
+MOCA_EXPLORER_REFERENCE_CACHE_SECONDS = int(os.environ.get("MOCA_EXPLORER_REFERENCE_CACHE_SECONDS", "3600"))
+MORANTA26_CATALOG_CACHE_SECONDS = int(os.environ.get("MORANTA26_CATALOG_CACHE_SECONDS", "3600"))
 MOCA_FLOWS_DEFAULT_AID = os.environ.get("MOCA_FLOWS_DEFAULT_AID", "ABDMG").strip().upper() or "ABDMG"
 MOCA_FLOWS_FEH_DEPENDENT_RESULT_KEYS = {
     "gaia_cmd",
@@ -3623,11 +3629,13 @@ def _load_spt_grid_from_db(
             standard_specid_key = ",".join(str(specid) for specid in sorted(standard_specid_set))
     cache_key = f"{_spt_db_cache_key(args)}|grid|source:{standards_source}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
     now = time.time()
-    cached = _SPT_GRID_CACHE.get(cache_key)
-    if cached and now - cached[0] < CACHE_SECONDS:
-        payload = copy.deepcopy(cached[1])
-        payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
-        return payload
+    cached = _page_payload_cache_get(
+        _SPT_GRID_CACHE,
+        "spectral-typing-grid",
+        cache_key,
+    )
+    if cached is not None:
+        return cached
 
     private_public_clause = ""
     if _is_private_db(args):
@@ -3762,7 +3770,13 @@ def _load_spt_grid_from_db(
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
-    _SPT_GRID_CACHE[cache_key] = (now, copy.deepcopy(payload))
+    _page_payload_cache_store(
+        _SPT_GRID_CACHE,
+        "spectral-typing-grid",
+        cache_key,
+        payload,
+        stored_at=now,
+    )
     return payload
 
 
@@ -13424,6 +13438,38 @@ def _xyzuvw_model_surfaces(models: list[dict[str, Any]], axes: list[str]) -> lis
     return surfaces
 
 
+def _xyzuvw_surface_cache_key(models: list[dict[str, Any]], axes: Sequence[str]) -> str:
+    model_digest = hashlib.sha256(
+        json.dumps(_json_clean(models), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"surfaces-v1|grid:{int(XYZUVW_MODEL_GRID_POINTS)}|axes:{''.join(axes)}|models:{model_digest}"
+
+
+def _xyzuvw_cached_model_surfaces(
+    models: list[dict[str, Any]],
+    axes: list[str],
+) -> tuple[list[dict[str, Any]], bool]:
+    cache_key = _xyzuvw_surface_cache_key(models, axes)
+    cached = _page_payload_cache_get(
+        _XYZUVW_SURFACE_CACHE,
+        "xyzuvw-surfaces",
+        cache_key,
+    )
+    if cached is not None:
+        return copy.deepcopy(list(cached.get("surfaces") or [])), True
+    surfaces = _xyzuvw_model_surfaces(models, axes)
+    _page_payload_cache_store(
+        _XYZUVW_SURFACE_CACHE,
+        "xyzuvw-surfaces",
+        cache_key,
+        {
+            "surfaces": surfaces,
+            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        },
+    )
+    return surfaces, False
+
+
 def _xyzuvw_payload_from_base(
     selection: dict[str, Any],
     base_payload: Mapping[str, Any],
@@ -13435,19 +13481,31 @@ def _xyzuvw_payload_from_base(
     models = copy.deepcopy(list(base_payload.get("models") or []))
     objects = copy.deepcopy(list(base_payload.get("objects") or []))
     surfaces_by_axes: dict[str, list[dict[str, Any]]] = {}
+    surface_cache_hits = 0
     if "models" in selection["checkboxes"]:
         if selection.get("dual"):
             surfaces_by_axes = {"xyz": [], "uvw": []}
             if models:
-                surfaces_by_axes = {
-                    "xyz": _xyzuvw_model_surfaces(models, ["x", "y", "z"]),
-                    "uvw": _xyzuvw_model_surfaces(models, ["u", "v", "w"]),
-                }
+                # The two meshes are independent NumPy/scikit-image workloads.
+                # Generate cold meshes concurrently, while retaining each mesh
+                # separately so single and dual views can reuse one another.
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {
+                        "xyz": executor.submit(_xyzuvw_cached_model_surfaces, models, ["x", "y", "z"]),
+                        "uvw": executor.submit(_xyzuvw_cached_model_surfaces, models, ["u", "v", "w"]),
+                    }
+                    for axis_key, future in futures.items():
+                        surfaces_by_axes[axis_key], cache_hit = future.result()
+                        surface_cache_hits += int(cache_hit)
             # The dual client reads the axis-keyed collections directly. Avoid
             # serializing the XYZ meshes a second time in modelSurfaces.
             model_surfaces = []
         else:
-            model_surfaces = _xyzuvw_model_surfaces(models, selection["axes"]) if models else []
+            if models:
+                model_surfaces, cache_hit = _xyzuvw_cached_model_surfaces(models, selection["axes"])
+                surface_cache_hits += int(cache_hit)
+            else:
+                model_surfaces = []
     else:
         model_surfaces = []
 
@@ -13473,6 +13531,7 @@ def _xyzuvw_payload_from_base(
         "model_surface_count": sum(len(rows) for rows in surfaces_by_axes.values()) if surfaces_by_axes else len(model_surfaces),
         "base_cache_hit": bool(base_cache.get("hit")),
         "base_shared_cache_hit": bool(base_cache.get("shared")),
+        "surface_cache_hits": surface_cache_hits,
         "surface_seconds": round(time.time() - surface_started, 3),
     })
     payload = {
@@ -14050,9 +14109,50 @@ def _moca_explorer_association_labels(conn) -> list[dict[str, Any]]:
     """))
 
 
+def _moca_explorer_reference_layers(
+    conn,
+    args: dict[str, Any],
+    view: str,
+) -> dict[str, Any]:
+    cache_key = f"{_spt_db_cache_key(args)}|moca-explorer-references-v1|{view}"
+    cached = _page_payload_cache_get(
+        _MOCA_EXPLORER_REFERENCE_CACHE,
+        "moca-explorer-references",
+        cache_key,
+        ttl_seconds=MOCA_EXPLORER_REFERENCE_CACHE_SECONDS,
+    )
+    if cached is not None:
+        return cached
+    sequence_tools = {
+        "cmd": {
+            "cmd": "moca_explorer_gaiadr3_mg_gr",
+            "cmdField": "moca_explorer_gaiadr3_mg_gr_fieldscatter",
+        },
+        "prot": {"prot": "moca_explorer_prot_br"},
+        "gaiaAct": {"gaiaAct": "moca_explorer_gaiadr3_act_br"},
+        "ewha": {"ewha": "moca_explorer_ewha_br"},
+        "ewli": {"ewli": "moca_explorer_ewli_br"},
+    }.get(view, {})
+    payload = {
+        "sequences": {
+            key: _moca_explorer_dataviz_sequences(conn, tool)
+            for key, tool in sequence_tools.items()
+        },
+        "labels": _moca_explorer_association_labels(conn) if view in {"xyz", "uvw", "projections"} else [],
+        "sptAxis": _moca_explorer_spt_axis(conn) if view == "cmd" else [],
+        "cache": {"hit": False, "ttl_seconds": MOCA_EXPLORER_REFERENCE_CACHE_SECONDS},
+    }
+    _page_payload_cache_store(
+        _MOCA_EXPLORER_REFERENCE_CACHE,
+        "moca-explorer-references",
+        cache_key,
+        payload,
+    )
+    return payload
+
+
 def _load_moca_explorer_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    selection = _moca_explorer_selection(args)
-    cache_key = f"{_spt_db_cache_key(args)}|moca-explorer-options-v2|{','.join(selection['aids'])}"
+    cache_key = f"{_spt_db_cache_key(args)}|moca-explorer-options-v3"
     now = time.time()
     cached = _page_payload_cache_get(
         _MOCA_EXPLORER_CACHE,
@@ -14072,12 +14172,6 @@ def _load_moca_explorer_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         mtids = _records(_read_sql(conn, """
             SELECT mt.moca_mtid, mt.name, mt.description
             FROM moca_membership_types mt
-            WHERE EXISTS (
-                SELECT 1
-                FROM mechanics_memberships_propagated mmp
-                WHERE mmp.moca_mtid = mt.moca_mtid
-                LIMIT 1
-            )
             ORDER BY mt.level DESC, mt.moca_mtid
         """))
 
@@ -14653,30 +14747,18 @@ def _load_moca_explorer_active_view_from_db(args: dict[str, Any]) -> dict[str, A
         else:
             models_df = pd.DataFrame()
 
-        sequence_tools = {
-            "cmd": {
-                "cmd": "moca_explorer_gaiadr3_mg_gr",
-                "cmdField": "moca_explorer_gaiadr3_mg_gr_fieldscatter",
-            },
-            "prot": {"prot": "moca_explorer_prot_br"},
-            "gaiaAct": {"gaiaAct": "moca_explorer_gaiadr3_act_br"},
-            "ewha": {"ewha": "moca_explorer_ewha_br"},
-            "ewli": {"ewli": "moca_explorer_ewli_br"},
-        }.get(view, {})
-        sequences = {
-            key: _moca_explorer_dataviz_sequences(conn, tool)
-            for key, tool in sequence_tools.items()
-        }
+        references = _moca_explorer_reference_layers(conn, args, view)
+        sequences = copy.deepcopy(references.get("sequences") or {})
         labels = (
             [
                 row
-                for row in _moca_explorer_association_labels(conn)
+                for row in (references.get("labels") or [])
                 if row.get("moca_aid") in selection["aids"]
             ]
             if spatial
             else []
         )
-        spt_axis = _moca_explorer_spt_axis(conn) if view == "cmd" else []
+        spt_axis = copy.deepcopy(references.get("sptAxis") or [])
         query_seconds = round(time.time() - started, 3)
 
     members_df = _moca_explorer_add_derived_columns(members_df)
@@ -16663,6 +16745,7 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         _TRUEFLOW_AGE_CACHE,
         "trueflow-age",
         cache_key,
+        ttl_seconds=TRUEFLOW_AGE_CACHE_SECONDS,
     )
     if cached is not None:
         return cached
@@ -16707,7 +16790,7 @@ def _load_tfage_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "association_count": len(associations),
         },
-        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "cache": {"hit": False, "ttl_seconds": TRUEFLOW_AGE_CACHE_SECONDS},
     }
     _page_payload_cache_store(
         _TRUEFLOW_AGE_CACHE,
@@ -16727,6 +16810,7 @@ def _load_mflows_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
         _TRUEFLOW_AGE_CACHE,
         "trueflow-age",
         cache_key,
+        ttl_seconds=TRUEFLOW_AGE_CACHE_SECONDS,
     )
     if cached is not None:
         return cached
@@ -16766,7 +16850,7 @@ def _load_mflows_options_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "option_scope": "mocaflows_blob_associations",
             "timings": {"options_total": round(time.time() - started, 3)},
         },
-        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "cache": {"hit": False, "ttl_seconds": TRUEFLOW_AGE_CACHE_SECONDS},
     }
     _page_payload_cache_store(
         _TRUEFLOW_AGE_CACHE,
@@ -16845,6 +16929,7 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         _TRUEFLOW_AGE_CACHE,
         "trueflow-age",
         cache_key,
+        ttl_seconds=TRUEFLOW_AGE_CACHE_SECONDS,
     )
     if cached is not None:
         return cached
@@ -16865,7 +16950,7 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 "curve_role": curve_role,
                 "load_posteriors": load_posteriors,
             },
-            "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+            "cache": {"hit": False, "ttl_seconds": TRUEFLOW_AGE_CACHE_SECONDS},
         }
 
     started = time.time()
@@ -16930,7 +17015,7 @@ def _load_tfage_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
             },
             "timings": {"load_total": round(time.time() - started, 3)},
         },
-        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "cache": {"hit": False, "ttl_seconds": TRUEFLOW_AGE_CACHE_SECONDS},
     }
     _page_payload_cache_store(
         _TRUEFLOW_AGE_CACHE,
@@ -26409,12 +26494,13 @@ def _moranta26_normalize_catalog_df(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    cache_key = _moranta26_cache_key(args, "catalog", "compact-v2")
+    cache_key = _moranta26_cache_key(args, "catalog", "compact-v3")
     now = time.time()
     cached = _page_payload_cache_get(
         _MORANTA26_ROTATION_CACHE,
         "moranta26-rotation",
         cache_key,
+        ttl_seconds=MORANTA26_CATALOG_CACHE_SECONDS,
     )
     if cached is not None:
         return cached
@@ -26435,10 +26521,13 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 rp.prot_index AS m,
                 rp.ignored,
                 rp.comments,
-                g.source_id
+                (
+                    SELECT g.source_id
+                    FROM {schema}.cat_gaiadr3 AS g
+                    WHERE g.moca_oid = rp.moca_oid
+                    LIMIT 1
+                ) AS source_id
             FROM {schema}.data_rotation_periods AS rp
-            LEFT JOIN {schema}.cat_gaiadr3 AS g
-                ON g.moca_oid = rp.moca_oid
             WHERE rp.moca_pid = :moca_pid
                 {visibility_filter}
             ORDER BY rp.moca_oid, rp.prot_index, rp.id
@@ -26484,7 +26573,7 @@ def _load_moranta26_catalog_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "include_ignored": True,
             "ignored_filter_note": "Mora26 dataviz intentionally includes data_rotation_periods rows with ignored=1 so all source m values can be explored.",
         },
-        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "cache": {"hit": False, "ttl_seconds": MORANTA26_CATALOG_CACHE_SECONDS},
     }
     _page_payload_cache_store(
         _MORANTA26_ROTATION_CACHE,
@@ -30240,7 +30329,10 @@ def spectral_typing_clear_cache():
     _SPT_SPECTRUM_CACHE.clear()
     _SPT_COMPARE_CACHE.clear()
     _SPT_STANDARD_PROCESS_CACHE.clear()
-    shared_count = _shared_page_cache_clear("spectral-typing-compare")
+    shared_count = (
+        _shared_page_cache_clear("spectral-typing-grid")
+        + _shared_page_cache_clear("spectral-typing-compare")
+    )
     return jsonify({
         "ok": True,
         "cleared": {
@@ -30892,11 +30984,20 @@ def moca_explorer_data():
 @app.post("/js/api/moca_explorer/cache/clear")
 def moca_explorer_clear_cache():
     moca_explorer_count = len(_MOCA_EXPLORER_CACHE)
+    reference_count = len(_MOCA_EXPLORER_REFERENCE_CACHE)
     _MOCA_EXPLORER_CACHE.clear()
-    shared_count = _shared_page_cache_clear("moca-explorer")
+    _MOCA_EXPLORER_REFERENCE_CACHE.clear()
+    shared_count = (
+        _shared_page_cache_clear("moca-explorer")
+        + _shared_page_cache_clear("moca-explorer-references")
+    )
     return jsonify({
         "ok": True,
-        "cleared": {"mocaExplorer": moca_explorer_count, "mocaExplorerShared": shared_count},
+        "cleared": {
+            "mocaExplorer": moca_explorer_count,
+            "mocaExplorerReferences": reference_count,
+            "mocaExplorerShared": shared_count,
+        },
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
     })
 
@@ -31560,14 +31661,21 @@ def xyzuvw_data():
 def xyzuvw_clear_cache():
     xyzuvw_count = len(_XYZUVW_CACHE)
     xyzuvw_base_count = len(_XYZUVW_BASE_CACHE)
+    xyzuvw_surface_count = len(_XYZUVW_SURFACE_CACHE)
     _XYZUVW_CACHE.clear()
     _XYZUVW_BASE_CACHE.clear()
-    shared_count = _shared_page_cache_clear("xyzuvw-view") + _shared_page_cache_clear("xyzuvw-base")
+    _XYZUVW_SURFACE_CACHE.clear()
+    shared_count = (
+        _shared_page_cache_clear("xyzuvw-view")
+        + _shared_page_cache_clear("xyzuvw-base")
+        + _shared_page_cache_clear("xyzuvw-surfaces")
+    )
     return jsonify({
         "ok": True,
         "cleared": {
             "xyzuvw": xyzuvw_count,
             "xyzuvwBase": xyzuvw_base_count,
+            "xyzuvwSurfaces": xyzuvw_surface_count,
             "xyzuvwShared": shared_count,
         },
         "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
@@ -32360,10 +32468,12 @@ def clear_cache():
     sed_template_count = len(_SED_TEMPLATE_CACHE)
     xyzuvw_count = len(_XYZUVW_CACHE)
     xyzuvw_base_count = len(_XYZUVW_BASE_CACHE)
+    xyzuvw_surface_count = len(_XYZUVW_SURFACE_CACHE)
     trueflow_age_count = len(_TRUEFLOW_AGE_CACHE)
     gaia_cmd_count = len(_GAIA_CMD_CACHE)
     gaia_cmd_shared_count = _gaia_cmd_shared_cache_clear()
     moca_explorer_count = len(_MOCA_EXPLORER_CACHE)
+    moca_explorer_reference_count = len(_MOCA_EXPLORER_REFERENCE_CACHE)
     group_hierarchy_count = len(_GROUP_HIERARCHY_CACHE)
     legacy_rv_count = len(_LEGACY_RV_CACHE)
     moranta26_rotation_count = len(_MORANTA26_ROTATION_CACHE)
@@ -32387,9 +32497,11 @@ def clear_cache():
     _SED_TEMPLATE_CACHE.clear()
     _XYZUVW_CACHE.clear()
     _XYZUVW_BASE_CACHE.clear()
+    _XYZUVW_SURFACE_CACHE.clear()
     _TRUEFLOW_AGE_CACHE.clear()
     _GAIA_CMD_CACHE.clear()
     _MOCA_EXPLORER_CACHE.clear()
+    _MOCA_EXPLORER_REFERENCE_CACHE.clear()
     _GROUP_HIERARCHY_CACHE.clear()
     _LEGACY_RV_CACHE.clear()
     _MORANTA26_ROTATION_CACHE.clear()
@@ -32415,10 +32527,12 @@ def clear_cache():
             "sedTemplates": sed_template_count,
             "xyzuvw": xyzuvw_count,
             "xyzuvwBase": xyzuvw_base_count,
+            "xyzuvwSurfaces": xyzuvw_surface_count,
             "trueflowAgePdfs": trueflow_age_count,
             "gaiaCmd": gaia_cmd_count,
             "gaiaCmdShared": gaia_cmd_shared_count,
             "mocaExplorer": moca_explorer_count,
+            "mocaExplorerReferences": moca_explorer_reference_count,
             **bd_evolution_counts,
             "groupHierarchy": group_hierarchy_count,
             "legacyRadialVelocities": legacy_rv_count,

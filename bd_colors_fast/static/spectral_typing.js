@@ -155,13 +155,16 @@ function defaultBinsForCurrentNormPreset() {
 async function initSpectralTyping() {
   collectSpectralElements();
   readSpectralUrlState();
-  await loadSpectralAuthContext();
+  const authPromise = loadSpectralAuthContext();
   bindSpectralControls();
+  const gridPromise = loadSpectralGrid();
+  await Promise.all([authPromise, gridPromise]);
   updateSpectralManagementVisibility();
-  await loadSpectralGrid();
   if (sptState.selectedSpecid !== null) {
-    await searchSpectra("", { selectedSpecid: sptState.selectedSpecid, quiet: true });
-    await computeSpectralComparison();
+    await Promise.all([
+      searchSpectra("", { selectedSpecid: sptState.selectedSpecid, quiet: true }),
+      computeSpectralComparison(),
+    ]);
   } else {
     renderEmptySpectralPlots("Select a comparison spectrum");
   }

@@ -150,8 +150,9 @@ async function initXyzuvwThree() {
     return;
   }
   renderOidChips();
-  await loadXyzuvwOptions();
+  const optionsPromise = loadXyzuvwOptions();
   await loadXyzuvwData();
+  await optionsPromise;
 }
 
 function collectXyzuvwElements() {

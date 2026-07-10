@@ -310,6 +310,54 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertEqual(payload["modelSurfacesByAxes"]["xyz"], [])
         self.assertEqual(payload["modelSurfacesByAxes"]["uvw"], [])
 
+    def test_xyzuvw_single_and_dual_views_reuse_axis_meshes(self):
+        base = {
+            "members": [],
+            "models": [{"moca_aid": "ABDMG", "coeff_index": 0}],
+            "objects": [],
+            "meta": {"member_count": 0, "model_count": 1, "object_count": 0},
+            "cache": {"hit": False, "ttl_seconds": 900},
+        }
+        single = _parse_xyzuvw_selection({"axes": "xyz", "checkbox": "models"})
+        dual = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
+        app_module._XYZUVW_SURFACE_CACHE.clear()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(app_module, "SHARED_PAGE_CACHE_DIR", Path(directory)),
+                patch.object(
+                    app_module,
+                    "_xyzuvw_model_surfaces",
+                    side_effect=lambda _models, axes: [{"axes": "".join(axes)}],
+                ) as generator,
+            ):
+                _xyzuvw_payload_from_base(single, base, "single-surface-test", 1.0)
+                payload = _xyzuvw_payload_from_base(dual, base, "dual-surface-test", 1.0)
+        app_module._XYZUVW_CACHE.clear()
+        app_module._XYZUVW_SURFACE_CACHE.clear()
+        self.assertEqual(generator.call_count, 2)
+        self.assertEqual(payload["meta"]["surface_cache_hits"], 1)
+        self.assertEqual(payload["modelSurfacesByAxes"]["xyz"], [{"axes": "xyz"}])
+        self.assertEqual(payload["modelSurfacesByAxes"]["uvw"], [{"axes": "uvw"}])
+
+    def test_xyz_and_spectral_startup_requests_are_parallelized(self):
+        xyz_source = (app_module.STATIC_DIR / "xyzuvw_three.js").read_text(encoding="utf-8")
+        xyz_init = xyz_source.split("async function initXyzuvwThree()", 1)[1].split(
+            "function collectXyzuvwElements",
+            1,
+        )[0]
+        self.assertIn("const optionsPromise = loadXyzuvwOptions()", xyz_init)
+        self.assertIn("await loadXyzuvwData()", xyz_init)
+        self.assertIn("await optionsPromise", xyz_init)
+
+        spectral_source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        spectral_init = spectral_source.split("async function initSpectralTyping()", 1)[1].split(
+            "function collectSpectralElements",
+            1,
+        )[0]
+        self.assertIn("Promise.all([authPromise, gridPromise])", spectral_init)
+        self.assertIn("searchSpectra(\"\", { selectedSpecid", spectral_init)
+        self.assertIn("computeSpectralComparison()", spectral_init)
+
     def test_xyz_association_removal_carves_loaded_payload_without_refetch(self):
         for filename in ("xyzuvw.js", "xyzuvw_three.js"):
             source = (app_module.STATIC_DIR / filename).read_text(encoding="utf-8")
