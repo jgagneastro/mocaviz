@@ -107,6 +107,26 @@ let xuvAnimationFrame = null;
 const xuvAppBaseUrl = new URL("../", import.meta.url).toString();
 
 document.addEventListener("DOMContentLoaded", initXyzuvwThree);
+document.addEventListener("scatter-symbol-size-change", applyXyzuvwThreeSymbolScale);
+
+function xyzuvwSymbolScale() {
+  return window.ScatterSymbolSize?.getScale?.() || 1;
+}
+
+function applyXyzuvwThreeSymbolScale() {
+  const scale = xyzuvwSymbolScale();
+  forEachThreePanel(() => {
+    if (xuvState.three.renderer?.domElement) {
+      xuvState.three.renderer.domElement.dataset.scatterSymbolSize = String(xuvMemberPointSize * scale);
+    }
+    xuvState.three.dataGroup?.traverse((child) => {
+      if (child.userData?.kind === "highlight") child.scale.setScalar(scale);
+    });
+    xuvState.three.selectedGroup?.traverse((child) => {
+      if (child.userData?.kind === "selection-symbol") child.scale.setScalar(scale);
+    });
+  });
+}
 
 function xuvAppUrl(path) {
   const normalized = String(path || "").replace(/^\/+/, "");
@@ -768,7 +788,10 @@ function disposeThreeObject(object) {
     if (child.geometry) child.geometry.dispose();
     if (child.material) {
       const materials = Array.isArray(child.material) ? child.material : [child.material];
-      materials.forEach((material) => material.dispose());
+      materials.forEach((material) => {
+        window.ScatterSymbolSize?.unregisterThreeMaterial?.(material);
+        material.dispose();
+      });
     }
   });
 }
@@ -805,6 +828,10 @@ function addMemberObjects(rows, colormap) {
       opacity: xuvDataPointOpacity,
       depthWrite: false,
     });
+    window.ScatterSymbolSize?.registerThreeMaterial?.(material, xuvMemberPointSize);
+    if (xuvState.three.renderer?.domElement) {
+      xuvState.three.renderer.domElement.dataset.scatterSymbolSize = String(material.size);
+    }
     const points = new THREE.Points(geometry, material);
     points.userData = { aid, kind: "members", rows: aidRows };
     xuvState.three.dataGroup.add(points);
@@ -832,6 +859,7 @@ function highlightObjectMarker(row, showAxes = false) {
   marker.position.set(row.plot0, row.plot1, row.plot2);
   marker.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight", row };
   marker.renderOrder = 900;
+  marker.scale.setScalar(xyzuvwSymbolScale());
 
   const color = showAxes ? "#000000" : xuvHighlightMarkerColor;
   const baseRadius = Math.max(xuvOverlayPointRadius * 1.35, xuvState.selectionMarkerRadius * 0.75);
@@ -1230,6 +1258,8 @@ function renderSelectedMarker() {
     ring.rotation.set(rotation[0], rotation[1], rotation[2]);
     ring.position.set(row.plot0, row.plot1, row.plot2);
     ring.renderOrder = 1000;
+    ring.userData = { kind: "selection-symbol" };
+    ring.scale.setScalar(xyzuvwSymbolScale());
     selectedGroup.add(ring);
   });
 }
@@ -1937,15 +1967,61 @@ function renderAssociationList() {
     button.addEventListener("click", () => {
       const aid = button.dataset.aid;
       xuvState.selectedAids = xuvState.selectedAids.filter((value) => value !== aid);
-      xuvState.hiddenAids.delete(aid);
+      carveAssociationFromLoadedXyzuvwData(aid);
       renderAssociationList();
-      if (xuvState.selectedAids.length) loadXyzuvwData();
-      else {
+      if (xuvState.selectedAids.length) {
+        renderXyzuvwThree(false);
+        updateXyzuvwUrl();
+      } else {
         renderEmptyXyzuvw("Select at least one association");
         updateXyzuvwUrl();
       }
     });
   });
+}
+
+function carveAssociationFromLoadedXyzuvwData(aid) {
+  const removedAid = String(aid || "");
+  if (!removedAid) return;
+  const payloads = new Set([
+    xuvState.payload,
+    ...Object.values(xuvState.panelPayloads || {}),
+  ].filter(Boolean));
+  payloads.forEach((payload) => carveAssociationFromXyzuvwPayload(payload, removedAid));
+  xuvState.selectedRows = xuvState.selectedRows.filter(
+    (row) => String(row?.moca_aid || "") !== removedAid,
+  );
+  xuvState.hiddenAids.delete(removedAid);
+}
+
+function carveAssociationFromXyzuvwPayload(payload, removedAid) {
+  const keepRow = (row) => String(row?.moca_aid || "") !== removedAid;
+  for (const key of ["members", "models", "labels", "modelSurfaces", "model_surfaces"]) {
+    if (Array.isArray(payload[key])) payload[key] = payload[key].filter(keepRow);
+  }
+  if (payload.modelSurfacesByAxes && typeof payload.modelSurfacesByAxes === "object") {
+    payload.modelSurfacesByAxes = Object.fromEntries(
+      Object.entries(payload.modelSurfacesByAxes).map(([axes, rows]) => [
+        axes,
+        Array.isArray(rows) ? rows.filter(keepRow) : rows,
+      ]),
+    );
+  }
+  if (payload.selection) {
+    payload.selection = { ...payload.selection, aids: [...xuvState.selectedAids] };
+  }
+  const surfaceCount = payload.modelSurfacesByAxes && Object.keys(payload.modelSurfacesByAxes).length
+    ? Object.values(payload.modelSurfacesByAxes).reduce(
+      (count, rows) => count + (Array.isArray(rows) ? rows.length : 0),
+      0,
+    )
+    : (payload.modelSurfaces || payload.model_surfaces || []).length;
+  payload.meta = {
+    ...(payload.meta || {}),
+    member_count: (payload.members || []).length,
+    model_count: (payload.models || []).length,
+    model_surface_count: surfaceCount,
+  };
 }
 
 async function searchXyzuvwAssociations(query) {

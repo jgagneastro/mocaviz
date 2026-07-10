@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RVBAM Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <link rel="stylesheet" href="static/styles.css?v=rvbam-posterior-controls-20260710a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
+  <script src="static/scatter_symbol_size.js?v=20260710b"></script>
 </head>
 <body class="rvbam-page">
   <div class="app-shell">
@@ -86,6 +87,10 @@
 
         <section class="control-section options-section">
           <h2>Display</h2>
+          <label class="range-label scatter-symbol-size-control">
+            <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
+            <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
+          </label>
           <label>
             Scatter y-axis
             <select id="rvb-scatter-y">
@@ -181,22 +186,6 @@
           </label>
         </section>
 
-        <section class="control-section filters-section">
-          <h2>Posterior</h2>
-          <label>
-            X parameter
-            <select id="rvb-param-x"></select>
-          </label>
-          <label>
-            Y parameter
-            <select id="rvb-param-y"></select>
-          </label>
-          <label>
-            Max samples
-            <input id="rvb-max-points" type="number" value="1800" min="100" max="8000" step="100">
-          </label>
-          <button id="rvb-load-posterior" type="button" disabled>Load Posterior</button>
-        </section>
       </aside>
 
       <section class="visual-area rvb-visual-area">
@@ -274,6 +263,21 @@
             </div>
 
             <div id="rvb-tab-posterior" class="rvb-tab-panel rvb-posterior-panel is-active">
+              <div class="rvb-tab-actions rvb-posterior-controls">
+                <label>
+                  X parameter
+                  <select id="rvb-param-x"></select>
+                </label>
+                <label>
+                  Y parameter
+                  <select id="rvb-param-y"></select>
+                </label>
+                <label>
+                  Max samples
+                  <input id="rvb-max-points" type="number" value="1800" min="100" max="8000" step="100">
+                </label>
+                <button id="rvb-load-posterior" type="button" disabled>Load Posterior</button>
+              </div>
               <div id="rvb-posterior-plot"></div>
               <div id="rvb-correlation-plot"></div>
             </div>

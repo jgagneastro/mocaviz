@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Gaia CMD</title>
-  <link rel="stylesheet" href="static/styles.css?v=gaia-cmd-vetted-mtid-filters-20260627b">
+  <link rel="stylesheet" href="static/styles.css?v=gaia-field-loader-20260710a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
+  <script src="static/scatter_symbol_size.js?v=20260710b"></script>
 </head>
 <body class="gaia-cmd-page">
   <div class="app-shell">
@@ -101,6 +102,10 @@
 
         <section class="control-section options-section">
           <h2>Options</h2>
+          <label class="range-label scatter-symbol-size-control">
+            <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
+            <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
+          </label>
           <label class="checkline">
             <input id="gcmd-color-age" type="checkbox">
             <span>Color by age</span>
@@ -140,8 +145,11 @@
       <section id="gcmd-visual-area" class="visual-area gaia-cmd-visual-area">
         <div class="plot-frame gaia-cmd-plot-frame">
           <div id="gcmd-plot"></div>
-          <div id="gcmd-plot-loader" class="plot-loader is-visible" aria-label="Loading Gaia CMD">
-            <div class="plot-loader-ring"></div>
+          <div id="gcmd-plot-loader" class="plot-loader gcmd-field-loader is-visible" aria-label="Loading field data set and reference sequences">
+            <div class="plot-loader-content">
+              <div class="plot-loader-label">Loading field data set and reference sequences</div>
+              <div class="plot-loader-ring"></div>
+            </div>
           </div>
         </div>
         <div class="gaia-cmd-toolbar">
@@ -240,6 +248,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=shared-cache-20260709a"></script>
+  <script src="static/gaia_cmd.js?v=gaia-field-loader-20260710a"></script>
 </body>
 </html>

@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Spectral Typing</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <link rel="stylesheet" href="static/styles.css?v=spectral-loader-labels-20260710a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
+  <script src="static/scatter_symbol_size.js?v=20260710b"></script>
 </head>
 <body class="spectral-typing-page">
   <div class="app-shell">
@@ -64,6 +65,14 @@
               <span aria-hidden="true">&darr;</span>
             </button>
           </div>
+        </section>
+
+        <section class="control-section options-section">
+          <h2>Display</h2>
+          <label class="range-label scatter-symbol-size-control">
+            <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
+            <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
+          </label>
         </section>
 
         <section class="control-section options-section">
@@ -132,8 +141,11 @@
       <section id="spt-visual-area" class="visual-area spectral-visual-area">
         <div class="plot-frame spectral-plot-frame">
           <div id="spt-plot"></div>
-          <div id="spt-plot-loader" class="plot-loader is-visible" aria-label="Loading spectral typing data">
-            <div class="plot-loader-ring"></div>
+          <div id="spt-plot-loader" class="plot-loader is-visible" aria-label="Loading best-fit comparison">
+            <div class="plot-loader-content">
+              <div class="plot-loader-label">Loading best-fit comparison</div>
+              <div class="plot-loader-ring"></div>
+            </div>
           </div>
         </div>
         <div class="spectral-toolbar">
@@ -156,8 +168,11 @@
         </div>
         <div class="plot-frame spectral-chi2-frame">
           <div id="spt-chi2-plot"></div>
-          <div id="spt-chi2-loader" class="plot-loader" aria-label="Loading spectral typing chi-square data">
-            <div class="plot-loader-ring"></div>
+          <div id="spt-chi2-loader" class="plot-loader" aria-label="Loading chi-squared map">
+            <div class="plot-loader-content">
+              <div class="plot-loader-label">Loading χ² map</div>
+              <div class="plot-loader-ring"></div>
+            </div>
           </div>
         </div>
         <div id="spt-correction-info" class="spectral-correction-info" hidden></div>

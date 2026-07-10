@@ -20207,6 +20207,10 @@ RVBAM_DEFAULT_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_MAX_SAMPLES", "18
 RVBAM_HARD_MAX_SAMPLES = int(os.environ.get("RVBAM_EXPLORER_HARD_MAX_SAMPLES", "8000"))
 RVBAM_ARRAY_CACHE_SECONDS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_SECONDS", "900"))
 RVBAM_ARRAY_CACHE_MAX_ITEMS = int(os.environ.get("RVBAM_EXPLORER_ARRAY_CACHE_ITEMS", "8"))
+RVBAM_PRIVATE_DEFAULT_RUN_ID = 77
+RVBAM_PRIVATE_DEFAULT_SPECID = 50949
+RVBAM_PRIVATE_DEFAULT_MODEL_FILE = "models_sonora_diamondback.h5"
+RVBAM_PRIVATE_DEFAULT_PIPELINE = "rvbam_2026_02_g395h"
 RVBAM_VENDOR_PACKAGE_DIR = BASE_DIR / "vendor"
 RVBAM_SOURCE_PACKAGE_DIR = Path("/Users/jonathan/Documents/Python/Python_Packages/rvbam")
 RVBAM_DEFAULT_PACKAGE_DIR = RVBAM_VENDOR_PACKAGE_DIR if (RVBAM_VENDOR_PACKAGE_DIR / "rvbam").is_dir() else RVBAM_SOURCE_PACKAGE_DIR
@@ -22870,11 +22874,49 @@ def _rvbam_apply_run_post_filters_from_db(
     return rows, skipped_count_filters
 
 
+def _rvbam_selected_run_id(args: dict[str, Any], rows: list[dict[str, Any]]) -> int | None:
+    run_ids: list[int] = []
+    rows_by_id: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            run_id = int(row.get("moca_rv_sample_run_id"))
+        except (TypeError, ValueError):
+            continue
+        run_ids.append(run_id)
+        rows_by_id[run_id] = row
+
+    if not run_ids:
+        return None
+
+    requested = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
+    if requested in rows_by_id:
+        return requested
+
+    if _is_private_db(args):
+        if RVBAM_PRIVATE_DEFAULT_RUN_ID in rows_by_id:
+            return RVBAM_PRIVATE_DEFAULT_RUN_ID
+        for run_id in run_ids:
+            row = rows_by_id[run_id]
+            try:
+                specid = int(row.get("moca_specid"))
+            except (TypeError, ValueError):
+                specid = None
+            template_name = Path(str(row.get("template_name") or "")).name
+            if (
+                specid == RVBAM_PRIVATE_DEFAULT_SPECID
+                and template_name == RVBAM_PRIVATE_DEFAULT_MODEL_FILE
+                and str(row.get("pipeline_version") or "").strip() == RVBAM_PRIVATE_DEFAULT_PIPELINE
+            ):
+                return run_id
+
+    return run_ids[0]
+
+
 def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
     limit = _rvbam_limit_arg(args, "limit", 250, 2000)
     cache_key = _rvbam_cache_key(
         args,
-        "runs-model-options-v4-raw-rv-fallback",
+        "runs-model-options-v5-private-default",
         args.get("q") or args.get("search") or "",
         args.get("moca_oid") or args.get("oid") or "",
         args.get("moca_specid") or args.get("specid") or "",
@@ -22905,6 +22947,7 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
     cached = _RVBAM_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
         payload = copy.deepcopy(cached[1])
+        payload["value"] = _rvbam_selected_run_id(args, payload.get("runs") or [])
         payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
         return payload
 
@@ -23002,14 +23045,11 @@ def _load_rvbam_runs_from_db(args: dict[str, Any]) -> dict[str, Any]:
         """, params))
         rows, skipped_count_filters = _rvbam_apply_run_post_filters_from_db(conn, rows, args)
 
-    selected = _rvbam_int_arg(args, "run_id", "moca_rv_sample_run_id")
-    if selected is not None and not any(row.get("moca_rv_sample_run_id") == selected for row in rows):
-        selected = None
     payload = {
         "runs": rows,
         "instrumentOptions": instrument_options,
         "modelOptions": model_options,
-        "value": selected or (rows[0]["moca_rv_sample_run_id"] if rows else None),
+        "value": _rvbam_selected_run_id(args, rows),
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "run_count": len(rows),
@@ -27365,7 +27405,7 @@ def _run_banyan_sigma(payload: Mapping[str, Any]) -> dict[str, Any]:
     lnp = _banyan_sigma_lnp_only(call_kwargs)
     lnp_seconds = round(time.time() - started, 3)
     if lnp.ndim != 2 or lnp.shape[0] < 1 or lnp.shape[1] != len(hypotheses):
-        raise RuntimeError("BANYAN Sigma returned an unexpected log-probability shape")
+        raise RuntimeError("BANYAN Σ returned an unexpected log-probability shape")
 
     probabilities = np.exp(lnp[0])
     probabilities = np.where(np.isfinite(probabilities), probabilities, 0.0)

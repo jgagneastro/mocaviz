@@ -8,6 +8,7 @@
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
+  <script src="static/scatter_symbol_size.js?v=20260710b"></script>
 </head>
 <body class="moca-explorer-page">
   <div class="app-shell">
@@ -56,6 +57,10 @@
 
         <section class="control-section axes-section">
           <h2>Plot Layers</h2>
+          <label class="range-label scatter-symbol-size-control">
+            <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
+            <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
+          </label>
           <label class="checkline">
             <input id="mex-hover" type="checkbox">
             <span>Hover labels</span>
@@ -102,7 +107,7 @@
           <h2>Load</h2>
           <label>
             Max member rows
-            <input id="mex-max-objects" type="number" min="1" step="1000" value="80000">
+            <input id="mex-max-objects" type="text" inputmode="numeric" pattern="[0-9,]*" value="80,000" autocomplete="off">
           </label>
           <button id="mex-load" type="button">Load MOCA Explorer</button>
         </section>
@@ -175,6 +180,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/moca_explorer.js?v=shared-cache-20260709a"></script>
+  <script src="static/moca_explorer.js?v=association-carve-20260710a"></script>
 </body>
 </html>

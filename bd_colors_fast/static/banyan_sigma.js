@@ -51,7 +51,7 @@ function collectBanyanSigmaElements() {
     "bsig-use-manual-range", "bsig-range-min", "bsig-range-max", "bsig-unit-priors",
     "bsig-no-xyz", "bsig-run", "bsig-ya-prob", "bsig-best-hyp",
     "bsig-best-ya", "bsig-field-prob", "bsig-model-count",
-    "bsig-prob-plot", "bsig-plot-loader", "bsig-summary",
+    "bsig-prob-plot", "bsig-empty-state", "bsig-plot-loader", "bsig-summary",
     "bsig-subtitle", "bsig-export-csv", "bsig-export-tsv",
     "bsig-clear-cache", "bsig-result-subtitle", "bsig-results-table",
     "bsig-stored-subtitle", "bsig-stored-table", "bsig-input-subtitle",
@@ -198,13 +198,13 @@ function clearBanyanSigmaObject() {
 
 async function runBanyanSigma() {
   const payload = buildBanyanSigmaPayload();
-  setBanyanSigmaStatus("Running BANYAN Sigma", "loading");
+  setBanyanSigmaStatus("Running BANYAN Σ", "loading");
   setBanyanSigmaLoader(true);
   bsigEl["bsig-run"].disabled = true;
   try {
     const params = connectionParams();
     const response = await postJson(bsigAppUrl(`api/banyan-sigma/run?${params.toString()}`), payload);
-    if (!response.ok) throw new Error(response.error || "BANYAN Sigma run failed");
+    if (!response.ok) throw new Error(response.error || "BANYAN Σ run failed");
     bsigState.result = response.result || null;
     if (response.stored) {
       bsigState.stored = response.stored;
@@ -294,6 +294,7 @@ function renderBanyanSigmaResult(result, cache) {
 }
 
 function renderBanyanSigmaPlot(rows) {
+  bsigEl["bsig-empty-state"].hidden = Boolean(rows.length);
   if (!rows.length) {
     Plotly.purge(bsigEl["bsig-prob-plot"]);
     return;

@@ -8,6 +8,7 @@
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
+  <script src="static/scatter_symbol_size.js?v=20260710b"></script>
 </head>
 <body class="xyzuvw-page xyz2-page">
   <div class="app-shell">
@@ -62,6 +63,10 @@
 
         <section class="control-section options-section">
           <h2>Display</h2>
+          <label class="range-label scatter-symbol-size-control">
+            <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
+            <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
+          </label>
           <label>
             BANYAN model version
             <select id="xuv-bsmdid"></select>
@@ -193,6 +198,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/xyzuvw.js?v=shared-cache-20260709a"></script>
+  <script src="static/xyzuvw.js?v=association-carve-20260710a"></script>
 </body>
 </html>

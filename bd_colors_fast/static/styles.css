@@ -751,6 +751,20 @@ body.is-mocadb-team textarea:focus {
   visibility: visible;
 }
 
+.plot-loader-content {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+}
+
+.plot-loader-label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-align: center;
+}
+
 .plot-loader-ring {
   width: 58px;
   height: 58px;
@@ -760,6 +774,15 @@ body.is-mocadb-team textarea:focus {
   background: rgba(255, 255, 255, .55);
   box-shadow: 0 0 0 8px rgba(255, 255, 255, .7);
   animation: status-spin .75s linear infinite;
+}
+
+.gcmd-field-loader .plot-loader-label {
+  color: #77717b;
+}
+
+.gcmd-field-loader .plot-loader-ring {
+  border-color: rgba(119, 113, 123, .25);
+  border-top-color: #77717b;
 }
 
 .table-toolbar {
@@ -3407,7 +3430,7 @@ body.is-management #spe-plot .modebar {
 
 .rvb-posterior-panel {
   height: 100%;
-  grid-template-rows: minmax(260px, 1fr) minmax(220px, .76fr);
+  grid-template-rows: auto minmax(260px, 1fr) minmax(220px, .76fr);
   gap: 1px;
   background: var(--line);
 }
@@ -3453,6 +3476,27 @@ body.is-management #spe-plot .modebar {
 
 .rvb-tab-actions button {
   height: 30px;
+}
+
+.rvb-posterior-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  align-items: end;
+}
+
+.rvb-posterior-controls label {
+  min-width: 0;
+  margin: 0;
+}
+
+.rvb-posterior-controls select,
+.rvb-posterior-controls input[type="number"] {
+  background: #f7f6f8;
+}
+
+.rvb-posterior-controls button {
+  width: 100%;
+  height: 34px;
 }
 
 #rvb-posterior-plot,
@@ -4214,6 +4258,25 @@ body.is-management #spe-plot .modebar {
 .banyan-sigma-plot-frame {
   height: 100%;
   min-height: 360px;
+}
+
+.bsig-empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  color: #77717b;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-align: center;
+  pointer-events: none;
+}
+
+.bsig-empty-state[hidden] {
+  display: none;
 }
 
 #bsig-prob-plot {

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BANYAN Sigma</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <title>BANYAN Σ</title>
+  <link rel="stylesheet" href="static/styles.css?v=banyan-sigma-empty-20260710b">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -12,8 +12,8 @@
 <body class="banyan-sigma-page">
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand">BANYAN Sigma</div>
-      <div id="bsig-status" class="status loading">Loading BANYAN Sigma</div>
+      <div class="brand">BANYAN Σ</div>
+      <div id="bsig-status" class="status loading">Loading BANYAN Σ</div>
     </header>
 
     <main class="workspace banyan-sigma-workspace">
@@ -33,7 +33,7 @@
             <button id="bsig-load-object" type="button">Load</button>
             <button id="bsig-clear-object" type="button">Clear</button>
           </div>
-          <button id="bsig-run" type="button" class="bsig-primary-action">Run BANYAN Sigma</button>
+          <button id="bsig-run" type="button" class="bsig-primary-action">Run BANYAN Σ</button>
           <div id="bsig-loaded-object" class="plot-hint">No object loaded</div>
         </section>
 
@@ -193,7 +193,8 @@
 
         <div class="plot-frame banyan-sigma-plot-frame">
           <div id="bsig-prob-plot"></div>
-          <div id="bsig-plot-loader" class="plot-loader is-visible" aria-label="Loading BANYAN Sigma">
+          <div id="bsig-empty-state" class="bsig-empty-state">Click "Load" to populate astrometry data, then "Run BANYAN Σ" to compute membership probabilities</div>
+          <div id="bsig-plot-loader" class="plot-loader is-visible" aria-label="Loading BANYAN Σ">
             <div class="plot-loader-ring"></div>
           </div>
         </div>
@@ -210,22 +211,22 @@
           </div>
         </div>
 
-        <section class="bsig-info-box" aria-label="BANYAN Sigma information">
+        <section class="bsig-info-box" aria-label="BANYAN Σ information">
           <p>
             Please see <a href="https://ui.adsabs.harvard.edu/abs/2018ApJ...856...23G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. (2018)</a>
-            for the details of the BANYAN Sigma classifier and
+            for the details of the BANYAN Σ classifier and
             <a href="https://ui.adsabs.harvard.edu/abs/2026arXiv260215695G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. (2026)</a>
-            for the updated BANYAN Sigma models, and please acknowledge both papers when you use results from this tool.
+            for the updated BANYAN Σ models, and please acknowledge both papers when you use results from this tool.
           </p>
           <p>
-            The stored BANYAN Sigma results in MOCAdb include an <code>Obs</code> column describing the observables used for the stored results of this star:
+            The stored BANYAN Σ results in MOCAdb include an <code>Obs</code> column describing the observables used for the stored results of this star:
             <code>pm</code> is the minimum set of observables, equatorial coordinates and proper motion; <code>rv</code> is the radial velocity; and <code>plx</code> is the parallax or photometric distance.
             The <code>YA(%)</code> result is the total membership probability for all possible young associations combined, in percent. Most of the time, this is concentrated in a single association, but for some ambiguous members it can be distributed across more than one.
             When this happens, <code>all_prob_yas</code> contains more than one <code>moca_aid</code> key with its relative share of the total association probability, in percent.
             For example, <code>all_prob_yas: BPMG(60); ABDMG(40)</code>, with <code>YA(%): 90%</code>, means the total association probability is divided 60/40 between BPMG and ABDMG; the absolute BPMG probability is 54%, and the ABDMG probability is 36%.
           </p>
           <p>
-            The priors of BANYAN Sigma are adjusted such that a selection threshold of 90% in total association probability will recover 90% of the true members across associations when using input measurements with a precision similar to Gaia; see Section 6 of
+            The priors of BANYAN Σ are adjusted such that a selection threshold of 90% in total association probability will recover 90% of the true members across associations when using input measurements with a precision similar to Gaia; see Section 6 of
             <a href="https://ui.adsabs.harvard.edu/abs/2018ApJ...856...23G/abstract" target="_blank" rel="noopener">Gagn&eacute; et al. 2018</a>.
             The contamination rate even at a 90% probability threshold varies widely between associations and is usually worse for the nearest associations or those with larger UVW models. When choosing a threshold other than 90%, the recovery rate also becomes association-dependent.
           </p>
@@ -235,7 +236,7 @@
           <section class="selection-area bsig-result-area">
             <div class="table-toolbar">
               <div>
-                <strong>BANYAN Sigma Results</strong>
+                <strong>BANYAN Σ Results</strong>
                 <div id="bsig-result-subtitle" class="plot-hint">No run loaded</div>
               </div>
             </div>
@@ -265,6 +266,6 @@
       </section>
     </main>
   </div>
-  <script src="static/banyan_sigma.js?v=shared-cache-20260709a"></script>
+  <script src="static/banyan_sigma.js?v=banyan-sigma-empty-20260710a"></script>
 </body>
 </html>

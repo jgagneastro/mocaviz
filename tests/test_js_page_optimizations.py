@@ -27,6 +27,7 @@ from bd_colors_fast.app import (
     _page_payload_cache_get,
     _page_payload_cache_store,
     _parse_xyzuvw_selection,
+    _rvbam_selected_run_id,
     _shared_page_cache_clear,
     _xyzuvw_payload_from_base,
     app,
@@ -236,6 +237,16 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertEqual(payload["modelSurfacesByAxes"]["xyz"], [])
         self.assertEqual(payload["modelSurfacesByAxes"]["uvw"], [])
 
+    def test_xyz_association_removal_carves_loaded_payload_without_refetch(self):
+        for filename in ("xyzuvw.js", "xyzuvw_three.js"):
+            source = (app_module.STATIC_DIR / filename).read_text(encoding="utf-8")
+            remove_handler = source.split("function renderAssociationList()", 1)[1].split(
+                "async function searchXyzuvwAssociations",
+                1,
+            )[0]
+            self.assertIn("carveAssociationFromLoadedXyzuvwData(aid)", remove_handler)
+            self.assertNotIn("loadXyzuvwData()", remove_handler)
+
     def test_moca_explorer_returns_only_active_view_columns(self):
         cmd = decoded_json(self.client.get(
             "/api/moca-explorer/data?mock=1&view=cmd&max_objects=20"
@@ -252,6 +263,164 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertFalse(cmd["models"])
         self.assertTrue(xyz["models"])
         self.assertEqual(xyz["selection"]["view"], "xyz")
+
+    def test_rvbam_private_mode_uses_requested_dataset_as_default(self):
+        runs = [
+            {
+                "moca_rv_sample_run_id": 91,
+                "moca_specid": 60000,
+                "template_name": "models_other.h5",
+                "pipeline_version": "rvbam_other",
+            },
+            {
+                "moca_rv_sample_run_id": 77,
+                "moca_specid": 50949,
+                "template_name": "/models/models_sonora_diamondback.h5",
+                "pipeline_version": "rvbam_2026_02_g395h",
+            },
+        ]
+        self.assertEqual(
+            _rvbam_selected_run_id({"dbase": "mocadb_private_tables"}, runs),
+            77,
+        )
+        self.assertEqual(_rvbam_selected_run_id({"dbase": "mocadb"}, runs), 91)
+        self.assertEqual(
+            _rvbam_selected_run_id(
+                {"dbase": "mocadb_private_tables", "run_id": "91"},
+                runs,
+            ),
+            91,
+        )
+
+    def test_rvbam_posterior_controls_live_inside_posterior_tab(self):
+        html = self.client.get("/js/rvbam-explorer").get_data(as_text=True)
+        sidebar, remainder = html.split("</aside>", 1)
+        posterior_panel = remainder.split('id="rvb-tab-posterior"', 1)[1].split(
+            'id="rvb-tab-params"',
+            1,
+        )[0]
+        for control_id in (
+            "rvb-param-x",
+            "rvb-param-y",
+            "rvb-max-points",
+            "rvb-load-posterior",
+        ):
+            self.assertNotIn(f'id="{control_id}"', sidebar)
+            self.assertIn(f'id="{control_id}"', posterior_panel)
+
+    def test_spectral_typing_loaders_have_panel_specific_labels(self):
+        html = self.client.get("/js/spectral-typing").get_data(as_text=True)
+        upper_loader = html.split('id="spt-plot-loader"', 1)[1].split("</div>", 3)[:3]
+        lower_loader = html.split('id="spt-chi2-loader"', 1)[1].split("</div>", 3)[:3]
+        self.assertIn("Loading best-fit comparison", "".join(upper_loader))
+        self.assertIn("Loading χ² map", "".join(lower_loader))
+
+    def test_banyan_sigma_page_uses_greek_sigma_and_has_empty_plot_guidance(self):
+        html = self.client.get("/js/banyan-sigma").get_data(as_text=True)
+        script = (app_module.STATIC_DIR / "banyan_sigma.js").read_text(encoding="utf-8")
+        self.assertIn(
+            'Click "Load" to populate astrometry data, then "Run BANYAN Σ" to compute membership probabilities',
+            html,
+        )
+        self.assertIn("Run BANYAN Σ", html)
+        self.assertNotIn("BANYAN Sigma", html)
+        self.assertNotIn("BANYAN Sigma", script)
+
+    def test_moca_explorer_max_rows_uses_grouped_display_value(self):
+        html = self.client.get("/js/moca-explorer").get_data(as_text=True)
+        script = (app_module.STATIC_DIR / "moca_explorer.js").read_text(encoding="utf-8")
+        self.assertIn('id="mex-max-objects" type="text" inputmode="numeric"', html)
+        self.assertIn('value="80,000"', html)
+        self.assertIn("formatMocaExplorerMaxObjectsInput()", script)
+        self.assertIn("parseMocaExplorerMaxObjects()", script)
+
+    def test_moca_explorer_association_removal_filters_complete_payload_in_browser(self):
+        script = (app_module.STATIC_DIR / "moca_explorer.js").read_text(encoding="utf-8")
+        remove_handler = script.split("function renderMocaExplorerAidChips()", 1)[1].split(
+            "function setMocaExplorerAssociations",
+            1,
+        )[0]
+        carve = script.split("function carveMocaExplorerAssociationsFromLoadedData", 1)[1].split(
+            "function mocaExplorerPayloadMatchesControls",
+            1,
+        )[0]
+        self.assertIn("setMocaExplorerAssociations(", remove_handler)
+        self.assertNotIn("loadMocaExplorerData()", remove_handler)
+        self.assertIn("payload.members = (payload.members || []).filter", carve)
+        self.assertIn("payload.models = (payload.models || []).filter", carve)
+        self.assertIn("payload.labels = (payload.labels || []).filter", carve)
+        self.assertIn("!wasTruncated", carve)
+        self.assertIn("retainedMembers.length >= maxObjects", carve)
+        self.assertIn("members (filtered locally)", carve)
+
+    def test_gaia_field_loader_has_gray_caption_and_tracks_field_request(self):
+        html = self.client.get("/js/gaia-cmd").get_data(as_text=True)
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        styles = (app_module.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+        caption = "Loading field data set and reference sequences"
+        self.assertIn(f'aria-label="{caption}"', html)
+        self.assertIn(f'<div class="plot-loader-label">{caption}</div>', html)
+        self.assertIn(".gcmd-field-loader .plot-loader-label", styles)
+        self.assertIn("color: #77717b", styles)
+
+        load_block = script.split("async function loadGaiaCmdData()", 1)[1].split(
+            "function gaiaCmdDataUrl",
+            1,
+        )[0]
+        self.assertIn("setGaiaCmdLoader(!fieldWasCached)", load_block)
+        partial_block = load_block.split("if (!fieldEntry.payload", 1)[1].split(
+            "const fieldPayload",
+            1,
+        )[0]
+        self.assertNotIn("setGaiaCmdLoader(false)", partial_block)
+
+    def test_all_maintained_scatter_pages_have_default_preserving_symbol_size_control(self):
+        scatter_pages = (
+            "index.html",
+            "gaia_cmd.html",
+            "moca_explorer.html",
+            "bd_evolution.html",
+            "companion_explorer.html",
+            "exoplanets_explorer.html",
+            "spectral_typing.html",
+            "astrometry.html",
+            "spectra.html",
+            "spectral_index_explorer.html",
+            "sed.html",
+            "xyzuvw_three.html",
+            "xyz2_three.html",
+            "xyzuvw.html",
+            "xyz2.html",
+            "moranta26_rotation.html",
+            "rvbam_explorer.html",
+            "retrieval_explorer.html",
+        )
+        for filename in scatter_pages:
+            with self.subTest(filename=filename):
+                html = (app_module.STATIC_DIR / filename).read_text(encoding="utf-8")
+                self.assertEqual(html.count("data-scatter-symbol-size>"), 1)
+                self.assertIn('value="100" data-scatter-symbol-size', html)
+                self.assertIn("data-scatter-symbol-size-output>100%</output>", html)
+                self.assertIn("static/scatter_symbol_size.js?v=20260710b", html)
+
+        legacy_rv = (app_module.STATIC_DIR / "legacy_radial_velocities.html").read_text(encoding="utf-8")
+        self.assertNotIn("data-scatter-symbol-size", legacy_rv)
+
+    def test_symbol_size_helper_scales_plotly_and_three_markers_proportionally(self):
+        script = (app_module.STATIC_DIR / "scatter_symbol_size.js").read_text(encoding="utf-8")
+        self.assertIn('for (const method of ["newPlot", "react"])', script)
+        self.assertIn('update = { "marker.size": [scaledSize(baseline.marker, scale)] }', script)
+        self.assertIn('update["selected.marker.size"]', script)
+        self.assertIn("prepareRestyle(graph, update, indexes)", script)
+        self.assertIn("prepareAddedTraces(graph, traces, indexes)", script)
+        self.assertIn("removeTraceBaselines(graph, indexes)", script)
+        self.assertIn("registerThreeMaterial", script)
+        self.assertIn("unregisterThreeMaterial", script)
+
+        three_script = (app_module.STATIC_DIR / "xyzuvw_three.js").read_text(encoding="utf-8")
+        self.assertIn("registerThreeMaterial?.(material, xuvMemberPointSize)", three_script)
+        self.assertIn('document.addEventListener("scatter-symbol-size-change"', three_script)
+        self.assertIn("dataset.scatterSymbolSize", three_script)
 
     def test_json_is_gzipped_and_encoded_response_is_reused(self):
         path = "/api/moca-explorer/data?mock=1&view=prot&max_objects=12"

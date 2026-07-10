@@ -364,14 +364,60 @@ function renderAssociationList() {
     button.addEventListener("click", () => {
       const aid = button.dataset.aid;
       xuvState.selectedAids = xuvState.selectedAids.filter((value) => value !== aid);
+      carveAssociationFromLoadedXyzuvwData(aid);
       renderAssociationList();
-      if (xuvState.selectedAids.length) loadXyzuvwData();
-      else {
+      if (xuvState.selectedAids.length) {
+        renderXyzuvw();
+        updateXyzuvwUrl();
+      } else {
         renderEmptyXyzuvw("Select at least one association");
         updateXyzuvwUrl();
       }
     });
   });
+}
+
+function carveAssociationFromLoadedXyzuvwData(aid) {
+  const removedAid = String(aid || "");
+  if (!removedAid) return;
+  const payloads = new Set([
+    xuvState.payload,
+    ...Object.values(xuvState.payloads || {}),
+  ].filter(Boolean));
+  payloads.forEach((payload) => carveAssociationFromXyzuvwPayload(payload, removedAid));
+  xuvState.selectedRows = xuvState.selectedRows.filter(
+    (row) => String(row?.moca_aid || "") !== removedAid,
+  );
+}
+
+function carveAssociationFromXyzuvwPayload(payload, removedAid) {
+  const keepRow = (row) => String(row?.moca_aid || "") !== removedAid;
+  for (const key of ["members", "models", "labels", "modelSurfaces", "model_surfaces"]) {
+    if (Array.isArray(payload[key])) payload[key] = payload[key].filter(keepRow);
+  }
+  if (payload.modelSurfacesByAxes && typeof payload.modelSurfacesByAxes === "object") {
+    payload.modelSurfacesByAxes = Object.fromEntries(
+      Object.entries(payload.modelSurfacesByAxes).map(([axes, rows]) => [
+        axes,
+        Array.isArray(rows) ? rows.filter(keepRow) : rows,
+      ]),
+    );
+  }
+  if (payload.selection) {
+    payload.selection = { ...payload.selection, aids: [...xuvState.selectedAids] };
+  }
+  const surfaceCount = payload.modelSurfacesByAxes && Object.keys(payload.modelSurfacesByAxes).length
+    ? Object.values(payload.modelSurfacesByAxes).reduce(
+      (count, rows) => count + (Array.isArray(rows) ? rows.length : 0),
+      0,
+    )
+    : (payload.modelSurfaces || payload.model_surfaces || []).length;
+  payload.meta = {
+    ...(payload.meta || {}),
+    member_count: (payload.members || []).length,
+    model_count: (payload.models || []).length,
+    model_surface_count: surfaceCount,
+  };
 }
 
 async function searchXyzuvwAssociations(query) {

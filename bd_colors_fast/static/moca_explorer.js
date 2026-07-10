@@ -97,14 +97,10 @@ function collectMocaExplorerElements() {
 function bindMocaExplorerControls() {
   mexEl["mex-load"].addEventListener("click", () => loadMocaExplorerData());
   mexEl["mex-aids-default"].addEventListener("click", () => {
-    mexState.selectedAids = defaultAids();
-    renderMocaExplorerSelections();
-    loadMocaExplorerData();
+    setMocaExplorerAssociations(defaultAids());
   });
   mexEl["mex-aids-clear"].addEventListener("click", () => {
-    mexState.selectedAids = [];
-    renderMocaExplorerSelections();
-    loadMocaExplorerData();
+    setMocaExplorerAssociations([]);
   });
   mexEl["mex-aid-search"].addEventListener("input", () => scheduleMocaExplorerAssociationSearch());
   mexEl["mex-object-search"].addEventListener("input", () => scheduleMocaExplorerObjectSearch());
@@ -113,9 +109,15 @@ function bindMocaExplorerControls() {
   });
   mexEl["mex-highlight-oids"].addEventListener("change", () => loadMocaExplorerData());
   mexEl["mex-max-objects"].addEventListener("keydown", (event) => {
-    if (event.key === "Enter") loadMocaExplorerData();
+    if (event.key === "Enter") {
+      formatMocaExplorerMaxObjectsInput();
+      loadMocaExplorerData();
+    }
   });
-  mexEl["mex-max-objects"].addEventListener("change", () => loadMocaExplorerData());
+  mexEl["mex-max-objects"].addEventListener("change", () => {
+    formatMocaExplorerMaxObjectsInput();
+    loadMocaExplorerData();
+  });
   for (const id of [
     "mex-hover", "mex-cmd-field", "mex-cmd-sequences", "mex-cmd-br",
     "mex-models", "mex-asscen", "mex-science-sequences",
@@ -176,6 +178,7 @@ function readMocaExplorerUrlState() {
   mexEl["mex-highlight-oids"].value = oids.join(",");
   const maxObjects = first("max_objects", "limit");
   if (maxObjects) mexEl["mex-max-objects"].value = maxObjects;
+  formatMocaExplorerMaxObjectsInput();
   mexEl["mex-assmem"].checked = ["1", "true", "yes", "on"].includes(first("assumed_membership", "assmem").toLowerCase());
   const requestedView = first("view");
   if (mexViewSpecs[requestedView]) mexState.activeView = requestedView;
@@ -224,11 +227,90 @@ function renderMocaExplorerAidChips() {
   )).join("");
   mexEl["mex-selected-aids"].querySelectorAll("button[data-aid]").forEach((button) => {
     button.addEventListener("click", () => {
-      mexState.selectedAids = mexState.selectedAids.filter((aid) => aid !== button.dataset.aid);
-      renderMocaExplorerSelections();
-      loadMocaExplorerData();
+      setMocaExplorerAssociations(
+        mexState.selectedAids.filter((aid) => aid !== button.dataset.aid),
+      );
     });
   });
+}
+
+function setMocaExplorerAssociations(nextAids) {
+  const previousAids = [...mexState.selectedAids];
+  const normalizedAids = parseCsv((nextAids || []).join(","));
+  const nextSet = new Set(normalizedAids);
+  const addedAids = normalizedAids.filter((aid) => !previousAids.includes(aid));
+  const removedAids = previousAids.filter((aid) => !nextSet.has(aid));
+  mexState.selectedAids = normalizedAids;
+  renderMocaExplorerSelections();
+  if (!addedAids.length && removedAids.length && carveMocaExplorerAssociationsFromLoadedData(previousAids)) {
+    return;
+  }
+  loadMocaExplorerData();
+}
+
+function carveMocaExplorerAssociationsFromLoadedData(previousAids) {
+  const payload = mexState.payload;
+  if (!payload || !mocaExplorerPayloadMatchesControls(payload, previousAids)) return false;
+  const selected = new Set(mexState.selectedAids);
+  const retainedMembers = mexState.members.filter((row) => selected.has(String(row.moca_aid || "")));
+  const maxObjects = Number(payload.meta?.max_objects ?? payload.selection?.max_objects ?? 0);
+  const wasTruncated = Boolean(payload.meta?.truncated);
+  const canPreserveLimitedResult = (
+    !wasTruncated
+    || mexState.selectedAids.length === 0
+    || (Number.isFinite(maxObjects) && maxObjects > 0 && retainedMembers.length >= maxObjects)
+  );
+  if (!canPreserveLimitedResult) return false;
+
+  // Invalidate any older in-flight request before installing the client-filtered state.
+  mexState.loadToken += 1;
+  const keepSelectedAssociation = (row) => selected.has(String(row?.moca_aid || ""));
+  mexState.members = retainedMembers;
+  mexState.rows = [...mexState.members, ...mexState.objects];
+  payload.members = (payload.members || []).filter(keepSelectedAssociation);
+  payload.models = (payload.models || []).filter(keepSelectedAssociation);
+  payload.labels = (payload.labels || []).filter(keepSelectedAssociation);
+  payload.selection = { ...(payload.selection || {}), aids: [...mexState.selectedAids] };
+  payload.meta = {
+    ...(payload.meta || {}),
+    member_count: mexState.members.length,
+    object_count: mexState.objects.length,
+    model_count: payload.models.length,
+    label_count: payload.labels.length,
+    truncated: Boolean(wasTruncated && mexState.members.length >= maxObjects),
+  };
+  payload.cache = { ...(payload.cache || {}), client_filtered: true };
+  pruneSelectionToLoadedRows();
+  renderMocaExplorerPlot();
+  renderMocaExplorerTable();
+  setMocaExplorerExportDisabled(mexState.rows.length === 0);
+  updateMocaExplorerSummary();
+  updateMocaExplorerUrl();
+  setMocaExplorerLoading(false);
+  setMocaExplorerStatus(
+    `${payload.source || "MOCAdb"}: ${mexState.members.length.toLocaleString()} members (filtered locally)`,
+    "",
+  );
+  return true;
+}
+
+function mocaExplorerPayloadMatchesControls(payload, expectedAids) {
+  const selection = payload.selection || {};
+  return (
+    sameMocaExplorerValues(selection.aids, expectedAids)
+    && sameMocaExplorerValues(selection.mtids, mexState.selectedMtids)
+    && sameMocaExplorerValues(selection.oids, selectedHighlightOids(), Number)
+    && String(selection.view || "cmd") === mexState.activeView
+    && Number(selection.max_objects) === parseMocaExplorerMaxObjects()
+    && Boolean(selection.assumed_membership) === Boolean(mexEl["mex-assmem"].checked)
+  );
+}
+
+function sameMocaExplorerValues(left, right, normalize = String) {
+  const leftValues = [...new Set((left || []).map(normalize))].sort();
+  const rightValues = [...new Set((right || []).map(normalize))].sort();
+  return leftValues.length === rightValues.length
+    && leftValues.every((value, index) => value === rightValues[index]);
 }
 
 function renderMocaExplorerObjectChips() {
@@ -383,8 +465,8 @@ function dataParams() {
   if (mexState.selectedMtids.length) params.set("mtid", mexState.selectedMtids.join(","));
   const oids = selectedHighlightOids();
   if (oids.length) params.set("oid", oids.join(","));
-  const maxObjects = Number(mexEl["mex-max-objects"].value);
-  if (Number.isFinite(maxObjects) && maxObjects > 0) params.set("max_objects", String(Math.floor(maxObjects)));
+  const maxObjects = parseMocaExplorerMaxObjects();
+  if (maxObjects !== null) params.set("max_objects", String(maxObjects));
   return params;
 }
 
@@ -406,8 +488,8 @@ function updateMocaExplorerUrl() {
   if (mexState.selectedMtids.length) params.set("mtid", mexState.selectedMtids.join(","));
   const oids = selectedHighlightOids();
   if (oids.length) params.set("oid", oids.join(","));
-  const maxObjects = Number(mexEl["mex-max-objects"].value);
-  if (Number.isFinite(maxObjects) && maxObjects > 0) params.set("max_objects", String(Math.floor(maxObjects)));
+  const maxObjects = parseMocaExplorerMaxObjects();
+  if (maxObjects !== null) params.set("max_objects", String(maxObjects));
   params.set("view", mexState.activeView);
   if (mexEl["mex-assmem"].checked) params.set("assumed_membership", "1");
   const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
@@ -1267,7 +1349,9 @@ function updateMocaExplorerSummary() {
     return;
   }
   const meta = payload.meta || {};
-  const cache = payload.cache?.hit ? "cache hit" : "fresh query";
+  const cache = payload.cache?.client_filtered
+    ? "filtered locally"
+    : (payload.cache?.hit ? "cache hit" : "fresh query");
   const truncated = meta.truncated ? ", truncated" : "";
   mexEl["mex-summary"].textContent = `${(meta.member_count || 0).toLocaleString()} members, ${(meta.object_count || 0).toLocaleString()} highlighted OIDs, ${(meta.model_count || 0).toLocaleString()} model rows (${cache}${truncated})`;
   mexEl["mex-subtitle"].textContent = mexState.selectedOids.size
@@ -1431,6 +1515,21 @@ function parseCsv(value) {
     .map((item) => item.trim())
     .filter(Boolean)
     .filter((item, index, array) => array.indexOf(item) === index);
+}
+
+function parseMocaExplorerMaxObjects(value = mexEl["mex-max-objects"]?.value) {
+  const digits = String(value ?? "").replace(/[,\s]/g, "");
+  if (!/^\d+$/.test(digits)) return null;
+  const number = Number(digits);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function formatMocaExplorerMaxObjectsInput() {
+  const maxObjects = parseMocaExplorerMaxObjects();
+  if (maxObjects !== null) {
+    mexEl["mex-max-objects"].value = maxObjects.toLocaleString("en-US");
+  }
+  return maxObjects;
 }
 
 function parseOidList(value) {

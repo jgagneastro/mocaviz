@@ -442,7 +442,6 @@ async function loadGaiaCmdData() {
   updateGaiaCmdUrl();
   const token = ++gcmdState.loadToken;
   setGaiaCmdStatus("Loading Gaia CMD", "loading");
-  setGaiaCmdLoader(true);
   gcmdEl["gcmd-load"].disabled = true;
   const params = gaiaCmdApiParams();
   try {
@@ -452,6 +451,7 @@ async function loadGaiaCmdData() {
       gcmdFieldPayloadCacheMax,
     );
     const fieldWasCached = Boolean(fieldEntry.payload);
+    setGaiaCmdLoader(!fieldWasCached);
     // The association requests normally finish first. Attach a rejection handler
     // immediately so a field failure cannot become an unhandled promise while the
     // page is still waiting for those smaller payloads.
@@ -471,7 +471,6 @@ async function loadGaiaCmdData() {
       : null;
     const newAssociationCount = associationEntries.filter((entry) => !entry.payload).length;
     if (fieldEntry.payload) {
-      setGaiaCmdLoader(false);
       const pendingText = newAssociationCount
         ? `Loading ${newAssociationCount} new association${newAssociationCount === 1 ? "" : "s"}; field sample and existing associations retained`
         : "Updating Gaia CMD from cached field and association samples";
@@ -492,7 +491,6 @@ async function loadGaiaCmdData() {
     }
     if (!fieldEntry.payload && (associationPayloads.some((payload) => payload.rows?.length) || highlightPayload?.rows?.length)) {
       await installGaiaCmdPayload(mergeGaiaCmdPayload(null, associationPayloads, highlightPayload), { partial: true });
-      setGaiaCmdLoader(false);
     }
     const fieldPayload = await fieldEntry.promise;
     if (token !== gcmdState.loadToken) return;
