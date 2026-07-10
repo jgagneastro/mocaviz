@@ -17,6 +17,7 @@ from bd_colors_fast.app import (
     _BoundedCache,
     _ENCODED_RESPONSE_CACHE,
     _ENCODED_RESPONSE_CACHE_LOCK,
+    _companion_explorer_layer_cache_key,
     _gaia_cmd_cache_key,
     _gaia_cmd_downsample_sequence,
     _gaia_cmd_filter_field_classes,
@@ -218,6 +219,78 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("STRAIGHT_JOIN data_distances dd", sql)
         self.assertIn("STRAIGHT_JOIN data_spectral_types dst", sql)
         self.assertIn("STRAIGHT_JOIN data_masses dm", sql)
+
+    def test_companion_layer_cache_ignores_pure_display_controls(self):
+        first = {
+            "database": "mocadb",
+            "layer": "companions",
+            "max_rows": "80000",
+            "x": "sep_au",
+            "y": "mass_ratio_q",
+            "xlog": "1",
+            "comover_probability_min": "50",
+            "spt_range": "L0-T9",
+        }
+        second = {
+            **first,
+            "color_age": "1",
+            "errors": "1",
+            "hover_text": "0",
+        }
+        self.assertEqual(
+            _companion_explorer_layer_cache_key(first, "companions"),
+            _companion_explorer_layer_cache_key(second, "companions"),
+        )
+        self.assertNotEqual(
+            _companion_explorer_layer_cache_key(first, "companions"),
+            _companion_explorer_layer_cache_key({**first, "max_rows": "1000"}, "companions"),
+        )
+        self.assertNotEqual(
+            _companion_explorer_layer_cache_key(first, "companions"),
+            _companion_explorer_layer_cache_key({**first, "comover_probability_min": "90"}, "companions"),
+        )
+
+    def test_companion_mock_layers_are_independent_and_unfiltered(self):
+        companions = decoded_json(self.client.get(
+            "/api/companion-explorer/data?mock=1&layer=companions&comover_probability_min=99"
+        ))
+        exoplanets = decoded_json(self.client.get(
+            "/api/companion-explorer/data?mock=1&layer=exoplanets"
+        ))
+        tess = decoded_json(self.client.get(
+            "/api/companion-explorer/data?mock=1&layer=tess_candidates"
+        ))
+        self.assertTrue(companions["rows"])
+        self.assertFalse(companions["exoplanets"])
+        self.assertFalse(companions["tess_candidates"])
+        self.assertTrue(exoplanets["exoplanets"])
+        self.assertFalse(exoplanets["rows"])
+        self.assertFalse(exoplanets["tess_candidates"])
+        self.assertTrue(tess["tess_candidates"])
+        self.assertFalse(tess["rows"])
+        self.assertFalse(tess["exoplanets"])
+        self.assertTrue(companions["meta"]["server_filtered"])
+
+    def test_companion_display_controls_render_without_data_refetch(self):
+        source = (app_module.STATIC_DIR / "companion_explorer.js").read_text(encoding="utf-8")
+        controls = source.split("function bindCompanionControls()", 1)[1].split(
+            "function readCompanionUrlState",
+            1,
+        )[0]
+        self.assertIn('renderCompanionExplorer()', controls)
+        self.assertIn('scheduleCompanionRender()', controls)
+        self.assertNotIn('scheduleCompanionDataLoad()', controls)
+        self.assertIn('loadMissingCompanionOverlaysOrRender()', controls)
+        self.assertIn("companionCoverageCoversControls()", source)
+        self.assertIn('params.set("layer", layer)', source)
+        self.assertNotIn("ensureCompanionDesignationIndex", source)
+        search = source.split("async function searchCompanionTargets", 1)[1].split(
+            "function localCompanionSearchResults",
+            1,
+        )[0]
+        self.assertIn("localCompanionSearchResults(query)", search)
+        self.assertIn("api/companion-explorer/search", search)
+        self.assertNotIn("api/companion-explorer/designations", search)
 
     def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
         selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})

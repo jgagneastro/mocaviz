@@ -9405,7 +9405,7 @@ COMPANION_EXPLORER_DEFAULT_MAX_ROWS = int(os.environ.get("COMPANION_EXPLORER_MAX
 COMPANION_EXPLORER_HARD_MAX_ROWS = int(os.environ.get("COMPANION_EXPLORER_HARD_MAX_ROWS", "200000"))
 COMPANION_EXPLORER_DEFAULT_MAX_EXOPLANETS = int(os.environ.get("COMPANION_EXPLORER_MAX_EXOPLANETS", "20000"))
 COMPANION_EXPLORER_DEFAULT_MAX_TESS_CANDIDATES = int(os.environ.get("COMPANION_EXPLORER_MAX_TESS_CANDIDATES", "20000"))
-COMPANION_EXPLORER_CACHE_SECONDS = int(os.environ.get("COMPANION_EXPLORER_CACHE_SECONDS", "120"))
+COMPANION_EXPLORER_CACHE_SECONDS = int(os.environ.get("COMPANION_EXPLORER_CACHE_SECONDS", "900"))
 COMPANION_EXPLORER_EARTH_MASS_TO_MSUN = 3.003489614915764e-6
 COMPANION_EXPLORER_JUPITER_MASS_TO_MSUN = 9.545880063213133e-4
 COMPANION_EXPLORER_G_CGS = 6.67430e-8
@@ -11173,12 +11173,82 @@ def _load_companion_explorer_tess_candidates_from_db(
     return [_companion_explorer_add_tess_candidate_derived(row) for row in rows]
 
 
+def _companion_explorer_layer(args: Mapping[str, Any]) -> str:
+    value = str(args.get("layer") or args.get("sample_part") or "all").strip().lower()
+    aliases = {
+        "base": "companions",
+        "companion": "companions",
+        "planet": "exoplanets",
+        "planets": "exoplanets",
+        "exoplanet": "exoplanets",
+        "tess": "tess_candidates",
+        "tess-candidates": "tess_candidates",
+    }
+    value = aliases.get(value, value)
+    return value if value in {"all", "companions", "exoplanets", "tess_candidates"} else "all"
+
+
+def _companion_explorer_coverage(args: Mapping[str, Any]) -> dict[str, Any]:
+    x_key, y_key = _companion_explorer_axis_pair(args)
+    filters = []
+    for param, aliases, key, absolute, null_param, null_aliases in COMPANION_EXPLORER_QUANTITY_FILTERS:
+        filters.append({
+            "key": key,
+            "limit": _companion_explorer_first_filter_value(args, (param, *aliases)),
+            "ignore_null": _companion_explorer_ignore_null_filter(args, (null_param, *null_aliases)),
+            "absolute": absolute,
+        })
+    return {
+        "x": x_key,
+        "y": y_key,
+        "xlog": _companion_explorer_axis_log(args, "x", x_key),
+        "ylog": _companion_explorer_axis_log(args, "y", y_key),
+        "comover_probability_min": _companion_explorer_first_filter_value(args, ("comover_probability_min", "prob_min")) or 0,
+        "ignore_null_comover": _as_bool(args.get("ignore_null_comover") or args.get("ignore_missing_comover_probability") or args.get("ignore_missing_comover")),
+        "spt_range": str(args.get("spt_range") or args.get("spt") or "").strip(),
+        "quantity_filters": filters,
+    }
+
+
+def _companion_explorer_layer_cache_key(args: Mapping[str, Any], layer: str) -> str:
+    parts = [
+        _spt_db_cache_key(dict(args)),
+        "companion-explorer-layers-v1",
+        layer,
+        f"photdist:{int(_companion_explorer_use_photometric_distances(args))}",
+    ]
+    if layer in {"all", "companions"}:
+        parts.extend([
+            f"max_rows:{_companion_explorer_parse_max_rows(args.get('max_rows') or args.get('limit'))}",
+            "cids:" + ",".join(str(value) for value in sorted(_companion_explorer_parse_cids(args))),
+            "coverage:" + json.dumps(_companion_explorer_coverage(args), sort_keys=True, separators=(",", ":")),
+        ])
+    if layer in {"all", "exoplanets"}:
+        parts.extend([
+            f"max_exoplanets:{_companion_explorer_parse_max_exoplanets(args.get('max_exoplanets') or args.get('exoplanet_limit'))}",
+            "highlight_exoplanets:" + ",".join(sorted(_companion_explorer_parse_exoplanet_ids(args))),
+        ])
+    if layer in {"all", "tess_candidates"}:
+        parts.append(
+            f"max_tess:{_companion_explorer_parse_max_tess_candidates(args.get('max_tess_candidates') or args.get('tess_candidate_limit') or args.get('max_tess'))}"
+        )
+    if layer == "all":
+        parts.extend([
+            f"include_exoplanets:{int(_companion_explorer_include_exoplanets(args))}",
+            f"include_tess:{int(_companion_explorer_include_tess_candidates(args))}",
+        ])
+    return "|".join(parts)
+
+
 def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
-    cache_key = _request_payload_cache_key(args, "companion-explorer-data-v2")
+    layer = _companion_explorer_layer(args)
+    cache_key = _companion_explorer_layer_cache_key(args, layer)
+    cache_namespace = f"companion-explorer-{layer.replace('_', '-')}"
     cached = _page_payload_cache_get(
         _COMPANION_EXPLORER_CACHE,
-        "companion-explorer",
+        cache_namespace,
         cache_key,
+        COMPANION_EXPLORER_CACHE_SECONDS,
     )
     if cached is not None:
         return cached
@@ -11190,68 +11260,74 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
         if not _db_table_exists(conn, "summary_all_companions"):
             raise ValueError("summary_all_companions is not available in this database")
         started = time.time()
-        common_ctes, common_params = _companion_explorer_common_ctes(
-            conn,
-            args,
-            include_overlay_rows=False,
-        )
-        select_columns_sql = ",\n                ".join(f"sac.{column}" for column in COMPANION_EXPLORER_COMPANION_SELECT_COLUMNS)
-        highlight_order = "sac.moca_cid"
-        params: dict[str, Any] = dict(common_params)
-        cid_clause = ""
-        if highlight_cids:
-            cid_clause, cid_params = _sql_in_clause("cex_cid", [str(cid) for cid in highlight_cids])
-            params.update(cid_params)
-            highlight_order = f"CASE WHEN sac.moca_cid IN ({cid_clause}) THEN 0 ELSE 1 END, sac.moca_cid"
-        photometric_distance_filter = "" if include_photometric_distances else "AND COALESCE(parent_dist.photometric_estimate, 0) = 0"
-        data_filter_sql = _companion_explorer_companion_filter_sql(args, params, cid_clause)
-        rows = _records(_read_sql(conn, f"""
-            WITH {common_ctes}
-            SELECT
-                {select_columns_sql},
-                NULL AS parent_designations,
-                NULL AS child_designations,
-                parent_dist.photometric_estimate AS distance_photometric_estimate,
-                parent_dist.distance_pc_unc_pos AS distance_pc_parent_unc_pos,
-                parent_dist.distance_pc_unc_neg AS distance_pc_parent_unc_neg,
-                COALESCE(obj_age.age_myr, banyan_age.age_myr) AS parent_age_myr,
-                COALESCE(obj_age.age_myr_unc, banyan_age.age_myr_unc) AS parent_age_myr_unc,
-                COALESCE(obj_age.age_myr_unc_pos, banyan_age.age_myr_unc_pos) AS parent_age_myr_unc_pos,
-                COALESCE(obj_age.age_myr_unc_neg, banyan_age.age_myr_unc_neg) AS parent_age_myr_unc_neg,
-                CASE
-                    WHEN obj_age.age_myr IS NOT NULL THEN 'object age'
-                    WHEN banyan_age.age_myr IS NOT NULL THEN 'BANYAN Sigma membership age'
-                    ELSE NULL
-                END AS parent_age_source,
-                CASE
-                    WHEN obj_age.age_myr IS NOT NULL THEN obj_age.age_source_detail
-                    WHEN banyan_age.age_myr IS NOT NULL THEN COALESCE(banyan_age.membership_name, banyan_age.membership)
-                    ELSE NULL
-                END AS parent_age_source_detail,
-                banyan_age.membership AS parent_age_membership,
-                banyan_age.ya_prob AS parent_age_ya_prob
-            FROM summary_all_companions sac
-            LEFT JOIN selected_distances parent_dist
-                ON parent_dist.moca_oid = sac.moca_oid_parent
-            LEFT JOIN object_age obj_age
-                ON obj_age.moca_oid = sac.moca_oid_parent
-            LEFT JOIN banyan_membership_age banyan_age
-                ON banyan_age.moca_oid = sac.moca_oid_parent
-            WHERE 1 = 1
-                AND {_companion_explorer_not_self_pair_sql("sac")}
-                {photometric_distance_filter}
-                {data_filter_sql}
-            ORDER BY {highlight_order}
-            LIMIT {max_rows}
-        """, params))
-        rows = [_companion_explorer_add_derived(row) for row in rows]
-        highlight_cid_set = set(highlight_cids)
-        rows = [row for row in rows if _companion_explorer_row_matches_payload_filters(row, args, highlight_cid_set)]
-        include_exoplanets = _companion_explorer_include_exoplanets(args)
-        include_tess_candidates = _companion_explorer_include_tess_candidates(args)
-        highlight_exoplanet_ids = _companion_explorer_parse_exoplanet_ids(args)
-        overlay_ctes = common_ctes
-        overlay_params = common_params
+        rows: list[dict[str, Any]] = []
+        if layer in {"all", "companions"}:
+            common_ctes, common_params = _companion_explorer_common_ctes(
+                conn,
+                args,
+                include_overlay_rows=False,
+            )
+            select_columns_sql = ",\n                ".join(f"sac.{column}" for column in COMPANION_EXPLORER_COMPANION_SELECT_COLUMNS)
+            highlight_order = "sac.moca_cid"
+            params: dict[str, Any] = dict(common_params)
+            cid_clause = ""
+            if highlight_cids:
+                cid_clause, cid_params = _sql_in_clause("cex_cid", [str(cid) for cid in highlight_cids])
+                params.update(cid_params)
+                highlight_order = f"CASE WHEN sac.moca_cid IN ({cid_clause}) THEN 0 ELSE 1 END, sac.moca_cid"
+            photometric_distance_filter = "" if include_photometric_distances else "AND COALESCE(parent_dist.photometric_estimate, 0) = 0"
+            data_filter_sql = _companion_explorer_companion_filter_sql(args, params, cid_clause)
+            rows = _records(_read_sql(conn, f"""
+                WITH {common_ctes}
+                SELECT
+                    {select_columns_sql},
+                    NULL AS parent_designations,
+                    NULL AS child_designations,
+                    parent_dist.photometric_estimate AS distance_photometric_estimate,
+                    parent_dist.distance_pc_unc_pos AS distance_pc_parent_unc_pos,
+                    parent_dist.distance_pc_unc_neg AS distance_pc_parent_unc_neg,
+                    COALESCE(obj_age.age_myr, banyan_age.age_myr) AS parent_age_myr,
+                    COALESCE(obj_age.age_myr_unc, banyan_age.age_myr_unc) AS parent_age_myr_unc,
+                    COALESCE(obj_age.age_myr_unc_pos, banyan_age.age_myr_unc_pos) AS parent_age_myr_unc_pos,
+                    COALESCE(obj_age.age_myr_unc_neg, banyan_age.age_myr_unc_neg) AS parent_age_myr_unc_neg,
+                    CASE
+                        WHEN obj_age.age_myr IS NOT NULL THEN 'object age'
+                        WHEN banyan_age.age_myr IS NOT NULL THEN 'BANYAN Sigma membership age'
+                        ELSE NULL
+                    END AS parent_age_source,
+                    CASE
+                        WHEN obj_age.age_myr IS NOT NULL THEN obj_age.age_source_detail
+                        WHEN banyan_age.age_myr IS NOT NULL THEN COALESCE(banyan_age.membership_name, banyan_age.membership)
+                        ELSE NULL
+                    END AS parent_age_source_detail,
+                    banyan_age.membership AS parent_age_membership,
+                    banyan_age.ya_prob AS parent_age_ya_prob
+                FROM summary_all_companions sac
+                LEFT JOIN selected_distances parent_dist
+                    ON parent_dist.moca_oid = sac.moca_oid_parent
+                LEFT JOIN object_age obj_age
+                    ON obj_age.moca_oid = sac.moca_oid_parent
+                LEFT JOIN banyan_membership_age banyan_age
+                    ON banyan_age.moca_oid = sac.moca_oid_parent
+                WHERE 1 = 1
+                    AND {_companion_explorer_not_self_pair_sql("sac")}
+                    {photometric_distance_filter}
+                    {data_filter_sql}
+                ORDER BY {highlight_order}
+                LIMIT {max_rows}
+            """, params))
+            rows = [_companion_explorer_add_derived(row) for row in rows]
+            highlight_cid_set = set(highlight_cids)
+            rows = [
+                row
+                for row in rows
+                if _companion_explorer_row_matches_payload_filters(row, args, highlight_cid_set)
+            ]
+
+        include_exoplanets = layer == "exoplanets" or (layer == "all" and _companion_explorer_include_exoplanets(args))
+        include_tess_candidates = layer == "tess_candidates" or (layer == "all" and _companion_explorer_include_tess_candidates(args))
+        exoplanets: list[dict[str, Any]] = []
+        tess_candidates: list[dict[str, Any]] = []
         if include_exoplanets or include_tess_candidates:
             overlay_ctes, overlay_params = _companion_explorer_common_ctes(
                 conn,
@@ -11259,10 +11335,10 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 include_companion_rows=False,
                 include_overlay_rows=True,
             )
-        exoplanets = _load_companion_explorer_exoplanets_from_db(conn, args, overlay_ctes, overlay_params) if include_exoplanets else []
-        exoplanets = [row for row in exoplanets if _companion_explorer_row_matches_payload_filters(row, args, highlight_exoplanet_ids=highlight_exoplanet_ids)]
-        tess_candidates = _load_companion_explorer_tess_candidates_from_db(conn, args, overlay_ctes, overlay_params) if include_tess_candidates else []
-        tess_candidates = [row for row in tess_candidates if _companion_explorer_row_matches_payload_filters(row, args)] if include_tess_candidates else []
+            if include_exoplanets:
+                exoplanets = _load_companion_explorer_exoplanets_from_db(conn, args, overlay_ctes, overlay_params)
+            if include_tess_candidates:
+                tess_candidates = _load_companion_explorer_tess_candidates_from_db(conn, args, overlay_ctes, overlay_params)
         query_seconds = round(time.time() - started, 3)
     payload = {
         "axes": _companion_explorer_axes_payload(),
@@ -11285,14 +11361,16 @@ def _load_companion_explorer_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "use_photometric_distances": include_photometric_distances,
             "include_exoplanets": include_exoplanets,
             "include_tess_candidates": include_tess_candidates,
-            "server_filtered": True,
+            "server_filtered": layer in {"all", "companions"},
+            "coverage": _companion_explorer_coverage(args) if layer in {"all", "companions"} else None,
+            "layer": layer,
             "query_seconds": query_seconds,
         },
-        "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
+        "cache": {"hit": False, "ttl_seconds": COMPANION_EXPLORER_CACHE_SECONDS},
     }
     _page_payload_cache_store(
         _COMPANION_EXPLORER_CACHE,
-        "companion-explorer",
+        cache_namespace,
         cache_key,
         payload,
     )
@@ -11439,13 +11517,25 @@ def _mock_companion_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
             "parent_age_source_detail": "mock TESS host age" if index % 4 else None,
         }))
     if not _companion_explorer_use_photometric_distances(args):
+        rows = [row for row in rows if not int(row.get("distance_photometric_estimate") or 0)]
         exoplanets = [row for row in exoplanets if not int(row.get("distance_photometric_estimate") or 0)]
         tess_candidates = [row for row in tess_candidates if not int(row.get("distance_photometric_estimate") or 0)]
-    highlight_cids = set(_companion_explorer_parse_cids(args))
-    highlight_exoplanet_ids = _companion_explorer_parse_exoplanet_ids(args)
-    rows = [row for row in rows if _companion_explorer_row_matches_payload_filters(row, args, highlight_cids)]
-    exoplanets = [row for row in exoplanets if _companion_explorer_row_matches_payload_filters(row, args, highlight_exoplanet_ids=highlight_exoplanet_ids)] if _companion_explorer_include_exoplanets(args) else []
-    tess_candidates = [row for row in tess_candidates if _companion_explorer_row_matches_payload_filters(row, args)] if _companion_explorer_include_tess_candidates(args) else []
+    layer = _companion_explorer_layer(args)
+    if layer in {"all", "companions"}:
+        highlight_cids = set(_companion_explorer_parse_cids(args))
+        rows = [
+            row
+            for row in rows
+            if _companion_explorer_row_matches_payload_filters(row, args, highlight_cids)
+        ]
+    include_exoplanets = layer == "exoplanets" or (layer == "all" and _companion_explorer_include_exoplanets(args))
+    include_tess_candidates = layer == "tess_candidates" or (layer == "all" and _companion_explorer_include_tess_candidates(args))
+    if layer not in {"all", "companions"}:
+        rows = []
+    if not include_exoplanets:
+        exoplanets = []
+    if not include_tess_candidates:
+        tess_candidates = []
     return {
         "axes": _companion_explorer_axes_payload(),
         "default": {"x": "sep_au", "y": "mass_ratio_q", "xLog": True, "yLog": True},
@@ -11465,9 +11555,11 @@ def _mock_companion_explorer_payload(args: dict[str, Any]) -> dict[str, Any]:
             "exoplanet_age_count": sum(1 for row in exoplanets if row.get("parent_age_myr") is not None),
             "tess_candidate_age_count": sum(1 for row in tess_candidates if row.get("parent_age_myr") is not None),
             "use_photometric_distances": _companion_explorer_use_photometric_distances(args),
-            "include_exoplanets": _companion_explorer_include_exoplanets(args),
-            "include_tess_candidates": _companion_explorer_include_tess_candidates(args),
-            "server_filtered": True,
+            "include_exoplanets": include_exoplanets,
+            "include_tess_candidates": include_tess_candidates,
+            "server_filtered": layer in {"all", "companions"},
+            "coverage": _companion_explorer_coverage(args) if layer in {"all", "companions"} else None,
+            "layer": layer,
             "query_seconds": 0,
             "mock": True,
         },
@@ -30982,7 +31074,16 @@ def companion_explorer_clear_cache():
     table_metadata_count = len(_DB_TABLE_EXISTS_CACHE)
     column_metadata_count = len(_DB_COLUMNS_CACHE)
     _COMPANION_EXPLORER_CACHE.clear()
-    shared_count = _shared_page_cache_clear("companion-explorer")
+    shared_count = sum(
+        _shared_page_cache_clear(namespace)
+        for namespace in (
+            "companion-explorer",
+            "companion-explorer-all",
+            "companion-explorer-companions",
+            "companion-explorer-exoplanets",
+            "companion-explorer-tess-candidates",
+        )
+    )
     _DB_TABLE_EXISTS_CACHE.clear()
     _DB_COLUMNS_CACHE.clear()
     return jsonify({

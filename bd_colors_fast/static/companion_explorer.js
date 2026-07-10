@@ -106,10 +106,10 @@ const cexState = {
   highlightExoplanetIds: new Set(),
   selectedCids: new Set(),
   selectedRowKeys: new Set(),
-  designationIndex: null,
-  designationIndexKey: "",
-  designationIndexPromise: null,
-  designationCacheBust: "",
+  layerPayloads: new Map(),
+  layerPromises: new Map(),
+  installedLayers: new Map(),
+  searchResultCache: new Map(),
   searchTimer: null,
   filterLoadTimer: null,
   loadToken: 0,
@@ -154,20 +154,27 @@ function collectCompanionElements() {
 }
 
 function bindCompanionControls() {
-  cexEl["cex-load"].addEventListener("click", () => loadCompanionData());
+  cexEl["cex-load"].addEventListener("click", () => loadCompanionData({ force: true }));
   cexEl["cex-clear-cache"].addEventListener("click", () => clearCompanionCache());
   for (const id of ["cex-x-axis", "cex-y-axis"]) {
     cexEl[id].addEventListener("change", () => {
       applyCompanionAxisDefaults(false);
       updateExoplanetAvailability();
       updateCompanionUrl();
-      loadCompanionData();
+      loadMissingCompanionOverlaysOrRender();
     });
   }
-  for (const id of ["cex-x-log", "cex-y-log", "cex-show-exoplanets", "cex-show-tess-candidates", "cex-ignore-null-comover"]) {
+  for (const id of ["cex-x-log", "cex-y-log", "cex-ignore-null-comover"]) {
     cexEl[id].addEventListener("change", () => {
       updateCompanionUrl();
-      loadCompanionData();
+      renderOrReloadCompanionCoverage();
+    });
+  }
+  for (const id of ["cex-show-exoplanets", "cex-show-tess-candidates"]) {
+    cexEl[id].addEventListener("change", () => {
+      updateExoplanetAvailability();
+      updateCompanionUrl();
+      loadMissingCompanionOverlaysOrRender();
     });
   }
   for (const id of ["cex-color-age", "cex-error-bars", "cex-hover-text"]) {
@@ -182,21 +189,21 @@ function bindCompanionControls() {
   });
   cexEl["cex-spt-range"].addEventListener("input", () => {
     updateCompanionUrl();
-    scheduleCompanionDataLoad();
+    scheduleCompanionRender();
   });
   cexEl["cex-prob-min"].addEventListener("input", () => {
     updateCompanionProbabilityReadout();
     updateCompanionUrl();
-    scheduleCompanionDataLoad();
+    scheduleCompanionRender();
   });
   for (const filter of cexQuantityFilters) {
     cexEl[filter.id].addEventListener("input", () => {
       updateCompanionUrl();
-      scheduleCompanionDataLoad();
+      scheduleCompanionRender();
     });
     cexEl[filter.nullId].addEventListener("change", () => {
       updateCompanionUrl();
-      scheduleCompanionDataLoad();
+      scheduleCompanionRender();
     });
   }
   cexEl["cex-max-rows"].addEventListener("change", () => loadCompanionData());
@@ -276,36 +283,209 @@ async function loadCompanionData(options = {}) {
   clearTimeout(cexState.filterLoadTimer);
   const token = ++cexState.loadToken;
   setCompanionLoading(true);
-  setCompanionStatus("Loading companions", "loading");
-  const params = companionApiParams();
-  applyCompanionDataParams(params);
-  if (options.cacheBust) params.set("_cache_bust", String(Date.now()));
-  const payload = await fetchCompanionJson(`api/companion-explorer/data?${params.toString()}`);
-  if (token !== cexState.loadToken) return;
-  if (!payload.ok) {
-    cexState.rows = [];
-    cexState.exoplanets = [];
-    cexState.tessCandidates = [];
-    cexState.payload = payload;
-    setCompanionStatus(payload.error || "Could not load companions", "error");
+  const includeCompanions = options.includeCompanions !== false;
+  const overlayLayers = [
+    ...(exoplanetsEnabled() ? ["exoplanets"] : []),
+    ...(tessCandidatesEnabled() ? ["tess_candidates"] : []),
+  ];
+  const requestedLayers = [...(includeCompanions ? ["companions"] : []), ...overlayLayers];
+  requestedLayers.forEach(clearIncompatibleCompanionLayer);
+  setCompanionStatus(
+    includeCompanions ? "Loading companion data" : "Loading companion overlay data",
+    "loading",
+  );
+  try {
+    const companionPromise = includeCompanions
+      ? fetchCompanionLayer("companions", options)
+      : Promise.resolve(null);
+    const overlayPromises = overlayLayers.map((layer) => fetchCompanionLayer(layer, options));
+
+    const companionEntry = await companionPromise;
+    if (token !== cexState.loadToken) return;
+    if (companionEntry) {
+      installCompanionLayer("companions", companionEntry);
+      composeCompanionPayload();
+      renderHighlightedCompanionList();
+      applyCompanionAxisDefaults(true, companionEntry.payload.default || {});
+      updateCompanionUrl();
+      renderCompanionExplorer();
+      if (overlayPromises.length) {
+        setCompanionLoading(false);
+        setCompanionStatus(
+          `${cexState.rows.length.toLocaleString()} companions loaded; loading overlay data`,
+          "loading",
+        );
+      }
+    }
+
+    const overlayEntries = await Promise.all(overlayPromises);
+    if (token !== cexState.loadToken) return;
+    overlayEntries.forEach((entry, index) => installCompanionLayer(overlayLayers[index], entry));
+    composeCompanionPayload();
+    renderHighlightedCompanionList();
+    setCompanionStatus(`${cexState.rows.length.toLocaleString()} companions, ${cexState.exoplanets.length.toLocaleString()} exoplanets, ${cexState.tessCandidates.length.toLocaleString()} TESS candidates loaded`, "");
+    setCompanionLoading(false);
+    updateCompanionUrl();
+    renderCompanionExplorer();
+  } catch (error) {
+    if (token !== cexState.loadToken) return;
+    composeCompanionPayload();
+    setCompanionStatus(error.message || "Could not load companions", "error");
     setCompanionLoading(false);
     renderCompanionExplorer();
+  }
+}
+
+async function fetchCompanionLayer(layer, options = {}) {
+  const params = companionLayerParams(layer);
+  const key = `${layer}?${params.toString()}`;
+  if (!options.force && cexState.layerPayloads.has(key)) {
+    return { key, payload: cexState.layerPayloads.get(key), clientCached: true };
+  }
+  if (!options.force && cexState.layerPromises.has(key)) return cexState.layerPromises.get(key);
+  if (options.cacheBust) params.set("_cache_bust", String(Date.now()));
+  const promise = fetchCompanionJson(`api/companion-explorer/data?${params.toString()}`)
+    .then((payload) => {
+      if (!payload.ok) throw new Error(payload.error || `Could not load ${layer}`);
+      cexState.layerPayloads.set(key, payload);
+      return { key, payload, clientCached: false };
+    })
+    .finally(() => cexState.layerPromises.delete(key));
+  cexState.layerPromises.set(key, promise);
+  return promise;
+}
+
+function companionLayerParams(layer) {
+  const params = companionApiParams();
+  params.set("layer", layer);
+  if (cexEl["cex-use-photometric-distances"].checked) params.set("use_photometric_distances", "1");
+  if (layer === "companions") {
+    params.set("max_rows", cexEl["cex-max-rows"].value || "80000");
+    params.set("x", cexEl["cex-x-axis"].value);
+    params.set("y", cexEl["cex-y-axis"].value);
+    params.set("xlog", cexEl["cex-x-log"].checked ? "1" : "0");
+    params.set("ylog", cexEl["cex-y-log"].checked ? "1" : "0");
+    params.set("comover_probability_min", cexEl["cex-prob-min"].value || "0");
+    if (cexEl["cex-spt-range"].value.trim()) params.set("spt_range", cexEl["cex-spt-range"].value.trim());
+    if (cexEl["cex-ignore-null-comover"].checked) params.set("ignore_null_comover", "1");
+    for (const filter of cexQuantityFilters) {
+      const value = validFilterLimit(cexEl[filter.id]?.value);
+      if (value !== null) params.set(filter.param, String(value));
+      if (cexEl[filter.nullId]?.checked) params.set(filter.nullParam, "1");
+    }
+    for (const cid of [...cexState.highlightCids].sort((a, b) => a - b)) params.append("cids", String(cid));
+  } else if (layer === "exoplanets") {
+    params.set("include_exoplanets", "1");
+    if (cexState.highlightExoplanetIds.size) {
+      params.set("highlight_exoplanets", [...cexState.highlightExoplanetIds].sort((a, b) => a.localeCompare(b)).join(","));
+    }
+  } else if (layer === "tess_candidates") {
+    params.set("include_tess_candidates", "1");
+  }
+  return params;
+}
+
+function currentCompanionLayerKey(layer) {
+  return `${layer}?${companionLayerParams(layer).toString()}`;
+}
+
+function clearIncompatibleCompanionLayer(layer) {
+  const installed = cexState.installedLayers.get(layer);
+  if (!installed || installed.key === currentCompanionLayerKey(layer)) return;
+  cexState.installedLayers.delete(layer);
+  if (layer === "companions") cexState.rows = [];
+  else if (layer === "exoplanets") cexState.exoplanets = [];
+  else if (layer === "tess_candidates") cexState.tessCandidates = [];
+}
+
+function installCompanionLayer(layer, entry) {
+  if (!entry?.payload) return;
+  cexState.installedLayers.set(layer, entry);
+  if (layer === "companions") {
+    cexState.rows = entry.payload.rows || [];
+    if (Array.isArray(entry.payload.axes) && entry.payload.axes.length) {
+      cexState.axes = new Map(entry.payload.axes.map((axis) => [axis.key, axis]));
+      populateCompanionAxisSelects();
+    }
+  } else if (layer === "exoplanets") {
+    cexState.exoplanets = entry.payload.exoplanets || [];
+  } else if (layer === "tess_candidates") {
+    cexState.tessCandidates = entry.payload.tess_candidates || entry.payload.tessCandidates || [];
+  }
+}
+
+function composeCompanionPayload() {
+  const entries = [...cexState.installedLayers.values()];
+  const base = cexState.installedLayers.get("companions")?.payload || cexState.payload || {};
+  cexState.payload = {
+    ...base,
+    rows: cexState.rows,
+    exoplanets: cexState.exoplanets,
+    tess_candidates: cexState.tessCandidates,
+    meta: {
+      ...(base.meta || {}),
+      row_count: cexState.rows.length,
+      exoplanet_count: cexState.exoplanets.length,
+      tess_candidate_count: cexState.tessCandidates.length,
+      layered_payloads: true,
+      query_seconds: entries.reduce((sum, entry) => sum + Number(entry.payload?.meta?.query_seconds || 0), 0),
+    },
+    cache: {
+      hit: Boolean(entries.length && entries.every((entry) => entry.clientCached || entry.payload?.cache?.hit)),
+      layered: true,
+    },
+  };
+}
+
+function companionLayerIsReady(layer) {
+  return cexState.installedLayers.get(layer)?.key === currentCompanionLayerKey(layer);
+}
+
+function loadMissingCompanionOverlaysOrRender() {
+  if (!companionCoverageCoversControls()) {
+    loadCompanionData();
     return;
   }
-  cexState.payload = payload;
-  cexState.rows = payload.rows || [];
-  cexState.exoplanets = payload.exoplanets || [];
-  cexState.tessCandidates = payload.tess_candidates || payload.tessCandidates || [];
-  if (Array.isArray(payload.axes) && payload.axes.length) {
-    cexState.axes = new Map(payload.axes.map((axis) => [axis.key, axis]));
-    populateCompanionAxisSelects();
+  const missing = (
+    (exoplanetsEnabled() && !companionLayerIsReady("exoplanets"))
+    || (tessCandidatesEnabled() && !companionLayerIsReady("tess_candidates"))
+  );
+  if (missing) loadCompanionData({ includeCompanions: false });
+  else renderCompanionExplorer();
+}
+
+function renderOrReloadCompanionCoverage() {
+  if (companionCoverageCoversControls()) renderCompanionExplorer();
+  else loadCompanionData();
+}
+
+function companionCoverageCoversControls() {
+  const coverage = cexState.installedLayers.get("companions")?.payload?.meta?.coverage;
+  if (!coverage) return false;
+  if (String(coverage.x || "") !== cexEl["cex-x-axis"].value) return false;
+  if (String(coverage.y || "") !== cexEl["cex-y-axis"].value) return false;
+  if (Boolean(coverage.xlog) && !cexEl["cex-x-log"].checked) return false;
+  if (Boolean(coverage.ylog) && !cexEl["cex-y-log"].checked) return false;
+  if (Number(cexEl["cex-prob-min"].value || 0) < Number(coverage.comover_probability_min || 0)) return false;
+  if (Boolean(coverage.ignore_null_comover) && !cexEl["cex-ignore-null-comover"].checked) return false;
+
+  const loadedSpt = parseSpectralRange(coverage.spt_range);
+  const currentSpt = parseSpectralRange(cexEl["cex-spt-range"].value);
+  if (loadedSpt && (!currentSpt || currentSpt.min < loadedSpt.min || currentSpt.max > loadedSpt.max)) return false;
+
+  const loadedFilters = new Map((coverage.quantity_filters || []).map((filter) => [filter.key, filter]));
+  for (const current of activeCompanionQuantityFilters()) {
+    const loaded = loadedFilters.get(current.key) || {};
+    const loadedLimit = finiteNumber(loaded.limit);
+    if (loadedLimit !== null && (current.limit === null || current.limit > loadedLimit)) return false;
+    if (Boolean(loaded.ignore_null) && !current.ignoreNull) return false;
   }
-  renderHighlightedCompanionList();
-  applyCompanionAxisDefaults(true, payload.default || {});
-  setCompanionStatus(`${cexState.rows.length.toLocaleString()} companions, ${cexState.exoplanets.length.toLocaleString()} exoplanets, ${cexState.tessCandidates.length.toLocaleString()} TESS candidates loaded`, "");
-  setCompanionLoading(false);
-  updateCompanionUrl();
-  renderCompanionExplorer();
+  for (const loaded of loadedFilters.values()) {
+    if (!loaded.ignore_null && finiteNumber(loaded.limit) === null) continue;
+    const current = activeCompanionQuantityFilters().find((filter) => filter.key === loaded.key);
+    if (!current) return false;
+  }
+  return true;
 }
 
 function applyCompanionAxisDefaults(initial = false, defaults = {}) {
@@ -355,9 +535,9 @@ function renderCompanionExplorer() {
   setCompanionExportDisabled(!(rows.length + exoplanets.length + tessCandidates.length));
 }
 
-function scheduleCompanionDataLoad(delay = 350) {
+function scheduleCompanionRender(delay = 90) {
   clearTimeout(cexState.filterLoadTimer);
-  cexState.filterLoadTimer = setTimeout(() => loadCompanionData(), delay);
+  cexState.filterLoadTimer = setTimeout(() => renderOrReloadCompanionCoverage(), delay);
 }
 
 function companionBaseTraces(rows, xKey, yKey, options = {}) {
@@ -1055,53 +1235,24 @@ async function searchCompanionTargets(query) {
   }
   cexEl["cex-companion-results"].innerHTML = `<div class="designation-result-note">Searching designations...</div>`;
   cexEl["cex-companion-results"].hidden = false;
-  try {
-    const index = await ensureCompanionDesignationIndex();
-    if (normalizeSearchText(cexEl["cex-companion-search"].value) !== normalizeSearchText(query)) return;
-    const indexResults = companionDesignationIndexResults(query, index);
-    if (indexResults.length) {
-      renderCompanionSearchResults(indexResults);
-      return;
-    }
-  } catch (error) {
-    console.warn("Companion designation index unavailable", error);
-  }
   const localResults = localCompanionSearchResults(query);
   if (localResults.length) {
     renderCompanionSearchResults(localResults);
+    return;
+  }
+  const cacheKey = `${exoplanetsEnabled() ? "exoplanets" : "companions"}:${normalizeSearchText(query)}`;
+  if (cexState.searchResultCache.has(cacheKey)) {
+    renderCompanionSearchResults(cexState.searchResultCache.get(cacheKey));
     return;
   }
   const params = companionApiParams();
   params.set("include_exoplanets", exoplanetsEnabled() ? "1" : "0");
   params.set("q", query);
   const payload = await fetchCompanionJson(`api/companion-explorer/search?${params.toString()}`);
-  renderCompanionSearchResults(payload.options || []);
-}
-
-async function ensureCompanionDesignationIndex() {
-  const key = exoplanetsEnabled() ? "exoplanets" : "companions";
-  if (cexState.designationIndex && cexState.designationIndexKey === key) return cexState.designationIndex;
-  if (cexState.designationIndexPromise && cexState.designationIndexKey === key) return cexState.designationIndexPromise;
-  cexState.designationIndexKey = key;
-  const params = companionApiParams();
-  params.set("include_exoplanets", exoplanetsEnabled() ? "1" : "0");
-  if (cexState.designationCacheBust) params.set("_cache_bust", cexState.designationCacheBust);
-  cexState.designationIndexPromise = fetchCompanionJson(`api/companion-explorer/designations?${params.toString()}`)
-    .then((payload) => {
-      if (!payload.ok) throw new Error(payload.error || "Could not load designation index");
-      cexState.designationIndex = payload.options || [];
-      return cexState.designationIndex;
-    })
-    .finally(() => {
-      cexState.designationIndexPromise = null;
-    });
-  return cexState.designationIndexPromise;
-}
-
-function companionDesignationIndexResults(query, rows) {
-  const companionRows = (rows || []).filter((row) => (row.result_kind || "companion") !== "exoplanet");
-  const exoplanetRows = (rows || []).filter((row) => (row.result_kind || "companion") === "exoplanet");
-  return localCompanionSearchResults(query, companionRows, exoplanetRows);
+  if (normalizeSearchText(cexEl["cex-companion-search"].value) !== normalizeSearchText(query)) return;
+  const options = payload.options || [];
+  cexState.searchResultCache.set(cacheKey, options);
+  renderCompanionSearchResults(options);
 }
 
 function localCompanionSearchResults(query, companionRows = cexState.rows || [], exoplanetRows = exoplanetsEnabled() ? cexState.exoplanets || [] : []) {
@@ -1436,10 +1587,10 @@ async function clearCompanionCache() {
   cexEl["cex-clear-cache-status"].textContent = "Clearing cache";
   try {
     const payload = await postCompanionJson("api/companion-explorer/cache/clear");
-    cexState.designationIndex = null;
-    cexState.designationIndexKey = "";
-    cexState.designationIndexPromise = null;
-    cexState.designationCacheBust = String(Date.now());
+    cexState.layerPayloads.clear();
+    cexState.layerPromises.clear();
+    cexState.installedLayers.clear();
+    cexState.searchResultCache.clear();
     const cleared = payload.cleared || {};
     const count = Object.values(cleared).reduce((sum, value) => sum + Number(value || 0), 0);
     cexEl["cex-clear-cache-status"].textContent = `Cleared ${count} cached entr${count === 1 ? "y" : "ies"}. Reloading.`;
@@ -1596,30 +1747,6 @@ function companionApiParams() {
   const params = new URLSearchParams();
   for (const key of ["host", "port", "user", "username", "pwd", "password", "dbase", "db", "database", "mock"]) {
     if (source.has(key)) params.set(key, source.get(key));
-  }
-  return params;
-}
-
-function applyCompanionDataParams(params) {
-  params.set("max_rows", cexEl["cex-max-rows"].value || "80000");
-  params.set("x", cexEl["cex-x-axis"].value);
-  params.set("y", cexEl["cex-y-axis"].value);
-  params.set("xlog", cexEl["cex-x-log"].checked ? "1" : "0");
-  params.set("ylog", cexEl["cex-y-log"].checked ? "1" : "0");
-  params.set("comover_probability_min", cexEl["cex-prob-min"].value || "0");
-  params.set("include_exoplanets", exoplanetsEnabled() ? "1" : "0");
-  params.set("include_tess_candidates", tessCandidatesEnabled() ? "1" : "0");
-  if (cexEl["cex-spt-range"].value.trim()) params.set("spt_range", cexEl["cex-spt-range"].value.trim());
-  if (cexEl["cex-ignore-null-comover"].checked) params.set("ignore_null_comover", "1");
-  if (cexEl["cex-use-photometric-distances"].checked) params.set("use_photometric_distances", "1");
-  for (const filter of cexQuantityFilters) {
-    const value = validFilterLimit(cexEl[filter.id]?.value);
-    if (value !== null) params.set(filter.param, String(value));
-    if (cexEl[filter.nullId]?.checked) params.set(filter.nullParam, "1");
-  }
-  for (const cid of cexState.highlightCids) params.append("cids", String(cid));
-  if (cexState.highlightExoplanetIds.size) {
-    params.set("highlight_exoplanets", [...cexState.highlightExoplanetIds].sort((a, b) => a.localeCompare(b)).join(","));
   }
   return params;
 }
