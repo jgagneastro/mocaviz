@@ -48,6 +48,7 @@ class BdEvolutionOptimizationTests(unittest.TestCase):
 
     def test_js_mount_api_routes_and_non_json_guard(self):
         script = (app_module.STATIC_DIR / "bd_evolution.js").read_text(encoding="utf-8")
+        html = (app_module.STATIC_DIR / "bd_evolution.html").read_text(encoding="utf-8")
         url_helper = script.split("function bdeAppUrl(path)", 1)[1].split(
             "async function initBdEvolution",
             1,
@@ -56,6 +57,7 @@ class BdEvolutionOptimizationTests(unittest.TestCase):
         self.assertNotIn("window.location.origin", url_helper)
         self.assertIn('if (!payload || typeof payload !== "object")', script)
         self.assertIn("Expected a JSON response", script)
+        self.assertIn("bd_evolution.js?v=api-routing-20260710a", html)
 
         data_response = self.client.get("/js/api/bd-evolution/data?mock=1&include_tracks=0")
         tracks_response = self.client.get("/js/api/bd-evolution/tracks?mock=1")
