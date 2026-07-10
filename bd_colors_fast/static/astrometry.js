@@ -55,7 +55,7 @@ const atmAppBaseUrl = (() => {
 
 function atmAppUrl(path) {
   const normalized = String(path || "").replace(/^\/+/, "");
-  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : atmAppBaseUrl).toString();
+  return new URL(normalized, atmAppBaseUrl).toString();
 }
 
 async function initAstrometry() {

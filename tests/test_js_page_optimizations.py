@@ -307,6 +307,64 @@ class JsPageOptimizationTests(unittest.TestCase):
         response = self.client.get("/js/api/companion-explorer/data?mock=1&layer=companions")
         self.assertTrue(decoded_json(response)["ok"])
 
+    def test_maintained_clients_keep_api_requests_under_js_mount(self):
+        script_names = (
+            "app.js",
+            "astrometry.js",
+            "banyan_sigma.js",
+            "bd_evolution.js",
+            "companion_explorer.js",
+            "exoplanets_explorer.js",
+            "gaia_cmd.js",
+            "group_hierarchy.js",
+            "moca_explorer.js",
+            "moca_flows.js",
+            "moranta26_rotation.js",
+            "retrieval_explorer.js",
+            "rvbam_explorer.js",
+            "sed.js",
+            "spectra.js",
+            "spectral_index_explorer.js",
+            "spectral_typing.js",
+            "trueflow_age_pdfs.js",
+            "xyzuvw.js",
+            "xyzuvw_three.js",
+        )
+        for script_name in script_names:
+            with self.subTest(script_name=script_name):
+                source = (app_module.STATIC_DIR / script_name).read_text(encoding="utf-8")
+                self.assertNotIn('normalized.startsWith("api/")', source)
+
+        html_names = (
+            "astrometry.html",
+            "banyan_sigma.html",
+            "exoplanets_explorer.html",
+            "gaia_cmd.html",
+            "group_hierarchy.html",
+            "index.html",
+            "moca_explorer.html",
+            "moca_flows.html",
+            "moranta26_rotation.html",
+            "retrieval_explorer.html",
+            "rvbam_explorer.html",
+            "sed.html",
+            "spectra.html",
+            "spectral_index_explorer.html",
+            "spectral_typing.html",
+            "trueflow_age_pdfs.html",
+            "xyz2.html",
+            "xyz2_three.html",
+            "xyzuvw.html",
+            "xyzuvw_three.html",
+        )
+        for html_name in html_names:
+            with self.subTest(html_name=html_name):
+                html = (app_module.STATIC_DIR / html_name).read_text(encoding="utf-8")
+                self.assertIn("api-routing-20260710a", html)
+
+        legacy_rv = (app_module.STATIC_DIR / "legacy_radial_velocities.js").read_text(encoding="utf-8")
+        self.assertNotIn("api-routing-20260710a", legacy_rv)
+
     def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
         selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
         base = {

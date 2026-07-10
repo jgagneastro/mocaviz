@@ -114,7 +114,7 @@ const rvbAppBaseUrl = (() => {
 
 function rvbAppUrl(path) {
   const normalized = String(path || "").replace(/^\/+/, "");
-  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : rvbAppBaseUrl).toString();
+  return new URL(normalized, rvbAppBaseUrl).toString();
 }
 
 async function initRvbamExplorer() {
