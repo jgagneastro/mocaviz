@@ -292,6 +292,21 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("api/companion-explorer/search", search)
         self.assertNotIn("api/companion-explorer/designations", search)
 
+    def test_companion_client_uses_js_mount_and_guards_non_json_responses(self):
+        source = (app_module.STATIC_DIR / "companion_explorer.js").read_text(encoding="utf-8")
+        html = (app_module.STATIC_DIR / "companion_explorer.html").read_text(encoding="utf-8")
+        url_helper = source.split("function cexAppUrl(path)", 1)[1].split(
+            "async function initCompanionExplorer",
+            1,
+        )[0]
+        self.assertIn("new URL(normalized, cexAppBaseUrl)", url_helper)
+        self.assertNotIn("window.location.origin", url_helper)
+        self.assertIn("Expected a JSON response", source)
+        self.assertIn("companion_explorer.js?v=api-routing-20260710a", html)
+
+        response = self.client.get("/js/api/companion-explorer/data?mock=1&layer=companions")
+        self.assertTrue(decoded_json(response)["ok"])
+
     def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
         selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
         base = {

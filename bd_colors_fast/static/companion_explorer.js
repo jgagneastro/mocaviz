@@ -127,7 +127,7 @@ const cexAppBaseUrl = (() => {
 
 function cexAppUrl(path) {
   const normalized = String(path || "").replace(/^\/+/, "");
-  return new URL(normalized.startsWith("api/") ? `/${normalized}` : normalized, normalized.startsWith("api/") ? window.location.origin : cexAppBaseUrl).toString();
+  return new URL(normalized, cexAppBaseUrl).toString();
 }
 
 async function initCompanionExplorer() {
@@ -1753,7 +1753,13 @@ function companionApiParams() {
 
 async function fetchCompanionJson(path) {
   const response = await fetch(cexAppUrl(path), { headers: { Accept: "application/json" } });
-  return response.json();
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `HTTP ${response.status}`);
+  if (!payload || typeof payload !== "object") {
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    throw new Error(`Expected a JSON response from ${new URL(response.url).pathname}; received ${contentType}`);
+  }
+  return payload;
 }
 
 async function postCompanionJson(path, body = {}) {
@@ -1762,8 +1768,12 @@ async function postCompanionJson(path, body = {}) {
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `HTTP ${response.status}`);
+  if (!payload || typeof payload !== "object") {
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    throw new Error(`Expected a JSON response from ${new URL(response.url).pathname}; received ${contentType}`);
+  }
   return payload;
 }
 
