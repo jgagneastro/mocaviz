@@ -128,6 +128,132 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertTrue(all(row.get("highlighted") for row in highlights["rows"]))
         self.assertFalse(highlights["sequences"])
 
+    def test_gaia_photometry_quality_off_is_explicit_and_unfiltered(self):
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        html = self.client.get("/js/gaia-cmd").get_data(as_text=True)
+        api_params_block = script.split("function gaiaCmdApiParams()", 1)[1].split(
+            "function updateGaiaCmdUrl()",
+            1,
+        )[0]
+        self.assertIn('params.set("gaia_quality", gaiaQuality);', api_params_block)
+        self.assertNotIn('gaiaQuality !== "off"', api_params_block)
+        self.assertIn("Gaia photometry quality filter", html)
+        self.assertNotIn("Gaia source quality", html)
+
+        payloads = {}
+        for mode in ("off", "soft", "strict"):
+            payloads[mode] = decoded_json(self.client.get(
+                "/api/gaia-cmd/data?mock=1&sample_part=associations&asso=HYA"
+                f"&gaia_quality={mode}&filter_wd=0&max_objects=200"
+            ))
+            self.assertEqual(payloads[mode]["selection"]["gaia_quality"], mode)
+        self.assertGreater(len(payloads["off"]["rows"]), len(payloads["soft"]["rows"]))
+        self.assertGreater(len(payloads["soft"]["rows"]), len(payloads["strict"]["rows"]))
+
+    def test_gaia_membership_basis_sources_defaults_and_union(self):
+        default_selection = _gaia_cmd_selection({})
+        literature_selection = _gaia_cmd_selection({"membership_basis": "literature_claims"})
+        union_selection = _gaia_cmd_selection({"membership_basis": "union"})
+        self.assertEqual(default_selection["membership_basis"], "banyan_sigma")
+        self.assertEqual(default_selection["membership_download_floor"], 50.0)
+        self.assertEqual(literature_selection["membership_download_floor"], 0.0)
+        self.assertEqual(union_selection["membership_download_floor"], 0.0)
+
+        banyan_sql = app_module._gaia_cmd_association_candidates_sql(
+            default_selection,
+            ":aid",
+            True,
+        )
+        literature_sql = app_module._gaia_cmd_association_candidates_sql(
+            literature_selection,
+            ":aid",
+            True,
+        )
+        union_sql = app_module._gaia_cmd_association_candidates_sql(
+            union_selection,
+            ":aid",
+            True,
+        )
+        self.assertIn("FROM calc_banyan_sigma", banyan_sql)
+        self.assertNotIn("FROM data_memberships", banyan_sql)
+        self.assertIn("FROM data_memberships", literature_sql)
+        self.assertIn("LEFT JOIN", literature_sql)
+        self.assertIn("FROM calc_banyan_sigma", literature_sql)
+        self.assertIn("canonical_banyan.ya_prob", literature_sql)
+        self.assertNotIn("dm.is_public", literature_sql)
+        self.assertNotIn("dm.is_public", union_sql)
+        self.assertIn("UNION ALL", union_sql)
+        self.assertIn("GROUP BY candidate_rows.moca_oid, candidate_rows.moca_aid", union_sql)
+
+        common = (
+            "/api/gaia-cmd/data?mock=1&sample_part=associations&asso=HYA"
+            "&gaia_quality=off&filter_wd=0&max_objects=240"
+        )
+        banyan = decoded_json(self.client.get(common))
+        literature = decoded_json(self.client.get(f"{common}&membership_basis=literature_claims"))
+        union = decoded_json(self.client.get(f"{common}&membership_basis=union"))
+        self.assertTrue(all(row["has_banyan_sigma"] == 1 for row in banyan["rows"]))
+        self.assertTrue(all(row["has_literature_claim"] == 1 for row in literature["rows"]))
+        self.assertTrue(any(row["ya_prob"] is not None for row in literature["rows"]))
+        self.assertTrue(any(row["ya_prob"] is None for row in literature["rows"]))
+        self.assertGreater(len(union["rows"]), len(banyan["rows"]))
+        self.assertGreater(len(union["rows"]), len(literature["rows"]))
+        self.assertEqual(len({(row["moca_aid"], row["moca_oid"]) for row in union["rows"]}), len(union["rows"]))
+        self.assertTrue(all(row["has_banyan_sigma"] or row["has_literature_claim"] for row in union["rows"]))
+        self.assertTrue(any(row["has_banyan_sigma"] and row["has_literature_claim"] for row in union["rows"]))
+
+        html = self.client.get("/js/gaia-cmd").get_data(as_text=True)
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        self.assertIn('<option value="banyan_sigma" selected>BANYAN Σ</option>', html)
+        self.assertIn('<option value="literature_claims">Literature claims</option>', html)
+        self.assertIn('<option value="union">Union of BANYAN Σ and literature</option>', html)
+        self.assertIn("literature_claims: 0", script)
+        self.assertIn("union: 0", script)
+        self.assertIn("input.disabled = false;", script)
+        self.assertIn("if (minimumProbability <= 0) return true;", script)
+
+    def test_gaia_vetted_membership_missing_option_and_filter(self):
+        options = decoded_json(self.client.get("/api/gaia-cmd/options?mock=1"))
+        option_values = [row["value"] for row in options["vetted_mtids"]]
+        missing_index = option_values.index("missing")
+        self.assertEqual(option_values[missing_index - 1:missing_index + 2], ["CM", "missing", "LM"])
+        self.assertEqual(options["vetted_mtids"][missing_index]["label"], "Missing")
+        self.assertTrue(options["vetted_mtids"][missing_index]["italic"])
+
+        missing = decoded_json(self.client.get(
+            "/api/gaia-cmd/data?mock=1&sample_part=associations&asso=HYA"
+            "&gaia_quality=off&filter_wd=0&vetted_mtid=missing&max_objects=200"
+        ))
+        self.assertTrue(missing["rows"])
+        self.assertTrue(all(not row.get("vetted_moca_mtids") for row in missing["rows"]))
+
+        selection = {
+            "vetted_mtids": ["missing"],
+            "filter_giants": False,
+            "filter_wd": False,
+        }
+        sql = app_module._gaia_cmd_object_filter_sql(
+            "cbs",
+            selection,
+            "`mocadb_private_tables`",
+            "NULL",
+            "cbs.moca_aid",
+            "",
+            "x",
+            "y",
+        )
+        self.assertIn("NOT EXISTS", sql)
+        self.assertIn("mechanics_memberships_vetted mmv_missing", sql)
+        self.assertNotIn("moca_mtid IN", sql)
+
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        styles = (app_module.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('const gcmdMissingVettedMtid = "missing";', script)
+        self.assertIn("const matchesMissing = Boolean(row?.moca_aid)", script)
+        self.assertIn("selected.includes(gcmdMissingVettedMtid)", script)
+        self.assertIn(".gcmd-vetted-mtid-missing", styles)
+        self.assertIn("font-style: italic", styles)
+
     def test_gaia_compact_field_payload_is_columnar(self):
         field = decoded_json(self.client.get(
             "/api/gaia-cmd/data?mock=1&sample_part=field&compact=1&max_objects=80"

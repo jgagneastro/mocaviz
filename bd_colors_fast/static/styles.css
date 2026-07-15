@@ -5073,3 +5073,6 @@ body.is-management #spe-plot .modebar {
     justify-content: flex-start;
   }
 }
+.gcmd-vetted-mtid-missing {
+  font-style: italic;
+}
