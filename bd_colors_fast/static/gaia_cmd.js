@@ -893,7 +893,7 @@ function gaiaCmdRowPassesMembership(row) {
 }
 
 function gaiaCmdRowPassesVettedMtid(row, selected = selectedGaiaCmdVettedMtids()) {
-  if (!selected.length) return true;
+  if (!selected.length || !row?.moca_aid || row._highlighted) return true;
   const rowMtids = row?._vettedMtidSet || new Set(parseCsv(row?.vetted_moca_mtids || "").map(String));
   const matchesMissing = Boolean(row?.moca_aid)
     && selected.includes(gcmdMissingVettedMtid)

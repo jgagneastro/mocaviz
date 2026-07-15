@@ -227,6 +227,16 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertTrue(missing["rows"])
         self.assertTrue(all(not row.get("vetted_moca_mtids") for row in missing["rows"]))
 
+        combined = decoded_json(self.client.get(
+            "/api/gaia-cmd/data?mock=1&sample_part=all&asso=HYA"
+            "&gaia_quality=off&filter_wd=0&vetted_mtid=HM&max_objects=200"
+        ))
+        field_rows = [row for row in combined["rows"] if not row.get("moca_aid")]
+        association_rows = [row for row in combined["rows"] if row.get("moca_aid")]
+        self.assertTrue(field_rows)
+        self.assertTrue(association_rows)
+        self.assertTrue(all("HM" in row.get("vetted_moca_mtids", "").split(",") for row in association_rows))
+
         selection = {
             "vetted_mtids": ["missing"],
             "filter_giants": False,
@@ -246,11 +256,24 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("mechanics_memberships_vetted mmv_missing", sql)
         self.assertNotIn("moca_mtid IN", sql)
 
+        field_sql = app_module._gaia_cmd_object_filter_sql(
+            "g",
+            selection,
+            "`mocadb_private_tables`",
+            "NULL",
+            None,
+            "",
+            "x",
+            "y",
+        )
+        self.assertEqual(field_sql, "")
+
         script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
         styles = (app_module.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
         self.assertIn('const gcmdMissingVettedMtid = "missing";', script)
         self.assertIn("const matchesMissing = Boolean(row?.moca_aid)", script)
         self.assertIn("selected.includes(gcmdMissingVettedMtid)", script)
+        self.assertIn("!selected.length || !row?.moca_aid || row._highlighted", script)
         self.assertIn(".gcmd-vetted-mtid-missing", styles)
         self.assertIn("font-style: italic", styles)
 

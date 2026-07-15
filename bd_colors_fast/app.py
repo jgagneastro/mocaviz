@@ -7213,35 +7213,32 @@ def _gaia_cmd_object_filter_sql(
     clauses: list[str] = []
     class_x_sql = f"({class_x_expr})"
     class_y_sql = f"({class_y_expr})"
-    if selection["vetted_mtids"]:
-        if vetted_aid_expr:
-            vetted_matches: list[str] = []
-            selected_mtids = [
-                mtid for mtid in selection["vetted_mtids"]
-                if mtid != GAIA_CMD_MISSING_VETTED_MTID
-            ]
-            if selected_mtids:
-                vetted_matches.append(
-                    "EXISTS ("
-                    f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_filter "
-                    f"WHERE mmv_filter.moca_oid = {alias}.moca_oid "
-                    f"AND mmv_filter.moca_aid = {vetted_aid_expr} "
-                    f"AND mmv_filter.moca_mtid IN ({vetted_mtid_clause})"
-                    f"{vetted_visibility_filter}"
-                    ")"
-                )
-            if GAIA_CMD_MISSING_VETTED_MTID in selection["vetted_mtids"]:
-                vetted_matches.append(
-                    "NOT EXISTS ("
-                    f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_missing "
-                    f"WHERE mmv_missing.moca_oid = {alias}.moca_oid "
-                    f"AND mmv_missing.moca_aid = {vetted_aid_expr}"
-                    f"{vetted_visibility_filter.replace('mmv_filter.', 'mmv_missing.')}"
-                    ")"
-                )
-            clauses.append(f"({' OR '.join(vetted_matches)})")
-        else:
-            clauses.append("0 = 1")
+    if selection["vetted_mtids"] and vetted_aid_expr:
+        vetted_matches: list[str] = []
+        selected_mtids = [
+            mtid for mtid in selection["vetted_mtids"]
+            if mtid != GAIA_CMD_MISSING_VETTED_MTID
+        ]
+        if selected_mtids:
+            vetted_matches.append(
+                "EXISTS ("
+                f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_filter "
+                f"WHERE mmv_filter.moca_oid = {alias}.moca_oid "
+                f"AND mmv_filter.moca_aid = {vetted_aid_expr} "
+                f"AND mmv_filter.moca_mtid IN ({vetted_mtid_clause})"
+                f"{vetted_visibility_filter}"
+                ")"
+            )
+        if GAIA_CMD_MISSING_VETTED_MTID in selection["vetted_mtids"]:
+            vetted_matches.append(
+                "NOT EXISTS ("
+                f"SELECT 1 FROM {schema_sql}.mechanics_memberships_vetted mmv_missing "
+                f"WHERE mmv_missing.moca_oid = {alias}.moca_oid "
+                f"AND mmv_missing.moca_aid = {vetted_aid_expr}"
+                f"{vetted_visibility_filter.replace('mmv_filter.', 'mmv_missing.')}"
+                ")"
+            )
+        clauses.append(f"({' OR '.join(vetted_matches)})")
     if selection["filter_giants"]:
         clauses.append(
             f"({alias}.moca_oid IS NULL OR {class_x_sql} IS NULL OR {class_y_sql} IS NULL "
@@ -7845,6 +7842,7 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     highlight_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
     field_sql_selection = {
         **selection,
+        "vetted_mtids": [],
         "filter_giants": False,
         "filter_wd": False,
     }
@@ -8495,7 +8493,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
                 mock_vetted_mtids.append("HM")
         mock_is_giant = index % 29 == 0
         mock_is_wd = index % 31 == 0
-        if selection["vetted_mtids"]:
+        if selection["vetted_mtids"] and aid:
             selected_real_mtids = {
                 mtid for mtid in selection["vetted_mtids"]
                 if mtid != GAIA_CMD_MISSING_VETTED_MTID
