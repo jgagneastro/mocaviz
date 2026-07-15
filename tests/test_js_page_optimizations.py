@@ -735,10 +735,22 @@ class JsPageOptimizationTests(unittest.TestCase):
 
     def test_gaia_cmd_field_rows_are_not_selectable(self):
         script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        events_block = script.split("function bindPlotEventsOnce", 1)[1].split(
+            "function rowFromGaiaCmdClick",
+            1,
+        )[0]
+        click_resolution_block = script.split("function rowFromGaiaCmdClick", 1)[1].split(
+            "function rowFromPoint",
+            1,
+        )[0]
         row_from_point_block = script.split("function rowFromPoint", 1)[1].split(
             "function uniqueRows",
             1,
         )[0]
+        self.assertIn("rowFromGaiaCmdClick(event, plot)", events_block)
+        self.assertIn("points.map(rowFromPoint).find(Boolean)", click_resolution_block)
+        self.assertIn("nearestSelectableGaiaCmdRow(points[0], plot)", click_resolution_block)
+        self.assertIn("gcmdSelectableClickRadiusPx ** 2", click_resolution_block)
         self.assertIn(
             "return row && (row.moca_aid || row._highlighted) ? row : null;",
             row_from_point_block,

@@ -132,6 +132,7 @@ const gcmdFieldPayloadCacheMax = 8;
 const gcmdAssociationPayloadCacheMax = 320;
 const gcmdHighlightPayloadCacheMax = 32;
 const gcmdDynamicTraceSlotCount = 16;
+const gcmdSelectableClickRadiusPx = 20;
 const gcmdMissingVettedMtid = "missing";
 const gcmdDefaultVettedMtids = [
   { value: "BF", label: "BF" },
@@ -2039,7 +2040,7 @@ function bindPlotEventsOnce() {
   if (plot.dataset.gcmdBound === "1") return;
   plot.dataset.gcmdBound = "1";
   plot.on("plotly_click", (event) => {
-    const row = rowFromPoint(event?.points?.[0]);
+    const row = rowFromGaiaCmdClick(event, plot);
     gcmdState.selectedRows = row ? [row] : [];
     renderGaiaCmdSelection();
     updateGaiaCmdSelectedPointMarker();
@@ -2056,6 +2057,43 @@ function bindPlotEventsOnce() {
     renderGaiaCmdSelection();
     updateGaiaCmdSelectedPointMarker();
   });
+}
+
+function rowFromGaiaCmdClick(event, plot) {
+  const points = event?.points || [];
+  const directRow = points.map(rowFromPoint).find(Boolean);
+  return directRow || nearestSelectableGaiaCmdRow(points[0], plot);
+}
+
+function nearestSelectableGaiaCmdRow(point, plot) {
+  const xAxis = plot?._fullLayout?.xaxis;
+  const yAxis = plot?._fullLayout?.yaxis;
+  if (!finite(point?.x) || !finite(point?.y)) return null;
+  if (typeof xAxis?.l2p !== "function" || typeof yAxis?.l2p !== "function") return null;
+
+  const clickX = xAxis.l2p(Number(point.x));
+  const clickY = yAxis.l2p(Number(point.y));
+  const maxDistanceSquared = gcmdSelectableClickRadiusPx ** 2;
+  const seen = new Set();
+  let nearestRow = null;
+  let nearestDistanceSquared = maxDistanceSquared;
+
+  for (const trace of plot?.data || []) {
+    for (const customdata of trace?.customdata || []) {
+      const index = Number(Array.isArray(customdata) ? customdata[0] : customdata);
+      if (!Number.isInteger(index) || seen.has(index)) continue;
+      seen.add(index);
+      const row = gcmdState.rows[index];
+      if (!row || (!row.moca_aid && !row._highlighted) || !finite(row.x) || !finite(row.y)) continue;
+      const dx = xAxis.l2p(Number(row.x)) - clickX;
+      const dy = yAxis.l2p(Number(row.y)) - clickY;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared > nearestDistanceSquared) continue;
+      nearestRow = row;
+      nearestDistanceSquared = distanceSquared;
+    }
+  }
+  return nearestRow;
 }
 
 function rowFromPoint(point) {
