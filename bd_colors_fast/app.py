@@ -1588,6 +1588,9 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 dst.complete_spectral_type,
                 dst.photometric_estimate AS spectral_type_photometric_estimate,
                 COALESCE(spt_pub.name, CAST(spt_pub.moca_pid AS CHAR), dst.origin, 'No reference') AS spt_ref,
+                dplx.parallax_mas,
+                dplx.parallax_mas_unc AS parallax_mas_error,
+                dplx.bibcode AS parallax_ref,
                 mopc.all_prop_confidences,
                 1 AS row_available
             FROM data_spectral_types dst
@@ -1595,6 +1598,9 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 ON mo.moca_oid = dst.moca_oid
             LEFT JOIN moca_publications spt_pub
                 ON spt_pub.moca_pid = dst.moca_pid
+            LEFT JOIN data_parallaxes dplx
+                ON dplx.moca_oid = dst.moca_oid
+                AND dplx.adopted = 1
             LEFT JOIN mechanics_object_properties_combined mopc
                 ON mopc.moca_oid = dst.moca_oid
             WHERE dst.spectral_type_number IS NOT NULL
@@ -2246,6 +2252,9 @@ def _mock_payload() -> dict[str, Any]:
             "spectral_type_photometric_estimate": photometric_spt,
             "spectral_type_public_adopted": 0 if photometric_spt and i % 2 else 1,
             "spt_ref": "mock",
+            "parallax_mas": round(12.5 + (i % 23) * 0.75, 3),
+            "parallax_mas_error": round(0.08 + (i % 7) * 0.015, 3),
+            "parallax_ref": f"20{10 + (i % 16):02d}Mock...{i % 10}P",
             "all_prop_confidences": binary_flag,
             "mock_banyan_moca_aid": mock_aid,
             "mock_banyan_ya_prob": mock_ya_prob,
