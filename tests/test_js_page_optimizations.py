@@ -733,6 +733,17 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn('line: { color: "#d69e00", width: 3.2 }', trace_block)
         self.assertEqual(events_block.count("updateGaiaCmdSelectedPointMarker();"), 3)
 
+    def test_gaia_cmd_field_rows_are_not_selectable(self):
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        row_from_point_block = script.split("function rowFromPoint", 1)[1].split(
+            "function uniqueRows",
+            1,
+        )[0]
+        self.assertIn(
+            "return row && (row.moca_aid || row._highlighted) ? row : null;",
+            row_from_point_block,
+        )
+
     def test_all_maintained_scatter_pages_have_default_preserving_symbol_size_control(self):
         scatter_pages = (
             "index.html",

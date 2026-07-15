@@ -2062,7 +2062,8 @@ function rowFromPoint(point) {
   const fallbackIndex = point?.data?.meta?.rowIndexes?.[point?.pointNumber];
   const index = Number(point?.customdata ?? fallbackIndex);
   if (!Number.isInteger(index)) return null;
-  return gcmdState.rows[index] || null;
+  const row = gcmdState.rows[index] || null;
+  return row && (row.moca_aid || row._highlighted) ? row : null;
 }
 
 function uniqueRows(rows) {
