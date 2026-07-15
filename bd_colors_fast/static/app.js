@@ -91,6 +91,7 @@ const state = {
   hiddenLegendBinaries: false,
   hiddenLegendPhotdist: false,
   legendClickTimer: null,
+  manualPhotdistChoice: false,
   plotBound: false,
   plotLoadReasons: new Set(),
   autoErrorDefaults: { x: false, y: false },
@@ -264,7 +265,10 @@ function readInitialUrlState() {
   el["xerr-max"].value = params.get("xerr_max") || "";
   el["yerr-max"].value = params.get("yerr_max") || "";
   el["show-errors"].checked = asBool(params.get("errors"));
-  el["include-photdist"].checked = asBool(params.get("photdist"));
+  state.manualPhotdistChoice = params.has("photdist");
+  el["include-photdist"].checked = state.manualPhotdistChoice
+    ? asBool(params.get("photdist"))
+    : !hasAbsoluteMagnitudeAxis();
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
   el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
@@ -301,6 +305,7 @@ function bindControls() {
       if (id.endsWith("axis-type")) {
         refreshAxisValueControls(id[0], { preferDefaults: true });
         applyAxisErrorDefaults();
+        applyPhotometricDistanceDefault();
       }
       updateAdvancedPhotometryControl();
       updateBickleSptControl();
@@ -346,6 +351,7 @@ function bindControls() {
     render();
   });
   el["include-photdist"].addEventListener("change", () => {
+    state.manualPhotdistChoice = true;
     requestInitialAxisRange();
     render();
   });
@@ -466,6 +472,14 @@ function hasAbsoluteMagnitudeAxis() {
 
 function includePhotometricDistances() {
   return el["include-photdist"].checked;
+}
+
+function applyPhotometricDistanceDefault() {
+  if (state.manualPhotdistChoice) return false;
+  const checked = !hasAbsoluteMagnitudeAxis();
+  if (el["include-photdist"].checked === checked) return false;
+  el["include-photdist"].checked = checked;
+  return true;
 }
 
 function applyAxisErrorDefaults(explicitErrorThresholds = {}) {

@@ -54,6 +54,9 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertNotIn("only-trig-parallaxes", script)
         self.assertIn('params.delete("trigplx")', script)
         self.assertNotIn("function updatePhotdistControl", script)
+        self.assertIn('state.manualPhotdistChoice = params.has("photdist")', script)
+        self.assertIn("function applyPhotometricDistanceDefault()", script)
+        self.assertIn("const checked = !hasAbsoluteMagnitudeAxis()", script)
         self.assertIn("const includePhotdist = includePhotometricDistances()", build_rows_block)
         self.assertIn(
             "if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;",
