@@ -58,6 +58,11 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("function applyPhotometricDistanceDefault()", script)
         self.assertIn("const checked = !hasAbsoluteMagnitudeAxis()", script)
         self.assertIn("const includePhotdist = includePhotometricDistances()", build_rows_block)
+        self.assertIn("const usePhotdistForAxes = usePhotometricDistancesForAxes()", build_rows_block)
+        self.assertIn(
+            "is_photometric_distance: usePhotdistForAxes &&",
+            build_rows_block,
+        )
         self.assertIn(
             "if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;",
             build_rows_block,

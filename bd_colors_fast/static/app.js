@@ -474,6 +474,10 @@ function includePhotometricDistances() {
   return el["include-photdist"].checked;
 }
 
+function usePhotometricDistancesForAxes() {
+  return hasAbsoluteMagnitudeAxis() && includePhotometricDistances();
+}
+
 function applyPhotometricDistanceDefault() {
   if (state.manualPhotdistChoice) return false;
   const checked = !hasAbsoluteMagnitudeAxis();
@@ -928,7 +932,7 @@ function ensureNeededFeatures() {
   if (state.selectedDesignations.length && !state.featuresLoaded.designations && !state.featureLoads.designations) {
     loadFeature("designations");
   }
-  if (includePhotometricDistances() && !state.photometricDistancesLoaded && !state.featureLoads.distances) {
+  if (usePhotometricDistancesForAxes() && !state.photometricDistancesLoaded && !state.featureLoads.distances) {
     loadDistances();
   }
   const sequenceKey = currentSequenceKey();
@@ -1776,7 +1780,7 @@ function render() {
 }
 
 function deferRenderUntilPhotometricDistancesLoaded() {
-  if (!includePhotometricDistances() || state.photometricDistancesLoaded) return false;
+  if (!usePhotometricDistancesForAxes() || state.photometricDistancesLoaded) return false;
   if (!state.featureLoads.distances) loadDistances();
   return true;
 }
@@ -1856,6 +1860,7 @@ function buildRows() {
   const range = parseSptRange(el["spt-range"].value);
   const highlighted = highlightedOidSet();
   const includePhotdist = includePhotometricDistances();
+  const usePhotdistForAxes = usePhotometricDistancesForAxes();
   const includeBinaries = el["include-binaries"].checked;
   const includePhotspt = el["include-photspt"].checked;
   const xSpec = axisSpec("x");
@@ -1875,14 +1880,14 @@ function buildRows() {
     if (!includeBinaries && binary && !isHighlighted) continue;
     if (!includePhotspt && photometricSpt && !isHighlighted) continue;
 
-    const x = axisValue(object, xSpec, includePhotdist);
-    const y = axisValue(object, ySpec, includePhotdist);
+    const x = axisValue(object, xSpec, usePhotdistForAxes);
+    const y = axisValue(object, ySpec, usePhotdistForAxes);
     if (!x || !y || !Number.isFinite(x.value) || !Number.isFinite(y.value)) continue;
 
     const age = state.maps.ageByOid.get(oid);
     const ageSample = ageSampleFor(object);
     const gravityClass = gravityClassForObject(object);
-    const distance = bestDistance(oid, includePhotdist);
+    const distance = bestDistance(oid, usePhotdistForAxes);
     const row = {
       moca_oid: oid,
       designation: object.designation || "",
@@ -1899,7 +1904,7 @@ function buildRows() {
       gravity_class: gravityClass,
       is_binary: binary,
       is_photometric_spt: photometricSpt,
-      is_photometric_distance: includePhotdist && Number(distance?.photometric_estimate || 0) === 1,
+      is_photometric_distance: usePhotdistForAxes && Number(distance?.photometric_estimate || 0) === 1,
       x: x.value,
       y: y.value,
       plot_x: jitteredAxisValue(x.value, oid, "x", xSpec.type),
@@ -2402,7 +2407,7 @@ function installPlotResizeObserver() {
 }
 
 function hasPendingCriticalPlotData() {
-  if (includePhotometricDistances() && !state.photometricDistancesLoaded) return true;
+  if (usePhotometricDistancesForAxes() && !state.photometricDistancesLoaded) return true;
   if (neededPhotometryPsids().some((psid) => !state.photometryLoaded.has(psid))) return true;
   for (const axis of ["x", "y"]) {
     const type = el[`${axis}-axis-type`].value;
@@ -2453,7 +2458,7 @@ function axisDataReadySignature(spec) {
   if (spec.type === "equivalent_width") return state.featuresLoaded.equivalentWidths ? "loaded" : "loading";
   if (spec.type === "absolute_magnitude") {
     const photometryReady = state.photometryLoaded.has(spec.value1) ? "phot-loaded" : "phot-loading";
-    const distanceReady = includePhotometricDistances() ? (state.photometricDistancesLoaded ? "dist-loaded" : "dist-loading") : "dist-spectro";
+    const distanceReady = usePhotometricDistancesForAxes() ? (state.photometricDistancesLoaded ? "dist-loaded" : "dist-loading") : "dist-spectro";
     return `${photometryReady}:${distanceReady}`;
   }
   if (spec.type === "color") {
@@ -3012,8 +3017,8 @@ function ageColorbar(rows) {
   const ages = rows.map((row) => Number(row.age_myr)).filter((age) => Number.isFinite(age) && age > 0);
   let length = ageColorbarLength;
   if (el["include-binaries"].checked) length *= ageColorbarBinaryLengthMultiplier;
-  if (includePhotometricDistances()) length *= ageColorbarPhotdistLengthMultiplier;
-  if (includePhotometricDistances() && el["include-binaries"].checked && el["include-photspt"].checked) {
+  if (usePhotometricDistancesForAxes()) length *= ageColorbarPhotdistLengthMultiplier;
+  if (usePhotometricDistancesForAxes() && el["include-binaries"].checked && el["include-photspt"].checked) {
     length *= ageColorbarAllOptionalLengthMultiplier;
   }
   const out = {
@@ -3118,7 +3123,7 @@ function binaryLegendTraces(rows) {
 }
 
 function photometricDistanceLegendTraces(rows) {
-  if (!includePhotometricDistances() || !rows.some((row) => row.is_photometric_distance)) return [];
+  if (!usePhotometricDistancesForAxes() || !rows.some((row) => row.is_photometric_distance)) return [];
   return [{
     type: "scatter",
     mode: "markers",
