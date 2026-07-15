@@ -1234,6 +1234,7 @@ async function renderGaiaCmdPlot(options = {}) {
   }
   addBinaryOverlayTrace(dynamicTraces, displayRows);
   addHighlightTrace(dynamicTraces, highlightRows);
+  dynamicTraces.push(selectedGaiaCmdPointTrace(selectedGaiaCmdMarkerRows()));
   markGaiaCmdTraceLayer(dynamicTraces, "dynamic");
 
   const layout = gaiaCmdLayout(payload.selection || {}, payload.spt_axis || null, displayRows);
@@ -1567,6 +1568,49 @@ function addHighlightTrace(traces, rows) {
       line: { width: 1.8, color: highlightEdge },
     },
   });
+}
+
+function selectedGaiaCmdMarkerRows() {
+  if (!gcmdState.selectedRows.length) return [];
+  const displayedKeys = new Set(gaiaCmdDisplayRows().map(rowKey));
+  return gcmdState.selectedRows.filter((row) => displayedKeys.has(rowKey(row)));
+}
+
+function selectedGaiaCmdPointTrace(rows) {
+  return {
+    type: "scattergl",
+    uid: "selected-point-marker",
+    mode: "markers",
+    name: "Selected",
+    showlegend: false,
+    x: rows.map((row) => row.x),
+    y: rows.map((row) => row.y),
+    text: rows.map((row) => hoverText(row)),
+    customdata: rows.map((row) => row._plotIndex),
+    hovertemplate: "%{text}<extra></extra>",
+    marker: {
+      symbol: "star",
+      size: 22,
+      color: "#ffffff",
+      opacity: 1,
+      line: { color: "#d69e00", width: 3.2 },
+    },
+    meta: { mocavizSelectedMarker: true },
+  };
+}
+
+function updateGaiaCmdSelectedPointMarker() {
+  const traceIndex = (gcmdEl["gcmd-plot"]?.data || []).findIndex((trace) => (
+    trace?.meta?.mocavizSelectedMarker || trace?.uid === "selected-point-marker"
+  ));
+  if (traceIndex < 0 || !gcmdEl["gcmd-plot"]?._fullLayout) return;
+  const trace = selectedGaiaCmdPointTrace(selectedGaiaCmdMarkerRows());
+  Plotly.restyle(gcmdEl["gcmd-plot"], {
+    x: [trace.x],
+    y: [trace.y],
+    text: [trace.text],
+    customdata: [trace.customdata],
+  }, [traceIndex]);
 }
 
 function addBinaryOverlayTrace(traces, rows) {
@@ -1998,16 +2042,19 @@ function bindPlotEventsOnce() {
     const row = rowFromPoint(event?.points?.[0]);
     gcmdState.selectedRows = row ? [row] : [];
     renderGaiaCmdSelection();
+    updateGaiaCmdSelectedPointMarker();
   });
   plot.on("plotly_selected", (event) => {
     if (window.MocaPlotlySelection?.isDegenerate(plot, event)) return;
     const rows = (event?.points || []).map(rowFromPoint).filter(Boolean);
     gcmdState.selectedRows = uniqueRows(rows);
     renderGaiaCmdSelection();
+    updateGaiaCmdSelectedPointMarker();
   });
   plot.on("plotly_deselect", () => {
     gcmdState.selectedRows = [];
     renderGaiaCmdSelection();
+    updateGaiaCmdSelectedPointMarker();
   });
 }
 

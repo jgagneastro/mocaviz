@@ -717,6 +717,22 @@ class JsPageOptimizationTests(unittest.TestCase):
         )[0]
         self.assertNotIn("setGaiaCmdLoader(false)", partial_block)
 
+    def test_gaia_cmd_selected_rows_have_plot_marker_overlay(self):
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        trace_block = script.split("function selectedGaiaCmdPointTrace", 1)[1].split(
+            "function updateGaiaCmdSelectedPointMarker",
+            1,
+        )[0]
+        events_block = script.split("function bindPlotEventsOnce", 1)[1].split(
+            "function rowFromPoint",
+            1,
+        )[0]
+        self.assertIn('uid: "selected-point-marker"', trace_block)
+        self.assertIn('symbol: "star"', trace_block)
+        self.assertIn('color: "#ffffff"', trace_block)
+        self.assertIn('line: { color: "#d69e00", width: 3.2 }', trace_block)
+        self.assertEqual(events_block.count("updateGaiaCmdSelectedPointMarker();"), 3)
+
     def test_all_maintained_scatter_pages_have_default_preserving_symbol_size_control(self):
         scatter_pages = (
             "index.html",
