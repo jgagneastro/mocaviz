@@ -2238,6 +2238,7 @@ def _mock_payload() -> dict[str, Any]:
         suffix = "sd" if i % 29 == 0 else None
         binary_flag = "multiple_system:C" if i % 23 == 0 else None
         photometric_spt = 1 if i % 31 == 0 else 0
+        has_mock_parallax = i % 4 != 1
         mock_aid = ["ABDMG", "BPMG", "TWA", "THA"][(i // 6) % 4] if i % 6 == 0 else None
         mock_ya_prob = round(50 + ((i * 7) % 50) + rng.random(), 3) if mock_aid else None
         objects.append({
@@ -2252,9 +2253,9 @@ def _mock_payload() -> dict[str, Any]:
             "spectral_type_photometric_estimate": photometric_spt,
             "spectral_type_public_adopted": 0 if photometric_spt and i % 2 else 1,
             "spt_ref": "mock",
-            "parallax_mas": round(12.5 + (i % 23) * 0.75, 3),
-            "parallax_mas_error": round(0.08 + (i % 7) * 0.015, 3),
-            "parallax_ref": f"20{10 + (i % 16):02d}Mock...{i % 10}P",
+            "parallax_mas": round(12.5 + (i % 23) * 0.75, 3) if has_mock_parallax else None,
+            "parallax_mas_error": round(0.08 + (i % 7) * 0.015, 3) if has_mock_parallax else None,
+            "parallax_ref": f"20{10 + (i % 16):02d}Mock...{i % 10}P" if has_mock_parallax else None,
             "all_prop_confidences": binary_flag,
             "mock_banyan_moca_aid": mock_aid,
             "mock_banyan_ya_prob": mock_ya_prob,

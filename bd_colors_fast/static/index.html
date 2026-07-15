@@ -118,6 +118,10 @@
             <span>Plot objects with photometric distances</span>
           </label>
           <label class="checkline">
+            <input id="only-trig-parallaxes" type="checkbox">
+            <span>Plot only objects with trigonometric parallaxes</span>
+          </label>
+          <label class="checkline">
             <input id="include-binaries" type="checkbox">
             <span>Plot known binaries</span>
           </label>
@@ -291,6 +295,11 @@
             <td>Plots known binaries. They are drawn with open marker symbols and listed in the legend.</td>
           </tr>
           <tr>
+            <td><code>trigplx</code></td>
+            <td><code>false</code></td>
+            <td>Plots only objects with a finite adopted trigonometric parallax measurement.</td>
+          </tr>
+          <tr>
             <td><code>photspt</code></td>
             <td><code>false</code></td>
             <td>Includes photometric spectral type estimates. This can be slow because it broadens the source query.</td>
@@ -354,6 +363,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-trigplx-20260715a"></script>
 </body>
 </html>

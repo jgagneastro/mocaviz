@@ -18,6 +18,7 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIsInstance(row["parallax_mas"], float)
         self.assertIsInstance(row["parallax_mas_error"], float)
         self.assertTrue(row["parallax_ref"])
+        self.assertTrue(any(candidate["parallax_mas"] is None for candidate in payload["catalog"]["objects"]))
 
     def test_object_query_uses_only_the_adopted_parallax(self):
         source = " ".join(inspect.getsource(app_module._load_bootstrap_from_db).split())
@@ -40,6 +41,21 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         for column in ("parallax_mas", "parallax_mas_error", "parallax_ref"):
             self.assertIn(f'tableColumn("{column}")', table_block)
             self.assertIn(f'"{column}"', export_block)
+
+    def test_trigonometric_parallax_filter_is_default_off_and_url_addressable(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        html = self.client.get("/js/bd-colors").get_data(as_text=True)
+        build_rows_block = script.split("function buildRows()", 1)[1].split(
+            "function associationHighlightForObject", 1
+        )[0]
+
+        self.assertIn('id="only-trig-parallaxes" type="checkbox"', html)
+        self.assertNotIn('id="only-trig-parallaxes" type="checkbox" checked', html)
+        self.assertIn("Plot only objects with trigonometric parallaxes", html)
+        self.assertIn('params.get("trigplx")', script)
+        self.assertIn('params.set("trigplx", el["only-trig-parallaxes"].checked ? "1" : "0")', script)
+        self.assertIn("const onlyTrigParallaxes", build_rows_block)
+        self.assertIn("!Number.isFinite(numericValue(object.parallax_mas))", build_rows_block)
 
 
 if __name__ == "__main__":

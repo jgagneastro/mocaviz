@@ -210,6 +210,7 @@ function collectElements() {
     "yerr-max",
     "show-errors",
     "include-photdist",
+    "only-trig-parallaxes",
     "include-binaries",
     "include-photspt",
     "include-risky-photspt",
@@ -267,6 +268,7 @@ function readInitialUrlState() {
   el["show-errors"].checked = asBool(params.get("errors"));
   el["include-photdist"].checked = asBool(params.get("photdist"));
   state.manualPhotdistChoice = el["include-photdist"].checked;
+  el["only-trig-parallaxes"].checked = asBool(params.get("trigplx"));
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
   el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
@@ -351,6 +353,10 @@ function bindControls() {
   });
   el["include-photdist"].addEventListener("change", () => {
     state.manualPhotdistChoice = el["include-photdist"].checked;
+    requestInitialAxisRange();
+    render();
+  });
+  el["only-trig-parallaxes"].addEventListener("change", () => {
     requestInitialAxisRange();
     render();
   });
@@ -648,6 +654,7 @@ function buildBootstrapParams() {
 function updateUrlFromControls() {
   const params = buildBootstrapParams();
   params.set("errors", el["show-errors"].checked ? "1" : "0");
+  params.set("trigplx", el["only-trig-parallaxes"].checked ? "1" : "0");
   params.set("binaries", el["include-binaries"].checked ? "1" : "0");
   params.set("agecolor", el["color-by-age"].checked ? "1" : "0");
   params.set("gravitycolor", el["color-by-gravity"].checked ? "1" : "0");
@@ -1859,6 +1866,7 @@ function buildRows() {
   const includePhotdist = includePhotometricDistancesForAxes();
   const includeBinaries = el["include-binaries"].checked;
   const includePhotspt = el["include-photspt"].checked;
+  const onlyTrigParallaxes = el["only-trig-parallaxes"].checked;
   const xSpec = axisSpec("x");
   const ySpec = axisSpec("y");
   const rows = [];
@@ -1871,6 +1879,7 @@ function buildRows() {
     const binary = isBinary(object);
     const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
     if (!Number.isFinite(spt)) continue;
+    if (onlyTrigParallaxes && !Number.isFinite(numericValue(object.parallax_mas))) continue;
     if (range && (spt < range.min || spt > range.max) && !isHighlighted) continue;
     if (!includeBinaries && binary && !isHighlighted) continue;
     if (!includePhotspt && photometricSpt && !isHighlighted) continue;
