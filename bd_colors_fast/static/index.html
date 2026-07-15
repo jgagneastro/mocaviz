@@ -118,10 +118,6 @@
             <span>Plot objects with photometric distances</span>
           </label>
           <label class="checkline">
-            <input id="only-trig-parallaxes" type="checkbox">
-            <span>Plot only objects with trigonometric parallaxes</span>
-          </label>
-          <label class="checkline">
             <input id="include-binaries" type="checkbox">
             <span>Plot known binaries</span>
           </label>
@@ -287,17 +283,12 @@
           <tr>
             <td><code>photdist</code></td>
             <td><code>false</code></td>
-            <td>Includes objects with photometric distance estimates when an absolute-magnitude axis is active.</td>
+            <td>Includes objects with photometric distance estimates. When false, only objects with a finite adopted trigonometric parallax are plotted.</td>
           </tr>
           <tr>
             <td><code>binaries</code></td>
             <td><code>false</code></td>
             <td>Plots known binaries. They are drawn with open marker symbols and listed in the legend.</td>
-          </tr>
-          <tr>
-            <td><code>trigplx</code></td>
-            <td><code>false</code></td>
-            <td>Plots only objects with a finite adopted trigonometric parallax measurement.</td>
           </tr>
           <tr>
             <td><code>photspt</code></td>
@@ -363,6 +354,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-trigplx-20260715a"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715b"></script>
 </body>
 </html>

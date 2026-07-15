@@ -42,20 +42,23 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             self.assertIn(f'tableColumn("{column}")', table_block)
             self.assertIn(f'"{column}"', export_block)
 
-    def test_trigonometric_parallax_filter_is_default_off_and_url_addressable(self):
+    def test_photometric_distance_option_is_the_inverse_parallax_filter(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         html = self.client.get("/js/bd-colors").get_data(as_text=True)
         build_rows_block = script.split("function buildRows()", 1)[1].split(
             "function associationHighlightForObject", 1
         )[0]
 
-        self.assertIn('id="only-trig-parallaxes" type="checkbox"', html)
-        self.assertNotIn('id="only-trig-parallaxes" type="checkbox" checked', html)
-        self.assertIn("Plot only objects with trigonometric parallaxes", html)
-        self.assertIn('params.get("trigplx")', script)
-        self.assertIn('params.set("trigplx", el["only-trig-parallaxes"].checked ? "1" : "0")', script)
-        self.assertIn("const onlyTrigParallaxes", build_rows_block)
-        self.assertIn("!Number.isFinite(numericValue(object.parallax_mas))", build_rows_block)
+        self.assertIn('id="include-photdist" type="checkbox"', html)
+        self.assertNotIn('id="only-trig-parallaxes"', html)
+        self.assertNotIn("only-trig-parallaxes", script)
+        self.assertIn('params.delete("trigplx")', script)
+        self.assertNotIn("function updatePhotdistControl", script)
+        self.assertIn("const includePhotdist = includePhotometricDistances()", build_rows_block)
+        self.assertIn(
+            "if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;",
+            build_rows_block,
+        )
 
 
 if __name__ == "__main__":
