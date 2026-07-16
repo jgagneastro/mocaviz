@@ -4357,9 +4357,16 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
     return payload
 
 
-def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selected_specid: int | None = None) -> dict[str, Any]:
+def _search_spt_spectra_from_db(
+    args: dict[str, Any],
+    query: str | None,
+    selected_specid: int | None = None,
+    required_oid: int | None = None,
+    excluded_specids: Sequence[int] | None = None,
+) -> dict[str, Any]:
     search_text = (query or "").strip()
-    if not search_text and selected_specid is None:
+    excluded = set(_spt_parse_specid_values(excluded_specids))
+    if not search_text and selected_specid is None and required_oid is None:
         return {"options": [], "value": None, "meta": {"row_count": 0}}
     search_int: int | None = None
     if search_text.isdigit():
@@ -4398,10 +4405,27 @@ def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selecte
             AND spt.adopted = 1
         WHERE COALESCE(ms.ignored, 0) = 0
     """
+    scope_sql = ""
+    scope_params: dict[str, Any] = {}
+    if required_oid is not None:
+        scope_sql = "\n            AND ms.moca_oid = :required_oid"
+        scope_params["required_oid"] = int(required_oid)
+    exclusion_sql = "\n            AND ms.moca_specid NOT IN :excluded_specids" if excluded else ""
     rows: list[dict[str, Any]] = []
     with engine.connect() as conn:
+        def read_scoped(sql: str, params: dict[str, Any]) -> pd.DataFrame:
+            if excluded:
+                return _read_sql_expanding(
+                    conn,
+                    sql,
+                    "excluded_specids",
+                    sorted(excluded),
+                    params,
+                )
+            return _read_sql(conn, sql, params)
+
         if search_text:
-            rows = _records(_read_sql(conn, base_query + """
+            rows = _records(read_scoped(base_query + scope_sql + exclusion_sql + """
                 AND (
                     (:search_int IS NOT NULL AND (ms.moca_specid = :search_int OR ms.moca_oid = :search_int))
                     OR CONCAT('specid', ms.moca_specid) LIKE :search_prefix
@@ -4426,15 +4450,21 @@ def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selecte
                     ms.moca_specid
                 LIMIT 100
             """, {
+                **scope_params,
                 "search_int": search_int,
                 "search_prefix": f"{search_text}%",
                 "search_like": f"%{search_text}%",
             }))
+        elif required_oid is not None:
+            rows = _records(read_scoped(base_query + scope_sql + exclusion_sql + """
+                ORDER BY ms.moca_specid
+                LIMIT 100
+            """, scope_params))
         if selected_specid is not None and all(int(row["moca_specid"]) != int(selected_specid) for row in rows if row.get("moca_specid") is not None):
-            selected_rows = _records(_read_sql(conn, base_query + """
+            selected_rows = _records(read_scoped(base_query + scope_sql + exclusion_sql + """
                 AND ms.moca_specid = :specid
                 LIMIT 1
-            """, {"specid": int(selected_specid)}))
+            """, {**scope_params, "specid": int(selected_specid)}))
             rows = selected_rows + rows
 
     seen: set[int] = set()
@@ -4443,12 +4473,20 @@ def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selecte
         if row.get("moca_specid") is None:
             continue
         specid = int(row["moca_specid"])
-        if specid in seen:
+        if specid in seen or specid in excluded:
             continue
         seen.add(specid)
         options.append({**row, "value": specid, "label": row.get("label") or f"specid{specid}"})
     value = int(selected_specid) if selected_specid is not None and int(selected_specid) in seen else None
-    return {"options": options, "value": value, "meta": {"row_count": len(options)}}
+    return {
+        "options": options,
+        "value": value,
+        "meta": {
+            "row_count": len(options),
+            "required_moca_oid": int(required_oid) if required_oid is not None else None,
+            "excluded_specids": sorted(excluded),
+        },
+    }
 
 
 def _precompute_spt_comparison(
@@ -30709,6 +30747,10 @@ def spectral_typing_grid():
 def spectral_typing_search():
     args = dict(request.args)
     query = args.get("q") or args.get("search") or ""
+    required_oid = _spt_int_value(args.get("moca_oid") or args.get("oid"))
+    excluded_specids = _spt_parse_specid_values(
+        args.get("exclude_specids") or args.get("excluded_specids")
+    )
     selected_specid = None
     raw_specid = args.get("specid") or args.get("moca_specid")
     if raw_specid is not None:
@@ -30719,21 +30761,55 @@ def spectral_typing_search():
     try:
         if args.get("mock") in {"1", "true", "yes"}:
             query_specids = _spt_parse_specid_values(query)
-            mock_specid = int(selected_specid or (query_specids[0] if query_specids else 450))
-            mock_oid = 10995 if mock_specid == 13510 else 990602
-            mock_designation = "2MASS J05591914-1404488" if mock_specid == 13510 else "MOCK comparison"
-            mock_spt = "T4.5" if mock_specid == 13510 else "L8.5"
-            options = [{
-                "moca_specid": mock_specid,
-                "moca_oid": mock_oid,
-                "designation": mock_designation,
-                "spectral_type": mock_spt,
-                "label": f"specid{mock_specid},oid{mock_oid}: {mock_designation} ({mock_spt})",
-                "value": mock_specid,
-            }]
-            value = mock_specid if selected_specid is not None else None
-            return jsonify({"ok": True, "source": "mock", "options": options, "value": value, "meta": {"row_count": len(options)}})
-        payload = _search_spt_spectra_from_db(args, query, selected_specid)
+            if selected_specid is not None:
+                mock_specids = [int(selected_specid)]
+            elif query_specids:
+                mock_specids = [int(query_specids[0])]
+            elif required_oid == 10995:
+                mock_specids = [13510]
+            elif required_oid is not None:
+                mock_specids = [450, 451, 452]
+            else:
+                mock_specids = [450]
+            excluded = set(excluded_specids)
+            options = []
+            for mock_specid in mock_specids:
+                mock_oid = 10995 if mock_specid == 13510 else 990602
+                if required_oid is not None and mock_oid != required_oid:
+                    continue
+                if mock_specid in excluded:
+                    continue
+                mock_designation = "2MASS J05591914-1404488" if mock_specid == 13510 else "MOCK comparison"
+                mock_spt = "T4.5" if mock_specid == 13510 else "L8.5"
+                options.append({
+                    "moca_specid": mock_specid,
+                    "moca_oid": mock_oid,
+                    "designation": mock_designation,
+                    "spectral_type": mock_spt,
+                    "label": f"specid{mock_specid},oid{mock_oid}: {mock_designation} ({mock_spt})",
+                    "value": mock_specid,
+                })
+            value = selected_specid if selected_specid is not None and any(
+                option["moca_specid"] == selected_specid for option in options
+            ) else None
+            return jsonify({
+                "ok": True,
+                "source": "mock",
+                "options": options,
+                "value": value,
+                "meta": {
+                    "row_count": len(options),
+                    "required_moca_oid": required_oid,
+                    "excluded_specids": sorted(excluded),
+                },
+            })
+        payload = _search_spt_spectra_from_db(
+            args,
+            query,
+            selected_specid,
+            required_oid=required_oid,
+            excluded_specids=excluded_specids,
+        )
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return jsonify({

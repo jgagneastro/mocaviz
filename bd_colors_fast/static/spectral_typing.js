@@ -56,6 +56,7 @@ const sptState = {
   currentIndex: 0,
   comparePayload: null,
   searchTimer: null,
+  suppressSearchFocus: false,
   computeToken: 0,
   quickComputeToken: 0,
   initialGridParam: "",
@@ -281,8 +282,9 @@ function bindSpectralControls() {
   sptEl["spt-compute-composite"].addEventListener("click", () => computeSpectralComparison({ force: true }));
   sptEl["spt-cancel-composite"].addEventListener("click", cancelCompositeSelection);
   sptEl["spt-comparison-search"].addEventListener("focus", () => {
+    if (sptState.suppressSearchFocus) return;
     const value = sptEl["spt-comparison-search"].value.trim();
-    if (value) searchSpectra(value);
+    if (value || sptState.combineMode) searchSpectra(value);
   });
   document.addEventListener("click", (event) => {
     if (!sptEl["spt-comparison-results"].contains(event.target) && event.target !== sptEl["spt-comparison-search"]) {
@@ -490,11 +492,11 @@ function fillGridSelect(options = sptState.gridOptions) {
 async function searchSpectra(query, options = {}) {
   const selectedSpecid = options.selectedSpecid ?? null;
   const quiet = Boolean(options.quiet);
-  if (!query && selectedSpecid === null) {
+  if (!query && selectedSpecid === null && !sptState.combineMode) {
     sptEl["spt-comparison-results"].hidden = true;
     return;
   }
-  if (!quiet && query.length < 2 && !/^\d+$/.test(query)) {
+  if (!quiet && query && query.length < 2 && !/^\d+$/.test(query)) {
     sptEl["spt-comparison-results"].innerHTML = `<div class="designation-result-note">Type at least two characters</div>`;
     showSearchResultsPopup();
     return;
@@ -502,6 +504,17 @@ async function searchSpectra(query, options = {}) {
   const params = apiParams();
   if (query) params.set("q", query);
   if (selectedSpecid !== null) params.set("specid", selectedSpecid);
+  const selectedSpecids = new Set(selectedComparisonSpecids());
+  const requiredOid = sptState.combineMode ? compositeSelectionOid() : null;
+  if (sptState.combineMode) {
+    if (requiredOid === null) {
+      setSpectralStatus("The selected spectrum is not linked to a moca_oid", "error");
+      sptEl["spt-comparison-results"].hidden = true;
+      return;
+    }
+    params.set("moca_oid", requiredOid);
+    if (selectedSpecids.size) params.set("exclude_specids", [...selectedSpecids].join(","));
+  }
   const payload = await fetchJsonUrl(sptAppUrl(`api/spectral-typing/search?${params.toString()}`));
   if (!payload.ok) {
     if (!quiet) {
@@ -510,7 +523,12 @@ async function searchSpectra(query, options = {}) {
     }
     return;
   }
-  const results = payload.options || [];
+  const results = (payload.options || []).filter((row) => {
+    if (!sptState.combineMode) return true;
+    const rowSpecid = parseInteger(row.value ?? row.moca_specid);
+    const rowOid = parseInteger(row.moca_oid);
+    return rowSpecid !== null && !selectedSpecids.has(rowSpecid) && rowOid === requiredOid;
+  });
   if (selectedSpecid !== null && results.length) {
     selectSpectrum(results[0], { deferCompute: true });
     return;
@@ -536,7 +554,9 @@ async function loadSelectedSpectrumLabels() {
 
 function renderSearchResults(results) {
   if (!results.length) {
-    sptEl["spt-comparison-results"].innerHTML = `<div class="designation-result-note">No spectra found</div>`;
+    const oid = sptState.combineMode ? compositeSelectionOid() : null;
+    const message = oid === null ? "No spectra found" : `No other spectra found for oid${oid}`;
+    sptEl["spt-comparison-results"].innerHTML = `<div class="designation-result-note">${escapeHtml(message)}</div>`;
     showSearchResultsPopup();
     return;
   }
@@ -628,6 +648,7 @@ function updateSelectedSpectrumDisplay() {
     : "No spectrum selected";
   sptEl["spt-clear-spectrum"].hidden = !hasSpectrum;
   sptEl["spt-start-composite"].hidden = !hasSpectrum || compositeMode;
+  sptEl["spt-start-composite"].disabled = !hasSpectrum || compositeSelectionOid() === null;
   sptEl["spt-selected-spectra"].hidden = !compositeMode;
   sptEl["spt-composite-actions"].hidden = !compositeMode;
   sptEl["spt-composite-hint"].hidden = !compositeMode;
@@ -652,6 +673,14 @@ function selectedComparisonSpecids() {
   return uniqueSpectralIntegers(sptState.selectedSpectra.map((item) => item.specid));
 }
 
+function compositeSelectionOid() {
+  for (const item of sptState.selectedSpectra) {
+    const oid = parseInteger(item?.metadata?.moca_oid);
+    if (oid !== null) return oid;
+  }
+  return parseInteger(sptState.comparePayload?.comparisonMetadata?.moca_oid);
+}
+
 function spectralSelectionItem(option) {
   const specid = parseInteger(option?.value ?? option?.moca_specid);
   const metadata = { ...(option || {}), moca_specid: specid, value: specid };
@@ -670,13 +699,21 @@ function syncPrimarySpectrumState() {
 
 function startCompositeSelection() {
   if (!selectedComparisonSpecids().length) return;
+  const oid = compositeSelectionOid();
+  if (oid === null) {
+    setSpectralStatus("The selected spectrum is not linked to a moca_oid and cannot be combined", "error");
+    return;
+  }
   sptState.combineMode = true;
   sptState.selectionDirty = false;
   sptEl["spt-comparison-search"].value = "";
   updateSelectedSpectrumDisplay();
   updateSpectralUrl();
-  setSpectralStatus("Add spectra from the same object, then type the combined spectrum", "");
+  setSpectralStatus(`Showing unselected spectra for oid${oid}`, "");
+  sptState.suppressSearchFocus = true;
   sptEl["spt-comparison-search"].focus();
+  sptState.suppressSearchFocus = false;
+  searchSpectra("");
 }
 
 async function cancelCompositeSelection() {
@@ -725,6 +762,7 @@ function removeSpectrumFromComposite(specid) {
   markCompositeSelectionDirty();
   updateSelectedSpectrumDisplay();
   updateSpectralUrl();
+  searchSpectra(sptEl["spt-comparison-search"].value.trim());
 }
 
 function markCompositeSelectionDirty() {

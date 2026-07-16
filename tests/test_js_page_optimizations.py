@@ -748,6 +748,21 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertEqual(payload["comparisonMetadata"]["moca_oid"], 990602)
         self.assertTrue(any(row.get("source_specids") == "450,451" for row in payload["comparison"]))
 
+    def test_spectral_typing_composite_search_is_scoped_and_excludes_selected_specids(self):
+        payload = decoded_json(self.client.get(
+            "/api/spectral-typing/search?mock=1&moca_oid=990602&exclude_specids=450"
+        ))
+        self.assertTrue(payload["ok"])
+        self.assertEqual([row["moca_specid"] for row in payload["options"]], [451, 452])
+        self.assertEqual(payload["meta"]["required_moca_oid"], 990602)
+        self.assertEqual(payload["meta"]["excluded_specids"], [450])
+
+        other_object = decoded_json(self.client.get(
+            "/api/spectral-typing/search?mock=1&q=13510&moca_oid=990602&exclude_specids=450,451"
+        ))
+        self.assertTrue(other_object["ok"])
+        self.assertEqual(other_object["options"], [])
+
     def test_spectral_typing_composite_push_uses_null_specid_and_provenance_comment(self):
         specids, specid, composite = app_module._spt_push_comparison_selection({
             "moca_specid": None,
@@ -781,6 +796,8 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("specids.length > 1 ? { specids }", source)
         self.assertIn("moca_specid: comparisonSpecid", source)
         self.assertIn("moca_specids: comparisonSpecids", source)
+        self.assertIn('params.set("moca_oid", requiredOid)', source)
+        self.assertIn('params.set("exclude_specids", [...selectedSpecids].join(","))', source)
 
     def test_banyan_sigma_page_uses_greek_sigma_and_has_empty_plot_guidance(self):
         html = self.client.get("/js/banyan-sigma").get_data(as_text=True)
