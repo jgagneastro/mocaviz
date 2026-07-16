@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 import bd_colors_fast.app as app_module
@@ -577,7 +578,7 @@ class JsPageOptimizationTests(unittest.TestCase):
             1,
         )[0]
         self.assertIn("Promise.all([authPromise, gridPromise])", spectral_init)
-        self.assertIn("searchSpectra(\"\", { selectedSpecid", spectral_init)
+        self.assertIn("loadSelectedSpectrumLabels()", spectral_init)
         self.assertIn("computeSpectralComparison()", spectral_init)
 
     def test_xyz_association_removal_carves_loaded_payload_without_refetch(self):
@@ -657,6 +658,129 @@ class JsPageOptimizationTests(unittest.TestCase):
         lower_loader = html.split('id="spt-chi2-loader"', 1)[1].split("</div>", 3)[:3]
         self.assertIn("Loading best-fit comparison", "".join(upper_loader))
         self.assertIn("Loading χ² map", "".join(lower_loader))
+
+    def test_spectral_typing_composite_stitching_is_order_independent(self):
+        def spectrum_payload(specid, start, stop, factor):
+            wavelength = np.arange(start, stop + 0.0001, 0.01)
+            intrinsic = 1.0 + 0.15 * wavelength + 0.03 * np.sin(8.0 * wavelength)
+            return {
+                "metadata": {
+                    "moca_specid": specid,
+                    "moca_oid": 602,
+                    "designation": "Composite target",
+                    "label": f"specid{specid}: Composite target",
+                },
+                "spectrum": [
+                    {
+                        "moca_specid": specid,
+                        "wv": float(wv),
+                        "sp": float(flux * factor),
+                        "esp": float(0.01 * factor),
+                    }
+                    for wv, flux in zip(wavelength, intrinsic)
+                ],
+                "meta": {"average_resolving_power": 150.0},
+            }
+
+        payloads = [
+            spectrum_payload(101, 0.82, 1.30, 4.0),
+            spectrum_payload(102, 1.10, 1.62, 0.5),
+            spectrum_payload(103, 1.45, 1.90, 2.5),
+        ]
+        forward = app_module._spt_comparison_from_payloads(payloads, 100)
+        reverse = app_module._spt_comparison_from_payloads(list(reversed(payloads)), 100)
+        pd.testing.assert_frame_equal(
+            forward["comparison_raw"].reset_index(drop=True),
+            reverse["comparison_raw"].reset_index(drop=True),
+        )
+        self.assertTrue(forward["stitching"]["composite"])
+        self.assertEqual(len(forward["stitching"]["components"]), 1)
+        self.assertGreaterEqual(len(forward["stitching"]["overlaps"]), 2)
+        self.assertTrue(any(row["source_count"] > 1 for _, row in forward["comparison_raw"].iterrows()))
+
+    def test_spectral_typing_composite_warns_for_disconnected_components(self):
+        def payload(specid, start, stop, factor):
+            wavelength = np.arange(start, stop + 0.0001, 0.01)
+            return {
+                "metadata": {"moca_specid": specid, "moca_oid": 602, "designation": "Target"},
+                "spectrum": [
+                    {"moca_specid": specid, "wv": float(wv), "sp": float(factor * (1 + wv)), "esp": 0.02}
+                    for wv in wavelength
+                ],
+                "meta": {"average_resolving_power": 120.0},
+            }
+
+        result = app_module._spt_comparison_from_payloads([
+            payload(201, 0.82, 1.10, 3.0),
+            payload(202, 1.50, 1.80, 0.4),
+        ], 100)
+        self.assertEqual(len(result["stitching"]["components"]), 2)
+        self.assertTrue(result["stitching"]["warnings"])
+        self.assertTrue(all(row["method"] == "independent_median" for row in result["stitching"]["components"]))
+
+    def test_spectral_typing_composite_requires_one_object(self):
+        def payload(specid, oid):
+            return {
+                "metadata": {"moca_specid": specid, "moca_oid": oid, "designation": "Target"},
+                "spectrum": [
+                    {"moca_specid": specid, "wv": float(wv), "sp": float(1 + wv), "esp": 0.02}
+                    for wv in np.arange(0.90, 1.21, 0.01)
+                ],
+                "meta": {"average_resolving_power": 120.0},
+            }
+
+        with self.assertRaisesRegex(ValueError, "same moca_oid"):
+            app_module._spt_comparison_from_payloads([
+                payload(301, 602),
+                payload(302, 603),
+            ], 100)
+
+    def test_spectral_typing_mock_api_accepts_composite_specids(self):
+        payload = decoded_json(self.client.post(
+            "/api/spectral-typing/compare?mock=1",
+            json={"specids": [451, 450], "bins": 200},
+        ))
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["meta"]["specids"], [450, 451])
+        self.assertTrue(payload["meta"]["composite"])
+        self.assertIsNone(payload["meta"]["specid"])
+        self.assertIsNone(payload["comparisonMetadata"]["moca_specid"])
+        self.assertEqual(payload["comparisonMetadata"]["moca_oid"], 990602)
+        self.assertTrue(any(row.get("source_specids") == "450,451" for row in payload["comparison"]))
+
+    def test_spectral_typing_composite_push_uses_null_specid_and_provenance_comment(self):
+        specids, specid, composite = app_module._spt_push_comparison_selection({
+            "moca_specid": None,
+            "moca_specids": [451, 450],
+        })
+        self.assertEqual(specids, [450, 451])
+        self.assertIsNone(specid)
+        self.assertTrue(composite)
+        comments = app_module._spt_push_comments(
+            {
+                "moca_specids": [451, 450],
+                "stitching_summary": "overlap_graph, scales=450:1,451:2",
+            },
+            {
+                "moca_specid": 9001,
+                "grid": "field",
+                "moca_sptgridhid": 77,
+                "designation": "Standard",
+            },
+        )
+        self.assertIn("combined_moca_specids=450,451", comments)
+        self.assertIn("stitching=overlap_graph, scales=450:1,451:2", comments)
+
+    def test_spectral_typing_composite_controls_are_progressively_disclosed(self):
+        html = self.client.get("/js/spectral-typing").get_data(as_text=True)
+        source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        self.assertIn('id="spt-start-composite"', html)
+        self.assertIn('id="spt-selected-spectra"', html)
+        self.assertIn('id="spt-compute-composite"', html)
+        self.assertIn("addSpectrumToComposite(result)", source)
+        self.assertIn("specids.length > 1 ? { specids }", source)
+        self.assertIn("moca_specid: comparisonSpecid", source)
+        self.assertIn("moca_specids: comparisonSpecids", source)
 
     def test_banyan_sigma_page_uses_greek_sigma_and_has_empty_plot_guidance(self):
         html = self.client.get("/js/banyan-sigma").get_data(as_text=True)

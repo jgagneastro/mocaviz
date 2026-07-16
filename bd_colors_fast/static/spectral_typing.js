@@ -19,6 +19,7 @@ const sptPicklesMetallicityOrder = new Map([["strong", 0], ["solar", 1], ["weak"
 const sptGridColors = ["#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5"];
 const sptStandardRed = "#E41A1C";
 const sptStandardPalette = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF"];
+const sptCompositeColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#666666"];
 
 const sptFeatureBands = [
   { name: "H2O", range: [0.92, 0.96], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
@@ -48,6 +49,9 @@ const sptState = {
   gridData: [],
   selectedSpecid: null,
   selectedSpectrumLabel: "",
+  selectedSpectra: [],
+  combineMode: false,
+  selectionDirty: false,
   selectedGrid: "",
   currentIndex: 0,
   comparePayload: null,
@@ -160,9 +164,9 @@ async function initSpectralTyping() {
   const gridPromise = loadSpectralGrid();
   await Promise.all([authPromise, gridPromise]);
   updateSpectralManagementVisibility();
-  if (sptState.selectedSpecid !== null) {
+  if (selectedComparisonSpecids().length) {
     await Promise.all([
-      searchSpectra("", { selectedSpecid: sptState.selectedSpecid, quiet: true }),
+      loadSelectedSpectrumLabels(),
       computeSpectralComparison(),
     ]);
   } else {
@@ -174,10 +178,20 @@ function collectSpectralElements() {
   [
     "spt-status",
     "spt-comparison-search",
+    "spt-comparison-search-label",
     "spt-comparison-results",
     "spt-selected-spectrum",
     "spt-selected-spectrum-text",
     "spt-clear-spectrum",
+    "spt-start-composite",
+    "spt-selected-spectra",
+    "spt-composite-actions",
+    "spt-compute-composite",
+    "spt-cancel-composite",
+    "spt-composite-hint",
+    "spt-stitch-details",
+    "spt-stitch-summary",
+    "spt-stitch-content",
     "spt-standards-source",
     "spt-grid-select",
     "spt-prev-grid",
@@ -226,8 +240,17 @@ function collectSpectralElements() {
 
 function readSpectralUrlState() {
   const params = new URLSearchParams(window.location.search);
+  const rawSpecids = params.get("specids") || "";
+  const parsedSpecids = uniqueSpectralIntegers(
+    rawSpecids.split(",").map((value) => parseInteger(value.trim())).filter((value) => value !== null),
+  );
   const rawSpecid = params.get("specid") || params.get("moca_specid") || String(sptDefaultSpecid);
-  sptState.selectedSpecid = parseInteger(rawSpecid);
+  const fallbackSpecid = parseInteger(rawSpecid);
+  const initialSpecids = parsedSpecids.length ? parsedSpecids : (fallbackSpecid !== null ? [fallbackSpecid] : []);
+  sptState.selectedSpectra = initialSpecids.map((specid) => ({ specid, label: `specid${specid}`, metadata: { moca_specid: specid } }));
+  sptState.selectedSpecid = initialSpecids[0] ?? null;
+  sptState.selectedSpectrumLabel = sptState.selectedSpecid !== null ? `specid${sptState.selectedSpecid}` : "";
+  sptState.combineMode = parsedSpecids.length > 1 || asSpectralBool(params.get("combine"));
   sptState.initialGridParam = params.get("grid") || "";
   sptState.initialGridIndexParam = parseInteger(params.get("grid_index"));
   setNormText(params.get("norm") || sptDefaultNormText);
@@ -241,9 +264,10 @@ function readSpectralUrlState() {
   if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
   sptState.fixedRvValue = spectralFixedRvUrlValue(params);
   sptState.cloudAlphaValue = spectralCloudAlphaUrlValue(params);
-  if (sptState.selectedSpecid !== null) {
+  if (sptState.selectedSpecid !== null && !sptState.combineMode) {
     sptEl["spt-comparison-search"].value = `specid${sptState.selectedSpecid}`;
   }
+  updateSelectedSpectrumDisplay();
 }
 
 function bindSpectralControls() {
@@ -253,6 +277,9 @@ function bindSpectralControls() {
     sptState.searchTimer = setTimeout(() => searchSpectra(value), 250);
   });
   sptEl["spt-clear-spectrum"].addEventListener("click", clearComparisonSpectrum);
+  sptEl["spt-start-composite"].addEventListener("click", startCompositeSelection);
+  sptEl["spt-compute-composite"].addEventListener("click", () => computeSpectralComparison({ force: true }));
+  sptEl["spt-cancel-composite"].addEventListener("click", cancelCompositeSelection);
   sptEl["spt-comparison-search"].addEventListener("focus", () => {
     const value = sptEl["spt-comparison-search"].value.trim();
     if (value) searchSpectra(value);
@@ -290,7 +317,7 @@ function bindSpectralControls() {
     sptState.hasAppliedInitialIndex = false;
     updateSpectralUrl();
     await loadSpectralGrid();
-    if (sptState.selectedSpecid !== null) {
+    if (selectedComparisonSpecids().length) {
       await computeSpectralComparison();
     } else {
       renderEmptySpectralPlots("Select a comparison spectrum");
@@ -491,6 +518,22 @@ async function searchSpectra(query, options = {}) {
   renderSearchResults(results);
 }
 
+async function loadSelectedSpectrumLabels() {
+  const items = [...sptState.selectedSpectra];
+  if (!items.length) return;
+  const resolved = [];
+  for (const item of items) {
+    const params = apiParams();
+    params.set("specid", item.specid);
+    const payload = await fetchJsonUrl(sptAppUrl(`api/spectral-typing/search?${params.toString()}`));
+    const option = payload.ok ? (payload.options || []).find((row) => Number(row.value) === Number(item.specid)) : null;
+    resolved.push(option ? spectralSelectionItem(option) : item);
+  }
+  sptState.selectedSpectra = resolved;
+  syncPrimarySpectrumState();
+  updateSelectedSpectrumDisplay();
+}
+
 function renderSearchResults(results) {
   if (!results.length) {
     sptEl["spt-comparison-results"].innerHTML = `<div class="designation-result-note">No spectra found</div>`;
@@ -503,9 +546,13 @@ function renderSearchResults(results) {
   sptEl["spt-comparison-results"].querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => {
       const result = results[Number(button.dataset.index)];
-      selectSpectrum(result);
+      if (sptState.combineMode) {
+        addSpectrumToComposite(result);
+      } else {
+        selectSpectrum(result);
+      }
       sptEl["spt-comparison-results"].hidden = true;
-      computeSpectralComparison();
+      if (!sptState.combineMode) computeSpectralComparison();
     });
   });
   showSearchResultsPopup();
@@ -533,8 +580,11 @@ function selectSpectrum(option, options = {}) {
   const specid = parseInteger(option.value ?? option.moca_specid);
   if (specid === null) return;
   const changedSpectrum = sptState.selectedSpecid !== specid;
-  sptState.selectedSpecid = specid;
-  sptState.selectedSpectrumLabel = option.label || `specid${specid}`;
+  const item = spectralSelectionItem(option);
+  sptState.selectedSpectra = [item];
+  sptState.combineMode = false;
+  sptState.selectionDirty = false;
+  syncPrimarySpectrumState();
   if (changedSpectrum && !options.deferCompute) {
     sptState.selectedGrid = "";
     sptState.currentIndex = 0;
@@ -550,6 +600,9 @@ function selectSpectrum(option, options = {}) {
 function clearComparisonSpectrum() {
   sptState.selectedSpecid = null;
   sptState.selectedSpectrumLabel = "";
+  sptState.selectedSpectra = [];
+  sptState.combineMode = false;
+  sptState.selectionDirty = false;
   sptState.comparePayload = null;
   sptState.selectedGrid = "";
   sptState.currentIndex = 0;
@@ -567,16 +620,214 @@ function clearComparisonSpectrum() {
 }
 
 function updateSelectedSpectrumDisplay() {
-  const hasSpectrum = sptState.selectedSpecid !== null;
+  const hasSpectrum = selectedComparisonSpecids().length > 0;
+  const compositeMode = Boolean(sptState.combineMode);
+  sptEl["spt-selected-spectrum"].hidden = compositeMode;
   sptEl["spt-selected-spectrum-text"].textContent = hasSpectrum
     ? sptState.selectedSpectrumLabel || `specid${sptState.selectedSpecid}`
     : "No spectrum selected";
   sptEl["spt-clear-spectrum"].hidden = !hasSpectrum;
+  sptEl["spt-start-composite"].hidden = !hasSpectrum || compositeMode;
+  sptEl["spt-selected-spectra"].hidden = !compositeMode;
+  sptEl["spt-composite-actions"].hidden = !compositeMode;
+  sptEl["spt-composite-hint"].hidden = !compositeMode;
+  sptEl["spt-comparison-search-label"].textContent = compositeMode ? "Add comparison spectrum" : "Comparison spectrum";
+  sptEl["spt-comparison-search"].placeholder = compositeMode
+    ? "Add a specid from the same object"
+    : "Type a specid, oid, designation, or instrument";
+  if (compositeMode) renderCompositeSpectrumTokens();
+  const count = selectedComparisonSpecids().length;
+  sptEl["spt-compute-composite"].disabled = count < 2;
+  sptEl["spt-composite-hint"].textContent = count < 2
+    ? "Add at least one more spectrum from the search box."
+    : (sptState.selectionDirty ? "Selection changed. Type the combined spectrum when ready." : `${count} spectra selected.`);
+  if (!compositeMode) renderStitchDetails(null);
 }
 
-async function computeSpectralComparison() {
-  if (sptState.selectedSpecid === null) {
+function uniqueSpectralIntegers(values) {
+  return [...new Set((values || []).map((value) => parseInteger(value)).filter((value) => value !== null))];
+}
+
+function selectedComparisonSpecids() {
+  return uniqueSpectralIntegers(sptState.selectedSpectra.map((item) => item.specid));
+}
+
+function spectralSelectionItem(option) {
+  const specid = parseInteger(option?.value ?? option?.moca_specid);
+  const metadata = { ...(option || {}), moca_specid: specid, value: specid };
+  return {
+    specid,
+    label: option?.label || `specid${specid}`,
+    metadata,
+  };
+}
+
+function syncPrimarySpectrumState() {
+  const first = sptState.selectedSpectra[0] || null;
+  sptState.selectedSpecid = first ? Number(first.specid) : null;
+  sptState.selectedSpectrumLabel = first?.label || (first ? `specid${first.specid}` : "");
+}
+
+function startCompositeSelection() {
+  if (!selectedComparisonSpecids().length) return;
+  sptState.combineMode = true;
+  sptState.selectionDirty = false;
+  sptEl["spt-comparison-search"].value = "";
+  updateSelectedSpectrumDisplay();
+  updateSpectralUrl();
+  setSpectralStatus("Add spectra from the same object, then type the combined spectrum", "");
+  sptEl["spt-comparison-search"].focus();
+}
+
+async function cancelCompositeSelection() {
+  const first = sptState.selectedSpectra[0] || null;
+  sptState.selectedSpectra = first ? [first] : [];
+  sptState.combineMode = false;
+  sptState.selectionDirty = false;
+  sptState.comparePayload = null;
+  syncPrimarySpectrumState();
+  sptEl["spt-comparison-search"].value = sptState.selectedSpectrumLabel;
+  resetSpectralSelectionNavigation();
+  updateSelectedSpectrumDisplay();
+  updateSpectralUrl();
+  if (first) await computeSpectralComparison({ force: true });
+  else clearComparisonSpectrum();
+}
+
+function addSpectrumToComposite(option) {
+  const item = spectralSelectionItem(option);
+  if (item.specid === null) return;
+  if (selectedComparisonSpecids().includes(item.specid)) {
+    setSpectralStatus(`specid${item.specid} is already selected`, "error");
+    return;
+  }
+  if (sptState.selectedSpectra.length >= 8) {
+    setSpectralStatus("At most 8 spectra can be combined", "error");
+    return;
+  }
+  const firstOid = parseInteger(sptState.selectedSpectra[0]?.metadata?.moca_oid ?? sptState.comparePayload?.comparisonMetadata?.moca_oid);
+  const nextOid = parseInteger(item.metadata?.moca_oid);
+  if (firstOid !== null && nextOid !== null && firstOid !== nextOid) {
+    setSpectralStatus(`specid${item.specid} belongs to oid${nextOid}; selected spectra belong to oid${firstOid}`, "error");
+    return;
+  }
+  sptState.selectedSpectra.push(item);
+  markCompositeSelectionDirty();
+  sptEl["spt-comparison-search"].value = "";
+  updateSelectedSpectrumDisplay();
+  updateSpectralUrl();
+  sptEl["spt-comparison-search"].focus();
+}
+
+function removeSpectrumFromComposite(specid) {
+  sptState.selectedSpectra = sptState.selectedSpectra.filter((item) => Number(item.specid) !== Number(specid));
+  syncPrimarySpectrumState();
+  markCompositeSelectionDirty();
+  updateSelectedSpectrumDisplay();
+  updateSpectralUrl();
+}
+
+function markCompositeSelectionDirty() {
+  sptState.selectionDirty = true;
+  sptState.comparePayload = null;
+  resetSpectralSelectionNavigation();
+  renderStitchDetails(null);
+  renderEmptySpectralPlots("Type combined spectrum when the selection is ready");
+  setSpectralStatus("Composite selection changed", "");
+}
+
+function resetSpectralSelectionNavigation() {
+  sptState.selectedGrid = "";
+  sptState.currentIndex = 0;
+  sptState.initialGridParam = "";
+  sptState.initialGridIndexParam = null;
+  sptState.hasAppliedInitialIndex = false;
+}
+
+function renderCompositeSpectrumTokens() {
+  const target = sptEl["spt-selected-spectra"];
+  if (!target) return;
+  if (!sptState.selectedSpectra.length) {
+    target.innerHTML = `<div class="plot-hint">No spectra selected</div>`;
+    return;
+  }
+  target.innerHTML = sptState.selectedSpectra.map((item, index) => {
+    const metadata = item.metadata || {};
+    const oid = parseInteger(metadata.moca_oid);
+    const detail = [
+      oid !== null ? `oid ${oid}` : "",
+      metadata.spectral_type ? `SpT ${metadata.spectral_type}` : "",
+      metadata.moca_instid || "",
+      metadata.instrument_mode_name || "",
+    ].filter(Boolean).join(" · ");
+    const title = metadata.designation || metadata.spectrum_name || item.label || `specid${item.specid}`;
+    return `
+      <div class="spectra-token" data-specid="${item.specid}" title="${escapeHtml(item.label || title)}">
+        <span class="spectra-token-swatch" style="--swatch-color: ${sptCompositeColors[index % sptCompositeColors.length]}"></span>
+        <span class="spectra-token-body">
+          <span class="spectra-token-title">${escapeHtml(title)}</span>
+          <span class="spectra-token-meta">specid ${escapeHtml(item.specid)}</span>
+          ${detail ? `<span class="spectra-token-meta">${escapeHtml(detail)}</span>` : ""}
+        </span>
+        <button type="button" aria-label="Remove specid ${item.specid}" data-specid="${item.specid}">x</button>
+      </div>
+    `;
+  }).join("");
+  target.querySelectorAll("button[data-specid]").forEach((button) => {
+    button.addEventListener("click", () => removeSpectrumFromComposite(Number(button.dataset.specid)));
+  });
+}
+
+function applyComparisonSourcesToSelection(payload) {
+  const bySpecid = new Map((payload?.comparisonSources || []).map((source) => [Number(source.moca_specid), source]));
+  sptState.selectedSpectra = sptState.selectedSpectra.map((item) => {
+    const source = bySpecid.get(Number(item.specid));
+    return source
+      ? { ...item, label: source.label || item.label, metadata: { ...(item.metadata || {}), ...source } }
+      : item;
+  });
+  syncPrimarySpectrumState();
+  updateSelectedSpectrumDisplay();
+}
+
+function renderStitchDetails(payload = sptState.comparePayload) {
+  const details = sptEl["spt-stitch-details"];
+  const summary = sptEl["spt-stitch-summary"];
+  const content = sptEl["spt-stitch-content"];
+  if (!details || !summary || !content) return;
+  const stitching = payload?.stitching;
+  if (!sptState.combineMode || !stitching?.composite) {
+    details.hidden = true;
+    details.open = false;
+    content.innerHTML = "";
+    return;
+  }
+  const components = stitching.components || [];
+  const overlaps = stitching.overlaps || [];
+  const warnings = stitching.warnings || [];
+  details.hidden = false;
+  summary.textContent = `${stitching.specids?.length || selectedComparisonSpecids().length} spectra · ${components.length} overlap component${components.length === 1 ? "" : "s"}`;
+  const scaleText = (stitching.scales || []).map((row) => `specid${row.moca_specid}: ×${formatNumber(row.scale, 4)}`).join("; ");
+  const overlapText = overlaps.map((row) => `${row.specids.join("↔")} (${formatNumber(row.overlap_min_um, 3)}–${formatNumber(row.overlap_max_um, 3)} μm; ${row.matched_points} bins)`).join("; ");
+  content.innerHTML = [
+    scaleText ? `<div><strong>Scales:</strong> ${escapeHtml(scaleText)}</div>` : "",
+    overlapText ? `<div><strong>Overlaps:</strong> ${escapeHtml(overlapText)}</div>` : "",
+    ...warnings.map((warning) => `<div class="spt-stitch-warning">${escapeHtml(warning)}</div>`),
+  ].filter(Boolean).join("");
+}
+
+async function computeSpectralComparison(options = {}) {
+  const specids = selectedComparisonSpecids();
+  if (!specids.length) {
     renderEmptySpectralPlots("Select a comparison spectrum");
+    return;
+  }
+  if (sptState.combineMode && sptState.selectionDirty && !options.force) {
+    renderEmptySpectralPlots("Type combined spectrum when the selection is ready");
+    return;
+  }
+  if (sptState.combineMode && specids.length < 2) {
+    renderEmptySpectralPlots("Add at least one more spectrum");
     return;
   }
   const fixedValue = fixedParameterValue();
@@ -591,7 +842,7 @@ async function computeSpectralComparison() {
   setSpectralStatus("Computing spectral comparison", "loading");
   updateSpectralUrl();
   const body = {
-    specid: sptState.selectedSpecid,
+    ...(specids.length > 1 ? { specids } : { specid: specids[0] }),
     bins: parseInteger(sptEl["spt-bins"].value) || sptDefaultBins,
     norm: sptEl["spt-norm"].value || sptDefaultNormText,
     deredden: deredden ? "1" : "0",
@@ -627,14 +878,18 @@ async function computeSpectralComparison() {
     sptState.comparePayload = null;
     setSpectralStatus(payload.error || "Comparison failed", "error");
     renderEmptySpectralPlots(payload.error || "Comparison failed");
+    renderStitchDetails(null);
     return;
   }
+  sptState.selectionDirty = false;
   sptState.comparePayload = payload;
+  applyComparisonSourcesToSelection(payload);
   sptState.gridOptions = orderedGridOptions(payload.options || sptState.gridOptions);
   chooseGridAndIndexAfterCompute();
   fillGridSelect(sptState.gridOptions);
   updateSpectralUrl();
   renderSpectralTyping();
+  renderStitchDetails(payload);
   setSpectralTypingExportDisabled(false);
   const timing = payload.meta?.timings?.compare_total;
   const timingText = finiteNumber(timing) ? Number(timing).toFixed(1) : "";
@@ -660,6 +915,8 @@ function applyQuickStandardPayload(payload) {
       ...sptState.comparePayload,
       comparison: payload.comparison || sptState.comparePayload.comparison,
       comparisonMetadata: payload.comparisonMetadata || sptState.comparePayload.comparisonMetadata,
+      comparisonSources: payload.comparisonSources || sptState.comparePayload.comparisonSources,
+      stitching: payload.stitching || sptState.comparePayload.stitching,
       options: payload.options || sptState.comparePayload.options,
       meta: { ...(sptState.comparePayload.meta || {}), ...(payload.meta || {}), progressive: true },
       entries: mergedEntries,
@@ -678,6 +935,7 @@ function applyQuickStandardPayload(payload) {
   updateLowResControl(mergedPayload);
   updateMetadata(mergedPayload, entry);
   renderCorrectionInfo(mergedPayload);
+  renderStitchDetails(mergedPayload);
   updateSpectralManagementControls();
   updateGridButtons();
 }
@@ -833,7 +1091,9 @@ function currentSpectralTypeProposal() {
   const wavelengths = comparisonRows.map((row) => Number(row.wv)).filter(Number.isFinite);
   const maxWavelength = wavelengths.length ? Math.max(...wavelengths) : null;
   const meta = payload.comparisonMetadata || {};
-  const comparisonSpecid = parseInteger(payload.meta?.specid ?? sptState.selectedSpecid);
+  const comparisonSpecids = uniqueSpectralIntegers(payload.meta?.specids || selectedComparisonSpecids());
+  const composite = comparisonSpecids.length > 1;
+  const comparisonSpecid = composite ? null : parseInteger(payload.meta?.specid ?? comparisonSpecids[0] ?? sptState.selectedSpecid);
   const standardSpecid = parseInteger(entry.moca_specid);
   const gridHistoryId = parseInteger(entry.moca_sptgridhid);
   const comparisonOid = parseInteger(meta.moca_oid);
@@ -843,7 +1103,8 @@ function currentSpectralTypeProposal() {
   return {
     moca_oid: comparisonOid,
     moca_specid: comparisonSpecid,
-    moca_instid: meta.moca_instid || null,
+    moca_specids: comparisonSpecids,
+    moca_instid: composite ? null : (meta.moca_instid || null),
     object_designation: meta.designation || meta.spectrum_name || null,
     comparison_label: comparisonShortName(payload),
     spectral_type: entry.spectral_type || "",
@@ -866,6 +1127,7 @@ function currentSpectralTypeProposal() {
     deredden,
     cloud_correction: cloud,
     best_parameters: spectralTypingBestParameters(entry),
+    stitching_summary: composite ? spectralStitchingComment(payload.stitching) : "",
     rls: managementInputValue("spt-management-rls", "gagne"),
     author: managementInputValue("spt-management-author", "gagne"),
   };
@@ -880,7 +1142,7 @@ function spectralManagementUnavailableReason(proposal = currentSpectralTypePropo
   if (!hasSpectralManagementCredentials()) return "Management credentials are required.";
   if (isSpectralMockMode()) return "Mock comparisons cannot be written to MOCAdb.";
   if (!proposal) return "No comparison displayed.";
-  if (!proposal.moca_specid) return "Comparison moca_specid is missing.";
+  if (!proposal.moca_specid && !(proposal.moca_specids || []).length) return "Comparison moca_specid is missing.";
   if (!proposal.moca_oid) return "Comparison moca_oid is missing.";
   if (!proposal.spectral_standard_moca_specid) return "Standard moca_specid is missing.";
   if (!proposal.moca_sptgridhid) return "Grid history id is missing.";
@@ -913,9 +1175,10 @@ function spectralManagementProposalHtml(proposal) {
   const standard = proposal.standard_label || proposal.standard_designation || `specid${proposal.spectral_standard_moca_specid}`;
   return [
     `<div><strong>${escapeHtml(proposal.spectral_type)}</strong> for ${escapeHtml(proposal.comparison_label || `specid${proposal.moca_specid}`)}</div>`,
+    proposal.moca_specids?.length > 1 ? `<div>Composite inputs: ${escapeHtml(proposal.moca_specids.map((specid) => `specid${specid}`).join(", "))}; stored moca_specid: NULL</div>` : "",
     `<div>Standard: ${escapeHtml(standard)} (${escapeHtml(proposal.spectral_standard_moca_specid)})</div>`,
     `<div>Grid: ${escapeHtml(proposal.grid || "N/A")}; χ²: ${escapeHtml(chi)}</div>`,
-  ].join("");
+  ].filter(Boolean).join("");
 }
 
 async function pushCurrentSpectralType() {
@@ -926,7 +1189,9 @@ async function pushCurrentSpectralType() {
     updateSpectralManagementControls();
     return;
   }
-  const label = proposal.comparison_label || `specid${proposal.moca_specid}`;
+  const label = proposal.comparison_label || (proposal.moca_specids?.length > 1
+    ? `composite ${proposal.moca_specids.join(",")}`
+    : `specid${proposal.moca_specid}`);
   if (!window.confirm(`Push spectral type ${proposal.spectral_type} for ${label} into data_spectral_types?`)) return;
 
   sptState.managementBusy = true;
@@ -956,9 +1221,9 @@ function hasExplicitUrlStandardSelection() {
 }
 
 function canUseQuickStandardPreview() {
-  return hasExplicitUrlStandardSelection()
+  return !sptState.selectionDirty && (hasExplicitUrlStandardSelection()
     || sptState.hasAppliedInitialIndex
-    || Boolean(sptState.comparePayload?.entries?.length);
+    || Boolean(sptState.comparePayload?.entries?.length));
 }
 
 function bestIndexForGrid(grid) {
@@ -991,6 +1256,7 @@ function renderSpectralTyping() {
   updateLowResControl(payload);
   updateMetadata(payload, entry);
   renderCorrectionInfo(payload);
+  renderStitchDetails(payload);
   updateSpectralManagementControls();
 }
 
@@ -1067,7 +1333,8 @@ function renderSpectrumPlot(payload, entry) {
       marker: { size: 10, color: "white", line: { color: "rgba(72,72,72,0.96)", width: 3.25 } },
       name: "Comparison",
       legendgroup: "comparison",
-      hovertemplate: "Comparison<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
+      customdata: comparisonRows.map((row) => row.source_specids || comparisonIdentifier(payload)),
+      hovertemplate: "Comparison<br>wv=%{x:.4f}<br>flux=%{y:.4f}<br>source=%{customdata}<extra></extra>",
     });
   } else {
     for (const [index, region] of normRegions.entries()) {
@@ -1081,7 +1348,8 @@ function renderSpectrumPlot(payload, entry) {
         name: "Comparison",
         legendgroup: "comparison",
         showlegend: index === 0,
-        hovertemplate: "Comparison<br>wv=%{x:.4f}<br>flux=%{y:.4f}<extra></extra>",
+        includeSourceSpecids: true,
+        hovertemplate: "Comparison<br>wv=%{x:.4f}<br>flux=%{y:.4f}<br>source=%{customdata}<extra></extra>",
       });
     }
   }
@@ -1119,7 +1387,7 @@ function renderSpectrumPlot(payload, entry) {
       metricAnnotation(entry, payload),
     ].filter(Boolean),
   };
-  Plotly.react(sptEl["spt-plot"], traces, layout, plotConfig(`sptype_specid_${payload.meta?.specid || "unknown"}_${entry.spectral_type || "std"}`));
+  Plotly.react(sptEl["spt-plot"], traces, layout, plotConfig(`sptype_${comparisonIdentifier(payload)}_${entry.spectral_type || "std"}`));
 }
 
 function renderChi2Plot(payload, selectedEntry) {
@@ -1223,7 +1491,7 @@ function renderChi2Plot(payload, selectedEntry) {
       bgcolor: "rgba(255,255,255,0.86)",
     },
   };
-  Plotly.react(sptEl["spt-chi2-plot"], traces, layout, plotConfig(`global_chi2_specid_${payload.meta?.specid || "unknown"}`));
+  Plotly.react(sptEl["spt-chi2-plot"], traces, layout, plotConfig(`global_chi2_${comparisonIdentifier(payload)}`));
   sptEl["spt-chi2-plot"].on("plotly_click", (event) => {
     const point = event.points?.[0];
     const custom = point?.customdata;
@@ -1390,6 +1658,13 @@ function updateGridButtons() {
 
 function updateMetadata(payload, entry) {
   const parts = [];
+  const comparisonSpecids = uniqueSpectralIntegers(payload.meta?.specids || []);
+  if (comparisonSpecids.length > 1) {
+    parts.push(`<strong>Composite comparison:</strong> ${escapeHtml(comparisonSpecids.map((specid) => `specid${specid}`).join(", "))}`);
+    (payload.stitching?.warnings || []).forEach((warning) => {
+      parts.push(`<span class="spt-stitch-warning">${escapeHtml(warning)}</span>`);
+    });
+  }
   parts.push(`<strong>${escapeHtml(entry.spectral_type || "Standard")} standard</strong>`);
   parts.push(`Standard: ${escapeHtml(entry.object_designation || entry.designation || "None")}`);
   parts.push(`Standard moca_specid: ${escapeHtml(entry.moca_specid ?? "None")}`);
@@ -1471,18 +1746,17 @@ function renderEmptySpectralPlots(message) {
   updateSpectralManagementControls();
 }
 
-const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
-const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2"]);
+const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_specids", "comparison_oid", "source_specids", "source_count", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
+const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "source_count", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2"]);
 
 function exportSpectralTyping(format) {
   const rows = spectralTypingExportRows();
   if (!rows.length) return;
-  const specid = sptState.selectedSpecid || "unknown";
   MocaExport.saveTable(format, {
     rows,
     columns: spectralTypingExportColumns,
     numericColumns: spectralTypingNumericExportColumns,
-    filenameBase: `mocadb_spectral_typing_specid_${specid}`,
+    filenameBase: `mocadb_spectral_typing_${comparisonIdentifier()}`,
     tableName: "mocadb_spectral_typing",
     resourceName: "MOCAdb Spectral Typing",
     extName: "SPTYPING",
@@ -1492,7 +1766,9 @@ function exportSpectralTyping(format) {
 function spectralTypingExportRows() {
   const payload = sptState.comparePayload;
   if (!payload) return [];
-  const comparisonSpecid = payload.meta?.specid || sptState.selectedSpecid || "";
+  const comparisonSpecids = uniqueSpectralIntegers(payload.meta?.specids || selectedComparisonSpecids());
+  const comparisonSpecid = comparisonSpecids.length === 1 ? comparisonSpecids[0] : "";
+  const comparisonSpecidsText = comparisonSpecids.join(",");
   const comparisonOid = payload.comparisonMetadata?.moca_oid || "";
   const entry = filteredEntries()[sptState.currentIndex] || null;
   const rows = [];
@@ -1500,7 +1776,10 @@ function spectralTypingExportRows() {
     rows.push({
       row_type: "comparison_spectrum",
       comparison_specid: comparisonSpecid,
+      comparison_specids: comparisonSpecidsText,
       comparison_oid: comparisonOid,
+      source_specids: row.source_specids || comparisonSpecidsText,
+      source_count: row.source_count ?? comparisonSpecids.length,
       wavelength_um: row.wv,
       normalized_flux: row.spn,
       normalized_flux_unc: row.espn ?? "",
@@ -1510,6 +1789,7 @@ function spectralTypingExportRows() {
   if (entry) {
     const base = {
       comparison_specid: comparisonSpecid,
+      comparison_specids: comparisonSpecidsText,
       comparison_oid: comparisonOid,
       standard_specid: entry.moca_specid ?? "",
       standard_oid: entry.moca_oid ?? "",
@@ -1534,6 +1814,7 @@ function spectralTypingExportRows() {
     rows.push({
       row_type: "chi2_grid",
       comparison_specid: comparisonSpecid,
+      comparison_specids: comparisonSpecidsText,
       comparison_oid: comparisonOid,
       standard_specid: candidate.moca_specid ?? "",
       standard_oid: candidate.moca_oid ?? "",
@@ -1559,6 +1840,23 @@ function spectralTypingBestParameters(entry) {
     return entry.cloud_tau0.map((tau0, index) => `tau_${index + 1}=${formatNumber(tau0, 5)}${alpha[index] !== undefined ? `; alpha_${index + 1}=${formatNumber(alpha[index], 5)}` : ""}`).join("; ");
   }
   return "";
+}
+
+function spectralStitchingComment(stitching) {
+  if (!stitching?.composite) return "";
+  const scales = (stitching.scales || [])
+    .map((row) => `${row.moca_specid}:${finiteNumber(row.scale) ? Number(row.scale).toPrecision(6) : "NA"}`)
+    .join(",");
+  const components = (stitching.components || [])
+    .map((row) => `[${(row.specids || []).join(",")}:${row.method || "unknown"}]`)
+    .join("|");
+  const warnings = (stitching.warnings || []).join(" | ");
+  return [
+    stitching.merge_method || "overlap_graph",
+    scales ? `scales=${scales}` : "",
+    components ? `components=${components}` : "",
+    warnings ? `warnings=${warnings}` : "",
+  ].filter(Boolean).join(", ");
 }
 
 function setSpectralTypingExportDisabled(disabled) {
@@ -1612,10 +1910,12 @@ function segmentRows(rows, region) {
 function addSegmentedLineTraces(traces, rows, baseTrace) {
   const chunks = splitRowsByWavelengthGap(rows);
   chunks.forEach((chunk, index) => {
+    const { includeSourceSpecids, ...traceOptions } = baseTrace;
     traces.push({
-      ...baseTrace,
+      ...traceOptions,
       x: chunk.map((row) => row.wv),
       y: chunk.map((row) => row.spn),
+      ...(includeSourceSpecids ? { customdata: chunk.map((row) => row.source_specids || "") } : {}),
       showlegend: Boolean(baseTrace.showlegend) && index === 0,
     });
   });
@@ -1781,7 +2081,9 @@ function localIndexForEntry(entry) {
 function spectrumTitle(payload, entry) {
   const comparison = comparisonShortName(payload);
   const ids = [];
-  if (payload.meta?.specid) ids.push(`specid=${payload.meta.specid}`);
+  const specids = uniqueSpectralIntegers(payload.meta?.specids || []);
+  if (specids.length > 1) ids.push(`specids=${specids.join(",")}`);
+  else if (payload.meta?.specid) ids.push(`specid=${payload.meta.specid}`);
   if (payload.comparisonMetadata?.moca_oid) ids.push(`oid=${payload.comparisonMetadata.moca_oid}`);
   const idText = ids.length ? ` (${ids.join("; ")})` : "";
   const standard = `${entry.spectral_type || ""} (${entry.designation || entry.object_designation || ""})`.trim();
@@ -1791,6 +2093,13 @@ function spectrumTitle(payload, entry) {
 function comparisonShortName(payload) {
   const meta = payload.comparisonMetadata || {};
   return meta.designation || meta.spectrum_name || `specid${payload.meta?.specid || ""}`;
+}
+
+function comparisonIdentifier(payload = sptState.comparePayload) {
+  const specids = uniqueSpectralIntegers(payload?.meta?.specids || selectedComparisonSpecids());
+  if (specids.length > 1) return `specids_${specids.join("_")}`;
+  const specid = parseInteger(payload?.meta?.specid ?? specids[0] ?? sptState.selectedSpecid);
+  return specid !== null ? `specid_${specid}` : "comparison_unknown";
 }
 
 function parseNormText(text) {
@@ -1879,18 +2188,31 @@ function plotConfig(filename) {
 function updateSpectralUrl() {
   const fixedValue = fixedParameterValue();
   const params = new URLSearchParams(window.location.search);
+  const comparisonSpecids = selectedComparisonSpecids();
   const hasResolvedSelection = sptState.hasAppliedInitialIndex || Boolean(sptState.comparePayload?.entries?.length);
   const shouldPersistGrid = hasResolvedSelection || Boolean(sptState.initialGridParam);
   const shouldPersistIndex = hasResolvedSelection || hasExplicitUrlStandardSelection();
-  if (sptState.selectedSpecid !== null) params.set("specid", sptState.selectedSpecid);
-  else {
+  if (sptState.combineMode) {
+    if (comparisonSpecids.length) params.set("specids", comparisonSpecids.join(","));
+    else params.delete("specids");
     params.delete("specid");
     params.delete("moca_specid");
+    if (comparisonSpecids.length < 2) params.set("combine", "1");
+    else params.delete("combine");
+  } else if (sptState.selectedSpecid !== null) {
+    params.set("specid", sptState.selectedSpecid);
+    params.delete("specids");
+    params.delete("combine");
+  } else {
+    params.delete("specid");
+    params.delete("moca_specid");
+    params.delete("specids");
+    params.delete("combine");
     params.delete("grid_index");
   }
   if (sptState.selectedGrid && shouldPersistGrid) params.set("grid", sptState.selectedGrid);
   else params.delete("grid");
-  if (sptState.selectedSpecid !== null && sptState.selectedGrid && shouldPersistIndex) params.set("grid_index", String(sptState.currentIndex || 0));
+  if (comparisonSpecids.length && sptState.selectedGrid && shouldPersistIndex) params.set("grid_index", String(sptState.currentIndex || 0));
   else params.delete("grid_index");
   params.set("bins", sptEl["spt-bins"].value || String(sptDefaultBins));
   params.set("norm", sptEl["spt-norm"].value || sptDefaultNormText);

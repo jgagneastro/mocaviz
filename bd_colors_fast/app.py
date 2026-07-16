@@ -330,6 +330,8 @@ SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
 SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
+SPT_COMPOSITE_MAX_SELECTED = max(2, int(os.environ.get("SPT_COMPOSITE_MAX_SELECTED", "8")))
+SPT_COMPOSITE_MIN_OVERLAP_POINTS = max(3, int(os.environ.get("SPT_COMPOSITE_MIN_OVERLAP_POINTS", "5")))
 SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
 SPT_STANDARDS_SOURCE_MOCA = "moca"
@@ -2504,6 +2506,48 @@ def _spt_db_cache_key(args: dict[str, Any]) -> str:
     return "|".join([cfg["host"], cfg["port"], cfg["username"], cfg["dbname"]])
 
 
+def _spt_parse_specid_values(raw: Any) -> list[int]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set, np.ndarray, pd.Series)):
+        values = list(raw)
+    else:
+        values = re.split(r"[,;\s]+", str(raw).strip())
+    specids: list[int] = []
+    for value in values:
+        try:
+            specid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if specid > 0 and specid not in specids:
+            specids.append(specid)
+    return specids
+
+
+def _spt_requested_specids(body: Mapping[str, Any], args: Mapping[str, Any]) -> list[int]:
+    raw = body.get("specids")
+    if raw is None:
+        raw = body.get("moca_specids")
+    if raw is None:
+        raw = args.get("specids")
+    if raw is None:
+        raw = args.get("moca_specids")
+    specids = _spt_parse_specid_values(raw)
+    if not specids:
+        single = (
+            body.get("specid")
+            or body.get("moca_specid")
+            or args.get("specid")
+            or args.get("moca_specid")
+        )
+        specids = _spt_parse_specid_values(single)
+    if len(specids) > SPT_COMPOSITE_MAX_SELECTED:
+        raise ValueError(
+            f"At most {SPT_COMPOSITE_MAX_SELECTED} comparison spectra can be combined."
+        )
+    return specids
+
+
 def _spt_parse_norm_regions(raw: str | None) -> list[tuple[float, float]]:
     if not raw:
         return [tuple(region) for region in SPT_DEFAULT_NORM_REGIONS]
@@ -2695,6 +2739,348 @@ def _spt_interp_without_large_gaps(x_values: Any, y_values: Any, target_wv: Any)
         if right - left > gap_limit:
             out[(target > left) & (target < right)] = np.nan
     return out
+
+
+def _spt_composite_source_frame(payload: Mapping[str, Any]) -> tuple[int, pd.DataFrame, dict[str, Any]]:
+    metadata = dict(payload.get("metadata") or {})
+    frame = pd.DataFrame(payload.get("spectrum") or [])
+    raw_specid = metadata.get("moca_specid")
+    if raw_specid is None and not frame.empty and "moca_specid" in frame.columns:
+        raw_specid = frame["moca_specid"].iloc[0]
+    specid = _spt_int_value(raw_specid)
+    if specid is None:
+        raise ValueError("A composite input spectrum is missing its moca_specid.")
+    if frame.empty or "wv" not in frame.columns or "sp" not in frame.columns:
+        raise ValueError(f"No spectrum data found for moca_specid={specid}")
+    work = frame.copy()
+    for column in ("wv", "sp", "esp"):
+        if column in work.columns:
+            work[column] = pd.to_numeric(work[column], errors="coerce")
+    if "esp" not in work.columns:
+        work["esp"] = np.nan
+    work = work.dropna(subset=["wv", "sp"])
+    work = work[work["wv"].between(SPT_WV_MIN, SPT_WV_MAX)]
+    work = _spt_apply_wavelength_mask(work).dropna(subset=["wv", "sp"])
+    if work.empty:
+        raise ValueError(f"No usable spectrum data found for moca_specid={specid}")
+    work = (
+        work.groupby("wv", as_index=False, observed=True)
+        .agg({"sp": "median", "esp": "median"})
+        .sort_values("wv", kind="mergesort")
+    )
+    work["moca_specid"] = int(specid)
+    metadata["moca_specid"] = int(specid)
+    return int(specid), work, metadata
+
+
+def _spt_pair_overlap_relation(
+    specid_a: int,
+    frame_a: pd.DataFrame,
+    specid_b: int,
+    frame_b: pd.DataFrame,
+) -> dict[str, Any] | None:
+    overlap_min = max(float(frame_a["wv"].min()), float(frame_b["wv"].min()))
+    overlap_max = min(float(frame_a["wv"].max()), float(frame_b["wv"].max()))
+    if not math.isfinite(overlap_min) or not math.isfinite(overlap_max) or overlap_max <= overlap_min:
+        return None
+    part_a = frame_a[frame_a["wv"].between(overlap_min, overlap_max)]
+    part_b = frame_b[frame_b["wv"].between(overlap_min, overlap_max)]
+    if len(part_a) < SPT_COMPOSITE_MIN_OVERLAP_POINTS or len(part_b) < SPT_COMPOSITE_MIN_OVERLAP_POINTS:
+        return None
+    target = (
+        part_a["wv"].to_numpy(dtype=float)
+        if len(part_a) <= len(part_b)
+        else part_b["wv"].to_numpy(dtype=float)
+    )
+    flux_a = _spt_interp_without_large_gaps(frame_a["wv"], frame_a["sp"], target)
+    flux_b = _spt_interp_without_large_gaps(frame_b["wv"], frame_b["sp"], target)
+    valid = (
+        np.isfinite(target)
+        & np.isfinite(flux_a)
+        & np.isfinite(flux_b)
+        & (flux_a > 0)
+        & (flux_b > 0)
+    )
+    if int(np.sum(valid)) < SPT_COMPOSITE_MIN_OVERLAP_POINTS:
+        return None
+    target_valid = target[valid]
+    log_ratio = np.log(flux_b[valid]) - np.log(flux_a[valid])
+    center = float(np.nanmedian(log_ratio))
+    absolute_deviation = np.abs(log_ratio - center)
+    mad = float(np.nanmedian(absolute_deviation))
+    robust_sigma = 1.4826 * mad if math.isfinite(mad) else float("nan")
+    if math.isfinite(robust_sigma) and robust_sigma > 0:
+        keep = absolute_deviation <= 4.0 * robust_sigma
+        if int(np.sum(keep)) >= SPT_COMPOSITE_MIN_OVERLAP_POINTS:
+            target_valid = target_valid[keep]
+            log_ratio = log_ratio[keep]
+            center = float(np.nanmedian(log_ratio))
+            mad = float(np.nanmedian(np.abs(log_ratio - center)))
+            robust_sigma = 1.4826 * mad if math.isfinite(mad) else 0.0
+    matched_points = int(log_ratio.size)
+    if matched_points < SPT_COMPOSITE_MIN_OVERLAP_POINTS:
+        return None
+    scatter = robust_sigma if math.isfinite(robust_sigma) and robust_sigma > 0 else 1e-3
+    weight = min(1e8, matched_points / max(scatter**2, 1e-6))
+    return {
+        "specid_a": int(specid_a),
+        "specid_b": int(specid_b),
+        "log_scale_a_minus_b": center,
+        "weight": float(weight),
+        "matched_points": matched_points,
+        "overlap_min_um": float(np.nanmin(target_valid)),
+        "overlap_max_um": float(np.nanmax(target_valid)),
+        "log_ratio_scatter": float(robust_sigma) if math.isfinite(robust_sigma) else None,
+    }
+
+
+def _spt_overlap_components(specids: list[int], edges: list[dict[str, Any]]) -> list[list[int]]:
+    neighbors = {int(specid): set() for specid in specids}
+    for edge in edges:
+        first = int(edge["specid_a"])
+        second = int(edge["specid_b"])
+        neighbors[first].add(second)
+        neighbors[second].add(first)
+    components: list[list[int]] = []
+    remaining = set(neighbors)
+    while remaining:
+        seed = min(remaining)
+        stack = [seed]
+        component: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(sorted(neighbors[current] - component, reverse=True))
+        remaining -= component
+        components.append(sorted(component))
+    return sorted(components, key=lambda values: values[0])
+
+
+def _spt_composite_scales(
+    frames: Mapping[int, pd.DataFrame],
+) -> tuple[dict[int, float], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    specids = sorted(int(specid) for specid in frames)
+    edges: list[dict[str, Any]] = []
+    for index, specid_a in enumerate(specids):
+        for specid_b in specids[index + 1:]:
+            edge = _spt_pair_overlap_relation(specid_a, frames[specid_a], specid_b, frames[specid_b])
+            if edge is not None:
+                edges.append(edge)
+    components = _spt_overlap_components(specids, edges)
+    scales: dict[int, float] = {}
+    component_rows: list[dict[str, Any]] = []
+    for component_index, component in enumerate(components, start=1):
+        local_edges = [
+            edge for edge in edges
+            if int(edge["specid_a"]) in component and int(edge["specid_b"]) in component
+        ]
+        index_by_specid = {specid: index for index, specid in enumerate(component)}
+        degrees = {specid: 0.0 for specid in component}
+        for edge in local_edges:
+            degrees[int(edge["specid_a"])] += float(edge["weight"])
+            degrees[int(edge["specid_b"])] += float(edge["weight"])
+        anchor = max(component, key=lambda specid: (degrees[specid], -specid))
+        if local_edges:
+            matrix = np.zeros((len(local_edges) + 1, len(component)), dtype=float)
+            values = np.zeros(len(local_edges) + 1, dtype=float)
+            weights = np.ones(len(local_edges) + 1, dtype=float)
+            for row_index, edge in enumerate(local_edges):
+                matrix[row_index, index_by_specid[int(edge["specid_a"])]] = 1.0
+                matrix[row_index, index_by_specid[int(edge["specid_b"])]] = -1.0
+                values[row_index] = float(edge["log_scale_a_minus_b"])
+                weights[row_index] = math.sqrt(max(float(edge["weight"]), 1.0))
+            matrix[-1, index_by_specid[anchor]] = 1.0
+            weights[-1] = max(weights[:-1].max(initial=1.0), 1.0)
+            solution, *_ = np.linalg.lstsq(matrix * weights[:, None], values * weights, rcond=None)
+        else:
+            solution = np.zeros(len(component), dtype=float)
+        provisional = {specid: float(math.exp(solution[index_by_specid[specid]])) for specid in component}
+        source_medians = []
+        for specid in component:
+            values_scaled = frames[specid]["sp"].to_numpy(dtype=float) * provisional[specid]
+            values_scaled = values_scaled[np.isfinite(values_scaled) & (values_scaled > 0)]
+            if values_scaled.size:
+                source_medians.append(float(np.nanmedian(values_scaled)))
+        component_median = float(np.nanmedian(source_medians)) if source_medians else 1.0
+        if not math.isfinite(component_median) or component_median == 0:
+            component_median = 1.0
+        for specid in component:
+            scales[specid] = provisional[specid] / component_median
+        component_rows.append({
+            "component": component_index,
+            "specids": component,
+            "anchor_specid": int(anchor),
+            "method": "overlap_graph" if local_edges else "independent_median",
+            "overlap_edge_count": len(local_edges),
+        })
+    warnings: list[str] = []
+    if len(components) > 1:
+        independent = [
+            ",".join(str(specid) for specid in component)
+            for component in components
+        ]
+        warnings.append(
+            "No usable overlap connects every spectrum; overlap components "
+            + " | ".join(independent)
+            + " were independently median-normalized."
+        )
+    return scales, edges, component_rows, warnings
+
+
+def _spt_merge_scaled_composite(
+    frames: Mapping[int, pd.DataFrame],
+    scales: Mapping[int, float],
+    bins_per_micron: int,
+) -> pd.DataFrame:
+    bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
+    source_bins: list[dict[str, Any]] = []
+    for specid in sorted(frames):
+        work = frames[specid].copy()
+        scale = float(scales[specid])
+        work["sp"] = work["sp"] * scale
+        work["esp"] = work["esp"] * abs(scale)
+        work["bin_index"] = np.rint(work["wv"].to_numpy(dtype=float) * bins).astype(int)
+        for bin_index, group in work.groupby("bin_index", sort=True, observed=True):
+            flux = pd.to_numeric(group["sp"], errors="coerce").to_numpy(dtype=float)
+            flux = flux[np.isfinite(flux)]
+            if flux.size == 0:
+                continue
+            error = pd.to_numeric(group["esp"], errors="coerce").to_numpy(dtype=float)
+            error = np.abs(error[np.isfinite(error) & (error > 0)])
+            source_bins.append({
+                "bin_index": int(bin_index),
+                "moca_specid": int(specid),
+                "sp": float(np.nanmedian(flux)),
+                "esp": float(np.nanmedian(error)) if error.size else np.nan,
+            })
+    if not source_bins:
+        return pd.DataFrame(columns=["wv", "sp", "esp", "source_specids", "source_count"])
+    rows: list[dict[str, Any]] = []
+    for bin_index, group in pd.DataFrame(source_bins).groupby("bin_index", sort=True, observed=True):
+        flux = group["sp"].to_numpy(dtype=float)
+        error = group["esp"].to_numpy(dtype=float)
+        valid_error = np.isfinite(error) & (error > 0)
+        if np.all(valid_error):
+            inverse_variance = 1.0 / np.square(error)
+            combined_flux = float(np.sum(flux * inverse_variance) / np.sum(inverse_variance))
+            statistical_error = float(math.sqrt(1.0 / np.sum(inverse_variance)))
+        else:
+            combined_flux = float(np.nanmedian(flux))
+            finite_error = error[valid_error]
+            statistical_error = float(np.nanmedian(finite_error)) if finite_error.size else float("nan")
+        scatter = float(np.sqrt(np.nanmean(np.square(flux - combined_flux)))) if flux.size > 1 else 0.0
+        if math.isfinite(statistical_error):
+            combined_error = float(math.sqrt(statistical_error**2 + scatter**2))
+        else:
+            combined_error = scatter if scatter > 0 else float("nan")
+        contributors = sorted(int(value) for value in group["moca_specid"].unique())
+        rows.append({
+            "wv": float(bin_index) / bins,
+            "sp": combined_flux,
+            "esp": combined_error,
+            "source_specids": ",".join(str(specid) for specid in contributors),
+            "source_count": len(contributors),
+        })
+    return pd.DataFrame(rows).sort_values("wv", kind="mergesort").reset_index(drop=True)
+
+
+def _spt_comparison_from_payloads(
+    payloads: Sequence[Mapping[str, Any]],
+    bins_per_micron: int,
+) -> dict[str, Any]:
+    prepared = [_spt_composite_source_frame(payload) for payload in payloads]
+    prepared.sort(key=lambda item: item[0])
+    specids = [item[0] for item in prepared]
+    if len(set(specids)) != len(specids):
+        raise ValueError("Each moca_specid can only be selected once.")
+    sources = [dict(item[2]) for item in prepared]
+    resolving_powers = [
+        _spt_float(payload.get("meta", {}).get("average_resolving_power"))
+        for payload in payloads
+    ]
+    resolving_powers = [value for value in resolving_powers if value is not None]
+    if len(prepared) == 1:
+        specid, _frame, metadata = prepared[0]
+        metadata["moca_specids"] = [int(specid)]
+        return {
+            "comparison_raw": pd.DataFrame(payloads[0].get("spectrum") or []),
+            "comparison_metadata": metadata,
+            "comparison_sources": sources,
+            "stitching": {
+                "composite": False,
+                "specids": [int(specid)],
+                "scales": [{"moca_specid": int(specid), "scale": 1.0, "component": 1}],
+                "components": [{"component": 1, "specids": [int(specid)], "method": "single"}],
+                "overlaps": [],
+                "warnings": [],
+            },
+            "average_resolving_power": resolving_powers[0] if resolving_powers else None,
+        }
+    oids = [_spt_int_value(metadata.get("moca_oid")) for _, _, metadata in prepared]
+    if any(oid is None for oid in oids):
+        raise ValueError("Every spectrum in a composite must be linked to a moca_oid.")
+    unique_oids = sorted(set(int(oid) for oid in oids if oid is not None))
+    if len(unique_oids) != 1:
+        pairs = ", ".join(f"specid{specid}:oid{oid}" for specid, oid in zip(specids, oids))
+        raise ValueError(f"Composite spectra must belong to the same moca_oid ({pairs}).")
+    frames = {specid: frame for specid, frame, _metadata in prepared}
+    scales, edges, components, warnings = _spt_composite_scales(frames)
+    comparison_raw = _spt_merge_scaled_composite(frames, scales, bins_per_micron)
+    if comparison_raw.empty:
+        raise ValueError("The selected spectra could not be merged into a usable composite.")
+    component_by_specid = {
+        int(specid): int(component["component"])
+        for component in components
+        for specid in component["specids"]
+    }
+    scale_rows = [
+        {
+            "moca_specid": int(specid),
+            "scale": float(scales[specid]),
+            "component": component_by_specid[int(specid)],
+        }
+        for specid in specids
+    ]
+    scale_by_specid = {row["moca_specid"]: row for row in scale_rows}
+    for source in sources:
+        source.update(scale_by_specid[int(source["moca_specid"])])
+    base_metadata = dict(prepared[0][2])
+    base_metadata.update({
+        "moca_specid": None,
+        "moca_specids": specids,
+        "moca_oid": unique_oids[0],
+        "moca_instid": None,
+        "instrument_mode_name": None,
+        "data_collection_date": None,
+        "spectrum_name": "Composite of " + ", ".join(f"specid{specid}" for specid in specids),
+        "label": "Composite: " + ", ".join(f"specid{specid}" for specid in specids),
+    })
+    return {
+        "comparison_raw": comparison_raw,
+        "comparison_metadata": base_metadata,
+        "comparison_sources": sources,
+        "stitching": {
+            "composite": True,
+            "specids": specids,
+            "scales": scale_rows,
+            "components": components,
+            "overlaps": [
+                {
+                    "specids": [int(edge["specid_a"]), int(edge["specid_b"])],
+                    "matched_points": int(edge["matched_points"]),
+                    "overlap_min_um": float(edge["overlap_min_um"]),
+                    "overlap_max_um": float(edge["overlap_max_um"]),
+                    "log_ratio_scatter": _pythonize(edge.get("log_ratio_scatter")),
+                }
+                for edge in edges
+            ],
+            "warnings": warnings,
+            "merge_method": "inverse_variance_with_between_spectrum_scatter",
+        },
+        "average_resolving_power": min(resolving_powers) if resolving_powers else None,
+    }
 
 
 def _spt_cardelli_ab(wavelength: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -3265,6 +3651,15 @@ def _spt_optimize_cloud_params(
     )
 
 
+def _spt_source_specids_text(values: Any) -> str:
+    specids: list[int] = []
+    for value in values:
+        for specid in _spt_parse_specid_values(value):
+            if specid not in specids:
+                specids.append(specid)
+    return ",".join(str(specid) for specid in sorted(specids))
+
+
 def _spt_bin_to_grid(region: pd.DataFrame, target_wv: np.ndarray) -> pd.DataFrame:
     if region.empty or target_wv.size == 0:
         return pd.DataFrame(columns=["wv", "spn", "espn", "moca_specid"])
@@ -3282,9 +3677,15 @@ def _spt_bin_to_grid(region: pd.DataFrame, target_wv: np.ndarray) -> pd.DataFram
         agg["espn"] = lambda series: np.nan if len(series) == 0 else float(np.sqrt(np.nansum(np.asarray(series, dtype=float) ** 2)) / max(1, np.sqrt(len(series))))
     if "moca_specid" in work.columns:
         agg["moca_specid"] = "first"
+    if "source_specids" in work.columns:
+        agg["source_specids"] = lambda series: _spt_source_specids_text(series)
     out = work.groupby("wv_bin", as_index=False, observed=True).agg(agg)
     out = out.rename(columns={"wv_bin": "wv"})
     out["wv"] = out["wv"].astype(float)
+    if "source_specids" in out.columns:
+        out["source_count"] = out["source_specids"].map(
+            lambda value: len(_spt_parse_specid_values(value))
+        )
     return out.dropna(subset=["wv", "spn"])
 
 
@@ -3335,7 +3736,8 @@ def _spt_process_spectrum(
     if common_wv is None:
         bin_size = 1.0 / bins
         if current_res >= bin_size:
-            return processed[["wv", "spn", "espn", "moca_specid"] if "moca_specid" in processed.columns else ["wv", "spn", "espn"]]
+            keep = [column for column in ("wv", "spn", "espn", "moca_specid", "source_specids", "source_count") if column in processed.columns]
+            return processed[keep]
         out_parts: list[pd.DataFrame] = []
         for region_min, region_max in norm_regions_local:
             region = processed[processed["wv"].between(region_min, region_max)].copy()
@@ -3529,7 +3931,12 @@ def _spt_standard_segments(
 def _spt_spectrum_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     if df.empty:
         return []
-    keep = [column for column in ("wv", "sp", "esp", "spn", "espn", "moca_specid") if column in df.columns]
+    keep = [
+        column for column in (
+            "wv", "sp", "esp", "spn", "espn", "moca_specid", "source_specids", "source_count"
+        )
+        if column in df.columns
+    ]
     clean = df[keep].replace({np.nan: None})
     rows: list[dict[str, Any]] = []
     for row in clean.to_dict(orient="records"):
@@ -4046,7 +4453,7 @@ def _search_spt_spectra_from_db(args: dict[str, Any], query: str | None, selecte
 
 def _precompute_spt_comparison(
     args: dict[str, Any],
-    specid: int,
+    specids: Sequence[int] | int,
     bins_per_micron: int,
     norm_regions_param: list[tuple[float, float]],
     deredden: bool,
@@ -4060,6 +4467,13 @@ def _precompute_spt_comparison(
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
+    requested_specids = _spt_parse_specid_values(specids)
+    if not requested_specids:
+        raise ValueError("At least one numeric comparison specid is required.")
+    if len(requested_specids) > SPT_COMPOSITE_MAX_SELECTED:
+        raise ValueError(f"At most {SPT_COMPOSITE_MAX_SELECTED} comparison spectra can be combined.")
+    requested_specids = sorted(requested_specids)
+    primary_specid = requested_specids[0]
     bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
     norm_key = _spt_format_norm_regions(norm_regions_param)
     fixed_key = "" if fixed_r_v is None else f"{fixed_r_v:.6g}"
@@ -4077,7 +4491,8 @@ def _precompute_spt_comparison(
     cloud_lambda0 = cloud_lambda0 if math.isfinite(cloud_lambda0) and cloud_lambda0 > 0 else SPT_DEFAULT_CLOUD_LAMBDA0
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
-    cache_key = f"{_spt_db_cache_key(args)}|compare|source:{standards_source}|{int(specid)}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    specid_key = ",".join(str(specid) for specid in requested_specids)
+    cache_key = f"{_spt_db_cache_key(args)}|compare|source:{standards_source}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_COMPARE_CACHE,
@@ -4094,14 +4509,15 @@ def _precompute_spt_comparison(
         standard_specids=[int(only_standard_specid)] if only_standard_specid is not None else None,
         standards_source=standards_source,
     )
-    spectrum_payload = _load_spt_spectrum_from_db(args, specid)
-    comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
+    spectrum_payloads = [_load_spt_spectrum_from_db(args, specid) for specid in requested_specids]
+    comparison_input = _spt_comparison_from_payloads(spectrum_payloads, bins)
+    comparison_raw = comparison_input["comparison_raw"]
     grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
     grid_data = pd.DataFrame(grid_payload["gridData"])
     if only_standard_specid is not None and not grid_data.empty and "moca_specid" in grid_data.columns:
         grid_data = grid_data[pd.to_numeric(grid_data["moca_specid"], errors="coerce") == int(only_standard_specid)].copy()
     if comparison_raw.empty:
-        raise ValueError(f"No spectrum data found for moca_specid={int(specid)}")
+        raise ValueError(f"No spectrum data found for moca_specid={primary_specid}")
     if grid_raw.empty or grid_data.empty:
         raise ValueError("No spectral typing grid data found")
     grid_data = grid_data.copy()
@@ -4123,8 +4539,8 @@ def _precompute_spt_comparison(
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
     lowres_comparison = (
-        _spt_float(spectrum_payload.get("meta", {}).get("average_resolving_power")) is not None
-        and float(spectrum_payload.get("meta", {}).get("average_resolving_power")) < 100
+        _spt_float(comparison_input.get("average_resolving_power")) is not None
+        and float(comparison_input.get("average_resolving_power")) < 100
     )
 
     comparison_regions = _spt_comparison_regions(comparison_df, norm_regions_param, cloud_lambda0)
@@ -4399,13 +4815,17 @@ def _precompute_spt_comparison(
 
     payload = {
         "comparison": _spt_spectrum_records(comparison_df),
-        "comparisonMetadata": spectrum_payload["metadata"],
+        "comparisonMetadata": comparison_input["comparison_metadata"],
+        "comparisonSources": comparison_input["comparison_sources"],
+        "stitching": comparison_input["stitching"],
         "entries": results,
         "options": grid_payload["options"],
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": _is_private_db(args),
-            "specid": int(specid),
+            "specid": int(primary_specid) if len(requested_specids) == 1 else None,
+            "specids": requested_specids,
+            "composite": len(requested_specids) > 1,
             "bins_per_micron": bins,
             "norm_regions": norm_regions_param,
             "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
@@ -4415,7 +4835,7 @@ def _precompute_spt_comparison(
             "cloud_alpha": _pythonize(float(cloud_alpha)),
             "cloud_alpha_fixed": bool(cloud_alpha_fixed),
             "cloud_lambda0": _pythonize(float(cloud_lambda0)),
-            "average_resolving_power": spectrum_payload.get("meta", {}).get("average_resolving_power"),
+            "average_resolving_power": comparison_input.get("average_resolving_power"),
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
@@ -4572,7 +4992,7 @@ def _mock_spt_spectrum_payload(specid: int) -> dict[str, Any]:
 
 def _mock_spt_compare(
     args: dict[str, Any],
-    specid: int,
+    specids: Sequence[int] | int,
     bins: int,
     norm_regions_param: list[tuple[float, float]],
     deredden: bool,
@@ -4586,24 +5006,30 @@ def _mock_spt_compare(
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
+    requested_specids = sorted(_spt_parse_specid_values(specids))
+    if not requested_specids:
+        raise ValueError("At least one numeric comparison specid is required.")
+    primary_specid = requested_specids[0]
     grid_payload = _mock_spt_grid_payload(standards_source=standards_source)
-    spectrum_payload = _mock_spt_spectrum_payload(specid)
+    spectrum_payloads = [_mock_spt_spectrum_payload(specid) for specid in requested_specids]
     temp_args = dict(args)
     temp_args["mock"] = "0"
     grid_cache_key = f"mock|grid"
-    spectrum_cache_key = f"mock|spectrum|{int(specid)}"
     _SPT_GRID_CACHE[grid_cache_key] = (time.time(), grid_payload)
-    _SPT_SPECTRUM_CACHE[spectrum_cache_key] = (time.time(), spectrum_payload)
+    for specid, spectrum_payload in zip(requested_specids, spectrum_payloads):
+        spectrum_cache_key = f"mock|spectrum|{int(specid)}"
+        _SPT_SPECTRUM_CACHE[spectrum_cache_key] = (time.time(), spectrum_payload)
 
-    comparison_raw = pd.DataFrame(spectrum_payload["spectrum"])
+    comparison_input = _spt_comparison_from_payloads(spectrum_payloads, bins)
+    comparison_raw = comparison_input["comparison_raw"]
     grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
     grid_data = pd.DataFrame(grid_payload["gridData"])
     comparison_df = _spt_process_spectrum(comparison_raw, bins_per_micron=bins, norm_regions_param=norm_regions_param)
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
     lowres_comparison = (
-        _spt_float(spectrum_payload.get("meta", {}).get("average_resolving_power")) is not None
-        and float(spectrum_payload.get("meta", {}).get("average_resolving_power")) < 100
+        _spt_float(comparison_input.get("average_resolving_power")) is not None
+        and float(comparison_input.get("average_resolving_power")) < 100
     )
     results = []
     if only_standard_specid is not None:
@@ -4700,13 +5126,17 @@ def _mock_spt_compare(
         entry.pop("_spt_original_order", None)
     return {
         "comparison": _spt_spectrum_records(comparison_df),
-        "comparisonMetadata": spectrum_payload["metadata"],
+        "comparisonMetadata": comparison_input["comparison_metadata"],
+        "comparisonSources": comparison_input["comparison_sources"],
+        "stitching": comparison_input["stitching"],
         "entries": _records(pd.DataFrame(results)) if results else [],
         "options": grid_payload["options"],
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "private_db": False,
-            "specid": int(specid),
+            "specid": int(primary_specid) if len(requested_specids) == 1 else None,
+            "specids": requested_specids,
+            "composite": len(requested_specids) > 1,
             "bins_per_micron": bins,
             "norm_regions": norm_regions_param,
             "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
@@ -4716,7 +5146,7 @@ def _mock_spt_compare(
             "cloud_alpha": _pythonize(float(cloud_alpha)),
             "cloud_alpha_fixed": bool(cloud_alpha_fixed),
             "cloud_lambda0": _pythonize(float(cloud_lambda0)),
-            "average_resolving_power": spectrum_payload["meta"]["average_resolving_power"],
+            "average_resolving_power": comparison_input.get("average_resolving_power"),
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
@@ -4832,6 +5262,14 @@ def _spt_push_comments(body: Mapping[str, Any], standard_row: Mapping[str, Any])
     best_parameters = _spt_clean_text(body.get("best_parameters"))
     if best_parameters:
         parts.append(f"best_parameters={best_parameters}")
+    comparison_specids = _spt_parse_specid_values(
+        body.get("moca_specids") or body.get("specids")
+    )
+    if len(comparison_specids) > 1:
+        parts.append("combined_moca_specids=" + ",".join(str(specid) for specid in sorted(comparison_specids)))
+        stitching_summary = _spt_clean_text(body.get("stitching_summary"), 1000)
+        if stitching_summary:
+            parts.append(f"stitching={stitching_summary}")
     return "; ".join(parts)
 
 
@@ -4866,16 +5304,33 @@ def _clear_spectral_type_write_caches() -> dict[str, int]:
     return counts
 
 
+def _spt_push_comparison_selection(body: Mapping[str, Any]) -> tuple[list[int], int | None, bool]:
+    comparison_specids = _spt_parse_specid_values(
+        body.get("moca_specids") or body.get("specids")
+    )
+    is_composite = len(comparison_specids) > 1
+    comparison_specid = None if is_composite else _spt_int_value(body.get("moca_specid") or body.get("specid"))
+    if comparison_specid is None and len(comparison_specids) == 1:
+        comparison_specid = comparison_specids[0]
+    if comparison_specid is not None and not comparison_specids:
+        comparison_specids = [comparison_specid]
+    if len(comparison_specids) == 1 and comparison_specid != comparison_specids[0]:
+        raise ValueError("The submitted comparison moca_specid does not match moca_specids.")
+    if not comparison_specids:
+        raise ValueError("At least one numeric comparison moca_specid is required.")
+    if len(comparison_specids) > SPT_COMPOSITE_MAX_SELECTED:
+        raise ValueError(f"At most {SPT_COMPOSITE_MAX_SELECTED} comparison spectra can be combined.")
+    return sorted(comparison_specids), comparison_specid, is_composite
+
+
 def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
-    comparison_specid = _spt_int_value(body.get("moca_specid") or body.get("specid"))
+    comparison_specids, comparison_specid, is_composite = _spt_push_comparison_selection(body)
     standard_specid = _spt_int_value(
         body.get("spectral_standard_moca_specid")
         or body.get("standard_specid")
         or body.get("moca_standard_specid")
     )
     grid_history_id = _spt_int_value(body.get("moca_sptgridhid") or body.get("grid_history_id"))
-    if comparison_specid is None:
-        raise ValueError("A numeric comparison moca_specid is required.")
     if standard_specid is None:
         raise ValueError("A numeric standard moca_specid is required.")
     if grid_history_id is None:
@@ -4896,7 +5351,7 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
         if missing:
             raise RuntimeError(f"data_spectral_types is missing required columns: {', '.join(sorted(missing))}")
 
-        comparison_row = conn.execute(text("""
+        comparison_stmt = text("""
             SELECT
                 ms.moca_specid,
                 ms.moca_oid,
@@ -4905,15 +5360,39 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
                 mo.designation
             FROM moca_spectra ms
             LEFT JOIN moca_objects mo USING(moca_oid)
-            WHERE ms.moca_specid = :comparison_specid
+            WHERE ms.moca_specid IN :comparison_specids
                 AND COALESCE(ms.ignored, 0) = 0
-            LIMIT 1
-        """), {"comparison_specid": comparison_specid}).mappings().first()
-        if not comparison_row:
-            raise ValueError(f"No active comparison spectrum found for moca_specid={comparison_specid}.")
-        comparison_row = dict(comparison_row)
-        if comparison_row.get("moca_oid") is None:
-            raise ValueError("The comparison spectrum is not linked to a moca_oid.")
+            ORDER BY ms.moca_specid
+        """).bindparams(bindparam("comparison_specids", expanding=True))
+        comparison_rows = [
+            dict(row)
+            for row in conn.execute(
+                comparison_stmt,
+                {"comparison_specids": sorted(comparison_specids)},
+            ).mappings().all()
+        ]
+        loaded_specids = {int(row["moca_specid"]) for row in comparison_rows}
+        missing_specids = sorted(set(comparison_specids) - loaded_specids)
+        if missing_specids:
+            raise ValueError(
+                "No active comparison spectrum found for moca_specid="
+                + ",".join(str(specid) for specid in missing_specids)
+                + "."
+            )
+        comparison_oids = {
+            int(row["moca_oid"])
+            for row in comparison_rows
+            if row.get("moca_oid") is not None
+        }
+        if len(comparison_oids) != 1 or any(row.get("moca_oid") is None for row in comparison_rows):
+            raise ValueError("All comparison spectra must be linked to the same moca_oid.")
+        comparison_row = comparison_rows[0]
+        if is_composite:
+            comparison_row["moca_specid"] = None
+            comparison_row["moca_instid"] = None
+            comparison_row["spectrum_name"] = "Composite of " + ", ".join(
+                f"specid{specid}" for specid in sorted(comparison_specids)
+            )
 
         standard_row = conn.execute(text("""
             SELECT
@@ -4979,9 +5458,11 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
             if object_type_exists <= 0:
                 object_type = None
 
+        comments_body = dict(body)
+        comments_body["moca_specids"] = sorted(comparison_specids)
         row = {
             "moca_oid": int(comparison_row["moca_oid"]),
-            "moca_specid": comparison_specid,
+            "moca_specid": None if is_composite else comparison_specid,
             "moca_instid": _spt_clean_text(comparison_row.get("moca_instid"), 255),
             "spectral_type": standard_spt,
             "moca_sptgridhid": grid_history_id,
@@ -5005,12 +5486,13 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
                 60,
             ),
             "object_type": object_type,
-            "comments": _spt_push_comments(body, standard_row),
+            "comments": _spt_push_comments(comments_body, standard_row),
             "is_public": 0,
             "rls": rls,
         }
 
-        duplicate = conn.execute(text("""
+        duplicate_comments_sql = "AND comments <=> :comments" if is_composite else ""
+        duplicate = conn.execute(text(f"""
             SELECT id
             FROM data_spectral_types
             WHERE COALESCE(ignored, 0) = 0
@@ -5020,12 +5502,17 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
                 AND spectral_standard_moca_specid <=> :spectral_standard_moca_specid
                 AND spectral_type <=> :spectral_type
                 AND ABS(COALESCE(spectral_type_number, -99999) - :spectral_type_number) < 0.00001
+                {duplicate_comments_sql}
             LIMIT 1
         """), row).mappings().first()
         if duplicate:
             raise FileExistsError(f"An active matching spectral type already exists (data_spectral_types.id={duplicate['id']}).")
 
-        insert_row = {key: value for key, value in row.items() if key in columns and value is not None}
+        insert_row = {
+            key: value
+            for key, value in row.items()
+            if key in columns and (value is not None or (is_composite and key == "moca_specid"))
+        }
         column_sql = ", ".join(f"`{key}`" for key in insert_row)
         value_sql = ", ".join(f":{key}" for key in insert_row)
         result = conn.execute(text(f"INSERT INTO data_spectral_types ({column_sql}) VALUES ({value_sql})"), insert_row)
@@ -5034,6 +5521,7 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
     return {
         "inserted_id": _pythonize(inserted_id),
         "row": _json_clean(row),
+        "comparison_specids": sorted(comparison_specids),
         "cleared": _clear_spectral_type_write_caches(),
     }
 
@@ -30230,8 +30718,9 @@ def spectral_typing_search():
             selected_specid = None
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            mock_specid = int(selected_specid or 450)
-            mock_oid = 10995 if mock_specid == 13510 else 990000 + mock_specid
+            query_specids = _spt_parse_specid_values(query)
+            mock_specid = int(selected_specid or (query_specids[0] if query_specids else 450))
+            mock_oid = 10995 if mock_specid == 13510 else 990602
             mock_designation = "2MASS J05591914-1404488" if mock_specid == 13510 else "MOCK comparison"
             mock_spt = "T4.5" if mock_specid == 13510 else "L8.5"
             options = [{
@@ -30282,11 +30771,12 @@ def spectral_typing_compare():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
-    raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
     try:
-        specid = int(raw_specid)
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "source": "none", "error": "A numeric specid is required"}), 400
+        specids = _spt_requested_specids(body, args)
+    except ValueError as exc:
+        return jsonify({"ok": False, "source": "none", "error": str(exc)}), 400
+    if not specids:
+        return jsonify({"ok": False, "source": "none", "error": "At least one numeric specid is required"}), 400
     try:
         bins = int(body.get("bins") or body.get("bins_per_micron") or args.get("bins") or SPT_DEFAULT_BINS_PER_MICRON)
     except (TypeError, ValueError):
@@ -30340,7 +30830,7 @@ def spectral_typing_compare():
         if args.get("mock") in {"1", "true", "yes"}:
             payload = _mock_spt_compare(
                 args,
-                specid,
+                specids,
                 bins,
                 norm_regions_param,
                 deredden,
@@ -30355,7 +30845,7 @@ def spectral_typing_compare():
         started = time.time()
         payload = _precompute_spt_comparison(
             args,
-            specid,
+            specids,
             bins,
             norm_regions_param,
             deredden,
@@ -30375,12 +30865,16 @@ def spectral_typing_compare():
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "comparison": [],
-            "comparisonMetadata": {"moca_specid": specid},
+            "comparisonMetadata": {"moca_specid": specids[0] if len(specids) == 1 else None, "moca_specids": specids},
+            "comparisonSources": [],
+            "stitching": {"composite": len(specids) > 1, "specids": specids, "warnings": []},
             "entries": [],
             "options": [],
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                "specid": specid,
+                "specid": specids[0] if len(specids) == 1 else None,
+                "specids": specids,
+                "composite": len(specids) > 1,
                 "bins_per_micron": bins,
                 "norm_regions": norm_regions_param,
                 "norm_regions_text": _spt_format_norm_regions(norm_regions_param),
@@ -30400,7 +30894,6 @@ def spectral_typing_standard():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
-    raw_specid = body.get("specid") or body.get("moca_specid") or args.get("specid") or args.get("moca_specid")
     raw_standard_specid = (
         body.get("standard_specid")
         or body.get("moca_standard_specid")
@@ -30408,9 +30901,12 @@ def spectral_typing_standard():
         or args.get("standard_specid")
     )
     try:
-        specid = int(raw_specid)
+        specids = _spt_requested_specids(body, args)
         standard_specid = int(raw_standard_specid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        message = str(exc) if str(exc) else "Numeric specid and standard_specid are required"
+        return jsonify({"ok": False, "source": "none", "error": message}), 400
+    if not specids:
         return jsonify({"ok": False, "source": "none", "error": "Numeric specid and standard_specid are required"}), 400
     try:
         bins = int(body.get("bins") or body.get("bins_per_micron") or args.get("bins") or SPT_DEFAULT_BINS_PER_MICRON)
@@ -30455,7 +30951,7 @@ def spectral_typing_standard():
         if args.get("mock") in {"1", "true", "yes"}:
             payload = _mock_spt_compare(
                 args,
-                specid,
+                specids,
                 bins,
                 norm_regions_param,
                 deredden,
@@ -30471,7 +30967,7 @@ def spectral_typing_standard():
         started = time.time()
         payload = _precompute_spt_comparison(
             args,
-            specid,
+            specids,
             bins,
             norm_regions_param,
             deredden,
@@ -30491,12 +30987,16 @@ def spectral_typing_standard():
             "source": "none",
             "error": f"{type(exc).__name__}: {exc}",
             "comparison": [],
-            "comparisonMetadata": {"moca_specid": specid},
+            "comparisonMetadata": {"moca_specid": specids[0] if len(specids) == 1 else None, "moca_specids": specids},
+            "comparisonSources": [],
+            "stitching": {"composite": len(specids) > 1, "specids": specids, "warnings": []},
             "entries": [],
             "options": [],
             "meta": {
                 "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                "specid": specid,
+                "specid": specids[0] if len(specids) == 1 else None,
+                "specids": specids,
+                "composite": len(specids) > 1,
                 "standard_specid": standard_specid,
                 "bins_per_micron": bins,
                 "norm_regions": norm_regions_param,

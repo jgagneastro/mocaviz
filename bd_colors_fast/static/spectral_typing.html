@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Spectral Typing</title>
-  <link rel="stylesheet" href="static/styles.css?v=spectral-loader-labels-20260710a">
+  <link rel="stylesheet" href="static/styles.css?v=spectral-composites-20260716a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -22,7 +22,7 @@
         <section class="control-section axes-section">
           <h2>Spectrum</h2>
           <div class="designation-picker">
-            <label for="spt-comparison-search">Comparison spectrum</label>
+            <label for="spt-comparison-search" id="spt-comparison-search-label">Comparison spectrum</label>
             <input id="spt-comparison-search" type="text" autocomplete="off" placeholder="Type a specid, oid, designation, or instrument">
             <div id="spt-comparison-results" class="designation-results" hidden></div>
           </div>
@@ -30,6 +30,17 @@
             <span id="spt-selected-spectrum-text">No spectrum selected</span>
             <button id="spt-clear-spectrum" type="button" aria-label="Clear selected comparison spectrum" hidden>x</button>
           </div>
+          <button id="spt-start-composite" class="spt-composite-start" type="button" hidden>+ Combine another spectrum</button>
+          <div id="spt-selected-spectra" class="spectra-selected-list spt-selected-spectra" hidden></div>
+          <div id="spt-composite-actions" class="button-grid spt-composite-actions" hidden>
+            <button id="spt-compute-composite" type="button">Type combined spectrum</button>
+            <button id="spt-cancel-composite" type="button">Cancel combination</button>
+          </div>
+          <div id="spt-composite-hint" class="plot-hint spt-composite-hint" hidden>Add at least one more spectrum from the search box.</div>
+          <details id="spt-stitch-details" class="spt-stitch-details" hidden>
+            <summary id="spt-stitch-summary">Composite stitching details</summary>
+            <div id="spt-stitch-content"></div>
+          </details>
         </section>
 
         <section class="control-section filters-section">
@@ -191,6 +202,7 @@
         <li><code>?specid=450&amp;grid=field&amp;bins=200</code></li>
         <li><code>?specid=450&amp;grid=field&amp;grid_index=4&amp;norm=0.860-1.350,1.445-1.800,2.010-2.400</code></li>
         <li><code>?specid=450&amp;deredden=1&amp;fix_rv=3.1</code></li>
+        <li><code>?specids=450,451</code> to stitch and type spectra from the same object.</li>
         <li><code>?specid=450&amp;cloud=1</code></li>
         <li><code>?specid=450&amp;standards_source=pickles&amp;grid=III%20weak%20M%2FH</code></li>
         <li><code>?mock=1&amp;specid=450</code> for a network-free local sample dataset.</li>
@@ -206,6 +218,11 @@
             <td><code>specid</code>, <code>moca_specid</code></td>
             <td>Numeric MOCAdb spectrum ID</td>
             <td>Preselects and computes the comparison spectrum. Defaults to <code>450</code>.</td>
+          </tr>
+          <tr>
+            <td><code>specids</code></td>
+            <td>Comma-separated MOCAdb spectrum IDs</td>
+            <td>Stitches spectra from one object through their overlaps, merges overlapping bins, and types the resulting composite.</td>
           </tr>
           <tr>
             <td><code>grid</code></td>
@@ -268,6 +285,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=api-routing-20260710a"></script>
+  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-20260716a"></script>
 </body>
 </html>

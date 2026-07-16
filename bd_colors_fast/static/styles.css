@@ -1307,6 +1307,52 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   font-size: 14px;
 }
 
+.spt-composite-start {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.spt-selected-spectra {
+  margin-top: 8px;
+}
+
+.spt-composite-actions {
+  margin-bottom: 4px;
+}
+
+.spt-composite-hint {
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+.spt-stitch-details {
+  margin-top: 8px;
+  border: 1px solid #c5c1c8;
+  border-radius: 6px;
+  background: #f5f4f6;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.spt-stitch-details summary {
+  cursor: pointer;
+  padding: 7px 8px;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.spt-stitch-details > div {
+  display: grid;
+  gap: 5px;
+  padding: 0 8px 8px;
+}
+
+.spt-stitch-warning {
+  color: #8b4d00;
+  font-weight: 700;
+}
+
 .button-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
