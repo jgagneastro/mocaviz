@@ -1499,19 +1499,87 @@ def _selection_sql_parts(args: dict[str, Any]) -> tuple[str, dict[str, Any], str
     return range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause
 
 
-def _selected_oids_subquery_sql(range_clause: str, limit_clause: str) -> str:
+def _axis_photometry_priority_sql(args: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Prioritize plot-ready objects before applying the broad-query cap."""
+    selectors: list[tuple[str, str]] = []
+    seen_selectors: set[tuple[str, str]] = set()
+    for axis in ("x", "y"):
+        axis_type = str(args.get(f"{axis}axis_type") or "").strip().lower()
+        if axis_type not in {"color", "absolute_magnitude"}:
+            continue
+        values = [args.get(f"{axis}axis_value_1")]
+        if axis_type == "color":
+            values.append(args.get(f"{axis}axis_value_2"))
+        for raw_value in values:
+            value = str(raw_value or "").strip()
+            simple_band = _normalize_simple_band(value)
+            if simple_band:
+                selector = ("simple", simple_band)
+            elif value and SAFE_ID_RE.match(value):
+                selector = ("psid", value)
+            else:
+                continue
+            if selector in seen_selectors:
+                continue
+            seen_selectors.add(selector)
+            selectors.append(selector)
+
+    conditions: list[str] = []
+    params: dict[str, str] = {}
+    for index, (selector_type, value) in enumerate(selectors):
+        alias = f"dp_priority_{index}"
+        param_name = f"axis_photometry_priority_{index}"
+        params[param_name] = value
+        selector_clause = (
+            f"{alias}.adopted_simpleband = 1 "
+            f"AND {alias}.system_band_simple = :{param_name}"
+            if selector_type == "simple"
+            else f"{alias}.moca_psid = :{param_name}"
+        )
+        conditions.append(f"""EXISTS (
+                SELECT 1
+                FROM data_photometry {alias}
+                WHERE {alias}.moca_oid = dst.moca_oid
+                    AND {alias}.adopted = 1
+                    AND {alias}.magnitude IS NOT NULL
+                    AND {alias}.magnitude_unc IS NOT NULL
+                    AND {selector_clause}
+            )""")
+
+    if not conditions:
+        return "", {}
+    return "CASE WHEN " + " AND ".join(conditions) + " THEN 0 ELSE 1 END", params
+
+
+def _selected_oids_subquery_sql(
+    range_clause: str,
+    limit_clause: str,
+    priority_sql: str = "",
+) -> str:
+    order_clause = "dst.spectral_type_number, dst.moca_oid"
+    if priority_sql:
+        order_clause = f"{priority_sql}, {order_clause}"
     return """
         SELECT dst.moca_oid
         FROM data_spectral_types dst
         WHERE dst.spectral_type_number IS NOT NULL
             AND {range_clause}
-        ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
-    """.format(range_clause=range_clause, limit_clause=limit_clause)
+        ORDER BY {order_clause}{limit_clause}
+    """.format(
+        range_clause=range_clause,
+        order_clause=order_clause,
+        limit_clause=limit_clause,
+    )
 
 
 def _selected_oids_from_db(conn, args: dict[str, Any]) -> list[int]:
-    range_clause, range_params, _spt_label, _include_photometric_spt, _object_limit, limit_clause = _selection_sql_parts(args)
-    rows = _records(_read_sql(conn, _selected_oids_subquery_sql(range_clause, limit_clause), range_params))
+    range_clause, range_params, _spt_label, _include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
+    priority_sql, priority_params = _axis_photometry_priority_sql(args) if object_limit is not None else ("", {})
+    rows = _records(_read_sql(
+        conn,
+        _selected_oids_subquery_sql(range_clause, limit_clause, priority_sql),
+        {**range_params, **priority_params},
+    ))
     return [int(row["moca_oid"]) for row in rows if row.get("moca_oid") is not None]
 
 
@@ -1557,7 +1625,12 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             return rows
 
         range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
-        selected_oids_subquery = _selected_oids_subquery_sql(range_clause, limit_clause)
+        priority_sql, priority_params = _axis_photometry_priority_sql(args) if object_limit is not None else ("", {})
+        range_params = {**range_params, **priority_params}
+        object_order_clause = "dst.spectral_type_number, dst.moca_oid"
+        if priority_sql:
+            object_order_clause = f"{priority_sql}, {object_order_clause}"
+        selected_oids_subquery = _selected_oids_subquery_sql(range_clause, limit_clause, priority_sql)
 
         photometry_options = read_static_records("photometry_options", """
             SELECT moca_psid, name, system_band_simple
@@ -1606,9 +1679,10 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 ON mopc.moca_oid = dst.moca_oid
             WHERE dst.spectral_type_number IS NOT NULL
                 AND {range_clause}
-            ORDER BY dst.spectral_type_number, dst.moca_oid{limit_clause}
+            ORDER BY {object_order_clause}{limit_clause}
         """.format(
             range_clause=range_clause,
+            object_order_clause=object_order_clause,
             limit_clause=limit_clause,
         ), range_params)
 

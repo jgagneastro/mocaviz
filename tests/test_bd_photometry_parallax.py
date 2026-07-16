@@ -68,6 +68,39 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             build_rows_block,
         )
 
+    def test_capped_selection_prioritizes_objects_with_all_axis_photometry(self):
+        args = {
+            "spt_range": "L0+",
+            "photspt": "1",
+            "max_objects": "5000",
+            "xaxis_type": "spectral_type",
+            "yaxis_type": "color",
+            "yaxis_value_1": "euclid_ymag",
+            "yaxis_value_2": "euclid_hmag",
+        }
+
+        priority_sql, priority_params = app_module._axis_photometry_priority_sql(args)
+        selection_sql = app_module._selected_oids_subquery_sql(
+            "dst.adopted = 1",
+            "\n            LIMIT 5000",
+            priority_sql,
+        )
+
+        self.assertEqual(
+            priority_params,
+            {
+                "axis_photometry_priority_0": "euclid_ymag",
+                "axis_photometry_priority_1": "euclid_hmag",
+            },
+        )
+        self.assertEqual(priority_sql.count("EXISTS ("), 2)
+        self.assertIn("dp_priority_0.moca_oid = dst.moca_oid", priority_sql)
+        self.assertIn("dp_priority_1.moca_oid = dst.moca_oid", priority_sql)
+        self.assertIn("dp_priority_0.magnitude_unc IS NOT NULL", priority_sql)
+        order_sql = selection_sql.split("ORDER BY", 1)[1]
+        self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("dst.spectral_type_number"))
+        self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("LIMIT 5000"))
+
 
 if __name__ == "__main__":
     unittest.main()
