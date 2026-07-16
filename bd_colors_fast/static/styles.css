@@ -449,6 +449,81 @@ body.is-mocadb-team textarea:focus {
   line-height: 1.25;
 }
 
+.sequence-fit-control {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(37, 35, 41, .16);
+}
+
+.sequence-fit-smoothing {
+  margin: 0 0 10px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.sequence-fit-smoothing.is-disabled {
+  color: #77717b;
+  opacity: .7;
+}
+
+.sequence-fit-smoothing output {
+  white-space: nowrap;
+}
+
+.sequence-fit-slider {
+  width: 100%;
+}
+
+.sequence-fit-ticks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 7px;
+  margin-top: -2px;
+  pointer-events: none;
+}
+
+.sequence-fit-ticks span {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: .72;
+}
+
+.sequence-fit-button {
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding: 7px 10px;
+  line-height: 1.25;
+}
+
+.sequence-fit-button[aria-pressed="true"] {
+  background: #252329;
+  border-color: #252329;
+}
+
+.sequence-fit-button:disabled {
+  cursor: not-allowed;
+}
+
+.sequence-fit-export-button {
+  width: 100%;
+  height: auto;
+  min-height: 30px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  line-height: 1.25;
+}
+
+.sequence-fit-status {
+  min-height: 32px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .disabled-field {
   color: #77717b;
   opacity: .7;

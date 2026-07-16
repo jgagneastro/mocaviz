@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Brown Dwarf Photometry Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-sequence-fit-20260716b-azul-byw-20260716a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -133,6 +133,10 @@
             <input id="use-bickle-spt" type="checkbox">
             <span>Use Bickle et al. spectral types</span>
           </label>
+          <label id="azul-byw-sample-line" class="checkline" hidden>
+            <input id="display-azul-byw-sample" type="checkbox">
+            <span>Display Azul's Backyard Worlds sample</span>
+          </label>
           <label class="checkline">
             <input id="advanced-photometry" type="checkbox">
             <span>Use advanced photometry systems</span>
@@ -145,6 +149,26 @@
             <input id="color-by-gravity" type="checkbox">
             <span>Color by gravity class</span>
           </label>
+          <div class="sequence-fit-control">
+            <label class="sequence-fit-smoothing">
+              <span class="range-heading">
+                <span>Smoothing window</span>
+                <output id="sequence-fit-smoothing-output" for="sequence-fit-smoothing">2.5 subtypes</output>
+              </span>
+              <div class="sequence-fit-slider">
+                <input id="sequence-fit-smoothing" type="range" min="0.5" max="8" step="0.5" value="2.5">
+                <div class="sequence-fit-ticks" aria-hidden="true">
+                  <span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span>
+                </div>
+              </div>
+            </label>
+            <button id="fit-sequence" class="sequence-fit-button" type="button" aria-pressed="false">Fit X &amp; Y vs spectral type</button>
+            <button id="export-sequence-csv" class="sequence-fit-export-button" type="button" disabled>Export sequence as CSV</button>
+            <div id="fit-sequence-status" class="plot-hint sequence-fit-status" aria-live="polite">Fits weighted medians and MAD scatter every 0.1 subtype, then smooths both over one-third of the selected data window.</div>
+          </div>
         </section>
       </aside>
 
@@ -257,6 +281,11 @@
             <td>De-emphasizes points whose propagated X or Y uncertainty exceeds the threshold and excludes those points from automatic axis limits. If omitted, the app applies axis-specific defaults where available.</td>
           </tr>
           <tr>
+            <td><code>sequence_smoothing</code></td>
+            <td><code>0.5</code>-<code>8</code> subtypes</td>
+            <td>Sets the total width of the centered, distance-weighted data window. The default is <code>2.5</code> subtypes. Weighted medians and weighted median absolute deviations (MADs) are evaluated every tenth of a subtype, then the fitted sequence and MAD scatter are smoothed over one-third of the selected width.</td>
+          </tr>
+          <tr>
             <td><code>max_objects</code></td>
             <td>Positive integer, or <code>0</code>/<code>none</code>/<code>uncapped</code>/<code>all</code></td>
             <td>Controls the safety cap for broad source queries, especially when including photometric spectral types or requesting spectral ranges earlier than L0. The default broad-query cap is 5,000 objects, and larger numeric requests are clamped; <code>0</code>, <code>none</code>, <code>uncapped</code>, or <code>all</code> explicitly requests no cap.</td>
@@ -301,6 +330,11 @@
             <td>In private-table mode with a spectral-type axis, keeps adopted non-low-gravity spectral types and uses Bickle et al. spectral types for the low-gravity branch.</td>
           </tr>
           <tr>
+            <td><code>azul_byw_sample</code></td>
+            <td><code>false</code></td>
+            <td>In private-table mode, highlights objects listed in <code>pcat_azul_byw_sample_jul16_2026</code>.</td>
+          </tr>
+          <tr>
             <td><code>advanced_photometry</code></td>
             <td><code>false</code></td>
             <td>Shows all detailed MOCAdb photometry system IDs instead of the simplified band list.</td>
@@ -314,6 +348,11 @@
             <td><code>gravitycolor</code></td>
             <td><code>false</code></td>
             <td>Colors objects by gravity class: field, beta, gamma, delta, or subdwarf. Beta/gamma classes are folded into gamma. Mutually exclusive with <code>agecolor</code>.</td>
+          </tr>
+          <tr>
+            <td><code>sequence_fit</code></td>
+            <td><code>false</code></td>
+            <td>Fits each non-spectral-type axis with weighted medians as a smooth function of fractional spectral type, draws the resulting sequence as a thick black line, and shades the local ±1 weighted-MAD region in gray.</td>
           </tr>
         </tbody>
       </table>
@@ -354,6 +393,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b"></script>
 </body>
 </html>

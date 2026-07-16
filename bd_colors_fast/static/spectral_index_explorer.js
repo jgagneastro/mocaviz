@@ -17,6 +17,7 @@ const sieState = {
   specid: sieDefaultSpecid,
   spectrumMetadata: null,
   definitionUid: sieDefaultDefinitionUid,
+  requestedMocaSiid: "",
   definitionMetadata: null,
   definitionOptions: [],
   definitionFilter: "",
@@ -84,7 +85,9 @@ function collectSpectralIndexElements() {
 function readSpectralIndexUrlState() {
   const params = new URLSearchParams(window.location.search);
   sieState.specid = parseInteger(params.get("moca_specid") || params.get("specid")) || defaultSpectralIndexSpecid();
-  sieState.definitionUid = params.get("definition_uid") || params.get("observable_uid") || params.get("uid") || sieDefaultDefinitionUid;
+  const explicitDefinitionUid = params.get("definition_uid") || params.get("observable_uid") || params.get("uid") || "";
+  sieState.requestedMocaSiid = params.get("moca_siid") || params.get("siid") || params.get("spectral_index") || "";
+  sieState.definitionUid = explicitDefinitionUid || (sieState.requestedMocaSiid ? "" : sieDefaultDefinitionUid);
   sieEl["sie-normalize"].checked = !asFalse(params.get("normalize"));
   sieEl["sie-show-continuum"].checked = !asFalse(params.get("continuum"));
   sieEl["sie-show-labels"].checked = !asFalse(params.get("labels"));
@@ -173,6 +176,9 @@ async function loadSelectedSpectrumLabel() {
 
 async function loadDefinitionOptions() {
   const params = apiParams();
+  if (sieState.requestedMocaSiid && !sieState.definitionUid) {
+    params.set("q", sieState.requestedMocaSiid);
+  }
   const payload = await fetchJsonUrl(sieAppUrl(`api/spectral-index-explorer/definitions/search?${params.toString()}`));
   if (!payload.ok) {
     sieEl["sie-definition-select"].innerHTML = `<option value="">${escapeHtml(payload.error || "Could not load definitions")}</option>`;
@@ -180,6 +186,11 @@ async function loadDefinitionOptions() {
   }
   let options = payload.options || [];
   let option = options.find((item) => item.value === sieState.definitionUid);
+  if (!option && sieState.requestedMocaSiid) {
+    const requested = sieState.requestedMocaSiid.toLowerCase();
+    option = options.find((item) => String(item.moca_siid || "").toLowerCase() === requested) || options[0];
+    if (option) sieState.definitionUid = option.value;
+  }
   if (!option && sieState.definitionUid) {
     const selectedParams = apiParams();
     selectedParams.set("definition_uid", sieState.definitionUid);

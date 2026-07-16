@@ -24,7 +24,18 @@ const simplePhotometryPrefix = "simple:";
 const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
 const broadSampleMaxObjects = 5000;
 const spectralTypeJitterAmplitude = 0.3;
+const sequenceFitMinObjectsPerWindow = 2;
+const sequenceFitLineWidth = 5;
+const sequenceFitDefaultSmoothingWidth = 2.5;
+const sequenceFitMinSmoothingWidth = 0.5;
+const sequenceFitMaxSmoothingWidth = 8;
+const sequenceFitEvaluationStep = 0.1;
+const sequenceFitPostSmoothingFraction = 1 / 3;
+const sequenceFitRenderDelayMs = 1000;
 const yDwarfRangePaddingFraction = 0.05;
+const additionalYAxisPaddingFraction = 0.15;
+const yAxisLowerQuantile = 0.01;
+const yAxisUpperQuantile = 0.99;
 const ageColorbarLength = 0.7371;
 const ageColorbarBinaryLengthMultiplier = 0.95;
 const ageColorbarPhotdistLengthMultiplier = 0.95;
@@ -91,6 +102,10 @@ const state = {
   hiddenLegendBinaries: false,
   hiddenLegendPhotdist: false,
   legendClickTimer: null,
+  sequenceFitEnabled: false,
+  sequenceFitAppliedSmoothingWidth: sequenceFitDefaultSmoothingWidth,
+  sequenceFitRenderTimer: null,
+  sequenceFitModel: null,
   manualPhotdistChoice: false,
   plotBound: false,
   plotLoadReasons: new Set(),
@@ -216,9 +231,16 @@ function collectElements() {
     "risky-photspt-line",
     "use-bickle-spt",
     "bickle-spt-line",
+    "display-azul-byw-sample",
+    "azul-byw-sample-line",
     "advanced-photometry",
     "color-by-age",
     "color-by-gravity",
+    "fit-sequence",
+    "fit-sequence-status",
+    "export-sequence-csv",
+    "sequence-fit-smoothing",
+    "sequence-fit-smoothing-output",
     "visual-area",
     "plot",
     "plot-loader",
@@ -273,12 +295,19 @@ function readInitialUrlState() {
   el["include-photspt"].checked = asBool(params.get("photspt"));
   el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
   el["use-bickle-spt"].checked = asBool(params.get("bickle_spt")) || asBool(params.get("use_bickle_spt")) || asBool(params.get("bickle_spectral_types"));
+  el["display-azul-byw-sample"].checked = asBool(params.get("azul_byw_sample")) || asBool(params.get("display_azul_byw_sample"));
   el["advanced-photometry"].checked = asBool(params.get("advanced_photometry"));
+  state.sequenceFitEnabled = asBool(params.get("sequence_fit"));
+  state.sequenceFitAppliedSmoothingWidth = sequenceFitSmoothingWidth(params.get("sequence_smoothing"));
+  el["sequence-fit-smoothing"].value = String(state.sequenceFitAppliedSmoothingWidth);
+  if (!sequenceFitEligible()) state.sequenceFitEnabled = false;
   const wantsGravityColor = asBool(params.get("gravitycolor")) || asBool(params.get("gravity_color")) || asBool(params.get("color_by_gravity"));
   el["color-by-age"].checked = asBool(params.get("agecolor")) && !wantsGravityColor;
   el["color-by-gravity"].checked = wantsGravityColor;
   updateAdvancedPhotometryControl();
   updateBickleSptControl();
+  updateSequenceFitSmoothingOutput();
+  updateSequenceFitControl();
   if (applyAxisErrorDefaults(explicitErrorThresholds)) requestInitialAxisRange();
 }
 
@@ -309,6 +338,8 @@ function bindControls() {
       }
       updateAdvancedPhotometryControl();
       updateBickleSptControl();
+      if (!sequenceFitEligible()) state.sequenceFitEnabled = false;
+      updateSequenceFitControl();
       requestInitialAxisRange();
       render();
       if (wasUsingBickleSpt !== bickleSpectralTypesRequested()) {
@@ -441,12 +472,36 @@ function bindControls() {
     render();
     scheduleBootstrapReload({ resetAxisRange: true });
   });
+  el["display-azul-byw-sample"].addEventListener("change", () => {
+    render();
+    scheduleBootstrapReload({ resetAxisRange: false });
+  });
   el["advanced-photometry"].addEventListener("change", () => {
     refreshAxisValueControls("x", { preferDefaults: true });
     refreshAxisValueControls("y", { preferDefaults: true });
     requestInitialAxisRange();
     render();
   });
+  el["fit-sequence"].addEventListener("click", () => {
+    if (!sequenceFitEligible()) return;
+    cancelScheduledSequenceFitRender();
+    state.sequenceFitAppliedSmoothingWidth = sequenceFitSmoothingWidth();
+    state.sequenceFitEnabled = !state.sequenceFitEnabled;
+    updateSequenceFitControl();
+    render();
+  });
+  el["sequence-fit-smoothing"].addEventListener("input", () => {
+    cancelScheduledSequenceFitRender();
+    updateSequenceFitSmoothingOutput();
+    if (state.sequenceFitEnabled && el["fit-sequence-status"]) {
+      el["fit-sequence-status"].textContent = "Release the smoothing slider to refit.";
+    }
+  });
+  el["sequence-fit-smoothing"].addEventListener("change", () => {
+    updateSequenceFitSmoothingOutput();
+    scheduleSequenceFitRender();
+  });
+  el["export-sequence-csv"].addEventListener("click", exportFittedSequenceCsv);
   el["bulk-preload"]?.addEventListener("click", bulkPreloadAll);
   el["clear-cache"]?.addEventListener("click", clearDownloadedCache);
   el["export-csv"].addEventListener("click", exportCsv);
@@ -582,6 +637,26 @@ function bickleSpectralTypesRequested() {
   return Boolean(el["use-bickle-spt"]?.checked && privateEligible && hasSpectralTypeAxis());
 }
 
+function updateAzulBywSampleControl() {
+  const checkbox = el["display-azul-byw-sample"];
+  const line = el["azul-byw-sample-line"];
+  if (!checkbox || !line) return;
+  const hasLoadedCatalog = Boolean(state.raw?.meta);
+  const privateData = Boolean(state.raw?.meta?.private_db);
+  line.hidden = !hasLoadedCatalog || !privateData;
+  checkbox.disabled = !privateData;
+  if (hasLoadedCatalog && !privateData) checkbox.checked = false;
+  line.classList.toggle("is-disabled", !privateData);
+  line.title = privateData
+    ? "Highlights objects listed in pcat_azul_byw_sample_jul16_2026."
+    : "";
+}
+
+function azulBywSampleRequested() {
+  const privateEligible = state.raw?.meta ? Boolean(state.raw.meta.private_db) : true;
+  return Boolean(el["display-azul-byw-sample"]?.checked && privateEligible);
+}
+
 function photometricSptCatalogReady() {
   if (!el["include-photspt"].checked) return true;
   if (!state.raw?.meta?.include_photometric_spt) return false;
@@ -629,6 +704,9 @@ function buildBootstrapParams() {
   if (bickleSpectralTypesRequested()) params.set("bickle_spt", "1");
   else params.delete("bickle_spt");
   params.set("advanced_photometry", useAdvancedPhotometrySystems() ? "1" : "0");
+  params.delete("display_azul_byw_sample");
+  if (azulBywSampleRequested()) params.set("azul_byw_sample", "1");
+  else params.delete("azul_byw_sample");
   params.set("photdist", includePhotometricDistances() ? "1" : "0");
   params.set("xaxis_type", el["x-axis-type"].value || "color");
   params.set("yaxis_type", el["y-axis-type"].value || "absolute_magnitude");
@@ -654,6 +732,8 @@ function updateUrlFromControls() {
   params.set("binaries", el["include-binaries"].checked ? "1" : "0");
   params.set("agecolor", el["color-by-age"].checked ? "1" : "0");
   params.set("gravitycolor", el["color-by-gravity"].checked ? "1" : "0");
+  params.set("sequence_fit", state.sequenceFitEnabled ? "1" : "0");
+  params.set("sequence_smoothing", formatSequenceFitSmoothingWidth(sequenceFitSmoothingWidth()));
   params.delete("gravity_color");
   params.delete("color_by_gravity");
   copyInputValueToParam(params, "xerr_max", "xerr-max");
@@ -731,6 +811,7 @@ async function loadBootstrap(options = {}) {
     state.associationHighlightMeta = payload.meta?.association_highlights || null;
     updatePhotometricSptControl();
     updateBickleSptControl();
+    updateAzulBywSampleControl();
     renderAssociationHighlightPicker();
     if (options.resetAxisRange) requestInitialAxisRange();
     refreshAxisValueControls("x");
@@ -780,6 +861,7 @@ async function bulkPreloadAll() {
     resetFeatureState(payload);
     updatePhotometricSptControl();
     updateBickleSptControl();
+    updateAzulBywSampleControl();
     refreshAxisValueControls("x");
     refreshAxisValueControls("y");
     requestInitialAxisRange();
@@ -848,6 +930,7 @@ function clearClientData(options = {}) {
   state.maps = null;
   state.allRows = [];
   state.rows = [];
+  state.sequenceFitModel = null;
   state.selectedOids = [];
   state.associationHighlightMeta = null;
   state.hiddenLegendClasses.clear();
@@ -872,6 +955,7 @@ function clearClientData(options = {}) {
   state.forceFreshPlot = true;
   updatePhotometricSptControl();
   updateBickleSptControl();
+  updateAzulBywSampleControl();
   if (el.plot && window.Plotly) Plotly.purge(el.plot);
   state.plotBound = false;
   if (el["selection-table"]) el["selection-table"].innerHTML = "";
@@ -1761,6 +1845,9 @@ function render() {
   state.allRows = rows;
   const plottedRows = legendFilteredRows(rows);
   state.rows = plottedRows;
+  const sequenceFit = fittedSequenceModel(plottedRows);
+  state.sequenceFitModel = sequenceFit;
+  updateSequenceFitControl(sequenceFit);
   state.selectedOids = state.selectedOids.filter((oid) => plottedRows.some((row) => row.moca_oid === oid));
   const rangeSignature = axisRangeSignature();
   if (!state.pendingInitialAxisRange && rangeSignature !== state.lastAppliedAxisRangeSignature) {
@@ -1769,6 +1856,7 @@ function render() {
   const plotRanges = drawPlot(rows, plottedRows, {
     keepPendingInitialRange: hasPendingCriticalPlotData(),
     rangeSignature,
+    sequenceFit,
   });
   renderTable(state.selectedOids);
   renderDesignationPicker();
@@ -1816,6 +1904,92 @@ function renderPlotHint() {
 
 function hasSpectralTypeAxis() {
   return el["x-axis-type"].value === "spectral_type" || el["y-axis-type"].value === "spectral_type";
+}
+
+function sequenceFitEligible() {
+  return el["x-axis-type"].value !== "spectral_type" || el["y-axis-type"].value !== "spectral_type";
+}
+
+function sequenceFitSmoothingWidth(value = el["sequence-fit-smoothing"]?.value) {
+  if (value === null || value === undefined || value === "") return sequenceFitDefaultSmoothingWidth;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return sequenceFitDefaultSmoothingWidth;
+  return clamp(numeric, sequenceFitMinSmoothingWidth, sequenceFitMaxSmoothingWidth);
+}
+
+function formatSequenceFitSmoothingWidth(value) {
+  return Number(value).toFixed(1);
+}
+
+function formatSequenceFitPostSmoothingWidth(value) {
+  return Number(value).toFixed(2);
+}
+
+function updateSequenceFitSmoothingOutput() {
+  const width = sequenceFitSmoothingWidth();
+  if (el["sequence-fit-smoothing"]) el["sequence-fit-smoothing"].value = String(width);
+  if (el["sequence-fit-smoothing-output"]) {
+    el["sequence-fit-smoothing-output"].textContent = `${formatSequenceFitSmoothingWidth(width)} subtypes`;
+  }
+}
+
+function cancelScheduledSequenceFitRender() {
+  window.clearTimeout(state.sequenceFitRenderTimer);
+  state.sequenceFitRenderTimer = null;
+}
+
+function scheduleSequenceFitRender() {
+  cancelScheduledSequenceFitRender();
+  const smoothingWidth = sequenceFitSmoothingWidth();
+  if (!state.sequenceFitEnabled) {
+    state.sequenceFitAppliedSmoothingWidth = smoothingWidth;
+    updateUrlFromControls();
+    return;
+  }
+  if (el["fit-sequence-status"]) {
+    el["fit-sequence-status"].textContent = "Refitting one second after slider release…";
+  }
+  state.sequenceFitRenderTimer = window.setTimeout(() => {
+    state.sequenceFitRenderTimer = null;
+    state.sequenceFitAppliedSmoothingWidth = smoothingWidth;
+    render();
+  }, sequenceFitRenderDelayMs);
+}
+
+function sequenceFitButtonLabel() {
+  const xIsSpt = el["x-axis-type"].value === "spectral_type";
+  const yIsSpt = el["y-axis-type"].value === "spectral_type";
+  if (xIsSpt && yIsSpt) return "Sequence fit unavailable";
+  if (state.sequenceFitEnabled) return "Hide fitted sequence";
+  if (xIsSpt) return "Fit Y vs spectral type";
+  if (yIsSpt) return "Fit X vs spectral type";
+  return "Fit X & Y vs spectral type";
+}
+
+function updateSequenceFitControl(model = null) {
+  const button = el["fit-sequence"];
+  const status = el["fit-sequence-status"];
+  const exportButton = el["export-sequence-csv"];
+  if (!button || !status) return;
+  const eligible = sequenceFitEligible();
+  const smoothing = el["sequence-fit-smoothing"];
+  button.disabled = !eligible;
+  if (smoothing) smoothing.disabled = !eligible;
+  smoothing?.closest("label")?.classList.toggle("is-disabled", !eligible);
+  button.setAttribute("aria-pressed", state.sequenceFitEnabled ? "true" : "false");
+  button.textContent = sequenceFitButtonLabel();
+  if (exportButton) exportButton.disabled = !state.sequenceFitEnabled || !model?.points?.length;
+  if (!eligible) {
+    status.textContent = "Both axes already show spectral type, so there is no observable axis to fit.";
+  } else if (!state.sequenceFitEnabled) {
+    status.textContent = "Fits weighted medians and MAD scatter every 0.1 subtype, then smooths both over one-third of the data-window width.";
+  } else if (model?.points?.length >= 2) {
+    status.textContent = `${model.sourceCount.toLocaleString()} plotted objects; ${model.points.length} weighted-median fit points at 0.1-subtype spacing; ${formatSequenceFitSmoothingWidth(model.smoothingWidth)}-subtype data window; ${formatSequenceFitPostSmoothingWidth(model.postSmoothingWidth)}-subtype median and MAD smoothing.`;
+  } else if (state.raw) {
+    status.textContent = "Need at least two fit locations with two plotted objects in the smoothing window.";
+  } else {
+    status.textContent = "Waiting for plotted data.";
+  }
 }
 
 function currentColorMode() {
@@ -1871,7 +2045,8 @@ function buildRows() {
     const oid = Number(object.moca_oid);
     const spt = Number(object.spectral_type_number);
     const associationHighlight = associationHighlightForObject(object);
-    const isHighlighted = highlighted.has(oid) || Boolean(associationHighlight);
+    const isAzulBywSample = azulBywSampleRequested() && Number(object.azul_byw_sample || 0) === 1;
+    const isHighlighted = highlighted.has(oid) || Boolean(associationHighlight) || isAzulBywSample;
     const binary = isBinary(object);
     const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
     if (!Number.isFinite(spt)) continue;
@@ -1917,6 +2092,7 @@ function buildRows() {
       y_ref: y.ref,
       input_data: mergeAxisInputs(x.inputs, y.inputs),
       highlighted: isHighlighted,
+      azul_byw_sample: isAzulBywSample,
       highlight_association: associationHighlight?.aid || "",
       highlight_ya_prob: associationHighlight?.yaProb ?? null,
       noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
@@ -2007,6 +2183,7 @@ function axisValue(object, spec, includePhotdist) {
         label: row.description || spec.value1,
         value: Number(row.index_value),
         error: numericValue(row.index_value_unc),
+        moca_siid: row.moca_siid,
         moca_specid: normalizedMocaSpecid(row.moca_specid),
       }],
     };
@@ -2220,7 +2397,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   const rangeRows = automaticRangeRows(plottedRows);
   const candidateInitialRanges = wantsInitialRange ? {
     x: percentileRange(rangeRows, "x"),
-    y: percentileRange(rangeRows, "y"),
+    y: percentileRange(plottedRows, "y"),
   } : { x: null, y: null };
   const appliesInitialRange = Boolean(candidateInitialRanges.x && candidateInitialRanges.y);
   const currentRanges = appliesInitialRange ? { x: null, y: null } : currentPlotRanges();
@@ -2240,6 +2417,9 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   }
   const traces = [];
   const colorMode = currentColorMode();
+  const sequenceFitTraces = fittedSequenceTraces(options.sequenceFit);
+
+  if (sequenceFitTraces.band) traces.push(sequenceFitTraces.band);
 
   if (colorMode === "age") {
     traces.push(...ageColorTraces(regularRows, opacityByOid, pointOpacity));
@@ -2272,6 +2452,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   traces.push(...medianColorTraces());
   traces.push(...sequenceTraces());
   traces.push(...binaryOverlayTraces(regularRows, opacityByOid, pointOpacity));
+  if (sequenceFitTraces.line) traces.push(sequenceFitTraces.line);
 
   if (highlightedRows.length) {
     traces.push(...highlightedPointTraces(highlightedRows));
@@ -2299,6 +2480,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     dragmode: "select",
     hovermode: "closest",
     uirevision: `bd-colors-fast-${nextRangeRevision}`,
+    images: sequenceFitTraces.image ? [sequenceFitTraces.image] : [],
   };
 
   const plotCanvasKey = currentPlotCanvasKey();
@@ -2342,6 +2524,7 @@ function currentPlotCanvasKey() {
     includePhotometricDistances() ? "photdist" : "spectrodist",
     el["include-binaries"].checked ? "binaries" : "singles",
     el["include-photspt"].checked ? "photspt" : "spectrospt",
+    azulBywSampleRequested() ? "azul-byw" : "no-azul-byw",
     axes,
   ].join("|");
 }
@@ -2481,21 +2664,38 @@ function errorThresholdsActive() {
 function percentileRange(rows, field) {
   const values = rows.map((row) => Number(plotValue(row, field))).filter(Number.isFinite).sort((a, b) => a - b);
   if (!values.length) return null;
-  const p2 = quantile(values, 0.02);
-  const p98 = quantile(values, 0.98);
-  const hasValuesOutsideCentiles = values[0] < p2 || values[values.length - 1] > p98;
-  let span = p98 - p2;
+  const lowerQuantile = field === "y" ? yAxisLowerQuantile : 0.02;
+  const upperQuantile = field === "y" ? yAxisUpperQuantile : 0.98;
+  const lower = quantile(values, lowerQuantile);
+  const upper = quantile(values, upperQuantile);
+  const hasValuesOutsideCentiles = values[0] < lower || values[values.length - 1] > upper;
+  let span = upper - lower;
   if (!Number.isFinite(span) || span <= 0) {
     const min = values[0];
     const max = values[values.length - 1];
     span = max - min;
-    if (!Number.isFinite(span) || span <= 0) span = Math.max(Math.abs(p2) * 0.1, 1);
+    if (!Number.isFinite(span) || span <= 0) span = Math.max(Math.abs(lower) * 0.1, 1);
   }
   const paddingFraction = el[`${field}-axis-type`]?.value === "spectral_type"
     ? 0.05
     : (hasValuesOutsideCentiles ? 0.2 : 0.05);
   const padding = span * paddingFraction;
-  return rangeWithAbsoluteMagnitudeYDwarfs([p2 - padding, p98 + padding], rows, field);
+  const usefulRange = rangeWithAbsoluteMagnitudeYDwarfs([lower - padding, upper + padding], rows, field);
+  const paddedRange = rangeWithAdditionalYAxisPadding(usefulRange, field);
+  return rangeWithNonnegativeSpectralIndexFloor(paddedRange, values, field);
+}
+
+function rangeWithAdditionalYAxisPadding(range, field) {
+  if (field !== "y") return range;
+  const span = Number(range?.[1]) - Number(range?.[0]);
+  if (!Number.isFinite(span) || span <= 0) return range;
+  const padding = span * additionalYAxisPaddingFraction;
+  return [range[0] - padding, range[1] + padding];
+}
+
+function rangeWithNonnegativeSpectralIndexFloor(range, values, field) {
+  if (field !== "y" || el["y-axis-type"]?.value !== "spectral_index" || values[0] < 0) return range;
+  return [Math.max(0, range[0]), range[1]];
 }
 
 function rangeWithAbsoluteMagnitudeYDwarfs(range, rows, field) {
@@ -2712,7 +2912,12 @@ function gravityColorTrace(rows, name, opacity, showlegend = name !== "Objects")
 
 function highlightedPointTraces(rows) {
   return [
-    errorBarTrace(rows, 0.2, "highlighted-errors"),
+    errorBarTrace(rows, 1, "highlighted-errors", {
+      color: "#d69e00",
+      forceVisible: true,
+      thickness: 3,
+      width: 5,
+    }),
     {
       type: "scattergl",
       uid: "highlighted-halo",
@@ -3217,6 +3422,444 @@ function sequenceTraces() {
   }));
 }
 
+function fittedSequenceModel(rows) {
+  if (!state.sequenceFitEnabled || !sequenceFitEligible()) return null;
+  const xIsSpt = el["x-axis-type"].value === "spectral_type";
+  const yIsSpt = el["y-axis-type"].value === "spectral_type";
+  const sourceRows = rows.filter((row) => (
+    Number.isFinite(Number(row.spectral_type_number)) &&
+    Number.isFinite(Number(row.x)) &&
+    Number.isFinite(Number(row.y))
+  ));
+  const smoothingWidth = state.sequenceFitAppliedSmoothingWidth;
+  const postSmoothingWidth = smoothingWidth * sequenceFitPostSmoothingFraction;
+  if (sourceRows.length < sequenceFitMinObjectsPerWindow) {
+    return { points: [], sourceCount: sourceRows.length, smoothingWidth, postSmoothingWidth };
+  }
+  const spectralTypes = sourceRows.map((row) => Number(row.spectral_type_number));
+  const minSpt = Math.min(...spectralTypes);
+  const maxSpt = Math.max(...spectralTypes);
+  const start = Math.ceil((minSpt - 1e-9) / sequenceFitEvaluationStep) * sequenceFitEvaluationStep;
+  const end = Math.floor((maxSpt + 1e-9) / sequenceFitEvaluationStep) * sequenceFitEvaluationStep;
+  const pointCount = Math.max(0, Math.floor((end - start) / sequenceFitEvaluationStep + 1e-9) + 1);
+  const localPoints = [];
+  for (let index = 0; index < pointCount; index += 1) {
+    const subtype = Math.round((start + index * sequenceFitEvaluationStep) * 100) / 100;
+    const weightedRows = sourceRows
+      .map((row) => ({
+        row,
+        weight: sequenceFitWindowWeight(Number(row.spectral_type_number), subtype, smoothingWidth),
+      }))
+      .filter((item) => item.weight > 0);
+    if (weightedRows.length < sequenceFitMinObjectsPerWindow) continue;
+    const weights = weightedRows.map((item) => item.weight);
+    const xValues = weightedRows.map((item) => Number(item.row.x));
+    const yValues = weightedRows.map((item) => Number(item.row.y));
+    const x = xIsSpt ? subtype : weightedMedian(xValues, weights);
+    const y = yIsSpt ? subtype : weightedMedian(yValues, weights);
+    const xMad = xIsSpt ? 0 : weightedMedianAbsoluteDeviation(xValues, weights, x);
+    const yMad = yIsSpt ? 0 : weightedMedianAbsoluteDeviation(yValues, weights, y);
+    localPoints.push({
+      subtype,
+      count: weightedRows.length,
+      x,
+      y,
+      xMad,
+      yMad,
+      xyComedian: xIsSpt || yIsSpt
+        ? 0
+        : weightedComedian(xValues, yValues, weights, x, y, xMad, yMad),
+    });
+  }
+  if (localPoints.length < 2) {
+    return { points: [], sourceCount: sourceRows.length, smoothingWidth, postSmoothingWidth };
+  }
+  const points = smoothSequenceFitPoints(localPoints, postSmoothingWidth, xIsSpt, yIsSpt);
+  return {
+    points,
+    xIsSpt,
+    yIsSpt,
+    sourceCount: sourceRows.length,
+    smoothingWidth,
+    postSmoothingWidth,
+  };
+}
+
+function smoothSequenceFitPoints(points, width, xIsSpt, yIsSpt) {
+  const output = [];
+  let segmentStart = 0;
+  for (let index = 1; index <= points.length; index += 1) {
+    const atEnd = index === points.length;
+    if (!atEnd && sequenceFitPointsAreAdjacent(points[index - 1], points[index])) continue;
+    const segment = points.slice(segmentStart, index);
+    for (const point of segment) {
+      const weightedPoints = segment
+        .map((candidate) => ({
+          point: candidate,
+          weight: sequenceFitWindowWeight(candidate.subtype, point.subtype, width),
+        }))
+        .filter((item) => item.weight > 0);
+      const weights = weightedPoints.map((item) => item.weight);
+      const weightedValues = (field) => weightedPoints.map((item) => Number(item.point[field]));
+      const xMadSquared = xIsSpt
+        ? 0
+        : weightedMean(weightedPoints.map((item) => item.point.xMad ** 2), weights);
+      const yMadSquared = yIsSpt
+        ? 0
+        : weightedMean(weightedPoints.map((item) => item.point.yMad ** 2), weights);
+      output.push({
+        ...point,
+        x: xIsSpt ? point.subtype : weightedMean(weightedValues("x"), weights),
+        y: yIsSpt ? point.subtype : weightedMean(weightedValues("y"), weights),
+        xMad: xIsSpt ? 0 : Math.sqrt(Math.max(0, xMadSquared)),
+        yMad: yIsSpt ? 0 : Math.sqrt(Math.max(0, yMadSquared)),
+        xyComedian: xIsSpt || yIsSpt
+          ? 0
+          : weightedMean(weightedValues("xyComedian"), weights),
+      });
+    }
+    segmentStart = index;
+  }
+  return output;
+}
+
+function fittedSequenceTraces(model) {
+  if (!model?.points?.length) return { band: null, line: null, image: null };
+  const band = fittedSequenceBand(model);
+  const image = fittedSequenceRibbonMask(model);
+  const line = fittedSequenceLineCoordinates(model.points);
+  const hoverText = model.points.map((point) => {
+    const parts = [
+      `Spectral type: ${formatSequenceFitSptLabel(point.subtype)}`,
+      `Objects in window: ${point.count}`,
+    ];
+    if (!model.xIsSpt) parts.push(`Smoothed X median ± MAD: ${formatFitValue(point.x)} ± ${formatFitValue(point.xMad)}`);
+    if (!model.yIsSpt) parts.push(`Smoothed Y median ± MAD: ${formatFitValue(point.y)} ± ${formatFitValue(point.yMad)}`);
+    return parts.join("<br>");
+  });
+  return {
+    band: band ? {
+      type: "scatter",
+      uid: "empirical-sequence-mad",
+      mode: "lines",
+      x: band.x,
+      y: band.y,
+      fill: "toself",
+      fillcolor: "rgba(128,128,128,0.7)",
+      line: { color: "rgba(90,90,90,0)", width: 0 },
+      connectgaps: false,
+      hoverinfo: "skip",
+      name: "Sequence ±1 MAD",
+      legendgroup: "empirical-sequence-fit",
+    } : {
+      type: "scatter",
+      uid: "empirical-sequence-mad-legend",
+      mode: "lines",
+      x: [null],
+      y: [null],
+      line: { color: "rgba(128,128,128,0.7)", width: 10 },
+      hoverinfo: "skip",
+      name: "Sequence ±1 MAD",
+      legendgroup: "empirical-sequence-fit",
+    },
+    line: {
+      type: "scatter",
+      uid: "empirical-sequence-mean",
+      mode: "lines",
+      x: line.x,
+      y: line.y,
+      text: withSequenceFitGapSeparators(model.points, hoverText),
+      hoverinfo: "text",
+      line: { color: "#000000", width: sequenceFitLineWidth },
+      connectgaps: false,
+      name: "Fitted sequence",
+      legendgroup: "empirical-sequence-fit",
+    },
+    image,
+  };
+}
+
+function fittedSequenceBand(model) {
+  const points = model.points;
+  if (model.xIsSpt) {
+    const upper = points.map((point) => ({ x: point.x, y: point.y + point.yMad }));
+    const lower = points.map((point) => ({ x: point.x, y: point.y - point.yMad })).reverse();
+    return polygonCoordinates(upper, lower);
+  }
+  if (model.yIsSpt) {
+    const upper = points.map((point) => ({ x: point.x + point.xMad, y: point.y }));
+    const lower = points.map((point) => ({ x: point.x - point.xMad, y: point.y })).reverse();
+    return polygonCoordinates(upper, lower);
+  }
+  return null;
+}
+
+function fittedSequenceRibbonMask(model) {
+  if (model.xIsSpt || model.yIsSpt || !model.points?.length || typeof document === "undefined") return null;
+  const geometry = sequenceFitParametricRibbonGeometry(model.points);
+  if (!geometry.segments.length) return null;
+  const bounds = sequenceFitRibbonBounds(geometry);
+  if (!bounds) return null;
+  const maxCanvasDimension = 1200;
+  const aspect = bounds.width / bounds.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = aspect >= 1 ? maxCanvasDimension : Math.max(240, Math.round(maxCanvasDimension * aspect));
+  canvas.height = aspect >= 1 ? Math.max(240, Math.round(maxCanvasDimension / aspect)) : maxCanvasDimension;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  const yReversed = el["y-axis-type"]?.value === "absolute_magnitude";
+  const canvasPoint = (point) => ({
+    x: (point.x - bounds.xMin) / bounds.width * canvas.width,
+    y: (yReversed ? point.y - bounds.yMin : bounds.yMax - point.y) / bounds.height * canvas.height,
+  });
+  context.fillStyle = "rgb(128,128,128)";
+  for (const segment of geometry.segments) {
+    const polygon = [segment.upperLeft, segment.upperRight, segment.lowerRight, segment.lowerLeft];
+    context.beginPath();
+    polygon.forEach((point, index) => {
+      const pixel = canvasPoint(point);
+      if (index === 0) context.moveTo(pixel.x, pixel.y);
+      else context.lineTo(pixel.x, pixel.y);
+    });
+    context.closePath();
+    context.fill();
+  }
+  const xScale = canvas.width / bounds.width;
+  const yScale = canvas.height / bounds.height;
+  for (const crossSection of geometry.crossSections) {
+    const center = canvasPoint(crossSection.center);
+    const varianceX = crossSection.xMad ** 2 * xScale ** 2;
+    const varianceY = crossSection.yMad ** 2 * yScale ** 2;
+    const covariance = -crossSection.xyComedian * xScale * yScale;
+    const discriminant = Math.sqrt(Math.max(0, (varianceX - varianceY) ** 2 + 4 * covariance ** 2));
+    const majorVariance = Math.max(0, (varianceX + varianceY + discriminant) / 2);
+    const minorVariance = Math.max(0, (varianceX + varianceY - discriminant) / 2);
+    const majorRadius = Math.sqrt(majorVariance);
+    const minorRadius = Math.sqrt(minorVariance);
+    if (!(majorRadius > 0) || !(minorRadius > 0)) continue;
+    context.beginPath();
+    context.ellipse(
+      center.x,
+      center.y,
+      majorRadius,
+      minorRadius,
+      0.5 * Math.atan2(2 * covariance, varianceX - varianceY),
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  }
+  return {
+    source: canvas.toDataURL("image/png"),
+    xref: "x",
+    yref: "y",
+    x: bounds.xMin,
+    y: yReversed ? bounds.yMin : bounds.yMax,
+    sizex: bounds.width,
+    sizey: bounds.height,
+    xanchor: "left",
+    yanchor: "top",
+    sizing: "stretch",
+    layer: "below",
+    opacity: 0.7,
+  };
+}
+
+function sequenceFitParametricRibbonGeometry(points) {
+  const upper = [];
+  const lower = [];
+  const crossSections = [];
+  const normals = sequenceFitContinuousNormals(points);
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const normalX = normals[index].x;
+    const normalY = normals[index].y;
+    const perpendicularVariance = (
+      normalX ** 2 * point.xMad ** 2 +
+      normalY ** 2 * point.yMad ** 2 +
+      2 * normalX * normalY * point.xyComedian
+    );
+    const perpendicularStddev = Math.sqrt(Math.max(0, perpendicularVariance));
+    crossSections.push({
+      center: { x: point.x, y: point.y },
+      xMad: point.xMad,
+      yMad: point.yMad,
+      xyComedian: point.xyComedian,
+    });
+    upper.push({
+      x: point.x + normalX * perpendicularStddev,
+      y: point.y + normalY * perpendicularStddev,
+    });
+    lower.push({
+      x: point.x - normalX * perpendicularStddev,
+      y: point.y - normalY * perpendicularStddev,
+    });
+  }
+  const segments = [];
+  for (let index = 0; index + 1 < points.length; index += 1) {
+    if (!sequenceFitPointsAreAdjacent(points[index], points[index + 1])) continue;
+    segments.push({
+      upperLeft: upper[index],
+      upperRight: upper[index + 1],
+      lowerRight: lower[index + 1],
+      lowerLeft: lower[index],
+    });
+  }
+  return { upper, lower, crossSections, segments };
+}
+
+function sequenceFitContinuousNormals(points) {
+  const normals = [];
+  let previousNormal = null;
+  for (let index = 0; index < points.length; index += 1) {
+    if (index > 0 && !sequenceFitPointsAreAdjacent(points[index - 1], points[index])) {
+      previousNormal = null;
+    }
+    const point = points[index];
+    const previous = index > 0 && sequenceFitPointsAreAdjacent(points[index - 1], point)
+      ? points[index - 1]
+      : point;
+    const next = index + 1 < points.length && sequenceFitPointsAreAdjacent(point, points[index + 1])
+      ? points[index + 1]
+      : point;
+    const dx = next.x - previous.x;
+    const dy = next.y - previous.y;
+    const length = Math.hypot(dx, dy);
+    let normal = length > 0
+      ? { x: -dy / length, y: dx / length }
+      : (previousNormal || { x: 0, y: 1 });
+    if (previousNormal && normal.x * previousNormal.x + normal.y * previousNormal.y < 0) {
+      normal = { x: -normal.x, y: -normal.y };
+    }
+    normals.push(normal);
+    previousNormal = normal;
+  }
+  return normals;
+}
+
+function sequenceFitRibbonBounds(geometry) {
+  const boundaryPoints = [...geometry.upper, ...geometry.lower];
+  const xValues = boundaryPoints.map((point) => point.x);
+  const yValues = boundaryPoints.map((point) => point.y);
+  for (const crossSection of geometry.crossSections) {
+    xValues.push(crossSection.center.x - crossSection.xMad, crossSection.center.x + crossSection.xMad);
+    yValues.push(crossSection.center.y - crossSection.yMad, crossSection.center.y + crossSection.yMad);
+  }
+  if (!xValues.length || !yValues.length) return null;
+  let xMin = Math.min(...xValues);
+  let xMax = Math.max(...xValues);
+  let yMin = Math.min(...yValues);
+  let yMax = Math.max(...yValues);
+  let width = xMax - xMin;
+  let height = yMax - yMin;
+  if (!(width > 0) || !(height > 0)) return null;
+  const xPadding = width * 0.03;
+  const yPadding = height * 0.03;
+  xMin -= xPadding;
+  xMax += xPadding;
+  yMin -= yPadding;
+  yMax += yPadding;
+  width = xMax - xMin;
+  height = yMax - yMin;
+  return { xMin, xMax, yMin, yMax, width, height };
+}
+
+function fittedSequenceLineCoordinates(points) {
+  return {
+    x: withSequenceFitGapSeparators(points, points.map((point) => point.x)),
+    y: withSequenceFitGapSeparators(points, points.map((point) => point.y)),
+  };
+}
+
+function withSequenceFitGapSeparators(points, values) {
+  const output = [];
+  for (let index = 0; index < points.length; index += 1) {
+    if (index > 0 && !sequenceFitPointsAreAdjacent(points[index - 1], points[index])) output.push(null);
+    output.push(values[index]);
+  }
+  return output;
+}
+
+function sequenceFitPointsAreAdjacent(left, right) {
+  return Math.abs(Number(right?.subtype) - Number(left?.subtype)) <= sequenceFitEvaluationStep * 1.5 + 1e-9;
+}
+
+function polygonCoordinates(...segments) {
+  const points = segments.flat();
+  return {
+    x: points.map((point) => point.x),
+    y: points.map((point) => point.y),
+  };
+}
+
+function sequenceFitWindowWeight(spt, center, width) {
+  const halfWidth = Math.max(width / 2, 1e-9);
+  const scaledDistance = Math.abs(spt - center) / halfWidth;
+  if (scaledDistance >= 1) return 0;
+  return 1 - scaledDistance ** 2;
+}
+
+function weightedMean(values, weights) {
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  if (!(totalWeight > 0)) return NaN;
+  return values.reduce((total, value, index) => total + value * weights[index], 0) / totalWeight;
+}
+
+function weightedMedian(values, weights) {
+  if (!values.length || values.length !== weights.length) return NaN;
+  const pairs = values
+    .map((value, index) => ({ value: Number(value), weight: Number(weights[index]) }))
+    .filter((pair) => Number.isFinite(pair.value) && Number.isFinite(pair.weight) && pair.weight > 0)
+    .sort((left, right) => left.value - right.value);
+  const totalWeight = pairs.reduce((total, pair) => total + pair.weight, 0);
+  if (!(totalWeight > 0)) return NaN;
+  const midpoint = totalWeight / 2;
+  const tolerance = Number.EPSILON * Math.max(totalWeight, 1) * 8;
+  let cumulativeWeight = 0;
+  for (let index = 0; index < pairs.length; index += 1) {
+    cumulativeWeight += pairs[index].weight;
+    if (Math.abs(cumulativeWeight - midpoint) <= tolerance && index + 1 < pairs.length) {
+      return (pairs[index].value + pairs[index + 1].value) / 2;
+    }
+    if (cumulativeWeight > midpoint) return pairs[index].value;
+  }
+  return pairs[pairs.length - 1].value;
+}
+
+function weightedMedianAbsoluteDeviation(values, weights, center = weightedMedian(values, weights)) {
+  if (!Number.isFinite(center)) return 0;
+  const deviations = values.map((value) => Math.abs(Number(value) - center));
+  const mad = weightedMedian(deviations, weights);
+  return Number.isFinite(mad) ? Math.max(0, mad) : 0;
+}
+
+function weightedComedian(xValues, yValues, weights, xMedian, yMedian, xMad, yMad) {
+  if (xValues.length !== yValues.length || xValues.length !== weights.length) return 0;
+  const products = xValues.map((xValue, index) => (
+    (Number(xValue) - xMedian) * (Number(yValues[index]) - yMedian)
+  ));
+  const comedian = weightedMedian(products, weights);
+  const limit = Math.max(0, xMad * yMad);
+  if (!Number.isFinite(comedian) || !(limit > 0)) return 0;
+  return clamp(comedian, -limit, limit);
+}
+
+function formatSequenceFitSptLabel(value) {
+  const adjusted = Number(value) + 60;
+  const classes = ["O", "B", "A", "F", "G", "K", "M", "L", "T", "Y"];
+  const index = Math.floor(adjusted / 10);
+  if (index < 0 || index >= classes.length) return formatFitValue(value);
+  const subclass = Math.round((adjusted - index * 10) * 100) / 100;
+  return `${classes[index]}${String(subclass).replace(/\.0+$/, "")}`;
+}
+
+function formatFitValue(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 100) return value.toFixed(1);
+  if (Math.abs(value) >= 10) return value.toFixed(2);
+  return value.toFixed(3);
+}
+
 function sequenceMatches(row, x, y) {
   return (
     axisMatchesRule(x, row.xaxis_type_bdcolapp, row.xaxis_value_1_bdcolapp, row.xaxis_value_2_bdcolapp) &&
@@ -3289,8 +3932,8 @@ function axisTitleLabel(label) {
   return String(label ?? "").replace(/\bCO2\b/g, "CO<sub>2</sub>");
 }
 
-function errorBarTrace(rows, opacity = 0.2, uid = "error-bars") {
-  if (!el["show-errors"].checked || !rows.length || !rows.some(hasFiniteError)) return null;
+function errorBarTrace(rows, opacity = 0.2, uid = "error-bars", style = {}) {
+  if ((!el["show-errors"].checked && !style.forceVisible) || !rows.length || !rows.some(hasFiniteError)) return null;
   return {
     type: "scattergl",
     uid,
@@ -3304,8 +3947,8 @@ function errorBarTrace(rows, opacity = 0.2, uid = "error-bars") {
       color: "rgba(0,0,0,0)",
       opacity: 0,
     },
-    error_x: errorSpec(rows, "ex", opacity),
-    error_y: errorSpec(rows, "ey", opacity),
+    error_x: errorSpec(rows, "ex", opacity, style),
+    error_y: errorSpec(rows, "ey", opacity, style),
     name: "Error bars",
   };
 }
@@ -3314,15 +3957,15 @@ function hasFiniteError(row) {
   return (Number.isFinite(row.ex) && row.ex > 0) || (Number.isFinite(row.ey) && row.ey > 0);
 }
 
-function errorSpec(rows, field, opacity = 0.2) {
-  if (!el["show-errors"].checked) return { visible: false };
+function errorSpec(rows, field, opacity = 0.2, style = {}) {
+  if (!el["show-errors"].checked && !style.forceVisible) return { visible: false };
   return {
     type: "data",
     array: rows.map((row) => Number.isFinite(row[field]) ? row[field] : 0),
     visible: true,
-    thickness: 0.75,
-    width: 0,
-    color: `rgba(55,55,55,${opacity})`,
+    thickness: style.thickness ?? 0.75,
+    width: style.width ?? 0,
+    color: style.color || `rgba(55,55,55,${opacity})`,
   };
 }
 
@@ -3517,6 +4160,7 @@ function renderTable(oids) {
   }
   const showAllSpectraLinks = selected.some((row) => allSpectrumSpecidsForRow(row).length);
   const showSpectrumLinks = selected.some((row) => spectrumSpecidsForRow(row).length);
+  const showIndexCalculationLinks = selected.some((row) => spectralIndexInputsForRow(row).length);
   const showAssociationHighlight = selected.some((row) => row.highlight_association);
   const columns = [
     tableColumn("moca_oid"),
@@ -3542,6 +4186,7 @@ function renderTable(oids) {
     "report",
     ...(showAllSpectraLinks ? ["all spectra"] : []),
     ...(showSpectrumLinks ? ["spectrum"] : []),
+    ...(showIndexCalculationLinks ? ["index calculation"] : []),
     ...columns.map((col) => col.label),
   ]
     .map((col) => `<th>${escapeHtml(plainText(col))}</th>`)
@@ -3558,6 +4203,7 @@ function renderTable(oids) {
               <td>${reportUrl ? `<a class="report-link" href="${escapeHtml(reportUrl)}" target="_blank" rel="noopener">Report</a>` : ""}</td>
               ${showAllSpectraLinks ? `<td>${allSpectraLinkHtml(row)}</td>` : ""}
               ${showSpectrumLinks ? `<td>${spectrumLinkHtml(row)}</td>` : ""}
+              ${showIndexCalculationLinks ? `<td>${spectralIndexCalculationLinksHtml(row)}</td>` : ""}
               ${columns.map((col) => `<td>${escapeHtml(col.value(row))}</td>`).join("")}
             </tr>
           `;
@@ -3646,6 +4292,43 @@ function allSpectraLinkHtml(row) {
   return `<a class="report-link all-spectra-link" role="button" href="${escapeHtml(url)}" target="_blank" rel="noopener">View all spectra</a>`;
 }
 
+function spectralIndexInputsForRow(row) {
+  const seen = new Set();
+  const inputs = [];
+  for (const input of row.input_data || []) {
+    const key = String(input?.key || "");
+    if (!key.startsWith("spectral_index:")) continue;
+    const mocaSiid = String(input.moca_siid || key.slice("spectral_index:".length)).trim();
+    const mocaSpecid = normalizedMocaSpecid(input.moca_specid);
+    const identity = `${mocaSpecid}|${mocaSiid}`;
+    if (!mocaSiid || !mocaSpecid || seen.has(identity)) continue;
+    seen.add(identity);
+    inputs.push({
+      moca_siid: mocaSiid,
+      moca_specid: mocaSpecid,
+      label: plainText(input.label || mocaSiid),
+    });
+  }
+  return inputs;
+}
+
+function spectralIndexCalculationLinksHtml(row) {
+  return spectralIndexInputsForRow(row).map((input) => {
+    const url = spectralIndexExplorerUrl(input);
+    const title = `${input.label} (${input.moca_siid}), specid ${input.moca_specid}`;
+    return `<a class="report-link index-calculation-link" role="button" href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(title)}">View index calculation</a>`;
+  }).join("<br>");
+}
+
+function spectralIndexExplorerUrl(input) {
+  const url = new URL("spectral-index-explorer", appBaseUrl);
+  const params = spectraExplorerUrlParams();
+  params.set("moca_specid", input.moca_specid);
+  params.set("moca_siid", input.moca_siid);
+  url.search = params.toString();
+  return url.toString();
+}
+
 function spectraExplorerUrlForRow(row) {
   const specids = spectrumSpecidsForRow(row);
   return spectraExplorerUrlForSpecids(specids);
@@ -3668,7 +4351,7 @@ function spectraExplorerUrlForSpecids(specids) {
 function spectraExplorerUrlParams() {
   const source = new URLSearchParams(window.location.search);
   const params = new URLSearchParams();
-  for (const key of ["host", "user", "pwd", "dbase", "database", "db", "mock"]) {
+  for (const key of ["host", "port", "user", "pwd", "dbase", "database", "db", "mock"]) {
     if (source.has(key)) params.set(key, source.get(key));
   }
   if (!params.has("dbase")) {
@@ -3789,6 +4472,33 @@ function exportRows() {
   return state.selectedOids.length
     ? state.rows.filter((row) => state.selectedOids.includes(row.moca_oid))
     : state.rows;
+}
+
+const fittedSequenceExportColumns = [
+  "spectral_type_number",
+  "fitted_x",
+  "fitted_y",
+  "fitted_x_scatter",
+  "fitted_y_scatter",
+];
+
+function fittedSequenceCsv(model = state.sequenceFitModel) {
+  const points = model?.points || [];
+  if (!points.length) return "";
+  const rows = points.map((point) => [
+    point.subtype,
+    point.x,
+    point.y,
+    point.xMad,
+    point.yMad,
+  ].map(numericExportText).join(","));
+  return [fittedSequenceExportColumns.join(","), ...rows].join("\n");
+}
+
+function exportFittedSequenceCsv() {
+  const csv = fittedSequenceCsv();
+  if (!csv) return;
+  downloadBlob(csv, "moca_fitted_sequence.csv", "text/csv;charset=utf-8");
 }
 
 function exportCsv() {

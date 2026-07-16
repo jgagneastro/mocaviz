@@ -101,6 +101,152 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("dst.spectral_type_number"))
         self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("LIMIT 5000"))
 
+    def test_empirical_sequence_fit_control_and_plot_traces(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        html = self.client.get("/js/bd-colors").get_data(as_text=True)
+
+        self.assertIn('id="fit-sequence"', html)
+        self.assertIn('id="fit-sequence-status"', html)
+        self.assertIn('id="sequence-fit-smoothing"', html)
+        self.assertIn('class="sequence-fit-ticks" aria-hidden="true"', html)
+        self.assertEqual(html.split('class="sequence-fit-ticks"', 1)[1].split("</div>", 1)[0].count("<span>"), 16)
+        self.assertIn('id="export-sequence-csv"', html)
+        self.assertIn("Export sequence as CSV", html)
+        self.assertIn('value="2.5"', html)
+        self.assertIn("function fittedSequenceModel(rows)", script)
+        self.assertIn("const sequenceFitEvaluationStep = 0.1", script)
+        self.assertIn("const sequenceFitPostSmoothingFraction = 1 / 3", script)
+        self.assertIn("const sequenceFitRenderDelayMs = 1000", script)
+        self.assertIn("function scheduleSequenceFitRender()", script)
+        self.assertIn('el["sequence-fit-smoothing"].addEventListener("change", () => {', script)
+        self.assertIn('textContent = "Release the smoothing slider to refit."', script)
+        self.assertIn("function smoothSequenceFitPoints(points, width, xIsSpt, yIsSpt)", script)
+        self.assertIn("item.point.xMad ** 2", script)
+        self.assertIn("item.point.yMad ** 2", script)
+        self.assertIn("sequenceFitWindowWeight", script)
+        self.assertIn("function weightedMedian(values, weights)", script)
+        self.assertIn("function weightedMedianAbsoluteDeviation", script)
+        self.assertIn("function weightedComedian", script)
+        self.assertNotIn("weightedSampleStandardDeviation", script)
+        self.assertNotIn("weightedSampleCovariance", script)
+        self.assertIn("fittedSequenceRibbonMask", script)
+        self.assertIn("sequenceFitParametricRibbonGeometry", script)
+        self.assertIn("sequenceFitRibbonBounds", script)
+        self.assertIn("sequenceFitContinuousNormals", script)
+        self.assertIn("withSequenceFitGapSeparators", script)
+        self.assertIn('const yReversed = el["y-axis-type"]?.value === "absolute_magnitude"', script)
+        self.assertIn("y: yReversed ? bounds.yMin : bounds.yMax", script)
+        self.assertIn('fill: "toself"', script)
+        self.assertIn('fillcolor: "rgba(128,128,128,0.7)"', script)
+        self.assertIn("opacity: 0.7", script)
+        self.assertIn('name: "Sequence ±1 MAD"', script)
+        self.assertIn('line: { color: "#000000", width: sequenceFitLineWidth }', script)
+        self.assertIn("xIsSpt ? subtype : weightedMedian(xValues, weights)", script)
+        self.assertIn("yIsSpt ? subtype : weightedMedian(yValues, weights)", script)
+        self.assertIn("function fittedSequenceCsv(model = state.sequenceFitModel)", script)
+        self.assertIn('"fitted_x_scatter"', script)
+        self.assertIn('"fitted_y_scatter"', script)
+        self.assertIn('downloadBlob(csv, "moca_fitted_sequence.csv"', script)
+
+    def test_azul_backyard_worlds_sample_is_private_only_and_highlighted(self):
+        private_args = {
+            "dbase": "mocadb_private_tables",
+            "user": "management",
+            "azul_byw_sample": "1",
+        }
+        public_args = {
+            "dbase": "mocadb",
+            "user": "public",
+            "azul_byw_sample": "1",
+        }
+
+        private_range_sql, *_ = app_module._range_sql(private_args)
+        public_range_sql, *_ = app_module._range_sql(public_args)
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        html = self.client.get("/js/bd-colors").get_data(as_text=True)
+
+        self.assertTrue(app_module._include_azul_byw_sample(private_args))
+        self.assertFalse(app_module._include_azul_byw_sample(public_args))
+        self.assertNotIn("pcat_azul_byw_sample_jul16_2026", private_range_sql)
+        self.assertNotIn("pcat_azul_byw_sample_jul16_2026", public_range_sql)
+        self.assertEqual(private_range_sql, public_range_sql)
+        priority_sql, _ = app_module._selection_priority_sql({
+            **private_args,
+            "xaxis_type": "color",
+            "xaxis_value_1": "simple:J",
+            "xaxis_value_2": "simple:K",
+        })
+        self.assertIn("azul_byw_priority.moca_oid = dst.moca_oid", priority_sql)
+        self.assertLess(priority_sql.index("azul_byw_priority"), priority_sql.index("dp_priority_0"))
+        self.assertIn('id="azul-byw-sample-line" class="checkline" hidden', html)
+        self.assertIn('id="display-azul-byw-sample" type="checkbox"', html)
+        self.assertIn("Display Azul's Backyard Worlds sample", html)
+        self.assertIn("function updateAzulBywSampleControl()", script)
+        self.assertIn("line.hidden = !hasLoadedCatalog || !privateData", script)
+        self.assertIn("Number(object.azul_byw_sample || 0) === 1", script)
+
+    def test_highlighted_points_have_thick_gold_error_bars(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        trace_block = script.split("function highlightedPointTraces(rows)", 1)[1].split(
+            "function selectedMarkerRows",
+            1,
+        )[0]
+
+        self.assertIn('errorBarTrace(rows, 1, "highlighted-errors"', trace_block)
+        self.assertIn('color: "#d69e00"', trace_block)
+        self.assertIn("forceVisible: true", trace_block)
+        self.assertIn("thickness: 3", trace_block)
+        self.assertIn("width: 5", trace_block)
+
+    def test_useful_y_range_receives_additional_padding(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        draw_block = script.split("function drawPlot(rows, plottedRows", 1)[1].split(
+            "function currentPlotCanvasKey",
+            1,
+        )[0]
+        percentile_block = script.split("function percentileRange(rows, field)", 1)[1].split(
+            "function rangeWithAbsoluteMagnitudeYDwarfs",
+            1,
+        )[0]
+        padding_block = script.split("function rangeWithAdditionalYAxisPadding(range, field)", 1)[1].split(
+            "function rangeWithAbsoluteMagnitudeYDwarfs",
+            1,
+        )[0]
+
+        self.assertIn("const additionalYAxisPaddingFraction = 0.15", script)
+        self.assertIn("const yAxisLowerQuantile = 0.01", script)
+        self.assertIn("const yAxisUpperQuantile = 0.99", script)
+        self.assertIn('y: percentileRange(plottedRows, "y")', draw_block)
+        self.assertIn('field === "y" ? yAxisLowerQuantile : 0.02', percentile_block)
+        self.assertIn('field === "y" ? yAxisUpperQuantile : 0.98', percentile_block)
+        self.assertIn("rangeWithAdditionalYAxisPadding(usefulRange, field)", percentile_block)
+        self.assertIn("rangeWithNonnegativeSpectralIndexFloor(paddedRange, values, field)", percentile_block)
+        self.assertIn('if (field !== "y") return range', padding_block)
+        self.assertIn("span * additionalYAxisPaddingFraction", padding_block)
+        self.assertIn("[range[0] - padding, range[1] + padding]", padding_block)
+        self.assertIn('el["y-axis-type"]?.value !== "spectral_index"', script)
+        self.assertIn("[Math.max(0, range[0]), range[1]]", script)
+
+    def test_spectral_index_axes_add_calculation_links_to_selection_table(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        explorer_script = (app_module.STATIC_DIR / "spectral_index_explorer.js").read_text(encoding="utf-8")
+        table_block = script.split("function renderTable(oids)", 1)[1].split(
+            "function bdTableMarkerHtml",
+            1,
+        )[0]
+
+        self.assertIn("showIndexCalculationLinks", table_block)
+        self.assertIn('"index calculation"', table_block)
+        self.assertIn("spectralIndexCalculationLinksHtml(row)", table_block)
+        self.assertIn("View index calculation", script)
+        self.assertIn('new URL("spectral-index-explorer", appBaseUrl)', script)
+        self.assertIn('params.set("moca_specid", input.moca_specid)', script)
+        self.assertIn('params.set("moca_siid", input.moca_siid)', script)
+        self.assertIn('moca_siid: row.moca_siid', script)
+        self.assertIn('params.get("moca_siid")', explorer_script)
+        self.assertIn('params.set("q", sieState.requestedMocaSiid)', explorer_script)
+        self.assertIn('String(item.moca_siid || "").toLowerCase() === requested', explorer_script)
+
 
 if __name__ == "__main__":
     unittest.main()

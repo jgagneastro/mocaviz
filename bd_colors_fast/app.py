@@ -100,6 +100,7 @@ DEFAULT_PHOTOMETRY_PSIDS = ("mko_jmag", "mko_kmag")
 SIMPLE_PHOTOMETRY_PREFIX = "simple:"
 SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
 BICKLE_SPT_METHOD_LIKE = "bickleredlprep_dered_young_sptfit%"
+AZUL_BYW_SAMPLE_TABLE = "pcat_azul_byw_sample_jul16_2026"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
@@ -908,6 +909,14 @@ def _include_photometric_dist(args: dict[str, Any]) -> bool:
     )
 
 
+def _include_azul_byw_sample(args: dict[str, Any]) -> bool:
+    requested = any(
+        _as_bool(args.get(key))
+        for key in ("azul_byw_sample", "display_azul_byw_sample")
+    )
+    return requested and _is_private_db(args)
+
+
 def _has_spectral_type_axis(args: dict[str, Any]) -> bool:
     return any(_axis_spec(args, axis)[0] == "spectral_type" for axis in ("x", "y"))
 
@@ -1204,6 +1213,7 @@ def _cache_key(args: dict[str, Any]) -> str:
         str(_is_private_db(args) and _include_risky_photometric_spt(args)),
         str(_use_bickle_spectral_types(args)),
         str(_include_photometric_dist(args)),
+        str(_include_azul_byw_sample(args)),
         str(limit),
         (
             "all-photometry"
@@ -1553,6 +1563,30 @@ def _axis_photometry_priority_sql(args: dict[str, Any]) -> tuple[str, dict[str, 
     return "CASE WHEN " + " AND ".join(conditions) + " THEN 0 ELSE 1 END", params
 
 
+def _selection_priority_sql(args: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    priority_parts: list[str] = []
+    highlighted_clauses: list[str] = []
+    highlighted_oids = _highlight_oids(args)
+    if highlighted_oids:
+        highlighted_clauses.append(
+            "dst.moca_oid IN (" + ",".join(str(int(oid)) for oid in highlighted_oids) + ")"
+        )
+    if _include_azul_byw_sample(args):
+        highlighted_clauses.append(
+            f"EXISTS (SELECT 1 FROM `{AZUL_BYW_SAMPLE_TABLE}` azul_byw_priority "
+            "WHERE azul_byw_priority.moca_oid = dst.moca_oid)"
+        )
+    if highlighted_clauses:
+        priority_parts.append(
+            "CASE WHEN (" + " OR ".join(highlighted_clauses) + ") THEN 0 ELSE 1 END"
+        )
+
+    axis_priority_sql, axis_priority_params = _axis_photometry_priority_sql(args)
+    if axis_priority_sql:
+        priority_parts.append(axis_priority_sql)
+    return ", ".join(priority_parts), axis_priority_params
+
+
 def _selected_oids_subquery_sql(
     range_clause: str,
     limit_clause: str,
@@ -1576,7 +1610,7 @@ def _selected_oids_subquery_sql(
 
 def _selected_oids_from_db(conn, args: dict[str, Any]) -> list[int]:
     range_clause, range_params, _spt_label, _include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
-    priority_sql, priority_params = _axis_photometry_priority_sql(args) if object_limit is not None else ("", {})
+    priority_sql, priority_params = _selection_priority_sql(args) if object_limit is not None else ("", {})
     rows = _records(_read_sql(
         conn,
         _selected_oids_subquery_sql(range_clause, limit_clause, priority_sql),
@@ -1627,12 +1661,22 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             return rows
 
         range_clause, range_params, spt_label, include_photometric_spt, object_limit, limit_clause = _selection_sql_parts(args)
-        priority_sql, priority_params = _axis_photometry_priority_sql(args) if object_limit is not None else ("", {})
+        priority_sql, priority_params = _selection_priority_sql(args) if object_limit is not None else ("", {})
         range_params = {**range_params, **priority_params}
         object_order_clause = "dst.spectral_type_number, dst.moca_oid"
         if priority_sql:
             object_order_clause = f"{priority_sql}, {object_order_clause}"
         selected_oids_subquery = _selected_oids_subquery_sql(range_clause, limit_clause, priority_sql)
+        include_azul_byw_sample = _include_azul_byw_sample(args)
+        azul_byw_sample_select = (
+            f"""CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM `{AZUL_BYW_SAMPLE_TABLE}` azul_byw
+                    WHERE azul_byw.moca_oid = dst.moca_oid
+                ) THEN 1 ELSE 0 END AS azul_byw_sample,"""
+            if include_azul_byw_sample
+            else "0 AS azul_byw_sample,"
+        )
 
         photometry_options = read_static_records("photometry_options", """
             SELECT moca_psid, name, system_band_simple
@@ -1668,6 +1712,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 dplx.parallax_mas_unc AS parallax_mas_error,
                 dplx.bibcode AS parallax_ref,
                 mopc.all_prop_confidences,
+                {azul_byw_sample_select}
                 1 AS row_available
             FROM data_spectral_types dst
             JOIN moca_objects mo
@@ -1686,6 +1731,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             range_clause=range_clause,
             object_order_clause=object_order_clause,
             limit_clause=limit_clause,
+            azul_byw_sample_select=azul_byw_sample_select,
         ), range_params)
 
         selected_oids = [int(row["moca_oid"]) for row in objects if row.get("moca_oid") is not None]
@@ -1713,6 +1759,11 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             int(row["moca_oid"])
             for row in objects
             if row.get("moca_oid") is not None and row.get("highlight_moca_aid")
+        }
+        azul_byw_loaded_oids = {
+            int(row["moca_oid"])
+            for row in objects
+            if row.get("moca_oid") is not None and int(row.get("azul_byw_sample") or 0) == 1
         }
         dd_oid_filter = _oid_filter_sql("dd", selected_oids)
         spectra_oid_filter = _oid_filter_sql("ms", selected_oids)
@@ -1915,6 +1966,11 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 "aids": _bdphot_highlight_aids(args),
                 "ya_prob_min": _bdphot_highlight_ya_prob_min(args),
                 "loaded_object_count": len(highlight_loaded_oids),
+            },
+            "azul_byw_sample": {
+                "available": _is_private_db(args),
+                "requested": include_azul_byw_sample,
+                "loaded_object_count": len(azul_byw_loaded_oids),
             },
             "lazy_features": ["designations", "spectralIndices", "equivalentWidths", "ages"],
             "timings": timings,
