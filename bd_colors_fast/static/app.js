@@ -66,6 +66,32 @@ const sampleLegendLabels = {
   low_gravity: "Low-gravity",
   subdwarf: "Subdwarf",
 };
+const sampleLegendOrder = ["field", "low_gravity", "subdwarf"];
+const richGravityCategorySymbols = {
+  field: "circle",
+  beta: "triangle-up",
+  gamma: "triangle-down",
+  pec_red: "diamond",
+  pec_blue: "cross",
+  pec_other: "x",
+  sd: "square",
+  d_sd: "pentagon",
+  esd: "hexagon",
+  usd: "octagon",
+};
+const richGravityCategoryLegendLabels = {
+  field: "Field grav. / α",
+  beta: "Int. grav. / β",
+  gamma: "Very low grav. / γ",
+  pec_red: "pec(red)",
+  pec_blue: "pec(blue)",
+  pec_other: "Other pec",
+  sd: "sd",
+  d_sd: "d/sd",
+  esd: "esd",
+  usd: "usd",
+};
+const richGravityCategoryLegendOrder = ["field", "beta", "gamma", "pec_red", "pec_blue", "pec_other", "sd", "d_sd", "esd", "usd"];
 const gravityClassColors = {
   field: "#8e8e8e",
   beta: "#7ad151",
@@ -236,6 +262,7 @@ function collectElements() {
     "advanced-photometry",
     "color-by-age",
     "color-by-gravity",
+    "rich-gravity-categories",
     "fit-sequence",
     "fit-sequence-status",
     "export-sequence-csv",
@@ -304,6 +331,7 @@ function readInitialUrlState() {
   const wantsGravityColor = asBool(params.get("gravitycolor")) || asBool(params.get("gravity_color")) || asBool(params.get("color_by_gravity"));
   el["color-by-age"].checked = asBool(params.get("agecolor")) && !wantsGravityColor;
   el["color-by-gravity"].checked = wantsGravityColor;
+  el["rich-gravity-categories"].checked = asBool(params.get("richgravity")) || asBool(params.get("rich_gravity")) || asBool(params.get("rich_gravity_categories"));
   updateAdvancedPhotometryControl();
   updateBickleSptControl();
   updateSequenceFitSmoothingOutput();
@@ -379,6 +407,10 @@ function bindControls() {
   });
   el["color-by-gravity"].addEventListener("change", () => {
     if (el["color-by-gravity"].checked) el["color-by-age"].checked = false;
+    render();
+  });
+  el["rich-gravity-categories"].addEventListener("change", () => {
+    state.hiddenLegendSamples.clear();
     render();
   });
   el["include-photdist"].addEventListener("change", () => {
@@ -732,10 +764,13 @@ function updateUrlFromControls() {
   params.set("binaries", el["include-binaries"].checked ? "1" : "0");
   params.set("agecolor", el["color-by-age"].checked ? "1" : "0");
   params.set("gravitycolor", el["color-by-gravity"].checked ? "1" : "0");
+  params.set("richgravity", el["rich-gravity-categories"].checked ? "1" : "0");
   params.set("sequence_fit", state.sequenceFitEnabled ? "1" : "0");
   params.set("sequence_smoothing", formatSequenceFitSmoothingWidth(sequenceFitSmoothingWidth()));
   params.delete("gravity_color");
   params.delete("color_by_gravity");
+  params.delete("rich_gravity");
+  params.delete("rich_gravity_categories");
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
   const query = params.toString();
@@ -2020,11 +2055,11 @@ function legendFilteredRows(rows) {
   const colorMode = currentColorMode();
   const hideClasses = colorMode === "spectral";
   const hideGravityClasses = colorMode === "gravity";
-  const hideSamples = colorMode !== "gravity";
+  const hideSamples = colorMode !== "gravity" || richGravityCategoriesRequested();
   return rows.filter((row) => (
     (!hideClasses || !state.hiddenLegendClasses.has(row.spectral_class)) &&
     (!hideGravityClasses || !state.hiddenLegendGravityClasses.has(row.gravity_class)) &&
-    (!hideSamples || !state.hiddenLegendSamples.has(row.age_sample)) &&
+    (!hideSamples || !state.hiddenLegendSamples.has(gravityMarkerCategoryForRow(row))) &&
     (!state.hiddenLegendBinaries || !row.is_binary) &&
     (!state.hiddenLegendPhotdist || !row.is_photometric_distance)
   ));
@@ -2062,6 +2097,7 @@ function buildRows() {
     const age = state.maps.ageByOid.get(oid);
     const ageSample = ageSampleFor(object);
     const gravityClass = gravityClassForObject(object);
+    const richGravityCategory = richGravityCategoryForObject(object);
     const distance = bestDistance(oid, usePhotdistForAxes);
     const row = {
       moca_oid: oid,
@@ -2077,6 +2113,7 @@ function buildRows() {
       age_myr: Number.isFinite(age) ? age : null,
       age_sample: ageSample,
       gravity_class: gravityClass,
+      rich_gravity_category: richGravityCategory,
       is_binary: binary,
       is_photometric_spt: photometricSpt,
       is_photometric_distance: usePhotdistForAxes && Number(distance?.photometric_estimate || 0) === 1,
@@ -2357,6 +2394,34 @@ function gravityClassForObject(object) {
   return "field";
 }
 
+function richGravityCategoryForObject(object) {
+  const gravity = normalizeGravityText(object.gravity_class);
+  const suffix = normalizeGravityText(object.suffix);
+  const complete = normalizeGravityText(object.complete_spectral_type);
+
+  // Explicit subdwarf and peculiarity suffixes take precedence over gravity
+  // so red/blue peculiar objects are not folded into low-g/subdwarf markers.
+  if (suffix.startsWith("usd") || complete.startsWith("usd")) return "usd";
+  if (suffix.startsWith("esd") || complete.startsWith("esd")) return "esd";
+  if (suffix.startsWith("d/sd") || complete.startsWith("d/sd")) return "d_sd";
+  if (suffix.startsWith("sd") || complete.startsWith("sd")) return "sd";
+
+  const suffixText = `${suffix} ${complete}`;
+  if (suffixText.includes("red")) return "pec_red";
+  if (suffixText.includes("blue")) return "pec_blue";
+  if (suffixText.includes("pec")) return "pec_other";
+
+  const gravityText = `${gravity} ${complete}`;
+  if (
+    matchesGravityText(gravityText, ["gamma", "very low gravity", "very low-g", "vl-g", "vlg", "low gravity", "low-g", "delta", "extremely low gravity", "extremely low-g", "el-g", "elg"]) ||
+    /\bb\s*[/_-]\s*g\b/.test(gravityText)
+  ) {
+    return "gamma";
+  }
+  if (matchesGravityText(gravityText, ["beta", "intermediate gravity", "intermediate-g", "int-g", "intg"])) return "beta";
+  return "field";
+}
+
 function normalizeGravityText(value) {
   return String(value || "")
     .toLowerCase()
@@ -2444,7 +2509,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     }
     traces.push(...legendTraces(legendRows));
   }
-  if (colorMode !== "gravity") traces.push(...sampleLegendTraces(legendRows));
+  if (colorMode !== "gravity" || richGravityCategoriesRequested()) traces.push(...sampleLegendTraces(legendRows));
   traces.push(...binaryLegendTraces(legendRows));
   traces.push(...photometricDistanceLegendTraces(legendRows));
   traces.push(...photometricSptLegendTraces(legendRows));
@@ -3033,7 +3098,7 @@ function binaryOverlayTraces(rows, opacityByOid, pointOpacity) {
 }
 
 function binaryOverlaySymbolForRow(row) {
-  return openMarkerSymbol(sampleSymbols[row.age_sample] || "circle");
+  return openMarkerSymbol(gravityMarkerBaseSymbolForRow(row));
 }
 
 function markerSizesForRows(rows, baseSize) {
@@ -3107,8 +3172,30 @@ function ageColorTraces(rows, opacityByOid, pointOpacity) {
 }
 
 function markerSymbolForRow(row) {
-  const symbol = sampleSymbols[row.age_sample] || "circle";
+  const symbol = gravityMarkerBaseSymbolForRow(row);
   return row.is_binary ? openMarkerSymbol(symbol) : symbol;
+}
+
+function richGravityCategoriesRequested() {
+  return Boolean(el["rich-gravity-categories"]?.checked);
+}
+
+function gravityMarkerCategoryForRow(row) {
+  return richGravityCategoriesRequested() ? row.rich_gravity_category : row.age_sample;
+}
+
+function gravityMarkerBaseSymbolForRow(row) {
+  const symbols = richGravityCategoriesRequested() ? richGravityCategorySymbols : sampleSymbols;
+  return symbols[gravityMarkerCategoryForRow(row)] || "circle";
+}
+
+function gravityMarkerLegendLabel(category) {
+  const labels = richGravityCategoriesRequested() ? richGravityCategoryLegendLabels : sampleLegendLabels;
+  return labels[category] || category;
+}
+
+function gravityMarkerLegendOrder() {
+  return richGravityCategoriesRequested() ? richGravityCategoryLegendOrder : sampleLegendOrder;
 }
 
 function openMarkerSymbol(symbol) {
@@ -3290,7 +3377,7 @@ function gravityLegendTraces(rows) {
 }
 
 function sampleLegendTraces(rows) {
-  const samples = ["field", "low_gravity", "subdwarf"].filter((sample) => rows.some((row) => row.age_sample === sample));
+  const samples = gravityMarkerLegendOrder().filter((sample) => rows.some((row) => gravityMarkerCategoryForRow(row) === sample));
   return samples.map((sample) => ({
     type: "scatter",
     mode: "markers",
@@ -3299,10 +3386,10 @@ function sampleLegendTraces(rows) {
     marker: {
       size: 10,
       color: "#5f5864",
-      symbol: sampleSymbols[sample],
+      symbol: (richGravityCategoriesRequested() ? richGravityCategorySymbols : sampleSymbols)[sample],
       line: { color: "#252329", width: 1 },
     },
-    name: sampleLegendLabels[sample],
+    name: gravityMarkerLegendLabel(sample),
     legendgroup: `sample:${sample}`,
     visible: state.hiddenLegendSamples.has(sample) ? "legendonly" : true,
   }));
@@ -4110,7 +4197,7 @@ function legendClassValues() {
 }
 
 function legendSampleValues() {
-  return ["field", "low_gravity", "subdwarf"].filter((sample) => state.allRows.some((row) => row.age_sample === sample));
+  return gravityMarkerLegendOrder().filter((sample) => state.allRows.some((row) => gravityMarkerCategoryForRow(row) === sample));
 }
 
 function legendGravityValues() {
@@ -4181,6 +4268,9 @@ function renderTable(oids) {
   if (el["color-by-gravity"].checked) {
     columns.push(tableColumn("gravity_class"));
   }
+  if (richGravityCategoriesRequested()) {
+    columns.push(tableColumn("rich_gravity_category"));
+  }
   const headerCells = [
     "plot",
     "report",
@@ -4242,6 +4332,7 @@ function bdTableColor(row) {
 function tableColumn(key) {
   const labels = {
     age_sample: "gravity_class",
+    rich_gravity_category: "gravity_category",
   };
   return {
     label: labels[key] || key,
@@ -4448,6 +4539,7 @@ const exportColumns = [
   "age_myr",
   "age_sample",
   "gravity_class",
+  "rich_gravity_category",
   "highlight_association",
   "highlight_ya_prob",
   "x_ref",
@@ -4664,11 +4756,14 @@ function hoverText(row) {
     `${escapeHtml(plainText(input.label))}: ${escapeHtml(measurementText(input))}`
   ));
   const hasDistanceInput = (row.input_data || []).some((input) => input.key === "distance_pc");
+  const gravityLine = richGravityCategoriesRequested()
+    ? `Gravity category: ${escapeHtml(gravityMarkerLegendLabel(row.rich_gravity_category) || "Field")}`
+    : `Gravity class: ${escapeHtml(gravityClassLegendLabels[row.gravity_class] || row.gravity_class || "Field")}`;
   return [
     `<b>${escapeHtml(row.designation)}</b>`,
     `MOCA OID: ${row.moca_oid}`,
     `SpT: ${escapeHtml(row.complete_spectral_type || row.spectral_type)}`,
-    `Gravity class: ${escapeHtml(gravityClassLegendLabels[row.gravity_class] || row.gravity_class || "Field")}`,
+    gravityLine,
     row.highlight_association ? `BANYAN: ${escapeHtml(row.highlight_association)} (${escapeHtml(formatCell(row.highlight_ya_prob))}%)` : null,
     `X (${escapeHtml(plainText(row.x_label))}): ${escapeHtml(measurementText({ value: row.x, error: row.ex }))}`,
     `Y (${escapeHtml(plainText(row.y_label))}): ${escapeHtml(measurementText({ value: row.y, error: row.ey }))}`,

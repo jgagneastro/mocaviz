@@ -149,6 +149,10 @@
             <input id="color-by-gravity" type="checkbox">
             <span>Color by gravity class</span>
           </label>
+          <label class="checkline">
+            <input id="rich-gravity-categories" type="checkbox">
+            <span>Use richer gravity class categories</span>
+          </label>
           <div class="sequence-fit-control">
             <label class="sequence-fit-smoothing">
               <span class="range-heading">
@@ -350,6 +354,11 @@
             <td>Colors objects by gravity class: field, beta, gamma, delta, or subdwarf. Beta/gamma classes are folded into gamma. Mutually exclusive with <code>agecolor</code>.</td>
           </tr>
           <tr>
+            <td><code>richgravity</code></td>
+            <td><code>false</code></td>
+            <td>Uses separate marker categories for Field grav. / α, Int. grav. / β, Very low grav. / γ, pec(red), pec(blue), other pec, sd, d/sd, esd, and usd.</td>
+          </tr>
+          <tr>
             <td><code>sequence_fit</code></td>
             <td><code>false</code></td>
             <td>Fits each non-spectral-type axis with weighted medians as a smooth function of fractional spectral type, draws the resulting sequence as a thick black line, and shades the local ±1 weighted-MAD region in gray.</td>
@@ -393,6 +402,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a"></script>
 </body>
 </html>

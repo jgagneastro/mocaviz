@@ -68,6 +68,42 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             build_rows_block,
         )
 
+    def test_rich_gravity_categories_are_wired_to_js_controls_and_markers(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        html = self.client.get("/js/bd-colors").get_data(as_text=True)
+        classifier = script.split("function richGravityCategoryForObject(object)", 1)[1].split(
+            "function normalizeGravityText",
+            1,
+        )[0]
+
+        self.assertIn('id="rich-gravity-categories" type="checkbox"', html)
+        self.assertIn("Use richer gravity class categories", html)
+        self.assertIn("<code>richgravity</code>", html)
+        self.assertIn('el["rich-gravity-categories"].checked = asBool(params.get("richgravity"))', script)
+        self.assertIn('params.set("richgravity", el["rich-gravity-categories"].checked ? "1" : "0")', script)
+        for category in (
+            "field",
+            "beta",
+            "gamma",
+            "pec_red",
+            "pec_blue",
+            "pec_other",
+            "sd",
+            "d_sd",
+            "esd",
+            "usd",
+        ):
+            self.assertIn(f'return "{category}"', classifier)
+        self.assertLess(classifier.index('return "usd"'), classifier.index('return "pec_red"'))
+        self.assertLess(classifier.index('return "pec_red"'), classifier.index('return "gamma"'))
+        self.assertIn("richGravityCategoriesRequested() ? row.rich_gravity_category : row.age_sample", script)
+        self.assertIn("richGravityCategoryLegendOrder", script)
+        self.assertIn("richGravityCategorySymbols", script)
+        self.assertIn('field: "Field grav. / α"', script)
+        self.assertIn('beta: "Int. grav. / β"', script)
+        self.assertIn('gamma: "Very low grav. / γ"', script)
+        self.assertIn("rich-gravity-20260716a", html)
+
     def test_capped_selection_prioritizes_objects_with_all_axis_photometry(self):
         args = {
             "spt_range": "L0+",
