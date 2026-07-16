@@ -151,6 +151,21 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertGreater(len(payloads["off"]["rows"]), len(payloads["soft"]["rows"]))
         self.assertGreater(len(payloads["soft"]["rows"]), len(payloads["strict"]["rows"]))
 
+    def test_gaia_extinction_correction_is_required_by_default_and_disabled_for_raw_photometry(self):
+        html = self.client.get("/js/gaia-cmd").get_data(as_text=True)
+        script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
+        self.assertIn('<input id="gcmd-extcorr-only" type="checkbox" checked>', html)
+        self.assertIn("<span>Require extinction correction</span>", html)
+        self.assertIn("extinctionCorrectedParam === null ? true", script)
+        self.assertIn('input.disabled = disabled;', script)
+        self.assertIn('classList.toggle("is-disabled", disabled)', script)
+        self.assertIn(
+            '!gcmdEl["gcmd-raw-gaia"].checked && gcmdEl["gcmd-extcorr-only"].checked',
+            script,
+        )
+        self.assertFalse(_gaia_cmd_selection({"extinction_corrected": "0"})["extinction_corrected_only"])
+        self.assertTrue(_gaia_cmd_selection({"extinction_corrected": "1"})["extinction_corrected_only"])
+
     def test_gaia_membership_basis_sources_defaults_and_union(self):
         default_selection = _gaia_cmd_selection({})
         literature_selection = _gaia_cmd_selection({"membership_basis": "literature_claims"})

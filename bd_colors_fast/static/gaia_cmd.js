@@ -247,7 +247,10 @@ function bindGaiaCmdControls() {
     loadGaiaCmdData();
   });
   for (const id of ["gcmd-x1", "gcmd-x2", "gcmd-y", "gcmd-gaia-quality", "gcmd-color-age", "gcmd-raw-gaia", "gcmd-extcorr-only", "gcmd-extcorr-vectors", "gcmd-show-sequences", "gcmd-filter-giants", "gcmd-filter-wd"]) {
-    gcmdEl[id].addEventListener("change", () => loadGaiaCmdData());
+    gcmdEl[id].addEventListener("change", () => {
+      if (id === "gcmd-raw-gaia") configureGaiaCmdExtinctionCorrectionControl();
+      loadGaiaCmdData();
+    });
   }
   gcmdEl["gcmd-vetted-mtids"].addEventListener("change", () => applyGaiaCmdClientFilters());
   gcmdEl["gcmd-membership-prob-min"].addEventListener("input", () => {
@@ -420,7 +423,9 @@ function readGaiaCmdUrlState() {
   gcmdEl["gcmd-filter-wd"].checked = filterWdParam === null ? true : truthyParam(filterWdParam);
   gcmdEl["gcmd-color-age"].checked = truthyParam(params.get("color_age") || params.get("color_by_age") || params.get("age"));
   gcmdEl["gcmd-raw-gaia"].checked = truthyParam(params.get("raw_gaia") || params.get("raw_photometry") || params.get("use_raw_gaia"));
-  gcmdEl["gcmd-extcorr-only"].checked = truthyParam(params.get("extinction_corrected") || params.get("extcorr") || params.get("extinction_corrected_only"));
+  const extinctionCorrectedParam = firstPresentParam(params, ["extinction_corrected", "extcorr", "extinction_corrected_only"]);
+  gcmdEl["gcmd-extcorr-only"].checked = extinctionCorrectedParam === null ? true : !falsyParam(extinctionCorrectedParam);
+  configureGaiaCmdExtinctionCorrectionControl();
   gcmdEl["gcmd-extcorr-vectors"].checked = truthyParam(params.get("extinction_vectors") || params.get("extcorr_vectors") || params.get("show_extinction_vectors"));
   gcmdEl["gcmd-display-errors"].checked = truthyParam(params.get("display_errors") || params.get("errors") || params.get("phot_errors") || params.get("show_errors"));
   gcmdEl["gcmd-highlight-binaries"].checked = truthyParam(params.get("binaries") || params.get("highlight_binaries") || params.get("known_binaries"));
@@ -482,6 +487,14 @@ function gaiaCmdMembershipBasis() {
 
 function gaiaCmdMembershipDownloadFloor() {
   return gaiaCmdMembershipBasis() === "banyan_sigma" ? gcmdBanyanMembershipDownloadFloor : 0;
+}
+
+function configureGaiaCmdExtinctionCorrectionControl() {
+  const input = gcmdEl["gcmd-extcorr-only"];
+  if (!input) return;
+  const disabled = Boolean(gcmdEl["gcmd-raw-gaia"]?.checked);
+  input.disabled = disabled;
+  input.closest(".checkline")?.classList.toggle("is-disabled", disabled);
 }
 
 function gaiaCmdDefaultMembershipProbMin() {
@@ -707,7 +720,7 @@ function currentGaiaCmdSelection(baseSelection) {
     ruwe_max: parseRuweMax(gcmdEl["gcmd-ruwe"].value),
     color_by_age: gcmdEl["gcmd-color-age"].checked,
     raw_gaia: gcmdEl["gcmd-raw-gaia"].checked,
-    extinction_corrected_only: gcmdEl["gcmd-extcorr-only"].checked,
+    extinction_corrected_only: !gcmdEl["gcmd-raw-gaia"].checked && gcmdEl["gcmd-extcorr-only"].checked,
     show_extinction_vectors: gcmdEl["gcmd-extcorr-vectors"].checked,
     show_sequences: gcmdEl["gcmd-show-sequences"].checked,
     sample_part: "all",
@@ -770,7 +783,7 @@ function gaiaCmdApiParams() {
   params.set("filter_wd", gcmdEl["gcmd-filter-wd"].checked ? "1" : "0");
   if (gcmdEl["gcmd-color-age"].checked) params.set("color_age", "1");
   if (gcmdEl["gcmd-raw-gaia"].checked) params.set("raw_gaia", "1");
-  if (gcmdEl["gcmd-extcorr-only"].checked) params.set("extinction_corrected", "1");
+  if (!gcmdEl["gcmd-raw-gaia"].checked && gcmdEl["gcmd-extcorr-only"].checked) params.set("extinction_corrected", "1");
   if (gcmdEl["gcmd-extcorr-vectors"].checked) params.set("extinction_vectors", "1");
   if (!gcmdEl["gcmd-show-sequences"].checked) params.set("sequences", "0");
   return params;
@@ -818,8 +831,12 @@ function updateGaiaCmdUrl() {
     params.delete("raw_photometry");
     params.delete("use_raw_gaia");
   }
-  if (!gcmdEl["gcmd-extcorr-only"].checked) {
+  if (gcmdEl["gcmd-extcorr-only"].checked) {
     params.delete("extinction_corrected");
+    params.delete("extcorr");
+    params.delete("extinction_corrected_only");
+  } else {
+    params.set("extinction_corrected", "0");
     params.delete("extcorr");
     params.delete("extinction_corrected_only");
   }

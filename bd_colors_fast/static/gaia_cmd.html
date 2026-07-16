@@ -123,8 +123,8 @@
             <span>Use raw Gaia photometry without extinction correction</span>
           </label>
           <label class="checkline">
-            <input id="gcmd-extcorr-only" type="checkbox">
-            <span>Only display photometry with extinction corrected</span>
+            <input id="gcmd-extcorr-only" type="checkbox" checked>
+            <span>Require extinction correction</span>
           </label>
           <label class="checkline">
             <input id="gcmd-extcorr-vectors" type="checkbox">
@@ -239,7 +239,7 @@
           <tr><td><code>filter_giants</code>, <code>filter_wd</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code>; <code>filter_wd=0</code> disables white-dwarf filtering</td><td>Filters out objects where <code>test_giant()</code> or <code>test_wd()</code> is true. White-dwarf filtering is on by default.</td></tr>
           <tr><td><code>color_age</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Colors objects with BANYAN-linked association ages by age.</td></tr>
           <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
-          <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>.</td></tr>
+          <tr><td><code>extinction_corrected</code></td><td><code>0</code>, <code>false</code>, or <code>no</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code> by default. A false value disables this requirement.</td></tr>
           <tr><td><code>extinction_vectors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws arrows from uncorrected photometry, <code>magnitude + extinction_a</code>, to the corrected plotted photometry when available.</td></tr>
           <tr><td><code>display_errors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows available CMD error bars from photometric and distance uncertainties.</td></tr>
           <tr><td><code>binaries</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overplots known binaries with open symbols. Objects remain plotted normally either way.</td></tr>
@@ -261,6 +261,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=api-routing-20260710a-gaia-quality-off-20260715a-vetted-missing-20260715a-membership-basis-20260715b-field-vetted-20260715a-selected-marker-20260715a-field-not-selectable-20260715a-selectable-click-priority-20260715a"></script>
+  <script src="static/gaia_cmd.js?v=api-routing-20260710a-gaia-quality-off-20260715a-vetted-missing-20260715a-membership-basis-20260715b-field-vetted-20260715a-selected-marker-20260715a-field-not-selectable-20260715a-selectable-click-priority-20260715a-extcorr-default-20260716a"></script>
 </body>
 </html>
