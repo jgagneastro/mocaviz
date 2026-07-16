@@ -2397,7 +2397,7 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   const rangeRows = automaticRangeRows(plottedRows);
   const candidateInitialRanges = wantsInitialRange ? {
     x: percentileRange(rangeRows, "x"),
-    y: percentileRange(plottedRows, "y"),
+    y: percentileRange(rangeRows, "y"),
   } : { x: null, y: null };
   const appliesInitialRange = Boolean(candidateInitialRanges.x && candidateInitialRanges.y);
   const currentRanges = appliesInitialRange ? { x: null, y: null } : currentPlotRanges();

@@ -198,7 +198,7 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("thickness: 3", trace_block)
         self.assertIn("width: 5", trace_block)
 
-    def test_useful_y_range_receives_additional_padding(self):
+    def test_useful_ranges_exclude_deemphasized_points_and_pad_y(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         draw_block = script.split("function drawPlot(rows, plottedRows", 1)[1].split(
             "function currentPlotCanvasKey",
@@ -216,7 +216,11 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("const additionalYAxisPaddingFraction = 0.15", script)
         self.assertIn("const yAxisLowerQuantile = 0.01", script)
         self.assertIn("const yAxisUpperQuantile = 0.99", script)
-        self.assertIn('y: percentileRange(plottedRows, "y")', draw_block)
+        self.assertIn("const rangeRows = automaticRangeRows(plottedRows)", draw_block)
+        self.assertIn('x: percentileRange(rangeRows, "x")', draw_block)
+        self.assertIn('y: percentileRange(rangeRows, "y")', draw_block)
+        self.assertNotIn('percentileRange(plottedRows, "y")', draw_block)
+        self.assertIn("const good = rows.filter((row) => !row.noisy)", script)
         self.assertIn('field === "y" ? yAxisLowerQuantile : 0.02', percentile_block)
         self.assertIn('field === "y" ? yAxisUpperQuantile : 0.98', percentile_block)
         self.assertIn("rangeWithAdditionalYAxisPadding(usefulRange, field)", percentile_block)
