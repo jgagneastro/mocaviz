@@ -4178,7 +4178,7 @@ function smoothSequenceFitPoints(points, width, xIsSpt, yIsSpt) {
 function fittedSequenceTraces(model) {
   if (!model?.points?.length) return { band: null, line: null, image: null };
   const band = fittedSequenceBand(model);
-  const image = fittedSequenceRibbonMask(model);
+  const image = band ? null : fittedSequenceRibbonMask(model);
   const line = fittedSequenceLineCoordinates(model.points);
   const hoverText = model.points.map((point) => {
     const parts = [
@@ -4243,12 +4243,37 @@ function fittedSequenceBand(model) {
     const lower = points.map((point) => ({ x: point.x - point.xMad, y: point.y })).reverse();
     return polygonCoordinates(upper, lower);
   }
+  if (hasTeffAxis()) return sequenceFitParametricBandCoordinates(model);
   return null;
+}
+
+function sequenceFitParametricBandCoordinates(model) {
+  const points = model.points;
+  const geometry = sequenceFitParametricRibbonGeometry(points, model.postSmoothingWidth);
+  const x = [];
+  const y = [];
+  for (let index = 0; index + 1 < points.length; index += 1) {
+    if (!sequenceFitPointsAreAdjacent(points[index], points[index + 1])) continue;
+    if (x.length) {
+      x.push(null);
+      y.push(null);
+    }
+    for (const point of [
+      geometry.upper[index],
+      geometry.upper[index + 1],
+      geometry.lower[index + 1],
+      geometry.lower[index],
+    ]) {
+      x.push(point.x);
+      y.push(point.y);
+    }
+  }
+  return x.length ? { x, y } : null;
 }
 
 function fittedSequenceRibbonMask(model) {
   if (model.xIsSpt || model.yIsSpt || !model.points?.length || typeof document === "undefined") return null;
-  const geometry = sequenceFitParametricRibbonGeometry(model.points);
+  const geometry = sequenceFitParametricRibbonGeometry(model.points, model.postSmoothingWidth);
   if (!geometry.segments.length) return null;
   const bounds = sequenceFitRibbonBounds(geometry);
   if (!bounds) return null;
@@ -4317,13 +4342,13 @@ function fittedSequenceRibbonMask(model) {
   };
 }
 
-function sequenceFitParametricRibbonGeometry(points) {
+function sequenceFitParametricRibbonGeometry(points, smoothingWidth = sequenceFitEvaluationStep * 5) {
   const upper = [];
   const lower = [];
   const crossSections = [];
-  const normals = sequenceFitContinuousNormals(points);
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
+  const width = Math.max(Number(smoothingWidth) || 0, sequenceFitEvaluationStep * 5);
+  const normals = sequenceFitContinuousNormals(points, width);
+  const perpendicularStddevs = points.map((point, index) => {
     const normalX = normals[index].x;
     const normalY = normals[index].y;
     const perpendicularVariance = (
@@ -4331,7 +4356,14 @@ function sequenceFitParametricRibbonGeometry(points) {
       normalY ** 2 * point.yMad ** 2 +
       2 * normalX * normalY * point.xyComedian
     );
-    const perpendicularStddev = Math.sqrt(Math.max(0, perpendicularVariance));
+    return Math.sqrt(Math.max(0, perpendicularVariance));
+  });
+  const smoothedStddevs = sequenceFitRobustSmoothValues(points, perpendicularStddevs, width);
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const normalX = normals[index].x;
+    const normalY = normals[index].y;
+    const perpendicularStddev = smoothedStddevs[index];
     crossSections.push({
       center: { x: point.x, y: point.y },
       xMad: point.xMad,
@@ -4360,7 +4392,7 @@ function sequenceFitParametricRibbonGeometry(points) {
   return { upper, lower, crossSections, segments };
 }
 
-function sequenceFitContinuousNormals(points) {
+function sequenceFitContinuousNormals(points, smoothingWidth = sequenceFitEvaluationStep * 5) {
   const normals = [];
   let previousNormal = null;
   for (let index = 0; index < points.length; index += 1) {
@@ -4386,7 +4418,67 @@ function sequenceFitContinuousNormals(points) {
     normals.push(normal);
     previousNormal = normal;
   }
-  return normals;
+  return sequenceFitSmoothNormals(points, normals, smoothingWidth);
+}
+
+function sequenceFitSmoothNormals(points, normals, width) {
+  const output = [];
+  let segmentStart = 0;
+  for (let index = 1; index <= points.length; index += 1) {
+    const atEnd = index === points.length;
+    if (!atEnd && sequenceFitPointsAreAdjacent(points[index - 1], points[index])) continue;
+    for (let pointIndex = segmentStart; pointIndex < index; pointIndex += 1) {
+      const reference = normals[pointIndex];
+      const candidates = [];
+      const weights = [];
+      for (let candidateIndex = segmentStart; candidateIndex < index; candidateIndex += 1) {
+        const weight = sequenceFitWindowWeight(
+          points[candidateIndex].subtype,
+          points[pointIndex].subtype,
+          width,
+        );
+        if (!(weight > 0)) continue;
+        const candidate = normals[candidateIndex];
+        const sign = candidate.x * reference.x + candidate.y * reference.y < 0 ? -1 : 1;
+        candidates.push({ x: candidate.x * sign, y: candidate.y * sign });
+        weights.push(weight);
+      }
+      const average = {
+        x: weightedMean(candidates.map((normal) => normal.x), weights),
+        y: weightedMean(candidates.map((normal) => normal.y), weights),
+      };
+      const length = Math.hypot(average.x, average.y);
+      output.push(length > 0 ? { x: average.x / length, y: average.y / length } : reference);
+    }
+    segmentStart = index;
+  }
+  return output;
+}
+
+function sequenceFitRobustSmoothValues(points, values, width) {
+  const output = [];
+  let segmentStart = 0;
+  for (let index = 1; index <= points.length; index += 1) {
+    const atEnd = index === points.length;
+    if (!atEnd && sequenceFitPointsAreAdjacent(points[index - 1], points[index])) continue;
+    for (let pointIndex = segmentStart; pointIndex < index; pointIndex += 1) {
+      const candidates = [];
+      const weights = [];
+      for (let candidateIndex = segmentStart; candidateIndex < index; candidateIndex += 1) {
+        const weight = sequenceFitWindowWeight(
+          points[candidateIndex].subtype,
+          points[pointIndex].subtype,
+          width,
+        );
+        if (!(weight > 0)) continue;
+        candidates.push(values[candidateIndex]);
+        weights.push(weight);
+      }
+      output.push(weightedMedian(candidates, weights));
+    }
+    segmentStart = index;
+  }
+  return output;
 }
 
 function sequenceFitRibbonBounds(geometry) {

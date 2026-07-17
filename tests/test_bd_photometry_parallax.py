@@ -137,6 +137,16 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("dst.spectral_type_number"))
         self.assertLess(order_sql.index("CASE WHEN"), order_sql.index("LIMIT 5000"))
 
+    def test_large_object_selection_joins_spectra_instead_of_expanding_an_oid_list(self):
+        source = " ".join(inspect.getsource(app_module._load_bootstrap_from_db).split())
+
+        self.assertIn("if _should_use_selected_oid_join(selected_oids):", source)
+        self.assertIn("STRAIGHT_JOIN moca_spectra ms ON ms.moca_oid = selected_oids.moca_oid", source)
+        self.assertIn('spectra_oid_filter = "1 = 1"', source)
+        self.assertIn('spectra_source_from_sql = "moca_spectra ms"', source)
+        self.assertIn("spectra_oid_filter = _oid_filter_sql(\"ms\", selected_oids)", source)
+        self.assertIn("), spectra_params)", source)
+
     def test_empirical_sequence_fit_control_and_plot_traces(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         html = self.client.get("/js/bd-colors").get_data(as_text=True)
@@ -167,10 +177,17 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertNotIn("weightedSampleCovariance", script)
         self.assertIn("fittedSequenceRibbonMask", script)
         self.assertIn("sequenceFitParametricRibbonGeometry", script)
+        self.assertIn("sequenceFitParametricBandCoordinates", script)
+        self.assertIn("sequenceFitSmoothNormals", script)
+        self.assertIn("sequenceFitRobustSmoothValues", script)
         self.assertIn("sequenceFitRibbonBounds", script)
         self.assertIn("sequenceFitContinuousNormals", script)
         self.assertIn("withSequenceFitGapSeparators", script)
         self.assertIn('const yReversed = el["y-axis-type"]?.value === "absolute_magnitude"', script)
+        self.assertIn("const image = band ? null : fittedSequenceRibbonMask(model)", script)
+        self.assertIn("if (hasTeffAxis()) return sequenceFitParametricBandCoordinates(model)", script)
+        self.assertIn("geometry.upper[index + 1]", script)
+        self.assertIn("geometry.lower[index + 1]", script)
         self.assertIn("y: yReversed ? bounds.yMin : bounds.yMax", script)
         self.assertIn('fill: "toself"', script)
         self.assertIn('fillcolor: "rgba(128,128,128,0.7)"', script)

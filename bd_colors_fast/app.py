@@ -2263,7 +2263,16 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             if row.get("moca_oid") is not None and int(row.get("azul_byw_sample") or 0) == 1
         }
         dd_oid_filter = _oid_filter_sql("dd", selected_oids)
-        spectra_oid_filter = _oid_filter_sql("ms", selected_oids)
+        if _should_use_selected_oid_join(selected_oids):
+            spectra_params = range_params
+            spectra_source_from_sql = f"""({selected_oids_subquery}) selected_oids
+                STRAIGHT_JOIN moca_spectra ms
+                    ON ms.moca_oid = selected_oids.moca_oid"""
+            spectra_oid_filter = "1 = 1"
+        else:
+            spectra_params = None
+            spectra_source_from_sql = "moca_spectra ms"
+            spectra_oid_filter = _oid_filter_sql("ms", selected_oids)
         include_photometric_dist = _include_photometric_dist(args)
         dd_phot_filter = "1 = 1" if include_photometric_dist else "dd.photometric_estimate = 0"
         dp_oid_filter = _oid_filter_sql("dp", selected_oids)
@@ -2353,14 +2362,17 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             SELECT
                 ms.moca_oid,
                 ms.moca_specid
-            FROM moca_spectra ms
+            FROM {spectra_source_from_sql}
             WHERE ms.moca_specid IS NOT NULL
                 AND ms.moca_oid IS NOT NULL
                 AND (ms.moca_specpackid != 1 OR ms.moca_specpackid IS NULL)
                 AND COALESCE(ms.ignored, 0) = 0
                 AND {spectra_oid_filter}
             ORDER BY ms.moca_oid, ms.moca_specid
-        """.format(spectra_oid_filter=spectra_oid_filter))
+        """.format(
+            spectra_source_from_sql=spectra_source_from_sql,
+            spectra_oid_filter=spectra_oid_filter,
+        ), spectra_params)
 
         median_colors = read_static_records("median_colors", """
             SELECT
