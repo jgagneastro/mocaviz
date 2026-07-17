@@ -1,5 +1,6 @@
 const axisTypes = [
   { value: "spectral_type", label: "Spectral Type" },
+  { value: "teff", label: "Teff" },
   { value: "color", label: "Color" },
   { value: "absolute_magnitude", label: "Absolute Magnitude" },
   { value: "spectral_index", label: "Spectral Index" },
@@ -36,6 +37,10 @@ const spherexVettingClassificationDefinitionByValue = new Map(
 const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
 const broadSampleMaxObjects = 5000;
 const spectralTypeJitterAmplitude = 0.3;
+const teffAxisLabelHtml = "<i>T</i><sub>eff</sub>";
+const teffJitterMinK = 0;
+const teffJitterDefaultK = 30;
+const teffJitterMaxK = 200;
 const sequenceFitMinObjectsPerWindow = 2;
 const sequenceFitLineWidth = 5;
 const sequenceFitDefaultSmoothingWidth = 2.5;
@@ -129,7 +134,7 @@ const state = {
   maps: null,
   allRows: [],
   rows: [],
-  selectedOids: [],
+  selectedRowIds: [],
   selectedDesignations: [],
   selectedAssociationHighlights: [],
   associationHighlightSearchTimer: null,
@@ -163,11 +168,13 @@ const state = {
     designations: false,
     spectralIndices: false,
     equivalentWidths: false,
+    teffs: false,
     ages: false,
   },
   featureLoads: {},
   photometryLoaded: new Set(),
   spectralIndicesLoaded: new Set(),
+  teffSelectionKey: "",
   photometricDistancesLoaded: false,
   sequencesKey: "",
   sequencesLoadedAll: false,
@@ -264,6 +271,16 @@ function collectElements() {
     "highlight-oids",
     "xerr-max",
     "yerr-max",
+    "only-best-measurement",
+    "sed-teff-line",
+    "only-sed-teff",
+    "teff-jitter-line",
+    "teff-jitter",
+    "teff-jitter-output",
+    "x-teff-log-line",
+    "x-teff-log",
+    "y-teff-log-line",
+    "y-teff-log",
     "spherex-vetting-panel",
     "spherex-vetting-classifications",
     "spherex-vetting-status",
@@ -332,6 +349,15 @@ function readInitialUrlState() {
   el["xerr-max"].value = params.get("xerr_max") || "";
   el["yerr-max"].value = params.get("yerr_max") || "";
   el["show-errors"].checked = asBool(params.get("errors"));
+  el["only-best-measurement"].checked = asBool(params.get("best_measurement"))
+    || asBool(params.get("only_best_measurement"))
+    || asBool(params.get("best_measurement_per_star"));
+  el["only-sed-teff"].checked = asBool(params.get("sed_teff"))
+    || asBool(params.get("only_sed_teff"))
+    || asBool(params.get("teff_sed_only"));
+  el["teff-jitter"].value = String(teffJitterK(params.get("teff_jitter")));
+  el["x-teff-log"].checked = asBool(firstUrlParam(params, "xaxis_log", "x_teff_log", "xlog"));
+  el["y-teff-log"].checked = asBool(firstUrlParam(params, "yaxis_log", "y_teff_log", "ylog"));
   state.manualPhotdistChoice = params.has("photdist");
   el["include-photdist"].checked = state.manualPhotdistChoice
     ? asBool(params.get("photdist"))
@@ -359,6 +385,7 @@ function readInitialUrlState() {
   );
   state.spherexVettingSelection = new Set(parseCommaSeparatedValues(spherexClassifications));
   updateAdvancedPhotometryControl();
+  updateSedTeffControl();
   updateBickleSptControl();
   updateSequenceFitSmoothingOutput();
   updateSequenceFitControl();
@@ -386,11 +413,14 @@ function bindControls() {
     el[id].addEventListener("change", () => {
       const wasUsingBickleSpt = bickleSpectralTypesRequested();
       if (id.endsWith("axis-type")) {
-        refreshAxisValueControls(id[0], { preferDefaults: true });
-        applyAxisErrorDefaults();
+        const changedAxis = id[0];
+        refreshAxisValueControls(changedAxis, { preferDefaults: true });
+        const forceErrorDefaultAxis = el[`${changedAxis}-axis-type`].value === "teff" ? changedAxis : "";
+        applyAxisErrorDefaults({}, forceErrorDefaultAxis);
         applyPhotometricDistanceDefault();
       }
       updateAdvancedPhotometryControl();
+      updateSedTeffControl();
       updateBickleSptControl();
       if (!sequenceFitEligible()) state.sequenceFitEnabled = false;
       updateSequenceFitControl();
@@ -426,6 +456,28 @@ function bindControls() {
   for (const id of ["show-errors", "include-binaries"]) {
     el[id].addEventListener("input", render);
     el[id].addEventListener("change", render);
+  }
+  el["only-best-measurement"].addEventListener("change", () => {
+    requestInitialAxisRange();
+    scheduleBootstrapReload({ resetAxisRange: true });
+  });
+  el["only-sed-teff"].addEventListener("change", () => {
+    invalidateTeffData();
+    requestInitialAxisRange();
+    render();
+  });
+  for (const eventName of ["input", "change"]) {
+    el["teff-jitter"].addEventListener(eventName, () => {
+      updateTeffJitterOutput();
+      requestInitialAxisRange();
+      render();
+    });
+  }
+  for (const axis of ["x", "y"]) {
+    el[`${axis}-teff-log`].addEventListener("change", () => {
+      requestInitialAxisRange();
+      render();
+    });
   }
   el["color-by-age"].addEventListener("change", () => {
     if (el["color-by-age"].checked) el["color-by-gravity"].checked = false;
@@ -617,18 +669,20 @@ function applyPhotometricDistanceDefault() {
   return true;
 }
 
-function applyAxisErrorDefaults(explicitErrorThresholds = {}) {
+function applyAxisErrorDefaults(explicitErrorThresholds = {}, forceAxis = "") {
   let changed = false;
   for (const axis of ["x", "y"]) {
     const input = el[`${axis}err-max`];
     const defaultValue = defaultErrorThresholdForAxisType(el[`${axis}-axis-type`].value);
     const hasManualThreshold = Boolean(explicitErrorThresholds[axis] || state.manualErrorThresholds[axis]);
+    const forceDefault = axis === forceAxis && Boolean(defaultValue);
     if (defaultValue) {
-      if (!hasManualThreshold && (input.value === "" || state.autoErrorDefaults[axis])) {
+      if (forceDefault || (!hasManualThreshold && (input.value === "" || state.autoErrorDefaults[axis]))) {
         if (input.value !== defaultValue) {
           input.value = defaultValue;
           changed = true;
         }
+        if (forceDefault) state.manualErrorThresholds[axis] = false;
         state.autoErrorDefaults[axis] = true;
       }
     } else if (state.autoErrorDefaults[axis]) {
@@ -642,6 +696,7 @@ function applyAxisErrorDefaults(explicitErrorThresholds = {}) {
 
 function defaultErrorThresholdForAxisType(type) {
   if (type === "spectral_type") return "3";
+  if (type === "teff") return "100";
   if (type === "absolute_magnitude") return "0.5";
   if (type === "color") return "0.2";
   if (type === "equivalent_width") return "5";
@@ -664,6 +719,66 @@ function updateAdvancedPhotometryControl() {
   const enabled = hasPhotometryAxis();
   checkbox.disabled = !enabled;
   checkbox.closest(".checkline")?.classList.toggle("is-disabled", !enabled);
+}
+
+function hasTeffAxis() {
+  return el["x-axis-type"].value === "teff" || el["y-axis-type"].value === "teff";
+}
+
+function sedTeffRequested() {
+  return Boolean(hasTeffAxis() && el["only-sed-teff"]?.checked);
+}
+
+function teffJitterK(value = el["teff-jitter"]?.value) {
+  if (value === null || value === undefined || value === "") return teffJitterDefaultK;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return teffJitterDefaultK;
+  return clamp(numeric, teffJitterMinK, teffJitterMaxK);
+}
+
+function teffLogRequested(axis) {
+  return Boolean(
+    el[`${axis}-axis-type`]?.value === "teff" &&
+    el[`${axis}-teff-log`]?.checked
+  );
+}
+
+function currentTeffSelectionKey() {
+  return sedTeffRequested() ? "sed" : "adopted";
+}
+
+function updateSedTeffControl() {
+  const checkbox = el["only-sed-teff"];
+  const line = el["sed-teff-line"];
+  if (!checkbox || !line) return;
+  const enabled = hasTeffAxis();
+  line.hidden = !enabled;
+  checkbox.disabled = !enabled;
+  line.classList.toggle("is-disabled", !enabled);
+  const jitterLine = el["teff-jitter-line"];
+  if (jitterLine) jitterLine.hidden = !enabled;
+  if (el["teff-jitter"]) el["teff-jitter"].disabled = !enabled;
+  updateTeffJitterOutput();
+  for (const axis of ["x", "y"]) {
+    const axisEnabled = el[`${axis}-axis-type`]?.value === "teff";
+    const axisLine = el[`${axis}-teff-log-line`];
+    if (axisLine) axisLine.hidden = !axisEnabled;
+    if (el[`${axis}-teff-log`]) el[`${axis}-teff-log`].disabled = !axisEnabled;
+  }
+}
+
+function updateTeffJitterOutput() {
+  if (el["teff-jitter-output"]) {
+    el["teff-jitter-output"].textContent = `±${teffJitterK().toLocaleString()} K`;
+  }
+}
+
+function invalidateTeffData() {
+  state.featuresLoaded.teffs = false;
+  state.teffSelectionKey = "";
+  if (!state.raw?.catalog) return;
+  state.raw.catalog.teffs = [];
+  state.maps = buildMaps(state.raw.catalog);
 }
 
 function updateBickleSptControl() {
@@ -741,6 +856,31 @@ function photometricSptCatalogReady() {
   return true;
 }
 
+function applySpherexVettingParams(params) {
+  for (const key of [
+    "spherex_classification",
+    "spherex_classifications",
+    "spherex_vetting_classification",
+    "spherex_vetting_classifications",
+  ]) params.delete(key);
+  const hasSpherexAxis = ["x", "y"].some((axis) => {
+    const type = String(params.get(`${axis}axis_type`) || "").toLowerCase();
+    const value1 = String(params.get(`${axis}axis_value_1`) || "").toLowerCase();
+    const value2 = String(params.get(`${axis}axis_value_2`) || "").toLowerCase();
+    if (type === "spectral_index") return value1.startsWith("spx");
+    if (type === "absolute_magnitude") return value1.includes("spherex");
+    if (type === "color") return value1.includes("spherex") || value2.includes("spherex");
+    return false;
+  });
+  if (hasSpherexAxis && state.spherexVettingSelection.size) {
+    params.set(
+      "spherex_classification",
+      orderedSpherexVettingClassifications(state.spherexVettingSelection).join(","),
+    );
+  }
+  return params;
+}
+
 function buildBootstrapParams() {
   const params = new URLSearchParams(window.location.search);
   params.delete("trigplx");
@@ -780,6 +920,25 @@ function buildBootstrapParams() {
   if (bickleSpectralTypesRequested()) params.set("bickle_spt", "1");
   else params.delete("bickle_spt");
   params.set("advanced_photometry", useAdvancedPhotometrySystems() ? "1" : "0");
+  params.delete("only_best_measurement");
+  params.delete("best_measurement_per_star");
+  params.delete("only_best_measurement_per_star");
+  params.set("best_measurement", el["only-best-measurement"].checked ? "1" : "0");
+  params.delete("only_sed_teff");
+  params.delete("teff_sed_only");
+  if (sedTeffRequested()) params.set("sed_teff", "1");
+  else params.delete("sed_teff");
+  params.delete("x_teff_log");
+  params.delete("y_teff_log");
+  params.delete("xlog");
+  params.delete("ylog");
+  const jitterK = teffJitterK();
+  if (hasTeffAxis() && jitterK !== teffJitterDefaultK) params.set("teff_jitter", String(jitterK));
+  else params.delete("teff_jitter");
+  for (const axis of ["x", "y"]) {
+    if (teffLogRequested(axis)) params.set(`${axis}axis_log`, "1");
+    else params.delete(`${axis}axis_log`);
+  }
   params.delete("display_azul_byw_sample");
   if (azulBywSampleRequested()) params.set("azul_byw_sample", "1");
   else params.delete("azul_byw_sample");
@@ -799,7 +958,7 @@ function buildBootstrapParams() {
     if (value1) params.set(`${axis}axis_value_1`, value1);
     if (value2) params.set(`${axis}axis_value_2`, value2);
   }
-  return params;
+  return applySpherexVettingParams(params);
 }
 
 function updateUrlFromControls() {
@@ -815,15 +974,6 @@ function updateUrlFromControls() {
   params.delete("color_by_gravity");
   params.delete("rich_gravity");
   params.delete("rich_gravity_categories");
-  for (const key of [
-    "spherex_classification",
-    "spherex_classifications",
-    "spherex_vetting_classification",
-    "spherex_vetting_classifications",
-  ]) params.delete(key);
-  if (spherexVettingPanelEligible() && state.spherexVettingSelection.size) {
-    params.set("spherex_classification", orderedSpherexVettingClassifications(state.spherexVettingSelection).join(","));
-  }
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
   const query = params.toString();
@@ -898,6 +1048,7 @@ async function loadBootstrap(options = {}) {
     resetFeatureState(payload);
     state.associationHighlightMeta = payload.meta?.association_highlights || null;
     updatePhotometricSptControl();
+    updateSedTeffControl();
     updateBickleSptControl();
     updateAzulBywSampleControl();
     renderAssociationHighlightPicker();
@@ -948,6 +1099,7 @@ async function bulkPreloadAll() {
     state.maps = buildMaps(payload.catalog);
     resetFeatureState(payload);
     updatePhotometricSptControl();
+    updateSedTeffControl();
     updateBickleSptControl();
     updateAzulBywSampleControl();
     refreshAxisValueControls("x");
@@ -1019,7 +1171,7 @@ function clearClientData(options = {}) {
   state.allRows = [];
   state.rows = [];
   state.sequenceFitModel = null;
-  state.selectedOids = [];
+  state.selectedRowIds = [];
   state.associationHighlightMeta = null;
   state.hiddenLegendClasses.clear();
   state.hiddenLegendSamples.clear();
@@ -1030,11 +1182,13 @@ function clearClientData(options = {}) {
     designations: false,
     spectralIndices: false,
     equivalentWidths: false,
+    teffs: false,
     ages: false,
   };
   state.featureLoads = {};
   state.photometryLoaded = new Set();
   state.spectralIndicesLoaded = new Set();
+  state.teffSelectionKey = "";
   state.photometricDistancesLoaded = false;
   state.sequencesKey = "";
   state.sequencesLoadedAll = false;
@@ -1044,6 +1198,7 @@ function clearClientData(options = {}) {
   state.lastAppliedAxisRangeSignature = "";
   state.forceFreshPlot = true;
   updatePhotometricSptControl();
+  updateSedTeffControl();
   updateBickleSptControl();
   updateAzulBywSampleControl();
   updateSpherexVettingControl();
@@ -1065,6 +1220,7 @@ function bulkPreloadCounts(payload) {
     `${Number(catalog.photometry?.length || 0).toLocaleString()} photometry rows`,
     `${Number(catalog.spectralIndices?.length || 0).toLocaleString()} spectral-index rows`,
     `${Number(catalog.equivalentWidths?.length || 0).toLocaleString()} EW rows`,
+    `${Number(catalog.teffs?.length || 0).toLocaleString()} Teff rows`,
     `${Number(catalog.ages?.length || 0).toLocaleString()} ages`,
   ];
   return parts.join(", ");
@@ -1090,6 +1246,7 @@ function resetFeatureState(payload) {
     designations: !lazy.has("designations"),
     spectralIndices: !lazy.has("spectralIndices"),
     equivalentWidths: !lazy.has("equivalentWidths"),
+    teffs: !lazy.has("teffs"),
     ages: !lazy.has("ages"),
   };
   state.photometryLoaded = new Set(payload.meta?.photometry_psids || (payload.catalog?.photometry || []).map((row) => row.moca_psid));
@@ -1097,6 +1254,9 @@ function resetFeatureState(payload) {
     state.photometryLoaded.add(simplePhotometryValue(band));
   }
   state.spectralIndicesLoaded = new Set(payload.meta?.spectral_index_siids || (payload.catalog?.spectralIndices || []).map((row) => row.moca_siid));
+  state.teffSelectionKey = state.featuresLoaded.teffs
+    ? (payload.meta?.only_sed_teff ? "sed" : "adopted")
+    : "";
   state.photometricDistancesLoaded = Boolean(payload.meta?.include_photometric_dist);
   state.sequencesLoadedAll = Boolean(payload.meta?.all_sequences_loaded);
   state.spherexVettingKey = "";
@@ -1129,6 +1289,10 @@ function ensureNeededFeatures() {
   for (const axis of ["x", "y"]) {
     const type = el[`${axis}-axis-type`].value;
     if (type === "equivalent_width") needed.add("equivalentWidths");
+    if (
+      type === "teff"
+      && (!state.featuresLoaded.teffs || state.teffSelectionKey !== currentTeffSelectionKey())
+    ) needed.add("teffs");
   }
   if (el["color-by-age"].checked) needed.add("ages");
 
@@ -1144,7 +1308,10 @@ function ensureNeededFeatures() {
   }
 
   for (const feature of needed) {
-    if ((feature === "spectralIndices" || !state.featuresLoaded[feature]) && !state.featureLoads[feature]) {
+    if (
+      (feature === "spectralIndices" || feature === "teffs" || !state.featuresLoaded[feature])
+      && !state.featureLoads[feature]
+    ) {
       loadFeature(feature);
     }
   }
@@ -1268,7 +1435,7 @@ async function loadPhotometry(selectors) {
     state.raw.catalog.photometry = mergeRowsByKey(
       state.raw.catalog.photometry || [],
       payload.rows || [],
-      (row) => `${row.moca_oid}|${row.moca_psid}`,
+      (row) => `photometry|${row.id ?? `${row.moca_oid}|${row.moca_psid}|${row.moca_specid ?? ""}|${row.magnitude}`}`,
     );
     for (const selector of selectors) state.photometryLoaded.add(selector);
     state.maps = buildMaps(state.raw.catalog);
@@ -1302,18 +1469,21 @@ async function loadFeature(feature) {
     designations: "designations",
     spectralIndices: "spectral-indices",
     equivalentWidths: "equivalent-widths",
+    teffs: "teffs",
     ages: "ages",
   };
   const labels = {
     designations: "designations",
     spectralIndices: "spectral indices",
     equivalentWidths: "equivalent widths",
+    teffs: "Teff values",
     ages: "ages",
   };
   const loadingLabels = {
     designations: "designation catalog data",
     spectralIndices: "spectral-index catalog data",
     equivalentWidths: "equivalent-width catalog data",
+    teffs: "Teff catalog data",
     ages: "age catalog data",
   };
   const route = routes[feature];
@@ -1337,7 +1507,7 @@ async function loadFeature(feature) {
       state.raw.catalog[feature] = mergeRowsByKey(
         state.raw.catalog[feature] || [],
         payload.rows || [],
-        (row) => `${row.moca_oid}|${row.moca_siid}`,
+        (row) => `spectral-index|${row.id ?? `${row.moca_oid}|${row.moca_siid}|${row.moca_specid ?? ""}|${row.index_value}`}`,
       );
       for (const siid of payload.meta?.spectral_index_siids || neededSpectralIndexIds()) {
         state.spectralIndicesLoaded.add(siid);
@@ -1350,6 +1520,10 @@ async function loadFeature(feature) {
         (row) => `${row.moca_oid}|${normalizeDesignation(row.designation)}`,
       );
       state.featuresLoaded[feature] = true;
+    } else if (feature === "teffs") {
+      state.raw.catalog[feature] = payload.rows || [];
+      state.featuresLoaded[feature] = true;
+      state.teffSelectionKey = payload.meta?.only_sed_teff ? "sed" : "adopted";
     } else {
       state.raw.catalog[feature] = payload.rows || [];
       state.featuresLoaded[feature] = true;
@@ -1439,8 +1613,13 @@ function toggleSpherexVettingClassification(classification) {
     state.spherexVettingSelection.add(classification);
   }
   requestInitialAxisRange();
-  state.forceFreshPlot = true;
-  render();
+  updateSpherexVettingControl();
+  if (el["only-best-measurement"].checked) {
+    scheduleBootstrapReload({ resetAxisRange: true });
+  } else {
+    state.forceFreshPlot = true;
+    render();
+  }
 }
 
 function updateSpherexVettingControl() {
@@ -1489,7 +1668,16 @@ function updateSpherexVettingControl() {
       state.spherexVettingSelection.has(option.dataset.spherexVettingClassification) ? "true" : "false",
     );
   }
-  status.textContent = "No selection shows all classifications. Click classifications to toggle them.";
+  if (state.spherexVettingSelection.size) {
+    const selectedLabels = orderedSpherexVettingClassifications(state.spherexVettingSelection)
+      .map(spherexVettingClassificationLabel)
+      .join(", ");
+    status.textContent = el["only-best-measurement"].checked
+      ? `Filtering before best-measurement selection: ${selectedLabels}.`
+      : `Filtering plotted SPHEREx measurements in the browser: ${selectedLabels}.`;
+  } else {
+    status.textContent = "No selection shows all classifications. Click classifications to toggle them.";
+  }
 }
 
 async function loadSpherexVetting(key) {
@@ -1527,6 +1715,23 @@ function spherexVettingAllowsObject(oid) {
   const classifications = state.maps?.spherexVettingByOid?.get(Number(oid))
     || new Set([spherexMissingVettingClassification]);
   return [...classifications].some((classification) => state.spherexVettingSelection.has(classification));
+}
+
+function spherexVettingAllowsMeasurement(row) {
+  if (!spherexVettingPanelEligible() || !state.spherexVettingSelection.size) return true;
+  if (state.spherexVettingKey !== currentSpherexVettingKey()) return true;
+  const specid = normalizedMocaSpecid(row?.moca_specid);
+  const classifications = (specid && state.maps?.spherexVettingBySpecid?.get(specid))
+    || new Set([spherexMissingVettingClassification]);
+  return [...classifications].some((classification) => state.spherexVettingSelection.has(classification));
+}
+
+function spherexVettedMeasurementRows(rows, observable, kind) {
+  const value = String(observable || "").toLowerCase();
+  const isSpherexObservable = kind === "spectral_index"
+    ? value.startsWith("spx")
+    : value.includes("spherex");
+  return isSpherexObservable ? rows.filter(spherexVettingAllowsMeasurement) : rows;
 }
 
 function scheduleFreshRenderAfterDataLoad(token) {
@@ -1578,8 +1783,10 @@ function buildMaps(catalog) {
   const spectrumSpecidsByOid = new Map();
   const spectralIndexByOid = new Map();
   const equivalentWidthByOid = new Map();
+  const teffByOid = new Map();
   const ageByOid = new Map();
   const spherexVettingByOid = new Map();
+  const spherexVettingBySpecid = new Map();
 
   for (const object of catalog.objects || []) {
     objectByOid.set(Number(object.moca_oid), object);
@@ -1598,6 +1805,9 @@ function buildMaps(catalog) {
   addDesignationRows(designationsByOid, oidsByDesignation, designationRows, catalog.designations || []);
   addNestedRows(spectralIndexByOid, catalog.spectralIndices || [], "moca_siid");
   addNestedRows(equivalentWidthByOid, catalog.equivalentWidths || [], "moca_spid");
+  for (const teff of catalog.teffs || []) {
+    teffByOid.set(Number(teff.moca_oid), teff);
+  }
   for (const age of catalog.ages || []) {
     ageByOid.set(Number(age.moca_oid), Number(age.age_myr));
   }
@@ -1608,6 +1818,11 @@ function buildMaps(catalog) {
     if (!Number.isFinite(oid)) continue;
     if (!spherexVettingByOid.has(oid)) spherexVettingByOid.set(oid, new Set());
     spherexVettingByOid.get(oid).add(classification);
+    const specid = normalizedMocaSpecid(row.moca_specid);
+    if (specid) {
+      if (!spherexVettingBySpecid.has(specid)) spherexVettingBySpecid.set(specid, new Set());
+      spherexVettingBySpecid.get(specid).add(classification);
+    }
   }
 
   return {
@@ -1621,8 +1836,10 @@ function buildMaps(catalog) {
     spectrumSpecidsByOid,
     spectralIndexByOid,
     equivalentWidthByOid,
+    teffByOid,
     ageByOid,
     spherexVettingByOid,
+    spherexVettingBySpecid,
   };
 }
 
@@ -1647,7 +1864,8 @@ function addSimplePhotometryRows(target, rows) {
     const band = normalizeSimplePhotometryBand(row.system_band_simple);
     if (!band) continue;
     if (!target.has(oid)) target.set(oid, new Map());
-    if (!target.get(oid).has(band)) target.get(oid).set(band, row);
+    if (!target.get(oid).has(band)) target.get(oid).set(band, []);
+    target.get(oid).get(band).push(row);
   }
 }
 
@@ -1687,7 +1905,9 @@ function addNestedRows(target, rows, keyField) {
   for (const row of rows) {
     const oid = Number(row.moca_oid);
     if (!target.has(oid)) target.set(oid, new Map());
-    target.get(oid).set(row[keyField], row);
+    const key = row[keyField];
+    if (!target.get(oid).has(key)) target.get(oid).set(key, []);
+    target.get(oid).get(key).push(row);
   }
 }
 
@@ -2126,7 +2346,8 @@ function render() {
   const sequenceFit = fittedSequenceModel(plottedRows);
   state.sequenceFitModel = sequenceFit;
   updateSequenceFitControl(sequenceFit);
-  state.selectedOids = state.selectedOids.filter((oid) => plottedRows.some((row) => row.moca_oid === oid));
+  const plottedRowIds = new Set(plottedRows.map((row) => row.row_id));
+  state.selectedRowIds = state.selectedRowIds.filter((rowId) => plottedRowIds.has(rowId));
   const rangeSignature = axisRangeSignature();
   if (!state.pendingInitialAxisRange && rangeSignature !== state.lastAppliedAxisRangeSignature) {
     requestInitialAxisRange();
@@ -2136,7 +2357,7 @@ function render() {
     rangeSignature,
     sequenceFit,
   });
-  renderTable(state.selectedOids);
+  renderTable(state.selectedRowIds);
   renderDesignationPicker();
   renderMissingHighlightedOids(rows);
   renderCountSummary(plottedRows, plotRanges);
@@ -2176,7 +2397,10 @@ function renderCountSummary(rows, plotRanges = currentPlotRanges()) {
 }
 
 function renderPlotHint() {
-  const jitterText = hasSpectralTypeAxis() ? " Spectral-type axes use ±0.3 subtype jitter." : "";
+  const jitterParts = [];
+  if (hasSpectralTypeAxis()) jitterParts.push("spectral-type axes use ±0.3 subtype jitter");
+  if (hasTeffAxis() && teffJitterK() > 0) jitterParts.push(`${teffAxisLabelHtml} axes use ±${teffJitterK().toLocaleString()} K jitter`);
+  const jitterText = jitterParts.length ? ` ${jitterParts.join("; ")}.` : "";
   el["plot-hint"].innerHTML = `Click a data point to select it${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
@@ -2334,52 +2558,59 @@ function buildRows() {
     if (!includeBinaries && binary && !isHighlighted) continue;
     if (!includePhotspt && photometricSpt && !isHighlighted) continue;
 
-    const x = axisValue(object, xSpec, usePhotdistForAxes);
-    const y = axisValue(object, ySpec, usePhotdistForAxes);
-    if (!x || !y || !Number.isFinite(x.value) || !Number.isFinite(y.value)) continue;
+    const xMeasurements = axisValues(object, xSpec, usePhotdistForAxes);
+    const yMeasurements = axisValues(object, ySpec, usePhotdistForAxes);
+    const measurementPairs = axisMeasurementPairs(xMeasurements, yMeasurements, xSpec, ySpec);
+    if (!measurementPairs.length) continue;
 
     const age = state.maps.ageByOid.get(oid);
     const ageSample = ageSampleFor(object);
     const gravityClass = gravityClassForObject(object);
     const richGravityCategory = richGravityCategoryForObject(object);
     const distance = bestDistance(oid, usePhotdistForAxes);
-    const row = {
-      moca_oid: oid,
-      designation: object.designation || "",
-      spectral_type_number: spt,
-      spectral_type: sptLabel(spt),
-      spectral_class: normalizedSpectralClass(object.spectral_class || classFromSpt(spt)),
-      complete_spectral_type: object.complete_spectral_type || sptLabel(spt),
-      parallax_mas: numericValue(object.parallax_mas),
-      parallax_mas_error: numericValue(object.parallax_mas_error),
-      parallax_ref: object.parallax_ref || "",
-      distance_pc: distance?.distance_pc ?? null,
-      age_myr: Number.isFinite(age) ? age : null,
-      age_sample: ageSample,
-      gravity_class: gravityClass,
-      rich_gravity_category: richGravityCategory,
-      is_binary: binary,
-      is_photometric_spt: photometricSpt,
-      is_photometric_distance: usePhotdistForAxes && Number(distance?.photometric_estimate || 0) === 1,
-      x: x.value,
-      y: y.value,
-      plot_x: jitteredAxisValue(x.value, oid, "x", xSpec.type),
-      plot_y: jitteredAxisValue(y.value, oid, "y", ySpec.type),
-      ex: x.error,
-      ey: y.error,
-      x_label: x.label,
-      y_label: y.label,
-      x_ref: x.ref,
-      y_ref: y.ref,
-      input_data: mergeAxisInputs(x.inputs, y.inputs),
-      highlighted: isHighlighted,
-      azul_byw_sample: isAzulBywSample,
-      highlight_association: associationHighlight?.aid || "",
-      highlight_ya_prob: associationHighlight?.yaProb ?? null,
-      noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
-    };
-    row.hover = hoverText(row);
-    rows.push(row);
+    for (const [x, y] of measurementPairs) {
+      if (!Number.isFinite(x.value) || !Number.isFinite(y.value)) continue;
+      const measurementKey = plottedMeasurementKey(oid, x, y);
+      const row = {
+        moca_oid: oid,
+        row_id: measurementKey,
+        designation: object.designation || "",
+        spectral_type_number: spt,
+        spectral_type: sptLabel(spt),
+        spectral_class: normalizedSpectralClass(object.spectral_class || classFromSpt(spt)),
+        complete_spectral_type: object.complete_spectral_type || sptLabel(spt),
+        parallax_mas: numericValue(object.parallax_mas),
+        parallax_mas_error: numericValue(object.parallax_mas_error),
+        parallax_ref: object.parallax_ref || "",
+        distance_pc: distance?.distance_pc ?? null,
+        age_myr: Number.isFinite(age) ? age : null,
+        age_sample: ageSample,
+        gravity_class: gravityClass,
+        rich_gravity_category: richGravityCategory,
+        is_binary: binary,
+        is_photometric_spt: photometricSpt,
+        is_photometric_distance: usePhotdistForAxes && Number(distance?.photometric_estimate || 0) === 1,
+        x: x.value,
+        y: y.value,
+        plot_x: jitteredAxisValue(x.value, oid, "x", xSpec.type),
+        plot_y: jitteredAxisValue(y.value, oid, "y", ySpec.type),
+        ex: x.error,
+        ey: y.error,
+        x_label: x.label,
+        y_label: y.label,
+        x_ref: x.ref,
+        y_ref: y.ref,
+        teff_ref: [...new Set([x.teff_ref, y.teff_ref].filter(Boolean))].join("; "),
+        input_data: mergeAxisInputs(x.inputs, y.inputs),
+        highlighted: isHighlighted,
+        azul_byw_sample: isAzulBywSample,
+        highlight_association: associationHighlight?.aid || "",
+        highlight_ya_prob: associationHighlight?.yaProb ?? null,
+        noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
+      };
+      row.hover = hoverText(row);
+      rows.push(row);
+    }
   }
   return rows;
 }
@@ -2405,60 +2636,81 @@ function axisSpec(axis) {
   };
 }
 
-function axisValue(object, spec, includePhotdist) {
+function axisValues(object, spec, includePhotdist) {
   const oid = Number(object.moca_oid);
   if (spec.type === "spectral_type") {
-    return {
+    return [{
       value: Number(object.spectral_type_number),
       error: numericValue(object.spectral_type_unc),
       label: "Spectral Type",
       ref: object.spt_ref || "",
+      measurement_keys: [],
       inputs: [{
         key: "spectral_type",
         label: "Spectral type number",
         value: Number(object.spectral_type_number),
         error: numericValue(object.spectral_type_unc),
       }],
-    };
+    }];
+  }
+  if (spec.type === "teff") {
+    const row = state.maps.teffByOid.get(oid);
+    if (!row) return [];
+    return [{
+      value: Number(row.teff_k),
+      error: numericValue(row.teff_k_unc),
+      label: `${teffAxisLabelHtml} (K)`,
+      ref: row.teff_ref || row.moca_pid || "",
+      teff_ref: row.moca_pid || "",
+      measurement_keys: [measurementRowKey("teff", row)],
+      inputs: [{
+        key: "teff",
+        label: "Teff",
+        value: Number(row.teff_k),
+        error: numericValue(row.teff_k_unc),
+        unit: "K",
+      }],
+    }];
   }
   if (spec.type === "color") {
-    const phot1 = photometryForAxisValue(oid, spec.value1);
-    const phot2 = photometryForAxisValue(oid, spec.value2);
-    if (!phot1 || !phot2 || spec.value1 === spec.value2) return null;
-    return {
-      value: Number(phot1.magnitude) - Number(phot2.magnitude),
-      error: hypot(phot1.magnitude_unc, phot2.magnitude_unc),
-      label: `${bandAxisLabel(phot1, spec.value1)} \u2212 ${bandAxisLabel(phot2, spec.value2)}`,
-      ref: `${phot1.photometry_ref || ""}; ${phot2.photometry_ref || ""}`,
-      inputs: [
-        photometryInput(phot1, spec.value1),
-        photometryInput(phot2, spec.value2),
-      ],
-    };
+    if (spec.value1 === spec.value2) return [];
+    const photometry1 = photometryRowsForAxisValue(oid, spec.value1);
+    const photometry2 = photometryRowsForAxisValue(oid, spec.value2);
+    return photometry1.flatMap((phot1) => photometry2.map((phot2) => ({
+        value: Number(phot1.magnitude) - Number(phot2.magnitude),
+        error: hypot(phot1.magnitude_unc, phot2.magnitude_unc),
+        label: `${bandAxisLabel(phot1, spec.value1)} \u2212 ${bandAxisLabel(phot2, spec.value2)}`,
+        ref: `${phot1.photometry_ref || ""}; ${phot2.photometry_ref || ""}`,
+        measurement_keys: [measurementRowKey("photometry", phot1), measurementRowKey("photometry", phot2)],
+        inputs: [
+          photometryInput(phot1, spec.value1),
+          photometryInput(phot2, spec.value2),
+        ],
+      })));
   }
   if (spec.type === "absolute_magnitude") {
-    const phot = photometryForAxisValue(oid, spec.value1);
     const dist = bestDistance(oid, includePhotdist);
-    if (!phot || !dist || dist.dmod === null || dist.dmod === undefined) return null;
-    return {
-      value: Number(phot.magnitude) - Number(dist.dmod),
-      error: hypot(phot.magnitude_unc, dist.dmod_unc),
-      label: `Absolute ${bandAxisLabel(phot, spec.value1)}-band magnitude (mag)`,
-      ref: `${phot.photometry_ref || ""}; ${dist.distance_ref || ""}`,
-      inputs: [
-        photometryInput(phot, spec.value1),
-        distanceInput(dist),
-      ],
-    };
+    if (!dist || dist.dmod === null || dist.dmod === undefined) return [];
+    return photometryRowsForAxisValue(oid, spec.value1).map((phot) => ({
+        value: Number(phot.magnitude) - Number(dist.dmod),
+        error: hypot(phot.magnitude_unc, dist.dmod_unc),
+        label: `Absolute ${bandAxisLabel(phot, spec.value1)}-band magnitude (mag)`,
+        ref: `${phot.photometry_ref || ""}; ${dist.distance_ref || ""}`,
+        measurement_keys: [measurementRowKey("photometry", phot)],
+        inputs: [
+          photometryInput(phot, spec.value1),
+          distanceInput(dist),
+        ],
+      }));
   }
   if (spec.type === "spectral_index") {
-    const row = state.maps.spectralIndexByOid.get(oid)?.get(spec.value1);
-    if (!row) return null;
-    return {
+    const spectralIndexRows = state.maps.spectralIndexByOid.get(oid)?.get(spec.value1) || [];
+    return spherexVettedMeasurementRows(spectralIndexRows, spec.value1, "spectral_index").map((row) => ({
       value: Number(row.index_value),
       error: numericValue(row.index_value_unc),
       label: row.description || spec.value1,
       ref: row.spectral_index_ref || "",
+      measurement_keys: [measurementRowKey("spectral-index", row)],
       inputs: [{
         key: `spectral_index:${row.moca_siid}`,
         label: row.description || spec.value1,
@@ -2467,18 +2719,17 @@ function axisValue(object, spec, includePhotdist) {
         moca_siid: row.moca_siid,
         moca_specid: normalizedMocaSpecid(row.moca_specid),
       }],
-    };
+    }));
   }
   if (spec.type === "equivalent_width") {
-    const row = state.maps.equivalentWidthByOid.get(oid)?.get(spec.value1);
-    if (!row) return null;
     const scale = spec.value1 === "li" ? 1000 : 1;
     const unit = spec.value1 === "li" ? "mÅ" : "Å";
-    return {
+    return (state.maps.equivalentWidthByOid.get(oid)?.get(spec.value1) || []).map((row) => ({
       value: Number(row.ew_angstrom) * scale,
       error: numericValue(row.ew_angstrom_unc) * scale,
       label: `${row.description || spec.value1} (${unit})`,
       ref: row.equivalent_width_ref || "",
+      measurement_keys: [measurementRowKey("equivalent-width", row)],
       inputs: [{
         key: `equivalent_width:${row.moca_spid}`,
         label: row.description || spec.value1,
@@ -2487,9 +2738,46 @@ function axisValue(object, spec, includePhotdist) {
         unit,
         moca_specid: normalizedMocaSpecid(row.moca_specid),
       }],
-    };
+    }));
   }
-  return null;
+  return [];
+}
+
+function axisValue(object, spec, includePhotdist) {
+  return axisValues(object, spec, includePhotdist)[0] || null;
+}
+
+function measurementRowKey(kind, row) {
+  const rowId = row?.id ?? [row?.moca_oid, row?.moca_specid, row?.moca_psid, row?.moca_siid, row?.moca_spid].join(":");
+  return `${kind}:${rowId}`;
+}
+
+function axisMeasurementKey(measurement) {
+  const keys = [...new Set(measurement?.measurement_keys || [])].sort();
+  return keys.join("+") || "object";
+}
+
+function sameAxisSpec(left, right) {
+  return left.type === right.type && left.value1 === right.value1 && left.value2 === right.value2;
+}
+
+function axisMeasurementPairs(xMeasurements, yMeasurements, xSpec, ySpec) {
+  if (!xMeasurements.length || !yMeasurements.length) return [];
+  if (sameAxisSpec(xSpec, ySpec)) {
+    const yByKey = new Map(yMeasurements.map((measurement) => [axisMeasurementKey(measurement), measurement]));
+    return xMeasurements
+      .filter((measurement) => yByKey.has(axisMeasurementKey(measurement)))
+      .map((measurement) => [measurement, yByKey.get(axisMeasurementKey(measurement))]);
+  }
+  return xMeasurements.flatMap((x) => yMeasurements.map((y) => [x, y]));
+}
+
+function plottedMeasurementKey(oid, xMeasurement, yMeasurement) {
+  const keys = [...new Set([
+    ...(xMeasurement?.measurement_keys || []),
+    ...(yMeasurement?.measurement_keys || []),
+  ])].sort();
+  return `oid:${oid}|${keys.join("+") || "object"}`;
 }
 
 function photometryInput(row, fallbackId) {
@@ -2527,26 +2815,38 @@ function mergeAxisInputs(...inputLists) {
   return out;
 }
 
-function photometryForAxisValue(oid, value) {
+function photometryRowsForAxisValue(oid, value) {
   const simpleBand = simplePhotometryBand(value);
-  if (simpleBand) return state.maps.simplePhotometryByOid.get(oid)?.get(simpleBand);
-  return state.maps.photometryByOid.get(oid)?.get(value);
+  const rows = simpleBand
+    ? state.maps.simplePhotometryByOid.get(oid)?.get(simpleBand) || []
+    : state.maps.photometryByOid.get(oid)?.get(value) || [];
+  return spherexVettedMeasurementRows(rows, value, "photometry");
 }
 
 function jitteredAxisValue(value, oid, axis, axisType) {
-  if (axisType !== "spectral_type") return value;
-  return value + deterministicJitter(oid, axis);
+  if (axisType === "spectral_type") return value + deterministicJitter(oid, axis);
+  if (axisType === "teff") return value + deterministicTeffJitter(oid, axis);
+  return value;
 }
 
 function deterministicJitter(oid, axis) {
   const seed = `${oid}:${axis}:spectral-type-jitter`;
+  return deterministicSignedUnit(seed) * spectralTypeJitterAmplitude;
+}
+
+function deterministicTeffJitter(oid, axis) {
+  const seed = `${oid}:${axis}:teff-jitter`;
+  return deterministicSignedUnit(seed) * teffJitterK();
+}
+
+function deterministicSignedUnit(seed) {
   let hash = 2166136261;
   for (let index = 0; index < seed.length; index += 1) {
     hash ^= seed.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
   const unit = (hash >>> 0) / 4294967295;
-  return (unit * 2 - 1) * spectralTypeJitterAmplitude;
+  return unit * 2 - 1;
 }
 
 function plotX(row) {
@@ -2696,8 +2996,8 @@ function matchesGravityText(text, tokens) {
 function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   const renderToken = ++state.plotRenderToken;
   const rangeSignature = options.rangeSignature || axisRangeSignature();
-  const xLabel = plottedRows[0]?.x_label || rows[0]?.x_label || axisTypes.find((item) => item.value === el["x-axis-type"].value)?.label || "X";
-  const yLabel = plottedRows[0]?.y_label || rows[0]?.y_label || axisTypes.find((item) => item.value === el["y-axis-type"].value)?.label || "Y";
+  const xLabel = plottedRows[0]?.x_label || rows[0]?.x_label || fallbackAxisLabel("x");
+  const yLabel = plottedRows[0]?.y_label || rows[0]?.y_label || fallbackAxisLabel("y");
   const regularRows = plottedRows.filter((row) => !row.highlighted);
   const highlightedRows = plottedRows.filter((row) => row.highlighted);
   const legendRows = rows;
@@ -2734,21 +3034,21 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     traces.push(...ageColorTraces(regularRows, opacityByOid, pointOpacity));
   } else if (colorMode === "gravity") {
     const good = regularRows.filter((row) => !row.noisy);
-    traces.push(errorBarTrace(good, 0.2, "gravity-good-errors"));
+    traces.push(...errorBarTraces(good, 0.18, "gravity-good-errors"));
     traces.push(gravityColorTrace(good, "Objects", rowOpacities(good, opacityByOid, pointOpacity)));
     const noisy = regularRows.filter((row) => row.noisy);
     if (noisy.length) {
-      traces.push(errorBarTrace(noisy, 0.11, "gravity-noisy-errors"));
+      traces.push(...errorBarTraces(noisy, 0.08, "gravity-noisy-errors"));
       traces.push(gravityColorTrace(noisy, "Filtered by error", mutedRowOpacities(noisy, opacityByOid, pointOpacity), false));
     }
     traces.push(...gravityLegendTraces(legendRows));
   } else {
     const good = regularRows.filter((row) => !row.noisy);
-    traces.push(errorBarTrace(good, 0.2, "default-good-errors"));
+    traces.push(...errorBarTraces(good, 0.18, "default-good-errors"));
     traces.push(defaultTrace(good, "Objects", rowOpacities(good, opacityByOid, pointOpacity)));
     const noisy = regularRows.filter((row) => row.noisy);
     if (noisy.length) {
-      traces.push(errorBarTrace(noisy, 0.11, "default-noisy-errors"));
+      traces.push(...errorBarTraces(noisy, 0.08, "default-noisy-errors"));
       traces.push(defaultTrace(noisy, "Filtered by error", mutedRowOpacities(noisy, opacityByOid, pointOpacity), false));
     }
     traces.push(...legendTraces(legendRows));
@@ -2821,6 +3121,12 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     }
   });
   return summaryRanges;
+}
+
+function fallbackAxisLabel(axis) {
+  const type = el[`${axis}-axis-type`].value;
+  if (type === "teff") return `${teffAxisLabelHtml} (K)`;
+  return axisTypes.find((item) => item.value === type)?.label || axis.toUpperCase();
 }
 
 function currentPlotCanvasKey() {
@@ -2905,6 +3211,10 @@ function hasPendingCriticalPlotData() {
     const type = el[`${axis}-axis-type`].value;
     if (type === "spectral_index" && !state.spectralIndicesLoaded.has(el[`${axis}-value-1`].value)) return true;
     if (type === "equivalent_width" && !state.featuresLoaded.equivalentWidths) return true;
+    if (
+      type === "teff"
+      && (!state.featuresLoaded.teffs || state.teffSelectionKey !== currentTeffSelectionKey())
+    ) return true;
   }
   return false;
 }
@@ -2926,6 +3236,7 @@ function currentAxesUseFeature(feature) {
   const featureTypes = {
     spectralIndices: "spectral_index",
     equivalentWidths: "equivalent_width",
+    teffs: "teff",
   };
   const axisType = featureTypes[feature];
   return Boolean(axisType && ["x", "y"].some((axis) => el[`${axis}-axis-type`].value === axisType));
@@ -2940,6 +3251,8 @@ function axisRangeSignature() {
       spec.value1 || "",
       spec.value2 || "",
       el[`${axis}err-max`].value || "",
+      spec.type === "teff" ? `jitter:${teffJitterK()}` : "",
+      spec.type === "teff" ? `log:${teffLogRequested(axis) ? 1 : 0}` : "",
       axisDataReadySignature(spec),
     ].join(":");
   }).join("|");
@@ -2948,6 +3261,11 @@ function axisRangeSignature() {
 function axisDataReadySignature(spec) {
   if (spec.type === "spectral_index") return state.spectralIndicesLoaded.has(spec.value1) ? `loaded:${spec.value1}` : `loading:${spec.value1}`;
   if (spec.type === "equivalent_width") return state.featuresLoaded.equivalentWidths ? "loaded" : "loading";
+  if (spec.type === "teff") {
+    return state.featuresLoaded.teffs && state.teffSelectionKey === currentTeffSelectionKey()
+      ? `loaded:${state.teffSelectionKey}`
+      : `loading:${currentTeffSelectionKey()}`;
+  }
   if (spec.type === "absolute_magnitude") {
     const photometryReady = state.photometryLoaded.has(spec.value1) ? "phot-loaded" : "phot-loading";
     const distanceReady = usePhotometricDistancesForAxes() ? (state.photometricDistancesLoaded ? "dist-loaded" : "dist-loading") : "dist-spectro";
@@ -3070,7 +3388,10 @@ function densityPlotRanges(rows, initialRanges) {
 }
 
 function currentAxisRange(axis) {
-  return orderedRange(el.plot?.layout?.[`${axis}axis`]?.range);
+  const range = el.plot?.layout?.[`${axis}axis`]?.range;
+  if (!teffLogRequested(axis)) return orderedRange(range);
+  if (!Array.isArray(range)) return null;
+  return orderedRange(range.map((value) => 10 ** Number(value)));
 }
 
 function dataRange(rows, field) {
@@ -3181,7 +3502,7 @@ function defaultTrace(rows, name, opacity, showlegend = name !== "Objects") {
     x: rows.map(plotX),
     y: rows.map(plotY),
     text: rows.map((row) => row.hover),
-    customdata: rows.map((row) => row.moca_oid),
+    customdata: rows.map((row) => row.row_id),
     hoverinfo: "text",
     marker: {
       size: markerSizesForRows(rows, 9),
@@ -3205,7 +3526,7 @@ function gravityColorTrace(rows, name, opacity, showlegend = name !== "Objects")
     x: rows.map(plotX),
     y: rows.map(plotY),
     text: rows.map((row) => row.hover),
-    customdata: rows.map((row) => row.moca_oid),
+    customdata: rows.map((row) => row.row_id),
     hoverinfo: "text",
     marker: {
       size: markerSizesForRows(rows, 9),
@@ -3221,7 +3542,7 @@ function gravityColorTrace(rows, name, opacity, showlegend = name !== "Objects")
 
 function highlightedPointTraces(rows) {
   return [
-    errorBarTrace(rows, 1, "highlighted-errors", {
+    ...errorBarTraces(rows, 0.42, "highlighted-errors", {
       color: "#d69e00",
       forceVisible: true,
       thickness: 3,
@@ -3233,7 +3554,7 @@ function highlightedPointTraces(rows) {
       mode: "markers",
       x: rows.map(plotX),
       y: rows.map(plotY),
-      customdata: rows.map((row) => row.moca_oid),
+      customdata: rows.map((row) => row.row_id),
       hoverinfo: "skip",
       marker: {
         symbol: "circle",
@@ -3252,12 +3573,12 @@ function highlightedPointTraces(rows) {
       x: rows.map(plotX),
       y: rows.map(plotY),
       text: rows.map((row) => row.hover),
-      customdata: rows.map((row) => row.moca_oid),
+      customdata: rows.map((row) => row.row_id),
       hoverinfo: "text",
       marker: {
         symbol: "star",
         size: 20,
-        color: "#ffe66d",
+        color: "#d69e00",
         opacity: 1,
         line: { color: "#111", width: 2.5 },
       },
@@ -3267,9 +3588,9 @@ function highlightedPointTraces(rows) {
 }
 
 function selectedMarkerRows(rows = state.rows) {
-  if (!state.selectedOids.length) return [];
-  const selected = new Set(state.selectedOids);
-  return rows.filter((row) => selected.has(row.moca_oid));
+  if (!state.selectedRowIds.length) return [];
+  const selected = new Set(state.selectedRowIds);
+  return rows.filter((row) => selected.has(row.row_id));
 }
 
 function selectedPointTrace(rows) {
@@ -3280,7 +3601,7 @@ function selectedPointTrace(rows) {
     x: rows.map(plotX),
     y: rows.map(plotY),
     text: rows.map((row) => row.hover),
-    customdata: rows.map((row) => row.moca_oid),
+    customdata: rows.map((row) => row.row_id),
     hoverinfo: "text",
     marker: {
       symbol: "star",
@@ -3327,7 +3648,7 @@ function binaryOverlayTraces(rows, opacityByOid, pointOpacity) {
     x: binaryRows.map(plotX),
     y: binaryRows.map(plotY),
     text: binaryRows.map((row) => row.hover),
-    customdata: binaryRows.map((row) => row.moca_oid),
+    customdata: binaryRows.map((row) => row.row_id),
     hoverinfo: "text",
     marker: {
       size: markerSizesForRows(binaryRows, 9),
@@ -3356,7 +3677,7 @@ function ageColorTraces(rows, opacityByOid, pointOpacity) {
   const withAge = rows.filter((row) => Number.isFinite(row.age_myr) && row.age_myr > 0);
   const colorDomain = ageColorDomain(rows);
   if (noAge.length) {
-    traces.push(errorBarTrace(noAge, 0.1, "age-no-age-errors"));
+    traces.push(...errorBarTraces(noAge, 0.08, "age-no-age-errors"));
     for (const group of markerStyleGroups(noAge)) {
       const marker = {
         size: markerSizeForRow(group.rows[0], 7),
@@ -3373,9 +3694,9 @@ function ageColorTraces(rows, opacityByOid, pointOpacity) {
         mode: "markers",
         x: group.rows.map(plotX),
         y: group.rows.map(plotY),
-        ids: group.rows.map((row) => `no-age-${row.moca_oid}`),
+        ids: group.rows.map((row) => `no-age-${row.row_id}`),
         text: group.rows.map((row) => row.hover),
-        customdata: group.rows.map((row) => row.moca_oid),
+        customdata: group.rows.map((row) => row.row_id),
         hoverinfo: "text",
         marker,
         name: "No age",
@@ -3385,16 +3706,16 @@ function ageColorTraces(rows, opacityByOid, pointOpacity) {
   }
   if (withAge.length) {
     const markerLine = markerLineForRows(withAge);
-    traces.push(errorBarTrace(withAge, 0.2, "age-with-age-errors"));
+    traces.push(...errorBarTraces(withAge, 0.18, "age-with-age-errors"));
     traces.push({
       type: "scattergl",
       uid: "age-with-age",
       mode: "markers",
       x: withAge.map(plotX),
       y: withAge.map(plotY),
-      ids: withAge.map((row) => `with-age-${row.moca_oid}`),
+      ids: withAge.map((row) => `with-age-${row.row_id}`),
       text: withAge.map((row) => row.hover),
-      customdata: withAge.map((row) => row.moca_oid),
+      customdata: withAge.map((row) => row.row_id),
       hoverinfo: "text",
       marker: {
         size: markerSizesForRows(withAge, 9),
@@ -4237,6 +4558,9 @@ function axisLayout(axis, label, rows, initialRange) {
     ticks: "outside",
   };
   const type = el[`${axis}-axis-type`].value;
+  const isTeff = type === "teff";
+  const isLogTeff = isTeff && teffLogRequested(axis);
+  if (isLogTeff) layout.type = "log";
   if (type === "spectral_type") {
     const values = rows.map((row) => axis === "x" ? row.x : row.y).filter(Number.isFinite);
     if (values.length) {
@@ -4249,11 +4573,15 @@ function axisLayout(axis, label, rows, initialRange) {
     }
   }
   const isAbsoluteMagnitudeY = axis === "y" && el["y-axis-type"].value === "absolute_magnitude";
+  const isReversedTeffX = axis === "x" && isTeff;
+  const reversed = isAbsoluteMagnitudeY || isReversedTeffX;
   if (initialRange) {
-    const reversed = isAbsoluteMagnitudeY;
-    layout.range = reversed ? [initialRange[1], initialRange[0]] : initialRange;
+    const range = isLogTeff
+      ? initialRange.map((value) => Math.log10(Math.max(value, Number.MIN_VALUE)))
+      : initialRange;
+    layout.range = reversed ? [range[1], range[0]] : range;
     layout.autorange = false;
-  } else if (isAbsoluteMagnitudeY) {
+  } else if (reversed) {
     layout.autorange = "reversed";
   }
   return layout;
@@ -4261,6 +4589,65 @@ function axisLayout(axis, label, rows, initialRange) {
 
 function axisTitleLabel(label) {
   return String(label ?? "").replace(/\bCO2\b/g, "CO<sub>2</sub>");
+}
+
+function errorBarTraces(rows, opacity = 0.2, uid = "error-bars", style = {}) {
+  if ((!el["show-errors"].checked && !style.forceVisible) || !rows.length || !rows.some(hasFiniteError)) return [];
+  if (style.color) {
+    return [errorBarTrace(rows, opacity, uid, {
+      ...style,
+      color: colorWithOpacity(style.color, opacity),
+    })].filter(Boolean);
+  }
+
+  const groups = new Map();
+  const ageDomain = currentColorMode() === "age" ? ageColorDomain(rows) : null;
+  for (const row of rows) {
+    const color = errorBarColorForRow(row, ageDomain);
+    if (!groups.has(color)) groups.set(color, []);
+    groups.get(color).push(row);
+  }
+  return [...groups.entries()].map(([color, groupRows], index) => errorBarTrace(
+    groupRows,
+    opacity,
+    `${uid}-${index}`,
+    { ...style, color: colorWithOpacity(color, opacity) },
+  )).filter(Boolean);
+}
+
+function errorBarColorForRow(row, ageDomain) {
+  const colorMode = currentColorMode();
+  if (colorMode === "gravity") return gravityColorForRow(row);
+  if (colorMode === "age") {
+    const age = Number(row.age_myr);
+    if (!ageDomain || !Number.isFinite(age) || age <= 0) return noAgeMarkerColor;
+    const raw = clamp((Math.log10(age) - ageDomain.min) / (ageDomain.max - ageDomain.min), 0, 1);
+    const quantized = Math.round(raw * 16) / 16;
+    return interpolateColorscale(ageColorscale, quantized);
+  }
+  return classColors[row.spectral_class] || "#1da6b8";
+}
+
+function colorWithOpacity(color, opacity) {
+  const namedColors = {
+    purple: [128, 0, 128],
+    darkblue: [0, 0, 139],
+    blue: [0, 0, 255],
+    darkgreen: [0, 100, 0],
+  };
+  const raw = String(color || "").trim().toLowerCase();
+  let rgb = namedColors[raw] || null;
+  const hex = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!rgb && hex) {
+    const digits = hex[1].length === 3
+      ? hex[1].split("").map((digit) => digit + digit).join("")
+      : hex[1];
+    rgb = [0, 2, 4].map((index) => Number.parseInt(digits.slice(index, index + 2), 16));
+  }
+  const functional = raw.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+  if (!rgb && functional) rgb = functional.slice(1, 4).map(Number);
+  if (!rgb) rgb = [55, 55, 55];
+  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${clamp(opacity, 0, 1)})`;
 }
 
 function errorBarTrace(rows, opacity = 0.2, uid = "error-bars", style = {}) {
@@ -4311,20 +4698,20 @@ function bindPlotEvents() {
   }
   el.plot.on("plotly_selected", (event) => {
     if (window.MocaPlotlySelection?.isDegenerate(el.plot, event)) return;
-    state.selectedOids = event?.points?.map((point) => Number(point.customdata)).filter(Number.isFinite) || [];
-    renderTable(state.selectedOids);
+    state.selectedRowIds = selectedPlotRowIds(event);
+    renderTable(state.selectedRowIds);
     updateSelectedPointMarker();
   });
   el.plot.on("plotly_deselect", () => {
-    state.selectedOids = [];
+    state.selectedRowIds = [];
     renderTable([]);
     updateSelectedPointMarker();
   });
   el.plot.on("plotly_click", (event) => {
-    const oid = clickedPlotOid(event);
-    if (Number.isFinite(oid)) {
-      state.selectedOids = [oid];
-      renderTable(state.selectedOids);
+    const rowId = clickedPlotRowId(event);
+    if (rowId) {
+      state.selectedRowIds = [rowId];
+      renderTable(state.selectedRowIds);
       updateSelectedPointMarker();
     }
   });
@@ -4342,12 +4729,24 @@ function bindPlotEvents() {
   state.plotBound = true;
 }
 
-function clickedPlotOid(event) {
+function plotRowIdFromCustomdata(customdata) {
+  return typeof customdata === "string" ? customdata : "";
+}
+
+function selectedPlotRowIds(event) {
+  return [...new Set(
+    (event?.points || [])
+      .map((point) => plotRowIdFromCustomdata(point?.customdata))
+      .filter(Boolean),
+  )];
+}
+
+function clickedPlotRowId(event) {
   for (const point of event?.points || []) {
-    const oid = Number(point?.customdata);
-    if (Number.isFinite(oid)) return oid;
+    const rowId = plotRowIdFromCustomdata(point?.customdata);
+    if (rowId) return rowId;
   }
-  return NaN;
+  return "";
 }
 
 function handleLegendClick(trace) {
@@ -4481,9 +4880,9 @@ function toggleLegendValue(hiddenValues, value) {
   }
 }
 
-function renderTable(oids) {
-  const selected = oids.length
-    ? state.rows.filter((row) => oids.includes(row.moca_oid))
+function renderTable(rowIds) {
+  const selected = rowIds.length
+    ? state.rows.filter((row) => rowIds.includes(row.row_id))
     : state.rows;
   if (!selected.length) {
     el["selection-table"].textContent = "No points to show.";
@@ -4493,6 +4892,7 @@ function renderTable(oids) {
   const showSpectrumLinks = selected.some((row) => spectrumSpecidsForRow(row).length);
   const showIndexCalculationLinks = selected.some((row) => spectralIndexInputsForRow(row).length);
   const showAssociationHighlight = selected.some((row) => row.highlight_association);
+  const showTeffRef = selected.some((row) => row.teff_ref);
   const columns = [
     tableColumn("moca_oid"),
     tableColumn("designation"),
@@ -4504,6 +4904,7 @@ function renderTable(oids) {
     ...(showSpectrumLinks ? [spectrumSpecidTableColumn()] : []),
     tableColumn("x"),
     tableColumn("y"),
+    ...(showTeffRef ? [tableColumn("teff_ref")] : []),
     ...inputTableColumns(selected),
   ];
   if (el["color-by-age"].checked) {
@@ -4777,6 +5178,7 @@ const exportColumns = [
   "ex",
   "y",
   "ey",
+  "teff_ref",
   "x_label",
   "y_label",
   "distance_pc",
@@ -4805,8 +5207,8 @@ const numericExportColumns = new Set([
 ]);
 
 function exportRows() {
-  return state.selectedOids.length
-    ? state.rows.filter((row) => state.selectedOids.includes(row.moca_oid))
+  return state.selectedRowIds.length
+    ? state.rows.filter((row) => state.selectedRowIds.includes(row.row_id))
     : state.rows;
 }
 

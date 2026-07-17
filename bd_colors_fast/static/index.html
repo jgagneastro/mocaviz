@@ -106,7 +106,7 @@
         <section id="spherex-vetting-panel" class="control-section filters-section spherex-vetting-panel" hidden>
           <h2>SPHEREx vetting</h2>
           <p class="spherex-vetting-help">
-            Filter plotted objects by the visual-vetting classification associated with the SPHEREx source spectrum.
+            Filter plotted measurements by the visual-vetting classification of their own SPHEREx source spectrum.
           </p>
           <div class="field-label">
             <span id="spherex-vetting-classifications-label">Classification</span>
@@ -124,6 +124,29 @@
           <label class="checkline">
             <input id="show-errors" type="checkbox">
             <span>Plot error bars</span>
+          </label>
+          <label class="checkline">
+            <input id="only-best-measurement" type="checkbox">
+            <span>Only plot the best measurement per brown dwarf</span>
+          </label>
+          <label id="sed-teff-line" class="checkline" hidden>
+            <input id="only-sed-teff" type="checkbox">
+            <span>Only plot <i>T</i><sub>eff</sub> values obtained from SED analysis</span>
+          </label>
+          <label id="teff-jitter-line" class="range-label teff-jitter-control" hidden>
+            <span class="range-heading">
+              <span><i>T</i><sub>eff</sub> jitter</span>
+              <output id="teff-jitter-output" for="teff-jitter">±30 K</output>
+            </span>
+            <input id="teff-jitter" type="range" min="0" max="200" step="5" value="30">
+          </label>
+          <label id="x-teff-log-line" class="checkline" hidden>
+            <input id="x-teff-log" type="checkbox">
+            <span>Display log X-axis</span>
+          </label>
+          <label id="y-teff-log-line" class="checkline" hidden>
+            <input id="y-teff-log" type="checkbox">
+            <span>Display log Y-axis</span>
           </label>
           <label class="checkline">
             <input id="include-photdist" type="checkbox">
@@ -239,7 +262,7 @@
         <tbody>
           <tr>
             <td><code>xaxis_type</code>, <code>yaxis_type</code></td>
-            <td><code>spectral_type</code>, <code>color</code>, <code>absolute_magnitude</code>, <code>spectral_index</code>, <code>equivalent_width</code></td>
+            <td><code>spectral_type</code>, <code>teff</code>, <code>color</code>, <code>absolute_magnitude</code>, <code>spectral_index</code>, <code>equivalent_width</code></td>
             <td>Chooses the observable shown on each axis. Defaults are <code>xaxis_type=color</code> and <code>yaxis_type=absolute_magnitude</code>.</td>
           </tr>
           <tr>
@@ -294,12 +317,12 @@
           <tr>
             <td><code>xerr_max</code>, <code>yerr_max</code></td>
             <td>Number, or blank/<code>none</code>/<code>null</code>/<code>nan</code></td>
-            <td>De-emphasizes points whose propagated X or Y uncertainty exceeds the threshold and excludes those points from automatic axis limits. If omitted, the app applies axis-specific defaults where available.</td>
+            <td>De-emphasizes points whose propagated X or Y uncertainty exceeds the threshold and excludes those points from automatic axis limits. If omitted, the app applies axis-specific defaults where available; <i>T</i><sub>eff</sub> axes default to 100 K.</td>
           </tr>
           <tr>
             <td><code>spherex_classification</code></td>
             <td>Comma-separated SPHEREx visual-vetting classifications, or <code>missing</code></td>
-            <td>In an authenticated private-table session with a SPHEREx magnitude or <code>spx…</code> spectral-index axis, shows only objects with at least one selected classification. <em>Missing</em> includes NULL classifications, absent vetting rows, and source spectra whose package has no mapped vetting table. With no selection, all classifications are shown.</td>
+            <td>In an authenticated private-table session with a SPHEREx magnitude or <code>spx…</code> spectral-index axis, shows only measurements whose own source spectrum has a selected classification. With all measurements shown, this filtering happens in the browser; with best-measurement selection enabled, it is applied by the backend before ranking. <em>Missing</em> includes NULL classifications, absent vetting rows, and source spectra whose package has no mapped vetting table. With no selection, all classifications are shown.</td>
           </tr>
           <tr>
             <td><code>sequence_smoothing</code></td>
@@ -329,6 +352,26 @@
             <td><code>errors</code></td>
             <td><code>false</code></td>
             <td>Shows propagated X and Y error bars.</td>
+          </tr>
+          <tr>
+            <td><code>best_measurement</code></td>
+            <td><code>false</code></td>
+            <td>Plots only the lowest-uncertainty measurement of each selected quantity for each brown dwarf. NULL uncertainties rank last, and row ID breaks ties deterministically.</td>
+          </tr>
+          <tr>
+            <td><code>sed_teff</code></td>
+            <td><code>false</code></td>
+            <td>With a <code>teff</code> axis, restricts <i>T</i><sub>eff</sub> values to SED analyses from <code>Sang23</code> or <code>Fili15</code>. <i>T</i><sub>eff</sub> rows are always de-duplicated per object by quality, uncertainty, then row ID.</td>
+          </tr>
+          <tr>
+            <td><code>teff_jitter</code></td>
+            <td><code>30</code></td>
+            <td>Adds deterministic <i>T</i><sub>eff</sub> jitter from 0 to 200 K in either direction so overlapping points can be separated.</td>
+          </tr>
+          <tr>
+            <td><code>xaxis_log</code>, <code>yaxis_log</code></td>
+            <td><code>false</code></td>
+            <td>Displays the corresponding <i>T</i><sub>eff</sub> axis logarithmically. This option is ignored for other axis types.</td>
           </tr>
           <tr>
             <td><code>photdist</code></td>
@@ -400,7 +443,7 @@
             For the current spectral range and highlighted objects, this preloads
             the full in-memory dataset: photometric spectral type estimates,
             photometric distances, designations, all photometry bands, all
-            spectral indices, equivalent widths, age data, and sequence overlays.
+            spectral indices, equivalent widths, Teff values, age data, and sequence overlays.
             This can take a
             few minutes, but once it finishes the app can switch most axes and
             display options much faster. Some large optional private datasets may
@@ -419,6 +462,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a-spherex-vetting-20260717c"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a-spherex-vetting-20260717f-best-measurement-20260717b-teff-20260717e"></script>
 </body>
 </html>

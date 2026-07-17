@@ -33,7 +33,7 @@ class BdPhotometryParallaxTests(unittest.TestCase):
 
     def test_table_and_exports_include_parallax_columns(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
-        table_block = script.split("function renderTable(oids)", 1)[1].split(
+        table_block = script.split("function renderTable(rowIds)", 1)[1].split(
             "function bdTableMarkerHtml", 1
         )[0]
         export_block = script.split("const exportColumns = [", 1)[1].split("];", 1)[0]
@@ -228,11 +228,23 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn('errorBarTrace(rows, 1, "highlighted-errors"', trace_block)
+        self.assertIn('errorBarTraces(rows, 0.42, "highlighted-errors"', trace_block)
         self.assertIn('color: "#d69e00"', trace_block)
         self.assertIn("forceVisible: true", trace_block)
         self.assertIn("thickness: 3", trace_block)
         self.assertIn("width: 5", trace_block)
+
+    def test_error_bars_follow_marker_colors_with_lower_opacity(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        error_block = script.split("function errorBarTraces(rows", 1)[1].split(
+            "function errorBarTrace(rows",
+            1,
+        )[0]
+
+        self.assertIn("errorBarColorForRow(row, ageDomain)", error_block)
+        self.assertIn("colorWithOpacity(color, opacity)", error_block)
+        self.assertIn('traces.push(...errorBarTraces(good, 0.18, "default-good-errors"))', script)
+        self.assertIn("return Math.max(0.06, opacity * 0.18)", script)
 
     def test_useful_ranges_exclude_deemphasized_points_and_pad_y(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -270,7 +282,7 @@ class BdPhotometryParallaxTests(unittest.TestCase):
     def test_spectral_index_axes_add_calculation_links_to_selection_table(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         explorer_script = (app_module.STATIC_DIR / "spectral_index_explorer.js").read_text(encoding="utf-8")
-        table_block = script.split("function renderTable(oids)", 1)[1].split(
+        table_block = script.split("function renderTable(rowIds)", 1)[1].split(
             "function bdTableMarkerHtml",
             1,
         )[0]

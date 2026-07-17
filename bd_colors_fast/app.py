@@ -108,9 +108,11 @@ BDPHOT_SPHEREX_VETTING_TABLES = {
     62: "pcat_spherex_spiffstacker_visual_vetting",
     76: "pcat_spherex_sublimeaperture_visual_vetting",
 }
+BDPHOT_SED_TEFF_MOCA_PIDS = ("Sang23", "Fili15")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
-AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
+AXIS_TYPES = {"spectral_type", "teff", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
+AXIS_TYPES_WITHOUT_VALUES = {"spectral_type", "teff"}
 DEFAULT_AXIS_SPECS = {
     "x": ("color", "simple:J", "simple:K"),
     "y": ("absolute_magnitude", "simple:J", ""),
@@ -929,6 +931,25 @@ def _include_azul_byw_sample(args: dict[str, Any]) -> bool:
     return requested and _is_private_db(args)
 
 
+def _only_best_measurement(args: Mapping[str, Any]) -> bool:
+    return any(
+        _as_bool(args.get(key))
+        for key in (
+            "best_measurement",
+            "only_best_measurement",
+            "best_measurement_per_star",
+            "only_best_measurement_per_star",
+        )
+    )
+
+
+def _only_sed_teff(args: Mapping[str, Any]) -> bool:
+    return any(
+        _as_bool(args.get(key))
+        for key in ("sed_teff", "only_sed_teff", "teff_sed_only")
+    )
+
+
 def _has_spectral_type_axis(args: dict[str, Any]) -> bool:
     return any(_axis_spec(args, axis)[0] == "spectral_type" for axis in ("x", "y"))
 
@@ -1137,6 +1158,99 @@ def _spherex_axis_observables(args: Mapping[str, Any]) -> tuple[list[str], list[
     return photometry_psids, spectral_index_siids
 
 
+def _selected_spherex_vetting_classifications(args: Mapping[str, Any]) -> list[str]:
+    raw = next(
+        (
+            args.get(key)
+            for key in (
+                "spherex_classification",
+                "spherex_classifications",
+                "spherex_vetting_classification",
+                "spherex_vetting_classifications",
+            )
+            if args.get(key) not in (None, "")
+        ),
+        "",
+    )
+    values = {
+        value.strip()
+        for value in re.split(r"[,;]+", str(raw))
+        if value.strip()
+    }
+    return sorted(values)
+
+
+def _spherex_measurement_vetting_filter_sql(
+    args: Mapping[str, Any],
+    *,
+    alias: str,
+    quantity_column: str,
+    observable_values: Sequence[str],
+    param_prefix: str,
+) -> tuple[str, dict[str, str]]:
+    """Filter only SPHEREx measurements, before any best-row ranking."""
+    classifications = _selected_spherex_vetting_classifications(args)
+    observables = sorted({
+        value
+        for value in observable_values
+        if value and SAFE_ID_RE.fullmatch(value)
+    })
+    if (
+        not _only_best_measurement(args)
+        or not classifications
+        or not observables
+        or not _spherex_vetting_available(dict(args))
+    ):
+        return "1 = 1", {}
+
+    observable_params = {
+        f"{param_prefix}_observable_{index}": value
+        for index, value in enumerate(observables)
+    }
+    classification_params = {
+        f"{param_prefix}_classification_{index}": value
+        for index, value in enumerate(classifications)
+    }
+    observable_placeholders = ",".join(f":{key}" for key in observable_params)
+    classification_placeholders = ",".join(f":{key}" for key in classification_params)
+    classification_sql = f"""CASE vetting_spectrum.moca_specpackid
+                            WHEN 54 THEN '{BDPHOT_SPHEREX_GOOD_CLASSIFICATION}'
+                            WHEN 55 THEN COALESCE(NULLIF(TRIM(vetting_55.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                            WHEN 62 THEN COALESCE(NULLIF(TRIM(vetting_62.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                            WHEN 76 THEN COALESCE(NULLIF(TRIM(vetting_76.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                            ELSE '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}'
+                        END"""
+    selected_measurement_sql = f"""EXISTS (
+                    SELECT 1
+                    FROM moca_spectra vetting_spectrum
+                    LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[55]} vetting_55
+                        ON vetting_55.moca_oid = {alias}.moca_oid
+                        AND vetting_spectrum.moca_specpackid = 55
+                    LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[62]} vetting_62
+                        ON vetting_62.moca_oid = {alias}.moca_oid
+                        AND vetting_spectrum.moca_specpackid = 62
+                    LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[76]} vetting_76
+                        ON vetting_76.moca_oid = {alias}.moca_oid
+                        AND vetting_spectrum.moca_specpackid = 76
+                    WHERE vetting_spectrum.moca_specid = {alias}.moca_specid
+                        AND {classification_sql} IN ({classification_placeholders})
+                )"""
+    if BDPHOT_SPHEREX_MISSING_CLASSIFICATION in classifications:
+        selected_measurement_sql += f"""
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM moca_spectra missing_vetting_spectrum
+                    WHERE missing_vetting_spectrum.moca_specid = {alias}.moca_specid
+                )"""
+
+    return f"""(
+                {alias}.{quantity_column} NOT IN ({observable_placeholders})
+                OR (
+                    {selected_measurement_sql}
+                )
+            )""", {**observable_params, **classification_params}
+
+
 def _spherex_vetting_query_sql(
     args: Mapping[str, Any],
     oid_filter: str,
@@ -1150,7 +1264,7 @@ def _spherex_vetting_query_sql(
         )
         params.update(psid_params)
         source_queries.append(f"""
-            SELECT dp.moca_oid, ms.moca_specpackid
+            SELECT dp.moca_oid, dp.moca_specid, ms.moca_specpackid
             FROM data_photometry dp
             LEFT JOIN moca_spectra ms
                 ON ms.moca_specid = dp.moca_specid
@@ -1166,7 +1280,7 @@ def _spherex_vetting_query_sql(
         )
         params.update(siid_params)
         source_queries.append(f"""
-            SELECT dsi.moca_oid, ms.moca_specpackid
+            SELECT dsi.moca_oid, dsi.moca_specid, ms.moca_specpackid
             FROM data_spectral_indices dsi
             LEFT JOIN moca_spectra ms
                 ON ms.moca_specid = dsi.moca_specid
@@ -1177,7 +1291,7 @@ def _spherex_vetting_query_sql(
         """)
     if not source_queries:
         return """
-            SELECT NULL AS moca_oid, NULL AS classification
+            SELECT NULL AS moca_oid, NULL AS moca_specid, NULL AS classification
             FROM DUAL
             WHERE 0 = 1
         """, {}
@@ -1186,6 +1300,7 @@ def _spherex_vetting_query_sql(
     return f"""
         SELECT DISTINCT
             source_rows.moca_oid,
+            source_rows.moca_specid,
             CASE source_rows.moca_specpackid
                 WHEN 54 THEN '{BDPHOT_SPHEREX_GOOD_CLASSIFICATION}'
                 WHEN 55 THEN COALESCE(NULLIF(TRIM(v55.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
@@ -1206,7 +1321,7 @@ def _spherex_vetting_query_sql(
             ON v76.moca_oid = source_rows.moca_oid
             AND source_rows.moca_specpackid = 76
         WHERE source_rows.moca_oid IS NOT NULL
-        ORDER BY source_rows.moca_oid, classification
+        ORDER BY source_rows.moca_oid, source_rows.moca_specid, classification
     """, params
 
 
@@ -1215,6 +1330,8 @@ def _axis_spec(args: dict[str, Any], axis: str) -> tuple[str, str, str]:
     axis_type = args.get(f"{axis}axis_type") or default_type
     if axis_type not in AXIS_TYPES:
         axis_type = default_type
+    if axis_type in AXIS_TYPES_WITHOUT_VALUES:
+        return axis_type, "", ""
     value1 = args.get(f"{axis}axis_value_1") or default_value1
     value2 = args.get(f"{axis}axis_value_2") or default_value2
     if not SAFE_ID_RE.match(value1):
@@ -1235,7 +1352,7 @@ def _sequence_filter_sql(args: dict[str, Any]) -> tuple[str, dict[str, str]]:
         axis_type, value1, value2 = _axis_spec(args, axis)
         params[f"{axis}_type"] = axis_type
         clauses.append(f"ms.{axis}axis_type_bdcolapp = :{axis}_type")
-        if axis_type != "spectral_type":
+        if axis_type not in AXIS_TYPES_WITHOUT_VALUES:
             clauses.append(_sequence_value_filter_sql(axis, 1, value1, params))
         if axis_type == "color":
             clauses.append(_sequence_value_filter_sql(axis, 2, value2, params))
@@ -1298,6 +1415,272 @@ def _safe_id_filter_sql(alias: str, column: str, values: list[str], prefix: str)
     return f"{alias}.{column} IN ({placeholders})", params
 
 
+def _measurement_source_sql(
+    args: Mapping[str, Any],
+    *,
+    alias: str,
+    source_from_sql: str,
+    columns: Sequence[str],
+    partition_columns: Sequence[str],
+    uncertainty_column: str,
+    candidate_filter_sql: str,
+) -> tuple[str, str]:
+    """Return a raw or deterministically ranked, pre-filtered measurement source."""
+    if not _only_best_measurement(args):
+        return source_from_sql, candidate_filter_sql
+
+    selected_columns = ",\n                    ".join(
+        f"{alias}.{column}" for column in columns
+    )
+    partition_sql = ", ".join(f"{alias}.{column}" for column in partition_columns)
+    return f"""(
+            SELECT ranked_measurements.*
+            FROM (
+                SELECT
+                    {selected_columns},
+                    ROW_NUMBER() OVER (
+                        PARTITION BY {partition_sql}
+                        ORDER BY COALESCE({alias}.{uncertainty_column}, 1.0e308), {alias}.id
+                    ) AS measurement_rank
+                FROM {source_from_sql}
+                WHERE {candidate_filter_sql}
+            ) ranked_measurements
+            WHERE ranked_measurements.measurement_rank = 1
+        ) {alias}""", "1 = 1"
+
+
+def _photometry_measurement_query_sql(
+    args: Mapping[str, Any],
+    *,
+    source_from_sql: str,
+    candidate_filter_sql: str,
+) -> str:
+    source_sql, source_filter_sql = _measurement_source_sql(
+        args,
+        alias="dp",
+        source_from_sql=source_from_sql,
+        columns=(
+            "id",
+            "moca_oid",
+            "moca_psid",
+            "moca_pid",
+            "moca_specid",
+            "system_band_simple",
+            "adopted_simpleband",
+            "magnitude",
+            "magnitude_unc",
+            "origin",
+            "calculation_method",
+        ),
+        partition_columns=("moca_oid", "moca_psid"),
+        uncertainty_column="magnitude_unc",
+        candidate_filter_sql=candidate_filter_sql,
+    )
+    return f"""
+        SELECT
+            dp.id,
+            dp.moca_oid,
+            dp.moca_psid,
+            dp.moca_specid,
+            dp.system_band_simple,
+            dp.adopted_simpleband,
+            dp.magnitude,
+            dp.magnitude_unc,
+            ps.name,
+            COALESCE(
+                phot_pub.name,
+                CAST(phot_pub.moca_pid AS CHAR),
+                dp.origin,
+                dp.calculation_method,
+                'No reference'
+            ) AS photometry_ref
+        FROM {source_sql}
+        JOIN moca_photometry_systems ps
+            ON ps.moca_psid = dp.moca_psid
+        LEFT JOIN moca_publications phot_pub
+            ON phot_pub.moca_pid = dp.moca_pid
+        WHERE {source_filter_sql}
+        ORDER BY dp.moca_oid, dp.moca_psid, dp.id
+    """
+
+
+def _spectral_index_measurement_query_sql(
+    args: Mapping[str, Any],
+    *,
+    oid_filter: str,
+    siid_filter: str,
+    vetting_filter_sql: str = "1 = 1",
+) -> str:
+    candidate_filter_sql = f"""dsi.ignored = 0
+                    AND dsi.index_value IS NOT NULL
+                    AND {siid_filter}
+                    AND {vetting_filter_sql}
+                    AND {oid_filter}"""
+    source_sql, source_filter_sql = _measurement_source_sql(
+        args,
+        alias="dsi",
+        source_from_sql="data_spectral_indices dsi",
+        columns=(
+            "id",
+            "moca_oid",
+            "moca_siid",
+            "moca_pid",
+            "moca_specid",
+            "index_value",
+            "index_value_unc",
+            "origin",
+            "calculation_method",
+        ),
+        partition_columns=("moca_oid", "moca_siid"),
+        uncertainty_column="index_value_unc",
+        candidate_filter_sql=candidate_filter_sql,
+    )
+    return f"""
+        SELECT
+            dsi.id,
+            dsi.moca_oid,
+            dsi.moca_siid,
+            dsi.moca_specid,
+            dsi.index_value,
+            dsi.index_value_unc,
+            msi.description,
+            COALESCE(
+                si_pub.name,
+                CAST(si_pub.moca_pid AS CHAR),
+                dsi.origin,
+                dsi.calculation_method,
+                'No reference'
+            ) AS spectral_index_ref
+        FROM {source_sql}
+        JOIN moca_spectral_indices msi
+            ON msi.moca_siid = dsi.moca_siid
+        LEFT JOIN moca_publications si_pub
+            ON si_pub.moca_pid = dsi.moca_pid
+        WHERE {source_filter_sql}
+        ORDER BY dsi.moca_oid, dsi.moca_siid, dsi.id
+    """
+
+
+def _equivalent_width_measurement_query_sql(
+    args: Mapping[str, Any],
+    *,
+    oid_filter: str,
+) -> str:
+    candidate_filter_sql = f"""dew.ignored = 0
+                    AND dew.ew_angstrom IS NOT NULL
+                    AND {oid_filter}"""
+    source_sql, source_filter_sql = _measurement_source_sql(
+        args,
+        alias="dew",
+        source_from_sql="data_equivalent_widths dew",
+        columns=(
+            "id",
+            "moca_oid",
+            "moca_spid",
+            "moca_pid",
+            "moca_specid",
+            "ew_angstrom",
+            "ew_angstrom_unc",
+            "origin",
+            "calculation_method",
+        ),
+        partition_columns=("moca_oid", "moca_spid"),
+        uncertainty_column="ew_angstrom_unc",
+        candidate_filter_sql=candidate_filter_sql,
+    )
+    return f"""
+        SELECT
+            dew.id,
+            dew.moca_oid,
+            dew.moca_spid,
+            dew.moca_specid,
+            dew.ew_angstrom,
+            dew.ew_angstrom_unc,
+            mcs.description,
+            COALESCE(
+                ew_pub.name,
+                CAST(ew_pub.moca_pid AS CHAR),
+                dew.origin,
+                dew.calculation_method,
+                'No reference'
+            ) AS equivalent_width_ref
+        FROM {source_sql}
+        JOIN moca_chemical_species mcs
+            ON mcs.moca_spid = dew.moca_spid
+        LEFT JOIN moca_publications ew_pub
+            ON ew_pub.moca_pid = dew.moca_pid
+        WHERE {source_filter_sql}
+        ORDER BY dew.moca_oid, dew.moca_spid, dew.id
+    """
+
+
+def _teff_measurement_query_sql(
+    args: Mapping[str, Any],
+    *,
+    oid_filter: str,
+) -> str:
+    sed_pid_sql = ", ".join(repr(moca_pid) for moca_pid in BDPHOT_SED_TEFF_MOCA_PIDS)
+    source_filter = (
+        f"dt.moca_pid IN ({sed_pid_sql})"
+        if _only_sed_teff(args)
+        else "dt.adopted = 1"
+    )
+    return f"""
+        SELECT
+            dt.id,
+            dt.moca_oid,
+            dt.moca_pid,
+            dt.teff_k,
+            dt.teff_k_unc,
+            dt.quality,
+            COALESCE(
+                teff_pub.name,
+                CAST(teff_pub.moca_pid AS CHAR),
+                dt.origin,
+                dt.calculation_method,
+                'No reference'
+            ) AS teff_ref
+        FROM (
+            SELECT
+                ranked_teff.*
+            FROM (
+                SELECT
+                    dt.id,
+                    dt.moca_oid,
+                    dt.moca_pid,
+                    dt.teff_k,
+                    dt.teff_k_unc,
+                    dt.quality,
+                    dt.origin,
+                    dt.calculation_method,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY dt.moca_oid
+                        ORDER BY
+                            CASE UPPER(TRIM(COALESCE(dt.quality, '')))
+                                WHEN 'A' THEN 0
+                                WHEN 'B' THEN 1
+                                WHEN 'C' THEN 2
+                                WHEN 'D' THEN 3
+                                WHEN 'E' THEN 4
+                                ELSE 5
+                            END,
+                            COALESCE(dt.teff_k_unc, 1.0e308),
+                            dt.id
+                    ) AS teff_rank
+                FROM data_teff dt
+                WHERE COALESCE(dt.ignored, 0) = 0
+                    AND dt.teff_k IS NOT NULL
+                    AND {source_filter}
+                    AND {oid_filter}
+            ) ranked_teff
+            WHERE ranked_teff.teff_rank = 1
+        ) dt
+        LEFT JOIN moca_publications teff_pub
+            ON teff_pub.moca_pid = dt.moca_pid
+        ORDER BY dt.moca_oid, dt.id
+    """
+
+
 def _cache_key(args: dict[str, Any]) -> str:
     cfg = _db_config(args)
     spt_min, spt_max, _label = _spt_window(args)
@@ -1317,6 +1700,13 @@ def _cache_key(args: dict[str, Any]) -> str:
         str(_use_bickle_spectral_types(args)),
         str(_include_photometric_dist(args)),
         str(_include_azul_byw_sample(args)),
+        str(_only_best_measurement(args)),
+        str(_only_sed_teff(args)),
+        (
+            ",".join(_selected_spherex_vetting_classifications(args))
+            if _only_best_measurement(args)
+            else ""
+        ),
         str(limit),
         (
             "all-photometry"
@@ -1888,6 +2278,14 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             photometry_psids = _requested_photometry_psids(args)
             photometry_simplebands = _requested_photometry_simplebands(args)
         dp_phot_filter, dp_phot_params = _photometry_filter_sql("dp", photometry_psids, photometry_simplebands)
+        spherex_photometry_psids, _spherex_spectral_index_siids = _spherex_axis_observables(args)
+        dp_vetting_filter, dp_vetting_params = _spherex_measurement_vetting_filter_sql(
+            args,
+            alias="dp",
+            quantity_column="moca_psid",
+            observable_values=spherex_photometry_psids,
+            param_prefix="photometry_vetting",
+        )
 
         distances = read_records("distances", """
             SELECT
@@ -1922,65 +2320,34 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             ORDER BY dd.moca_oid, dd.photometric_estimate
         """.format(dd_oid_filter=dd_oid_filter, dd_phot_filter=dd_phot_filter))
 
-        photometry_select_sql = """
-            SELECT
-                dp.moca_oid,
-                dp.moca_psid,
-                MIN(dp.system_band_simple) AS system_band_simple,
-                MAX(dp.adopted_simpleband) AS adopted_simpleband,
-                MIN(dp.magnitude) AS magnitude,
-                MIN(dp.magnitude_unc) AS magnitude_unc,
-                MIN(ps.name) AS name,
-                MIN(COALESCE(
-                    phot_pub.name,
-                    CAST(phot_pub.moca_pid AS CHAR),
-                    dp.origin,
-                    dp.calculation_method,
-                    'No reference'
-                )) AS photometry_ref
-        """
         if _should_use_selected_oid_join(selected_oids):
-            photometry_params = {**range_params, **dp_phot_params}
-            photometry = read_records("photometry", """
-                {photometry_select_sql}
-                FROM ({selected_oids_subquery}) selected_oids
+            photometry_params = {**range_params, **dp_phot_params, **dp_vetting_params}
+            source_from_sql = f"""({selected_oids_subquery}) selected_oids
                 STRAIGHT_JOIN data_photometry dp
-                    ON dp.moca_oid = selected_oids.moca_oid
-                STRAIGHT_JOIN moca_photometry_systems ps
-                    ON ps.moca_psid = dp.moca_psid
-                LEFT JOIN moca_publications phot_pub
-                    ON phot_pub.moca_pid = dp.moca_pid
-                WHERE dp.adopted = 1
+                    ON dp.moca_oid = selected_oids.moca_oid"""
+            candidate_filter_sql = f"""dp.adopted = 1
                     AND dp.magnitude IS NOT NULL
                     AND dp.magnitude_unc IS NOT NULL
                     AND {dp_phot_filter}
-                GROUP BY dp.moca_oid, dp.moca_psid
-                ORDER BY dp.moca_oid, dp.moca_psid
-            """.format(
-                photometry_select_sql=photometry_select_sql,
-                selected_oids_subquery=selected_oids_subquery,
-                dp_phot_filter=dp_phot_filter,
-            ), photometry_params)
+                    AND {dp_vetting_filter}"""
         else:
-            photometry = read_records("photometry", """
-                {photometry_select_sql}
-                FROM data_photometry dp
-                JOIN moca_photometry_systems ps
-                    ON ps.moca_psid = dp.moca_psid
-                LEFT JOIN moca_publications phot_pub
-                    ON phot_pub.moca_pid = dp.moca_pid
-                WHERE dp.adopted = 1
+            photometry_params = {**dp_phot_params, **dp_vetting_params}
+            source_from_sql = "data_photometry dp"
+            candidate_filter_sql = f"""dp.adopted = 1
                     AND dp.magnitude IS NOT NULL
                     AND dp.magnitude_unc IS NOT NULL
                     AND {dp_phot_filter}
-                    AND {dp_oid_filter}
-                GROUP BY dp.moca_oid, dp.moca_psid
-                ORDER BY dp.moca_oid, dp.moca_psid
-            """.format(
-                photometry_select_sql=photometry_select_sql,
-                dp_oid_filter=dp_oid_filter,
-                dp_phot_filter=dp_phot_filter,
-            ), dp_phot_params)
+                    AND {dp_vetting_filter}
+                    AND {dp_oid_filter}"""
+        photometry = read_records(
+            "photometry",
+            _photometry_measurement_query_sql(
+                args,
+                source_from_sql=source_from_sql,
+                candidate_filter_sql=candidate_filter_sql,
+            ),
+            photometry_params,
+        )
 
         spectra = read_records("spectra", """
             SELECT
@@ -2049,6 +2416,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "designations": [],
             "spectralIndices": [],
             "equivalentWidths": [],
+            "teffs": [],
             "ages": [],
             "medianColors": median_colors,
             "sequences": sequences,
@@ -2062,6 +2430,8 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "include_photometric_dist": include_photometric_dist,
             "private_db": _is_private_db(args),
             "spherex_vetting_available": _spherex_vetting_available(args),
+            "only_best_measurement": _only_best_measurement(args),
+            "only_sed_teff": _only_sed_teff(args),
             "max_objects": object_limit,
             "object_limit_applied": object_limit is not None and len(objects) >= object_limit,
             "object_count": len(objects),
@@ -2080,7 +2450,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
                 "requested": include_azul_byw_sample,
                 "loaded_object_count": len(azul_byw_loaded_oids),
             },
-            "lazy_features": ["designations", "spectralIndices", "equivalentWidths", "ages"],
+            "lazy_features": ["designations", "spectralIndices", "equivalentWidths", "teffs", "ages"],
             "timings": timings,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -2090,7 +2460,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
-    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "designations", "spectralIndices", "equivalentWidths", "ages", "spherexVetting"}:
+    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "designations", "spectralIndices", "equivalentWidths", "teffs", "ages", "spherexVetting"}:
         raise ValueError(f"Unknown feature: {feature}")
 
     if feature == "spherexVetting" and not _spherex_vetting_available(args):
@@ -2155,6 +2525,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 "designations": _oid_filter_sql("mad", selected_oids),
                 "spectralIndices": _oid_filter_sql("dsi", selected_oids),
                 "equivalentWidths": _oid_filter_sql("dew", selected_oids),
+                "teffs": _oid_filter_sql("dt", selected_oids),
                 "ages": _oid_filter_sql("cbs", selected_oids),
                 "spherexVetting": _oid_filter_sql("source_rows", selected_oids),
             }[feature]
@@ -2273,95 +2644,66 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 photometry_psids = _requested_photometry_psids(args)
                 photometry_simplebands = _requested_photometry_simplebands(args)
                 psid_filter, psid_params = _photometry_filter_sql("dp", photometry_psids, photometry_simplebands)
+            spherex_photometry_psids, _spherex_spectral_index_siids = _spherex_axis_observables(args)
+            dp_vetting_filter, dp_vetting_params = _spherex_measurement_vetting_filter_sql(
+                args,
+                alias="dp",
+                quantity_column="moca_psid",
+                observable_values=spherex_photometry_psids,
+                param_prefix="photometry_vetting",
+            )
             feature_meta["photometry_psids"] = photometry_psids
             feature_meta["photometry_simplebands"] = photometry_simplebands
-            rows = _records(_read_sql(conn, """
-                SELECT
-                    dp.moca_oid,
-                    dp.moca_psid,
-                    MIN(dp.system_band_simple) AS system_band_simple,
-                    MAX(dp.adopted_simpleband) AS adopted_simpleband,
-                    MIN(dp.magnitude) AS magnitude,
-                    MIN(dp.magnitude_unc) AS magnitude_unc,
-                    MIN(ps.name) AS name,
-                    MIN(COALESCE(
-                        phot_pub.name,
-                        CAST(phot_pub.moca_pid AS CHAR),
-                        dp.origin,
-                        dp.calculation_method,
-                        'No reference'
-                    )) AS photometry_ref
-                FROM data_photometry dp
-                JOIN moca_photometry_systems ps
-                    ON ps.moca_psid = dp.moca_psid
-                LEFT JOIN moca_publications phot_pub
-                    ON phot_pub.moca_pid = dp.moca_pid
-                WHERE dp.adopted = 1
-                    AND dp.magnitude IS NOT NULL
-                    AND dp.magnitude_unc IS NOT NULL
-                    AND {psid_filter}
-                    AND {oid_filter}
-                GROUP BY dp.moca_oid, dp.moca_psid
-                ORDER BY dp.moca_oid, dp.moca_psid
-            """.format(psid_filter=psid_filter, oid_filter=oid_filter), psid_params))
+            rows = _records(_read_sql(
+                conn,
+                _photometry_measurement_query_sql(
+                    args,
+                    source_from_sql="data_photometry dp",
+                    candidate_filter_sql=f"""dp.adopted = 1
+                        AND dp.magnitude IS NOT NULL
+                        AND dp.magnitude_unc IS NOT NULL
+                        AND {psid_filter}
+                        AND {dp_vetting_filter}
+                        AND {oid_filter}""",
+                ),
+                {**psid_params, **dp_vetting_params},
+            ))
         elif feature == "spectralIndices":
             spectral_index_ids = _requested_spectral_index_ids(args)
             siid_filter, siid_params = _safe_id_filter_sql("dsi", "moca_siid", spectral_index_ids, "siid")
+            _spherex_photometry_psids, spherex_spectral_index_siids = _spherex_axis_observables(args)
+            dsi_vetting_filter, dsi_vetting_params = _spherex_measurement_vetting_filter_sql(
+                args,
+                alias="dsi",
+                quantity_column="moca_siid",
+                observable_values=spherex_spectral_index_siids,
+                param_prefix="spectral_index_vetting",
+            )
             feature_meta["spectral_index_siids"] = spectral_index_ids
-            rows = _records(_read_sql(conn, """
-                SELECT
-                    dsi.moca_oid,
-                    dsi.moca_siid,
-                    MIN(dsi.moca_specid) AS moca_specid,
-                    MIN(dsi.index_value) AS index_value,
-                    MIN(dsi.index_value_unc) AS index_value_unc,
-                    MIN(msi.description) AS description,
-                    MIN(COALESCE(
-                        si_pub.name,
-                        CAST(si_pub.moca_pid AS CHAR),
-                        dsi.origin,
-                        dsi.calculation_method,
-                        'No reference'
-                    )) AS spectral_index_ref
-                FROM data_spectral_indices dsi
-                JOIN moca_spectral_indices msi
-                    ON msi.moca_siid = dsi.moca_siid
-                LEFT JOIN moca_publications si_pub
-                    ON si_pub.moca_pid = dsi.moca_pid
-                WHERE dsi.ignored = 0
-                    AND dsi.index_value IS NOT NULL
-                    AND {siid_filter}
-                    AND {oid_filter}
-                GROUP BY dsi.moca_oid, dsi.moca_siid
-                ORDER BY dsi.moca_oid, dsi.moca_siid
-            """.format(siid_filter=siid_filter, oid_filter=oid_filter), siid_params))
+            rows = _records(_read_sql(
+                conn,
+                _spectral_index_measurement_query_sql(
+                    args,
+                    oid_filter=oid_filter,
+                    siid_filter=siid_filter,
+                    vetting_filter_sql=dsi_vetting_filter,
+                ),
+                {**siid_params, **dsi_vetting_params},
+            ))
         elif feature == "equivalentWidths":
-            rows = _records(_read_sql(conn, """
-                SELECT
-                    dew.moca_oid,
-                    dew.moca_spid,
-                    MIN(dew.moca_specid) AS moca_specid,
-                    MIN(dew.ew_angstrom) AS ew_angstrom,
-                    MIN(dew.ew_angstrom_unc) AS ew_angstrom_unc,
-                    MIN(mcs.description) AS description,
-                    MIN(COALESCE(
-                        ew_pub.name,
-                        CAST(ew_pub.moca_pid AS CHAR),
-                        dew.origin,
-                        dew.calculation_method,
-                        'No reference'
-                    )) AS equivalent_width_ref
-                FROM data_equivalent_widths dew
-                JOIN moca_chemical_species mcs
-                    ON mcs.moca_spid = dew.moca_spid
-                LEFT JOIN moca_publications ew_pub
-                    ON ew_pub.moca_pid = dew.moca_pid
-                WHERE dew.ignored = 0
-                    AND dew.ew_angstrom IS NOT NULL
-                    AND {oid_filter}
-                GROUP BY dew.moca_oid, dew.moca_spid
-                ORDER BY dew.moca_oid, dew.moca_spid
-            """.format(oid_filter=oid_filter)))
+            rows = _records(_read_sql(
+                conn,
+                _equivalent_width_measurement_query_sql(args, oid_filter=oid_filter),
+            ))
+        elif feature == "teffs":
+            rows = _records(_read_sql(
+                conn,
+                _teff_measurement_query_sql(args, oid_filter=oid_filter),
+            ))
+            feature_meta["only_sed_teff"] = _only_sed_teff(args)
+            feature_meta["teff_moca_pids"] = (
+                list(BDPHOT_SED_TEFF_MOCA_PIDS) if _only_sed_teff(args) else []
+            )
         else:
             rows = _records(_read_sql(conn, """
                 SELECT
@@ -2392,6 +2734,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "object_count": len(selected_oids),
             "row_count": len(rows),
+            "only_best_measurement": _only_best_measurement(args),
             **feature_meta,
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -2423,7 +2766,7 @@ def _load_preload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     payload = copy.deepcopy(_load_bootstrap_from_db(bulk_args))
     catalog = payload["catalog"]
     feature_timings: dict[str, float] = {}
-    for feature in ("sequences", "designations", "spectralIndices", "equivalentWidths", "ages"):
+    for feature in ("sequences", "designations", "spectralIndices", "equivalentWidths", "teffs", "ages"):
         started = time.time()
         feature_payload = _load_feature_from_db(bulk_args, feature)
         catalog[feature] = feature_payload["rows"]
@@ -2459,6 +2802,8 @@ def _load_preload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "include_photometric_dist": True,
         "private_db": _is_private_db(args),
         "spherex_vetting_available": _spherex_vetting_available(args),
+        "only_best_measurement": _only_best_measurement(args),
+        "only_sed_teff": _only_sed_teff(args),
         "bulk_preloaded": True,
         "all_sequences_loaded": True,
         "lazy_features": [],
@@ -2500,6 +2845,7 @@ def _mock_payload() -> dict[str, Any]:
     designations = []
     spectral_indices = []
     equivalent_widths = []
+    teffs = []
     ages = []
 
     for i in range(240):
@@ -2577,10 +2923,11 @@ def _mock_payload() -> dict[str, Any]:
             "wise_w2": -(1.35 + 0.06 * spt),
             "spherex_smag": -(1.5 + 0.065 * spt),
         }
-        for opt in phot_opts:
+        for photometry_index, opt in enumerate(phot_opts):
             psid = opt["moca_psid"]
             mag = abs_j + dmod + colors[psid] + rng.gauss(0, 0.06)
             photometry.append({
+                "id": 1_000_000 + i * len(phot_opts) + photometry_index,
                 "moca_oid": oid,
                 "moca_psid": psid,
                 "system_band_simple": opt["system_band_simple"],
@@ -2602,6 +2949,7 @@ def _mock_payload() -> dict[str, Any]:
             })
 
         spectral_indices.append({
+            "id": 2_000_000 + i * 10,
             "moca_oid": oid,
             "moca_siid": "h2o_j",
             "moca_specid": 200000 + oid,
@@ -2611,6 +2959,7 @@ def _mock_payload() -> dict[str, Any]:
             "spectral_index_ref": "mock",
         })
         spectral_indices.append({
+            "id": 2_000_001 + i * 10,
             "moca_oid": oid,
             "moca_siid": "spx_ch4",
             "moca_specid": 240000 + oid,
@@ -2621,7 +2970,27 @@ def _mock_payload() -> dict[str, Any]:
             "description": "SPHEREx-based CH4 spectral index",
             "spectral_index_ref": "mock",
         })
+        if i == 0:
+            lower_uncertainty_spiff_specid = 260000 + oid
+            spectra.append({
+                "moca_oid": oid,
+                "moca_specid": lower_uncertainty_spiff_specid,
+                "moca_specpackid": 62,
+            })
+            spectral_indices.append({
+                "id": 2_000_005,
+                "moca_oid": oid,
+                "moca_siid": "spx_ch4",
+                "moca_specid": lower_uncertainty_spiff_specid,
+                "moca_specpackid": 62,
+                "spherex_classification": "bad",
+                "index_value": round(1.12 - 0.02 * spt, 4),
+                "index_value_unc": 0.005,
+                "description": "SPHEREx-based CH4 spectral index",
+                "spectral_index_ref": "mock lower-uncertainty SPIFFStacker duplicate",
+            })
         spectral_indices.append({
+            "id": 2_000_002 + i * 10,
             "moca_oid": oid,
             "moca_siid": "ch4_h",
             "moca_specid": 210000 + oid,
@@ -2630,7 +2999,32 @@ def _mock_payload() -> dict[str, Any]:
             "description": "CH4-H spectral index",
             "spectral_index_ref": "mock",
         })
+        if i % 12 == 0:
+            duplicate_specid = 250000 + oid
+            spectra.append({"moca_oid": oid, "moca_specid": duplicate_specid})
+            spectral_indices.append({
+                "id": 2_000_003 + i * 10,
+                "moca_oid": oid,
+                "moca_siid": "h2o_j",
+                "moca_specid": duplicate_specid,
+                "index_value": round(0.93 - 0.015 * spt + rng.gauss(0, 0.02), 4),
+                "index_value_unc": 0.01,
+                "description": "H2O-J spectral index",
+                "spectral_index_ref": "mock duplicate",
+            })
+        if i % 24 == 0:
+            spectral_indices.append({
+                "id": 2_000_004 + i * 10,
+                "moca_oid": oid,
+                "moca_siid": "h2o_j",
+                "moca_specid": None,
+                "index_value": round(0.91 - 0.015 * spt, 4),
+                "index_value_unc": None,
+                "description": "H2O-J spectral index",
+                "spectral_index_ref": "mock null-uncertainty duplicate",
+            })
         equivalent_widths.append({
+            "id": 3_000_000 + i * 10,
             "moca_oid": oid,
             "moca_spid": "li",
             "moca_specid": 220000 + oid,
@@ -2640,6 +3034,7 @@ def _mock_payload() -> dict[str, Any]:
             "equivalent_width_ref": "mock",
         })
         equivalent_widths.append({
+            "id": 3_000_001 + i * 10,
             "moca_oid": oid,
             "moca_spid": "na_i_8190",
             "moca_specid": 230000 + oid,
@@ -2648,6 +3043,65 @@ def _mock_payload() -> dict[str, Any]:
             "description": "Na I 8190",
             "equivalent_width_ref": "mock",
         })
+        if i % 15 == 0:
+            equivalent_widths.append({
+                "id": 3_000_002 + i * 10,
+                "moca_oid": oid,
+                "moca_spid": "li",
+                "moca_specid": 220000 + oid,
+                "ew_angstrom": round(max(0, rng.gauss(0.25 if spt > 16 else 0.05, 0.08)), 4),
+                "ew_angstrom_unc": 0.015,
+                "description": "Lithium 6708",
+                "equivalent_width_ref": "mock duplicate",
+            })
+        adopted_teff = round(2850 - 73 * (spt - 6) + rng.gauss(0, 35), 1)
+        teffs.append({
+            "id": 4_000_000 + i * 10,
+            "moca_oid": oid,
+            "moca_pid": "MockAdopted",
+            "teff_k": adopted_teff,
+            "teff_k_unc": round(45 + rng.random() * 55, 1),
+            "quality": "C",
+            "adopted": 1,
+            "ignored": 0,
+            "teff_ref": "mock adopted Teff",
+        })
+        if i % 3 != 2:
+            teffs.append({
+                "id": 4_000_001 + i * 10,
+                "moca_oid": oid,
+                "moca_pid": "Sang23",
+                "teff_k": round(adopted_teff + rng.gauss(0, 30), 1),
+                "teff_k_unc": 35.0,
+                "quality": "B",
+                "adopted": 0,
+                "ignored": 0,
+                "teff_ref": "mock Sang23 SED",
+            })
+        if i % 4 != 3:
+            teffs.append({
+                "id": 4_000_002 + i * 10,
+                "moca_oid": oid,
+                "moca_pid": "Fili15",
+                "teff_k": round(adopted_teff + rng.gauss(0, 30), 1),
+                "teff_k_unc": None if i % 11 == 0 else 85.0,
+                "quality": "A",
+                "adopted": 0,
+                "ignored": 0,
+                "teff_ref": "mock Fili15 SED",
+            })
+        if i % 12 == 0:
+            teffs.append({
+                "id": 4_000_003 + i * 10,
+                "moca_oid": oid,
+                "moca_pid": "Fili15",
+                "teff_k": round(adopted_teff + rng.gauss(0, 30), 1),
+                "teff_k_unc": 25.0,
+                "quality": "A",
+                "adopted": 0,
+                "ignored": 0,
+                "teff_ref": "mock Fili15 SED duplicate",
+            })
         if i % 7 == 0:
             ages.append({"moca_oid": oid, "age_myr": round(10 ** rng.uniform(1.0, 3.2), 2)})
 
@@ -2679,6 +3133,7 @@ def _mock_payload() -> dict[str, Any]:
             "designations": designations,
             "spectralIndices": spectral_indices,
             "equivalentWidths": equivalent_widths,
+            "teffs": teffs,
             "ages": ages,
             "medianColors": median_colors,
             "sequences": [],
@@ -2698,6 +3153,21 @@ def _mock_payload() -> dict[str, Any]:
     }
 
 
+def _mock_spherex_measurement_classification(source: Mapping[str, Any]) -> str:
+    try:
+        specpackid = int(source.get("moca_specpackid"))
+    except (TypeError, ValueError):
+        return BDPHOT_SPHEREX_MISSING_CLASSIFICATION
+    if specpackid == 54:
+        return BDPHOT_SPHEREX_GOOD_CLASSIFICATION
+    if specpackid in BDPHOT_SPHEREX_VETTING_TABLES:
+        return (
+            str(source.get("spherex_classification") or "").strip()
+            or BDPHOT_SPHEREX_MISSING_CLASSIFICATION
+        )
+    return BDPHOT_SPHEREX_MISSING_CLASSIFICATION
+
+
 def _mock_spherex_vetting_rows(payload: Mapping[str, Any], args: Mapping[str, Any]) -> list[dict[str, Any]]:
     photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
     source_rows = [
@@ -2711,29 +3181,156 @@ def _mock_spherex_vetting_rows(payload: Mapping[str, Any], args: Mapping[str, An
         if row.get("moca_siid") in set(spectral_index_siids)
     )
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[int, str]] = set()
+    seen: set[tuple[int, int | None, str]] = set()
     for source in source_rows:
         try:
             oid = int(source["moca_oid"])
-            specpackid = int(source.get("moca_specpackid"))
         except (KeyError, TypeError, ValueError):
             continue
-        if specpackid == 54:
-            classification = BDPHOT_SPHEREX_GOOD_CLASSIFICATION
-        elif specpackid in BDPHOT_SPHEREX_VETTING_TABLES:
-            classification = str(source.get("spherex_classification") or "").strip()
-            classification = classification or BDPHOT_SPHEREX_MISSING_CLASSIFICATION
-        else:
-            classification = BDPHOT_SPHEREX_MISSING_CLASSIFICATION
-        key = (oid, classification)
+        try:
+            specid = int(source.get("moca_specid"))
+        except (TypeError, ValueError):
+            specid = None
+        classification = _mock_spherex_measurement_classification(source)
+        key = (oid, specid, classification)
         if key in seen:
             continue
         seen.add(key)
-        rows.append({"moca_oid": oid, "classification": classification})
-    return sorted(rows, key=lambda row: (int(row["moca_oid"]), str(row["classification"])))
+        rows.append({"moca_oid": oid, "moca_specid": specid, "classification": classification})
+    return sorted(rows, key=lambda row: (
+        int(row["moca_oid"]),
+        int(row["moca_specid"] or 0),
+        str(row["classification"]),
+    ))
+
+
+def _apply_mock_spherex_measurement_vetting(
+    payload: dict[str, Any],
+    args: Mapping[str, Any],
+) -> dict[str, Any]:
+    classifications = set(_selected_spherex_vetting_classifications(args))
+    photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
+    if (
+        not _only_best_measurement(args)
+        or not classifications
+        or not _spherex_vetting_available(dict(args))
+    ):
+        return payload
+
+    catalog = payload.get("catalog", {})
+    scoped_photometry = set(photometry_psids)
+    scoped_indices = set(spectral_index_siids)
+    catalog["photometry"] = [
+        row
+        for row in catalog.get("photometry", [])
+        if row.get("moca_psid") not in scoped_photometry
+        or _mock_spherex_measurement_classification(row) in classifications
+    ]
+    catalog["spectralIndices"] = [
+        row
+        for row in catalog.get("spectralIndices", [])
+        if row.get("moca_siid") not in scoped_indices
+        or _mock_spherex_measurement_classification(row) in classifications
+    ]
+    return payload
+
+
+def _mock_best_measurement_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    key_fields: Sequence[str],
+    uncertainty_field: str,
+) -> list[dict[str, Any]]:
+    best: dict[tuple[Any, ...], dict[str, Any]] = {}
+    best_rank: dict[tuple[Any, ...], tuple[float, int]] = {}
+    for fallback_id, source_row in enumerate(rows):
+        row = dict(source_row)
+        key = tuple(row.get(field) for field in key_fields)
+        uncertainty = _safe_float(row.get(uncertainty_field))
+        try:
+            row_id = int(row.get("id"))
+        except (TypeError, ValueError):
+            row_id = fallback_id
+        rank = (uncertainty if uncertainty is not None else 1.0e308, row_id)
+        if key not in best_rank or rank < best_rank[key]:
+            best[key] = row
+            best_rank[key] = rank
+    return sorted(
+        best.values(),
+        key=lambda row: tuple(str(row.get(field) or "") for field in key_fields) + (int(row.get("id") or 0),),
+    )
+
+
+def _mock_teff_measurement_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    only_sed: bool,
+) -> list[dict[str, Any]]:
+    quality_rank = {quality: rank for rank, quality in enumerate(("A", "B", "C", "D", "E"))}
+    best: dict[int, dict[str, Any]] = {}
+    best_rank: dict[int, tuple[int, float, int]] = {}
+    for fallback_id, source_row in enumerate(rows):
+        row = dict(source_row)
+        try:
+            oid = int(row["moca_oid"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if int(row.get("ignored") or 0) != 0 or _safe_float(row.get("teff_k")) is None:
+            continue
+        if only_sed:
+            if row.get("moca_pid") not in BDPHOT_SED_TEFF_MOCA_PIDS:
+                continue
+        elif int(row.get("adopted") or 0) != 1:
+            continue
+        quality = str(row.get("quality") or "").strip().upper()
+        uncertainty = _safe_float(row.get("teff_k_unc"))
+        try:
+            row_id = int(row.get("id"))
+        except (TypeError, ValueError):
+            row_id = fallback_id
+        rank = (
+            quality_rank.get(quality, len(quality_rank)),
+            uncertainty if uncertainty is not None else 1.0e308,
+            row_id,
+        )
+        if oid not in best_rank or rank < best_rank[oid]:
+            best[oid] = row
+            best_rank[oid] = rank
+    return sorted(best.values(), key=lambda row: (int(row["moca_oid"]), int(row.get("id") or 0)))
+
+
+def _apply_mock_best_measurements(payload: dict[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
+    _apply_mock_spherex_measurement_vetting(payload, args)
+    payload.setdefault("meta", {})["only_best_measurement"] = _only_best_measurement(args)
+    payload["meta"]["only_sed_teff"] = _only_sed_teff(args)
+    catalog = payload.get("catalog", {})
+    catalog["teffs"] = _mock_teff_measurement_rows(
+        catalog.get("teffs", []),
+        only_sed=_only_sed_teff(args),
+    )
+    if not _only_best_measurement(args):
+        return payload
+    catalog["photometry"] = _mock_best_measurement_rows(
+        catalog.get("photometry", []),
+        key_fields=("moca_oid", "moca_psid"),
+        uncertainty_field="magnitude_unc",
+    )
+    catalog["spectralIndices"] = _mock_best_measurement_rows(
+        catalog.get("spectralIndices", []),
+        key_fields=("moca_oid", "moca_siid"),
+        uncertainty_field="index_value_unc",
+    )
+    catalog["equivalentWidths"] = _mock_best_measurement_rows(
+        catalog.get("equivalentWidths", []),
+        key_fields=("moca_oid", "moca_spid"),
+        uncertainty_field="ew_angstrom_unc",
+    )
+    payload["meta"]["photometry_count"] = len(catalog["photometry"])
+    return payload
 
 
 def _apply_mock_bdphot_association_highlights(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    _apply_mock_best_measurements(payload, args)
     aids = set(_bdphot_highlight_aids(args))
     ya_prob_min = _bdphot_highlight_ya_prob_min(args)
     loaded_oids: set[int] = set()
@@ -30928,7 +31525,7 @@ def preload():
                 )
             }
             catalog["objects"] = [row for row in catalog["objects"] if int(row["moca_oid"]) in keep_oids]
-            for key in ("distances", "photometry", "spectra", "designations", "spectralIndices", "equivalentWidths", "ages"):
+            for key in ("distances", "photometry", "spectra", "designations", "spectralIndices", "equivalentWidths", "teffs", "ages"):
                 catalog[key] = [row for row in catalog[key] if int(row["moca_oid"]) in keep_oids]
         payload["meta"] = {
             **payload["meta"],
@@ -30942,6 +31539,7 @@ def preload():
             "preload_omitted_risky_photometric_spt": private_db,
             "include_photometric_dist": True,
             "private_db": private_db,
+            "only_sed_teff": _only_sed_teff(args),
             "bulk_preloaded": True,
             "all_sequences_loaded": True,
             "lazy_features": [],
@@ -33633,6 +34231,8 @@ def feature(feature: str):
         "spectralIndices": "spectralIndices",
         "equivalent-widths": "equivalentWidths",
         "equivalentWidths": "equivalentWidths",
+        "teffs": "teffs",
+        "teff": "teffs",
         "ages": "ages",
         "spherex-vetting": "spherexVetting",
         "spherexVetting": "spherexVetting",
@@ -33643,32 +34243,35 @@ def feature(feature: str):
 
     args = dict(request.args)
     if args.get("mock") in {"1", "true", "yes"}:
-        payload = _mock_payload()
+        raw_payload = _mock_payload()
         if feature_name == "spherexVetting":
+            payload = raw_payload
             available = _spherex_vetting_available(args)
             rows = _mock_spherex_vetting_rows(payload, args) if available else []
-        elif feature_name == "photometryOptions":
-            counts: dict[str, int] = {}
-            simple_counts: dict[str, int] = {}
-            option_by_psid = {row["moca_psid"]: row for row in payload["options"]["photometry"]}
-            for row in payload["catalog"]["photometry"]:
-                psid = row["moca_psid"]
-                counts[psid] = counts.get(psid, 0) + 1
-                if int(row.get("adopted_simpleband") or 0) == 1 and row.get("system_band_simple"):
-                    band = str(row["system_band_simple"])
-                    simple_counts[band] = simple_counts.get(band, 0) + 1
-            rows = [
-                {
-                    "moca_psid": psid,
-                    "name": option_by_psid.get(psid, {}).get("name", psid),
-                    "system_band_simple": option_by_psid.get(psid, {}).get("system_band_simple"),
-                    "n_data": count,
-                }
-                for psid, count in counts.items()
-                if count > 0
-            ]
         else:
-            rows = payload["catalog"][feature_name]
+            payload = _apply_mock_best_measurements(raw_payload, args)
+            if feature_name == "photometryOptions":
+                counts: dict[str, int] = {}
+                simple_counts: dict[str, int] = {}
+                option_by_psid = {row["moca_psid"]: row for row in payload["options"]["photometry"]}
+                for row in payload["catalog"]["photometry"]:
+                    psid = row["moca_psid"]
+                    counts[psid] = counts.get(psid, 0) + 1
+                    if int(row.get("adopted_simpleband") or 0) == 1 and row.get("system_band_simple"):
+                        band = str(row["system_band_simple"])
+                        simple_counts[band] = simple_counts.get(band, 0) + 1
+                rows = [
+                    {
+                        "moca_psid": psid,
+                        "name": option_by_psid.get(psid, {}).get("name", psid),
+                        "system_band_simple": option_by_psid.get(psid, {}).get("system_band_simple"),
+                        "n_data": count,
+                    }
+                    for psid, count in counts.items()
+                    if count > 0
+                ]
+            else:
+                rows = payload["catalog"][feature_name]
         if feature_name == "photometry" and not _request_all_photometry(args):
             psids = set(_requested_photometry_psids(args))
             simplebands = set(_requested_photometry_simplebands(args))
@@ -33680,7 +34283,11 @@ def feature(feature: str):
                     and row.get("system_band_simple") in simplebands
                 )
             ]
-        meta = {"object_count": payload["meta"]["object_count"], "row_count": len(rows)}
+        meta = {
+            "object_count": payload["meta"]["object_count"],
+            "row_count": len(rows),
+            "only_best_measurement": _only_best_measurement(args),
+        }
         if feature_name == "spherexVetting":
             photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
             meta.update({
@@ -33701,6 +34308,11 @@ def feature(feature: str):
                 rows = [row for row in rows if row.get("moca_siid") in set(siids)]
                 meta["row_count"] = len(rows)
             meta["spectral_index_siids"] = siids
+        if feature_name == "teffs":
+            meta["only_sed_teff"] = _only_sed_teff(args)
+            meta["teff_moca_pids"] = (
+                list(BDPHOT_SED_TEFF_MOCA_PIDS) if _only_sed_teff(args) else []
+            )
         return jsonify({
             "ok": True,
             "source": "mock",
