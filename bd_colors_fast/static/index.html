@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Brown Dwarf Photometry Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-sequence-fit-20260716b-azul-byw-20260716a">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-sequence-fit-20260716b-azul-byw-20260716a-spherex-vetting-20260717a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -101,6 +101,18 @@
             De-emphasize data with Y error larger than
             <input id="yerr-max" type="number" step="0.01" placeholder="none">
           </label>
+        </section>
+
+        <section id="spherex-vetting-panel" class="control-section filters-section spherex-vetting-panel" hidden>
+          <h2>SPHEREx vetting</h2>
+          <p class="spherex-vetting-help">
+            Filter plotted objects by the visual-vetting classification associated with the SPHEREx source spectrum.
+          </p>
+          <label>
+            Classification
+            <select id="spherex-vetting-classifications" class="gcmd-multiselect" multiple size="8" aria-describedby="spherex-vetting-status"></select>
+          </label>
+          <div id="spherex-vetting-status" class="plot-hint spherex-vetting-status" aria-live="polite">Loading classifications…</div>
         </section>
 
         <section class="control-section options-section">
@@ -285,6 +297,11 @@
             <td>De-emphasizes points whose propagated X or Y uncertainty exceeds the threshold and excludes those points from automatic axis limits. If omitted, the app applies axis-specific defaults where available.</td>
           </tr>
           <tr>
+            <td><code>spherex_classification</code></td>
+            <td>Comma-separated SPHEREx visual-vetting classifications, or <code>missing</code></td>
+            <td>In an authenticated private-table session with a SPHEREx magnitude or <code>spx…</code> spectral-index axis, shows only objects with at least one selected classification. <em>Missing</em> includes NULL classifications, absent vetting rows, and source spectra whose package has no mapped vetting table. With no selection, all classifications are shown.</td>
+          </tr>
+          <tr>
             <td><code>sequence_smoothing</code></td>
             <td><code>0.5</code>-<code>8</code> subtypes</td>
             <td>Sets the total width of the centered, distance-weighted data window. The default is <code>2.5</code> subtypes. Weighted medians and weighted median absolute deviations (MADs) are evaluated every tenth of a subtype, then the fitted sequence and MAD scatter are smoothed over one-third of the selected width.</td>
@@ -402,6 +419,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a-spherex-vetting-20260717a"></script>
 </body>
 </html>

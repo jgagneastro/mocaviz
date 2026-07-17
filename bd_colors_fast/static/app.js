@@ -21,6 +21,7 @@ const classColors = {
 
 const spectralClassLegendOrder = ["M", "L", "T", "Y"];
 const simplePhotometryPrefix = "simple:";
+const spherexMissingVettingClassification = "missing";
 const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
 const broadSampleMaxObjects = 5000;
 const spectralTypeJitterAmplitude = 0.3;
@@ -162,6 +163,9 @@ const state = {
   bulkPreloadActive: false,
   cacheClearActive: false,
   preservedDesignationOids: new Set(),
+  spherexVettingKey: "",
+  spherexVettingErrorKey: "",
+  spherexVettingSelection: new Set(),
 };
 
 const appBaseUrl = (() => {
@@ -249,6 +253,9 @@ function collectElements() {
     "highlight-oids",
     "xerr-max",
     "yerr-max",
+    "spherex-vetting-panel",
+    "spherex-vetting-classifications",
+    "spherex-vetting-status",
     "show-errors",
     "include-photdist",
     "include-binaries",
@@ -332,6 +339,14 @@ function readInitialUrlState() {
   el["color-by-age"].checked = asBool(params.get("agecolor")) && !wantsGravityColor;
   el["color-by-gravity"].checked = wantsGravityColor;
   el["rich-gravity-categories"].checked = asBool(params.get("richgravity")) || asBool(params.get("rich_gravity")) || asBool(params.get("rich_gravity_categories"));
+  const spherexClassifications = firstUrlParam(
+    params,
+    "spherex_classification",
+    "spherex_classifications",
+    "spherex_vetting_classification",
+    "spherex_vetting_classifications",
+  );
+  state.spherexVettingSelection = new Set(parseCommaSeparatedValues(spherexClassifications));
   updateAdvancedPhotometryControl();
   updateBickleSptControl();
   updateSequenceFitSmoothingOutput();
@@ -411,6 +426,15 @@ function bindControls() {
   });
   el["rich-gravity-categories"].addEventListener("change", () => {
     state.hiddenLegendSamples.clear();
+    render();
+  });
+  el["spherex-vetting-classifications"].addEventListener("change", () => {
+    state.spherexVettingSelection = new Set(
+      Array.from(el["spherex-vetting-classifications"].selectedOptions || [])
+        .map((option) => option.value)
+        .filter(Boolean),
+    );
+    requestInitialAxisRange();
     render();
   });
   el["include-photdist"].addEventListener("change", () => {
@@ -771,6 +795,15 @@ function updateUrlFromControls() {
   params.delete("color_by_gravity");
   params.delete("rich_gravity");
   params.delete("rich_gravity_categories");
+  for (const key of [
+    "spherex_classification",
+    "spherex_classifications",
+    "spherex_vetting_classification",
+    "spherex_vetting_classifications",
+  ]) params.delete(key);
+  if (spherexVettingPanelEligible() && state.spherexVettingSelection.size) {
+    params.set("spherex_classification", [...state.spherexVettingSelection].sort().join(","));
+  }
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
   const query = params.toString();
@@ -985,12 +1018,15 @@ function clearClientData(options = {}) {
   state.photometricDistancesLoaded = false;
   state.sequencesKey = "";
   state.sequencesLoadedAll = false;
+  state.spherexVettingKey = "";
+  state.spherexVettingErrorKey = "";
   state.pendingInitialAxisRange = true;
   state.lastAppliedAxisRangeSignature = "";
   state.forceFreshPlot = true;
   updatePhotometricSptControl();
   updateBickleSptControl();
   updateAzulBywSampleControl();
+  updateSpherexVettingControl();
   if (el.plot && window.Plotly) Plotly.purge(el.plot);
   state.plotBound = false;
   if (el["selection-table"]) el["selection-table"].innerHTML = "";
@@ -1043,6 +1079,9 @@ function resetFeatureState(payload) {
   state.spectralIndicesLoaded = new Set(payload.meta?.spectral_index_siids || (payload.catalog?.spectralIndices || []).map((row) => row.moca_siid));
   state.photometricDistancesLoaded = Boolean(payload.meta?.include_photometric_dist);
   state.sequencesLoadedAll = Boolean(payload.meta?.all_sequences_loaded);
+  state.spherexVettingKey = "";
+  state.spherexVettingErrorKey = "";
+  if (payload.catalog) payload.catalog.spherexVetting = payload.catalog.spherexVetting || [];
   state.featureLoads = {};
 }
 
@@ -1072,6 +1111,17 @@ function ensureNeededFeatures() {
     if (type === "equivalent_width") needed.add("equivalentWidths");
   }
   if (el["color-by-age"].checked) needed.add("ages");
+
+  const spherexVettingKey = currentSpherexVettingKey();
+  if (
+    spherexVettingPanelEligible()
+    && spherexVettingKey
+    && state.spherexVettingKey !== spherexVettingKey
+    && state.spherexVettingErrorKey !== spherexVettingKey
+    && !state.featureLoads.spherexVetting
+  ) {
+    loadSpherexVetting(spherexVettingKey);
+  }
 
   for (const feature of needed) {
     if ((feature === "spectralIndices" || !state.featuresLoaded[feature]) && !state.featureLoads[feature]) {
@@ -1297,6 +1347,133 @@ async function loadFeature(feature) {
   }
 }
 
+function spherexVettingAxisObservables() {
+  const photometry = [];
+  const spectralIndices = [];
+  for (const axis of ["x", "y"]) {
+    const spec = axisSpec(axis);
+    if (spec.type === "color" || spec.type === "absolute_magnitude") {
+      const values = spec.type === "color" ? [spec.value1, spec.value2] : [spec.value1];
+      for (const value of values) {
+        if (String(value || "").toLowerCase().includes("spherex") && !photometry.includes(value)) {
+          photometry.push(value);
+        }
+      }
+    } else if (spec.type === "spectral_index") {
+      if (String(spec.value1 || "").toLowerCase().startsWith("spx") && !spectralIndices.includes(spec.value1)) {
+        spectralIndices.push(spec.value1);
+      }
+    }
+  }
+  return { photometry: photometry.sort(), spectralIndices: spectralIndices.sort() };
+}
+
+function currentSpherexVettingKey() {
+  const observables = spherexVettingAxisObservables();
+  if (!observables.photometry.length && !observables.spectralIndices.length) return "";
+  return `phot:${observables.photometry.join(",")}|index:${observables.spectralIndices.join(",")}`;
+}
+
+function spherexVettingPanelEligible() {
+  return Boolean(state.raw?.meta?.spherex_vetting_available && currentSpherexVettingKey());
+}
+
+function spherexVettingOptions() {
+  const objectIdsByClassification = new Map();
+  for (const row of state.raw?.catalog?.spherexVetting || []) {
+    const classification = String(row.classification || spherexMissingVettingClassification).trim()
+      || spherexMissingVettingClassification;
+    if (!objectIdsByClassification.has(classification)) objectIdsByClassification.set(classification, new Set());
+    objectIdsByClassification.get(classification).add(Number(row.moca_oid));
+  }
+  if (!objectIdsByClassification.has(spherexMissingVettingClassification)) {
+    objectIdsByClassification.set(spherexMissingVettingClassification, new Set());
+  }
+  for (const classification of state.spherexVettingSelection) {
+    if (!objectIdsByClassification.has(classification)) objectIdsByClassification.set(classification, new Set());
+  }
+  return [...objectIdsByClassification.entries()]
+    .map(([value, objectIds]) => ({ value, count: objectIds.size }))
+    .sort((left, right) => {
+      if (left.value === spherexMissingVettingClassification) return 1;
+      if (right.value === spherexMissingVettingClassification) return -1;
+      return left.value.localeCompare(right.value);
+    });
+}
+
+function updateSpherexVettingControl() {
+  const panel = el["spherex-vetting-panel"];
+  const select = el["spherex-vetting-classifications"];
+  const status = el["spherex-vetting-status"];
+  if (!panel || !select || !status) return;
+  const eligible = spherexVettingPanelEligible();
+  panel.hidden = !eligible;
+  if (!eligible) return;
+
+  const key = currentSpherexVettingKey();
+  const ready = state.spherexVettingKey === key;
+  const failed = state.spherexVettingErrorKey === key;
+  select.disabled = !ready;
+  if (!ready) {
+    select.innerHTML = `<option disabled>${failed ? "Classifications unavailable" : "Loading classifications…"}</option>`;
+    status.textContent = failed
+      ? "Could not load the SPHEREx visual-vetting classifications for these axes."
+      : "Loading classifications for the selected SPHEREx axes…";
+    status.classList.toggle("error", failed);
+    return;
+  }
+
+  status.classList.remove("error");
+  const options = spherexVettingOptions();
+  select.size = Math.min(12, Math.max(3, options.length));
+  select.innerHTML = options.map((option) => {
+    const selected = state.spherexVettingSelection.has(option.value) ? " selected" : "";
+    const missingClass = option.value === spherexMissingVettingClassification
+      ? ' class="spherex-vetting-missing"'
+      : "";
+    const label = option.value === spherexMissingVettingClassification ? "Missing" : option.value;
+    return `<option value="${escapeHtml(option.value)}"${missingClass}${selected}>${escapeHtml(label)} (${option.count.toLocaleString()})</option>`;
+  }).join("");
+  status.textContent = "No selection shows all classifications. Use Ctrl/Command-click to select more than one.";
+}
+
+async function loadSpherexVetting(key) {
+  const token = state.loadToken;
+  state.featureLoads.spherexVetting = true;
+  state.spherexVettingErrorKey = "";
+  updateSpherexVettingControl();
+  setPlotLoading("spherex-vetting", true);
+  try {
+    const params = buildBootstrapParams();
+    const payload = await fetchJsonUrl(appUrl(`api/feature/spherex-vetting?${params.toString()}`));
+    if (token !== state.loadToken || key !== currentSpherexVettingKey()) return;
+    if (!payload.meta?.available) {
+      state.raw.meta.spherex_vetting_available = false;
+      return;
+    }
+    state.raw.catalog.spherexVetting = payload.rows || [];
+    state.spherexVettingKey = key;
+    state.maps = buildMaps(state.raw.catalog);
+  } catch (_error) {
+    if (token === state.loadToken && key === currentSpherexVettingKey()) state.spherexVettingErrorKey = key;
+  } finally {
+    delete state.featureLoads.spherexVetting;
+    setPlotLoading("spherex-vetting", false);
+    if (token === state.loadToken) {
+      state.forceFreshPlot = true;
+      render();
+    }
+  }
+}
+
+function spherexVettingAllowsObject(oid) {
+  if (!spherexVettingPanelEligible() || !state.spherexVettingSelection.size) return true;
+  if (state.spherexVettingKey !== currentSpherexVettingKey()) return true;
+  const classifications = state.maps?.spherexVettingByOid?.get(Number(oid))
+    || new Set([spherexMissingVettingClassification]);
+  return [...classifications].some((classification) => state.spherexVettingSelection.has(classification));
+}
+
 function scheduleFreshRenderAfterDataLoad(token) {
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
@@ -1347,6 +1524,7 @@ function buildMaps(catalog) {
   const spectralIndexByOid = new Map();
   const equivalentWidthByOid = new Map();
   const ageByOid = new Map();
+  const spherexVettingByOid = new Map();
 
   for (const object of catalog.objects || []) {
     objectByOid.set(Number(object.moca_oid), object);
@@ -1368,6 +1546,14 @@ function buildMaps(catalog) {
   for (const age of catalog.ages || []) {
     ageByOid.set(Number(age.moca_oid), Number(age.age_myr));
   }
+  for (const row of catalog.spherexVetting || []) {
+    const oid = Number(row.moca_oid);
+    const classification = String(row.classification || spherexMissingVettingClassification).trim()
+      || spherexMissingVettingClassification;
+    if (!Number.isFinite(oid)) continue;
+    if (!spherexVettingByOid.has(oid)) spherexVettingByOid.set(oid, new Set());
+    spherexVettingByOid.get(oid).add(classification);
+  }
 
   return {
     objectByOid,
@@ -1381,6 +1567,7 @@ function buildMaps(catalog) {
     spectralIndexByOid,
     equivalentWidthByOid,
     ageByOid,
+    spherexVettingByOid,
   };
 }
 
@@ -1873,6 +2060,7 @@ function optionHtml(value, label) {
 function render() {
   updateUrlFromControls();
   if (!state.raw || !state.maps) return;
+  updateSpherexVettingControl();
   if (applyAxisErrorDefaults()) requestInitialAxisRange();
   if (deferRenderUntilPhotometricDistancesLoaded()) return;
   if (deferRenderUntilAgesLoaded()) return;
@@ -2085,6 +2273,7 @@ function buildRows() {
     const binary = isBinary(object);
     const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
     if (!Number.isFinite(spt)) continue;
+    if (!spherexVettingAllowsObject(oid)) continue;
     if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;
     if (range && (spt < range.min || spt > range.max) && !isHighlighted) continue;
     if (!includeBinaries && binary && !isHighlighted) continue;
@@ -4872,6 +5061,18 @@ function firstUrlParam(params, ...keys) {
     if (params.has(key)) return params.get(key);
   }
   return null;
+}
+
+function parseCommaSeparatedValues(value) {
+  const values = [];
+  const seen = new Set();
+  for (const item of String(value || "").replace(/;/g, ",").split(",")) {
+    const cleaned = item.trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    values.push(cleaned);
+  }
+  return values;
 }
 
 function clamp(value, min, max) {

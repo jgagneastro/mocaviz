@@ -101,6 +101,13 @@ SIMPLE_PHOTOMETRY_PREFIX = "simple:"
 SIMPLE_PHOTOMETRY_BANDS = ("g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4")
 BICKLE_SPT_METHOD_LIKE = "bickleredlprep_dered_young_sptfit%"
 AZUL_BYW_SAMPLE_TABLE = "pcat_azul_byw_sample_jul16_2026"
+BDPHOT_SPHEREX_MISSING_CLASSIFICATION = "missing"
+BDPHOT_SPHEREX_GOOD_CLASSIFICATION = "good"
+BDPHOT_SPHEREX_VETTING_TABLES = {
+    55: "pcat_spherex_visual_vetting",
+    62: "pcat_spherex_spiffstacker_visual_vetting",
+    76: "pcat_spherex_sublimeaperture_visual_vetting",
+}
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 AXIS_TYPES = {"spectral_type", "color", "absolute_magnitude", "spectral_index", "equivalent_width"}
@@ -690,6 +697,11 @@ def _auth_context(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _spherex_vetting_available(args: dict[str, Any]) -> bool:
+    auth = _auth_context(args)
+    return bool(auth.get("has_credentials") and auth.get("private_db"))
+
+
 @lru_cache(maxsize=8)
 def _engine(connection_string: str):
     return create_engine(connection_string, pool_pre_ping=True, pool_recycle=1800)
@@ -1105,6 +1117,97 @@ def _requested_spectral_index_ids(args: dict[str, Any]) -> list[str]:
         if siid and SAFE_ID_RE.match(siid) and siid not in clean:
             clean.append(siid)
     return clean
+
+
+def _spherex_axis_observables(args: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    photometry_psids: list[str] = []
+    spectral_index_siids: list[str] = []
+    for axis in ("x", "y"):
+        axis_type = str(args.get(f"{axis}axis_type") or "").strip().lower()
+        value1 = str(args.get(f"{axis}axis_value_1") or "").strip()
+        value2 = str(args.get(f"{axis}axis_value_2") or "").strip()
+        if axis_type in {"color", "absolute_magnitude"}:
+            values = (value1, value2) if axis_type == "color" else (value1,)
+            for value in values:
+                if "spherex" in value.lower() and SAFE_ID_RE.fullmatch(value) and value not in photometry_psids:
+                    photometry_psids.append(value)
+        elif axis_type == "spectral_index":
+            if value1.lower().startswith("spx") and SAFE_ID_RE.fullmatch(value1) and value1 not in spectral_index_siids:
+                spectral_index_siids.append(value1)
+    return photometry_psids, spectral_index_siids
+
+
+def _spherex_vetting_query_sql(
+    args: Mapping[str, Any],
+    oid_filter: str,
+) -> tuple[str, dict[str, str]]:
+    photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
+    source_queries: list[str] = []
+    params: dict[str, str] = {}
+    if photometry_psids:
+        psid_filter, psid_params = _safe_id_filter_sql(
+            "dp", "moca_psid", photometry_psids, "spherex_psid"
+        )
+        params.update(psid_params)
+        source_queries.append(f"""
+            SELECT dp.moca_oid, ms.moca_specpackid
+            FROM data_photometry dp
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = dp.moca_specid
+            WHERE dp.adopted = 1
+                AND dp.magnitude IS NOT NULL
+                AND dp.magnitude_unc IS NOT NULL
+                AND {psid_filter}
+                AND {oid_filter.replace('source_rows.', 'dp.')}
+        """)
+    if spectral_index_siids:
+        siid_filter, siid_params = _safe_id_filter_sql(
+            "dsi", "moca_siid", spectral_index_siids, "spherex_siid"
+        )
+        params.update(siid_params)
+        source_queries.append(f"""
+            SELECT dsi.moca_oid, ms.moca_specpackid
+            FROM data_spectral_indices dsi
+            LEFT JOIN moca_spectra ms
+                ON ms.moca_specid = dsi.moca_specid
+            WHERE dsi.ignored = 0
+                AND dsi.index_value IS NOT NULL
+                AND {siid_filter}
+                AND {oid_filter.replace('source_rows.', 'dsi.')}
+        """)
+    if not source_queries:
+        return """
+            SELECT NULL AS moca_oid, NULL AS classification
+            FROM DUAL
+            WHERE 0 = 1
+        """, {}
+
+    source_sql = "\nUNION ALL\n".join(source_queries)
+    return f"""
+        SELECT DISTINCT
+            source_rows.moca_oid,
+            CASE source_rows.moca_specpackid
+                WHEN 54 THEN '{BDPHOT_SPHEREX_GOOD_CLASSIFICATION}'
+                WHEN 55 THEN COALESCE(NULLIF(TRIM(v55.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                WHEN 62 THEN COALESCE(NULLIF(TRIM(v62.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                WHEN 76 THEN COALESCE(NULLIF(TRIM(v76.classification), ''), '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}')
+                ELSE '{BDPHOT_SPHEREX_MISSING_CLASSIFICATION}'
+            END AS classification
+        FROM (
+            {source_sql}
+        ) source_rows
+        LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[55]} v55
+            ON v55.moca_oid = source_rows.moca_oid
+            AND source_rows.moca_specpackid = 55
+        LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[62]} v62
+            ON v62.moca_oid = source_rows.moca_oid
+            AND source_rows.moca_specpackid = 62
+        LEFT JOIN {BDPHOT_SPHEREX_VETTING_TABLES[76]} v76
+            ON v76.moca_oid = source_rows.moca_oid
+            AND source_rows.moca_specpackid = 76
+        WHERE source_rows.moca_oid IS NOT NULL
+        ORDER BY source_rows.moca_oid, classification
+    """, params
 
 
 def _axis_spec(args: dict[str, Any], axis: str) -> tuple[str, str, str]:
@@ -1625,6 +1728,10 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
     cached = _BOOTSTRAP_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
         payload = dict(cached[1])
+        payload["meta"] = {
+            **payload.get("meta", {}),
+            "spherex_vetting_available": _spherex_vetting_available(args),
+        }
         payload["cache"] = {"hit": True, "ttl_seconds": CACHE_SECONDS}
         return payload
 
@@ -1954,6 +2061,7 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
             "use_bickle_spectral_types": _use_bickle_spectral_types(args),
             "include_photometric_dist": include_photometric_dist,
             "private_db": _is_private_db(args),
+            "spherex_vetting_available": _spherex_vetting_available(args),
             "max_objects": object_limit,
             "object_limit_applied": object_limit is not None and len(objects) >= object_limit,
             "object_count": len(objects),
@@ -1982,8 +2090,21 @@ def _load_bootstrap_from_db(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
-    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "designations", "spectralIndices", "equivalentWidths", "ages"}:
+    if feature not in {"distances", "photometry", "photometryOptions", "sequences", "designations", "spectralIndices", "equivalentWidths", "ages", "spherexVetting"}:
         raise ValueError(f"Unknown feature: {feature}")
+
+    if feature == "spherexVetting" and not _spherex_vetting_available(args):
+        return {
+            "feature": feature,
+            "rows": [],
+            "meta": {
+                "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "object_count": 0,
+                "row_count": 0,
+                "available": False,
+            },
+            "cache": {"hit": False, "ttl_seconds": 0},
+        }
 
     cache_key = f"{_cache_key(args)}|{feature}"
     now = time.time()
@@ -2035,6 +2156,7 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 "spectralIndices": _oid_filter_sql("dsi", selected_oids),
                 "equivalentWidths": _oid_filter_sql("dew", selected_oids),
                 "ages": _oid_filter_sql("cbs", selected_oids),
+                "spherexVetting": _oid_filter_sql("source_rows", selected_oids),
             }[feature]
         if feature == "sequences":
             pass
@@ -2092,6 +2214,21 @@ def _load_feature_from_db(args: dict[str, Any], feature: str) -> dict[str, Any]:
                 if _normalize_simple_band(str(row.get("system_band_simple") or ""))
             }
             feature_meta["simple_photometry_options"] = _simple_band_option_rows(simple_counts)
+        elif feature == "spherexVetting":
+            vetting_sql, vetting_params = _spherex_vetting_query_sql(args, oid_filter)
+            rows = _records(_read_sql(conn, vetting_sql, vetting_params))
+            photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
+            feature_meta.update({
+                "available": True,
+                "missing_value": BDPHOT_SPHEREX_MISSING_CLASSIFICATION,
+                "photometry_psids": photometry_psids,
+                "spectral_index_siids": spectral_index_siids,
+                "classifications": sorted({
+                    str(row["classification"])
+                    for row in rows
+                    if row.get("classification") not in (None, "")
+                }),
+            })
         elif feature == "distances":
             include_photometric_dist = _include_photometric_dist(args)
             phot_filter = "1 = 1" if include_photometric_dist else "dd.photometric_estimate = 0"
@@ -2321,6 +2458,7 @@ def _load_preload_from_db(args: dict[str, Any]) -> dict[str, Any]:
         "preload_omitted_risky_photometric_spt": _is_private_db(args),
         "include_photometric_dist": True,
         "private_db": _is_private_db(args),
+        "spherex_vetting_available": _spherex_vetting_available(args),
         "bulk_preloaded": True,
         "all_sequences_loaded": True,
         "lazy_features": [],
@@ -2343,10 +2481,12 @@ def _mock_payload() -> dict[str, Any]:
         {"moca_psid": "mko_kmag", "name": "MKO K", "system_band_simple": "K"},
         {"moca_psid": "wise_w1", "name": "WISE W1", "system_band_simple": "W1"},
         {"moca_psid": "wise_w2", "name": "WISE W2", "system_band_simple": "W2"},
+        {"moca_psid": "spherex_smag", "name": "SPHEREx S", "system_band_simple": None},
     ]
     si_opts = [
         {"moca_siid": "h2o_j", "description": "H2O-J spectral index"},
         {"moca_siid": "ch4_h", "description": "CH4-H spectral index"},
+        {"moca_siid": "spx_ch4", "description": "SPHEREx-based CH4 spectral index"},
     ]
     ew_opts = [
         {"moca_spid": "li", "description": "Lithium 6708"},
@@ -2423,12 +2563,19 @@ def _mock_payload() -> dict[str, Any]:
             })
 
         abs_j = 9.5 + 0.23 * spt + rng.gauss(0, 0.35)
+        spherex_specpackid = (54, 55, 62, 63, 76, 90, 99)[i % 7]
+        spherex_classification = {
+            55: "bad" if i % 2 else "good_candidate",
+            62: "good_candidate" if i % 2 else "snr",
+            76: "peculiar_ucd" if i % 2 else "good_reddened",
+        }.get(spherex_specpackid)
         colors = {
             "mko_jmag": 0.0,
             "mko_hmag": -(0.55 + 0.02 * spt),
             "mko_kmag": -(0.95 + 0.035 * spt),
             "wise_w1": -(1.2 + 0.045 * spt),
             "wise_w2": -(1.35 + 0.06 * spt),
+            "spherex_smag": -(1.5 + 0.065 * spt),
         }
         for opt in phot_opts:
             psid = opt["moca_psid"]
@@ -2437,7 +2584,10 @@ def _mock_payload() -> dict[str, Any]:
                 "moca_oid": oid,
                 "moca_psid": psid,
                 "system_band_simple": opt["system_band_simple"],
-                "adopted_simpleband": 1,
+                "adopted_simpleband": 0 if psid == "spherex_smag" else 1,
+                "moca_specid": 240000 + oid if psid == "spherex_smag" else None,
+                "moca_specpackid": spherex_specpackid if psid == "spherex_smag" else None,
+                "spherex_classification": spherex_classification if psid == "spherex_smag" else None,
                 "magnitude": round(mag, 4),
                 "magnitude_unc": round(0.02 + rng.random() * 0.08, 4),
                 "name": opt["name"],
@@ -2445,7 +2595,11 @@ def _mock_payload() -> dict[str, Any]:
             })
 
         for specid in [200000 + oid, 210000 + oid, 220000 + oid, 230000 + oid, 240000 + oid]:
-            spectra.append({"moca_oid": oid, "moca_specid": specid})
+            spectra.append({
+                "moca_oid": oid,
+                "moca_specid": specid,
+                "moca_specpackid": spherex_specpackid if specid == 240000 + oid else None,
+            })
 
         spectral_indices.append({
             "moca_oid": oid,
@@ -2454,6 +2608,17 @@ def _mock_payload() -> dict[str, Any]:
             "index_value": round(0.95 - 0.015 * spt + rng.gauss(0, 0.02), 4),
             "index_value_unc": 0.02,
             "description": "H2O-J spectral index",
+            "spectral_index_ref": "mock",
+        })
+        spectral_indices.append({
+            "moca_oid": oid,
+            "moca_siid": "spx_ch4",
+            "moca_specid": 240000 + oid,
+            "moca_specpackid": spherex_specpackid,
+            "spherex_classification": spherex_classification,
+            "index_value": round(1.15 - 0.02 * spt + rng.gauss(0, 0.025), 4),
+            "index_value_unc": 0.03,
+            "description": "SPHEREx-based CH4 spectral index",
             "spectral_index_ref": "mock",
         })
         spectral_indices.append({
@@ -2533,6 +2698,41 @@ def _mock_payload() -> dict[str, Any]:
     }
 
 
+def _mock_spherex_vetting_rows(payload: Mapping[str, Any], args: Mapping[str, Any]) -> list[dict[str, Any]]:
+    photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
+    source_rows = [
+        row
+        for row in payload.get("catalog", {}).get("photometry", [])
+        if row.get("moca_psid") in set(photometry_psids)
+    ]
+    source_rows.extend(
+        row
+        for row in payload.get("catalog", {}).get("spectralIndices", [])
+        if row.get("moca_siid") in set(spectral_index_siids)
+    )
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for source in source_rows:
+        try:
+            oid = int(source["moca_oid"])
+            specpackid = int(source.get("moca_specpackid"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if specpackid == 54:
+            classification = BDPHOT_SPHEREX_GOOD_CLASSIFICATION
+        elif specpackid in BDPHOT_SPHEREX_VETTING_TABLES:
+            classification = str(source.get("spherex_classification") or "").strip()
+            classification = classification or BDPHOT_SPHEREX_MISSING_CLASSIFICATION
+        else:
+            classification = BDPHOT_SPHEREX_MISSING_CLASSIFICATION
+        key = (oid, classification)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"moca_oid": oid, "classification": classification})
+    return sorted(rows, key=lambda row: (int(row["moca_oid"]), str(row["classification"])))
+
+
 def _apply_mock_bdphot_association_highlights(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     aids = set(_bdphot_highlight_aids(args))
     ya_prob_min = _bdphot_highlight_ya_prob_min(args)
@@ -2554,6 +2754,8 @@ def _apply_mock_bdphot_association_highlights(payload: dict[str, Any], args: dic
         "ya_prob_min": ya_prob_min,
         "loaded_object_count": len(loaded_oids),
     }
+    payload["meta"]["private_db"] = _is_private_db(args)
+    payload["meta"]["spherex_vetting_available"] = _spherex_vetting_available(args)
     return payload
 
 
@@ -33432,6 +33634,8 @@ def feature(feature: str):
         "equivalent-widths": "equivalentWidths",
         "equivalentWidths": "equivalentWidths",
         "ages": "ages",
+        "spherex-vetting": "spherexVetting",
+        "spherexVetting": "spherexVetting",
     }
     feature_name = feature_map.get(feature)
     if feature_name is None:
@@ -33440,7 +33644,10 @@ def feature(feature: str):
     args = dict(request.args)
     if args.get("mock") in {"1", "true", "yes"}:
         payload = _mock_payload()
-        if feature_name == "photometryOptions":
+        if feature_name == "spherexVetting":
+            available = _spherex_vetting_available(args)
+            rows = _mock_spherex_vetting_rows(payload, args) if available else []
+        elif feature_name == "photometryOptions":
             counts: dict[str, int] = {}
             simple_counts: dict[str, int] = {}
             option_by_psid = {row["moca_psid"]: row for row in payload["options"]["photometry"]}
@@ -33474,6 +33681,15 @@ def feature(feature: str):
                 )
             ]
         meta = {"object_count": payload["meta"]["object_count"], "row_count": len(rows)}
+        if feature_name == "spherexVetting":
+            photometry_psids, spectral_index_siids = _spherex_axis_observables(args)
+            meta.update({
+                "available": available,
+                "missing_value": BDPHOT_SPHEREX_MISSING_CLASSIFICATION,
+                "photometry_psids": photometry_psids,
+                "spectral_index_siids": spectral_index_siids,
+                "classifications": sorted({str(row["classification"]) for row in rows}),
+            })
         if feature_name == "photometryOptions":
             meta["simple_photometry_options"] = _simple_band_option_rows(simple_counts)
         if feature_name == "photometry":

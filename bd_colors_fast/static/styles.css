@@ -340,6 +340,34 @@ textarea {
   padding: 2px 8px;
 }
 
+.spherex-vetting-panel {
+  background: #c9c1d4;
+}
+
+html.is-mocadb-team .spherex-vetting-panel,
+body.is-mocadb-team .spherex-vetting-panel {
+  background: #d8c1cc;
+}
+
+.spherex-vetting-help {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.spherex-vetting-status {
+  min-height: 16px;
+}
+
+.spherex-vetting-status.error {
+  color: #8b1e1e;
+}
+
+.spherex-vetting-missing {
+  font-style: italic;
+}
+
 input[type="range"] {
   display: block;
   width: 100%;
