@@ -439,15 +439,23 @@ function bindControls() {
     state.hiddenLegendSamples.clear();
     render();
   });
-  el["spherex-vetting-classifications"].addEventListener("change", (event) => {
-    if (!event.target.matches("input[data-spherex-vetting-classification]")) return;
-    state.spherexVettingSelection = new Set(
-      Array.from(el["spherex-vetting-classifications"].querySelectorAll("input[data-spherex-vetting-classification]:checked"))
-        .map((input) => input.value)
-        .filter(Boolean),
-    );
-    requestInitialAxisRange();
-    render();
+  el["spherex-vetting-classifications"].addEventListener("click", (event) => {
+    const option = event.target.closest?.("[data-spherex-vetting-classification]");
+    if (!option) return;
+    toggleSpherexVettingClassification(option.dataset.spherexVettingClassification);
+  });
+  el["spherex-vetting-classifications"].addEventListener("keydown", (event) => {
+    const options = [...el["spherex-vetting-classifications"].querySelectorAll("[data-spherex-vetting-classification]")];
+    if (!options.length) return;
+    const currentIndex = Math.max(0, options.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = Math.min(options.length - 1, currentIndex + 1);
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = Math.max(0, currentIndex - 1);
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else return;
+    event.preventDefault();
+    options[nextIndex].focus();
   });
   el["include-photdist"].addEventListener("change", () => {
     state.manualPhotdistChoice = true;
@@ -1423,6 +1431,18 @@ function spherexVettingOptions() {
     .map((value) => ({ value, count: objectIdsByClassification.get(value).size }));
 }
 
+function toggleSpherexVettingClassification(classification) {
+  if (!classification) return;
+  if (state.spherexVettingSelection.has(classification)) {
+    state.spherexVettingSelection.delete(classification);
+  } else {
+    state.spherexVettingSelection.add(classification);
+  }
+  requestInitialAxisRange();
+  state.forceFreshPlot = true;
+  render();
+}
+
 function updateSpherexVettingControl() {
   const panel = el["spherex-vetting-panel"];
   const classificationList = el["spherex-vetting-classifications"];
@@ -1436,6 +1456,7 @@ function updateSpherexVettingControl() {
   const ready = state.spherexVettingKey === key;
   const failed = state.spherexVettingErrorKey === key;
   if (!ready) {
+    delete classificationList.dataset.optionKey;
     classificationList.setAttribute("aria-busy", "true");
     classificationList.innerHTML = `<span>${failed ? "Classifications unavailable" : "Loading classifications…"}</span>`;
     status.textContent = failed
@@ -1448,19 +1469,27 @@ function updateSpherexVettingControl() {
   status.classList.remove("error");
   classificationList.removeAttribute("aria-busy");
   const options = spherexVettingOptions();
-  classificationList.innerHTML = options.map((option) => {
-    const checked = state.spherexVettingSelection.has(option.value) ? " checked" : "";
-    const missingClass = option.value === spherexMissingVettingClassification
-      ? " spherex-vetting-missing"
-      : "";
-    const label = spherexVettingClassificationLabel(option.value);
-    return `<label class="spherex-vetting-choice${missingClass}">`
-      + `<input type="checkbox" value="${escapeHtml(option.value)}" data-spherex-vetting-classification${checked}>`
-      + `<span class="spherex-vetting-choice-label">${escapeHtml(label)}</span>`
-      + `<span class="spherex-vetting-choice-count">${option.count.toLocaleString()}</span>`
-      + "</label>";
-  }).join("");
-  status.textContent = "No selection shows all classifications. Checked classifications are combined.";
+  const optionKey = JSON.stringify(options);
+  if (classificationList.dataset.optionKey !== optionKey) {
+    classificationList.innerHTML = options.map((option) => {
+      const missingClass = option.value === spherexMissingVettingClassification
+        ? " spherex-vetting-option-missing"
+        : "";
+      const label = spherexVettingClassificationLabel(option.value);
+      return `<button type="button" class="spherex-vetting-option" role="option" aria-selected="false" data-spherex-vetting-classification="${escapeHtml(option.value)}">`
+        + `<span class="spherex-vetting-option-label${missingClass}">${escapeHtml(label)}</span> `
+        + `<span class="spherex-vetting-option-count">(${option.count.toLocaleString()})</span>`
+        + "</button>";
+    }).join("");
+    classificationList.dataset.optionKey = optionKey;
+  }
+  for (const option of classificationList.querySelectorAll("[data-spherex-vetting-classification]")) {
+    option.setAttribute(
+      "aria-selected",
+      state.spherexVettingSelection.has(option.dataset.spherexVettingClassification) ? "true" : "false",
+    );
+  }
+  status.textContent = "No selection shows all classifications. Click classifications to toggle them.";
 }
 
 async function loadSpherexVetting(key) {

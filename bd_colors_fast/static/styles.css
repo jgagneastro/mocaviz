@@ -356,48 +356,55 @@ body.is-mocadb-team .spherex-vetting-panel {
   line-height: 1.4;
 }
 
-.spherex-vetting-fieldset {
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.spherex-vetting-fieldset legend {
-  margin-bottom: 4px;
-}
-
-.spherex-vetting-classifications {
-  display: grid;
-  gap: 3px;
-}
-
-.spherex-vetting-choice {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 7px;
-  min-height: 28px;
-  padding: 3px 7px;
+.spherex-vetting-listbox {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  max-height: 210px;
+  margin-top: 4px;
+  padding: 2px 0;
+  overflow-y: auto;
   border: 1px solid #aaa6af;
   border-radius: 6px;
   background: #f1f0f2;
   color: var(--ink);
-  cursor: pointer;
 }
 
-.spherex-vetting-choice:hover {
-  border-color: var(--accent);
-}
-
-.spherex-vetting-choice input {
+.spherex-vetting-option {
+  display: block;
+  width: 100%;
   margin: 0;
-  accent-color: var(--accent);
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.2;
+  text-align: left;
+  cursor: default;
 }
 
-.spherex-vetting-choice-count {
-  color: var(--muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+.spherex-vetting-option:hover {
+  background: #e2dfe4;
+}
+
+.spherex-vetting-option[aria-selected="true"] {
+  background: #735d83;
+  color: #fff;
+}
+
+.spherex-vetting-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.spherex-vetting-option-missing {
+  font-style: italic;
+}
+
+.spherex-vetting-option-count {
+  font-style: normal;
 }
 
 .spherex-vetting-status {
@@ -406,10 +413,6 @@ body.is-mocadb-team .spherex-vetting-panel {
 
 .spherex-vetting-status.error {
   color: #8b1e1e;
-}
-
-.spherex-vetting-missing .spherex-vetting-choice-label {
-  font-style: italic;
 }
 
 input[type="range"] {

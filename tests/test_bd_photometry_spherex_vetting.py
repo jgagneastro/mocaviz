@@ -92,6 +92,8 @@ class BdPhotometrySpherexVettingTests(unittest.TestCase):
 
         self.assertIn('id="spherex-vetting-panel"', html)
         self.assertIn('id="spherex-vetting-classifications"', html)
+        self.assertIn('class="gcmd-multiselect spherex-vetting-listbox"', html)
+        self.assertIn('role="listbox"', html)
         self.assertIn("<code>spherex_classification</code>", html)
         self.assertIn('const spherexMissingVettingClassification = "missing";', script)
         self.assertIn('{ value: "missing", label: "Missing" }', script)
@@ -99,11 +101,17 @@ class BdPhotometrySpherexVettingTests(unittest.TestCase):
         self.assertIn('{ value: "good_reddened", label: "Good with extinction" }', script)
         self.assertIn('{ value: "contaminated_ucd", label: "Good but contaminated" }', script)
         self.assertIn("function orderedSpherexVettingClassifications(values)", script)
+        self.assertIn("function toggleSpherexVettingClassification(classification)", script)
+        self.assertIn('event.key === "ArrowDown"', script)
+        self.assertIn('event.key === "Home"', script)
+        self.assertIn('state.forceFreshPlot = true;', script)
+        self.assertIn('class="spherex-vetting-option-count">(${option.count.toLocaleString()})', script)
         self.assertIn("function spherexVettingPanelEligible()", script)
         self.assertIn("function spherexVettingAllowsObject(oid)", script)
         self.assertIn("if (!spherexVettingAllowsObject(oid)) continue;", script)
         self.assertIn("api/feature/spherex-vetting", script)
-        self.assertIn(".spherex-vetting-missing", styles)
+        self.assertIn(".spherex-vetting-option-missing", styles)
+        self.assertIn(".spherex-vetting-option-count", styles)
 
 
 if __name__ == "__main__":
