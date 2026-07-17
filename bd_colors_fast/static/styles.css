@@ -356,6 +356,50 @@ body.is-mocadb-team .spherex-vetting-panel {
   line-height: 1.4;
 }
 
+.spherex-vetting-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.spherex-vetting-fieldset legend {
+  margin-bottom: 4px;
+}
+
+.spherex-vetting-classifications {
+  display: grid;
+  gap: 3px;
+}
+
+.spherex-vetting-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 1px solid #aaa6af;
+  border-radius: 6px;
+  background: #f1f0f2;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.spherex-vetting-choice:hover {
+  border-color: var(--accent);
+}
+
+.spherex-vetting-choice input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.spherex-vetting-choice-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .spherex-vetting-status {
   min-height: 16px;
 }
@@ -364,7 +408,7 @@ body.is-mocadb-team .spherex-vetting-panel {
   color: #8b1e1e;
 }
 
-.spherex-vetting-missing {
+.spherex-vetting-missing .spherex-vetting-choice-label {
   font-style: italic;
 }
 

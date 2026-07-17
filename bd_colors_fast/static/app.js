@@ -22,6 +22,17 @@ const classColors = {
 const spectralClassLegendOrder = ["M", "L", "T", "Y"];
 const simplePhotometryPrefix = "simple:";
 const spherexMissingVettingClassification = "missing";
+const spherexVettingClassificationDefinitions = [
+  { value: "missing", label: "Missing" },
+  { value: "good", label: "Good" },
+  { value: "peculiar_ucd", label: "Good but peculiar" },
+  { value: "good_candidate", label: "Good candidate" },
+  { value: "good_reddened", label: "Good with extinction" },
+  { value: "contaminated_ucd", label: "Good but contaminated" },
+];
+const spherexVettingClassificationDefinitionByValue = new Map(
+  spherexVettingClassificationDefinitions.map((definition, index) => [definition.value, { ...definition, index }]),
+);
 const simplePhotometryBands = ["g", "r", "i", "z", "y", "J", "H", "K", "W1", "W2", "W3", "W4"];
 const broadSampleMaxObjects = 5000;
 const spectralTypeJitterAmplitude = 0.3;
@@ -428,10 +439,11 @@ function bindControls() {
     state.hiddenLegendSamples.clear();
     render();
   });
-  el["spherex-vetting-classifications"].addEventListener("change", () => {
+  el["spherex-vetting-classifications"].addEventListener("change", (event) => {
+    if (!event.target.matches("input[data-spherex-vetting-classification]")) return;
     state.spherexVettingSelection = new Set(
-      Array.from(el["spherex-vetting-classifications"].selectedOptions || [])
-        .map((option) => option.value)
+      Array.from(el["spherex-vetting-classifications"].querySelectorAll("input[data-spherex-vetting-classification]:checked"))
+        .map((input) => input.value)
         .filter(Boolean),
     );
     requestInitialAxisRange();
@@ -802,7 +814,7 @@ function updateUrlFromControls() {
     "spherex_vetting_classifications",
   ]) params.delete(key);
   if (spherexVettingPanelEligible() && state.spherexVettingSelection.size) {
-    params.set("spherex_classification", [...state.spherexVettingSelection].sort().join(","));
+    params.set("spherex_classification", orderedSpherexVettingClassifications(state.spherexVettingSelection).join(","));
   }
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
@@ -1378,6 +1390,21 @@ function spherexVettingPanelEligible() {
   return Boolean(state.raw?.meta?.spherex_vetting_available && currentSpherexVettingKey());
 }
 
+function spherexVettingClassificationLabel(value) {
+  return spherexVettingClassificationDefinitionByValue.get(value)?.label || value;
+}
+
+function orderedSpherexVettingClassifications(values) {
+  return [...values].sort((left, right) => {
+    const leftDefinition = spherexVettingClassificationDefinitionByValue.get(left);
+    const rightDefinition = spherexVettingClassificationDefinitionByValue.get(right);
+    if (leftDefinition && rightDefinition) return leftDefinition.index - rightDefinition.index;
+    if (leftDefinition) return -1;
+    if (rightDefinition) return 1;
+    return spherexVettingClassificationLabel(left).localeCompare(spherexVettingClassificationLabel(right));
+  });
+}
+
 function spherexVettingOptions() {
   const objectIdsByClassification = new Map();
   for (const row of state.raw?.catalog?.spherexVetting || []) {
@@ -1392,20 +1419,15 @@ function spherexVettingOptions() {
   for (const classification of state.spherexVettingSelection) {
     if (!objectIdsByClassification.has(classification)) objectIdsByClassification.set(classification, new Set());
   }
-  return [...objectIdsByClassification.entries()]
-    .map(([value, objectIds]) => ({ value, count: objectIds.size }))
-    .sort((left, right) => {
-      if (left.value === spherexMissingVettingClassification) return 1;
-      if (right.value === spherexMissingVettingClassification) return -1;
-      return left.value.localeCompare(right.value);
-    });
+  return orderedSpherexVettingClassifications(objectIdsByClassification.keys())
+    .map((value) => ({ value, count: objectIdsByClassification.get(value).size }));
 }
 
 function updateSpherexVettingControl() {
   const panel = el["spherex-vetting-panel"];
-  const select = el["spherex-vetting-classifications"];
+  const classificationList = el["spherex-vetting-classifications"];
   const status = el["spherex-vetting-status"];
-  if (!panel || !select || !status) return;
+  if (!panel || !classificationList || !status) return;
   const eligible = spherexVettingPanelEligible();
   panel.hidden = !eligible;
   if (!eligible) return;
@@ -1413,9 +1435,9 @@ function updateSpherexVettingControl() {
   const key = currentSpherexVettingKey();
   const ready = state.spherexVettingKey === key;
   const failed = state.spherexVettingErrorKey === key;
-  select.disabled = !ready;
   if (!ready) {
-    select.innerHTML = `<option disabled>${failed ? "Classifications unavailable" : "Loading classifications…"}</option>`;
+    classificationList.setAttribute("aria-busy", "true");
+    classificationList.innerHTML = `<span>${failed ? "Classifications unavailable" : "Loading classifications…"}</span>`;
     status.textContent = failed
       ? "Could not load the SPHEREx visual-vetting classifications for these axes."
       : "Loading classifications for the selected SPHEREx axes…";
@@ -1424,17 +1446,21 @@ function updateSpherexVettingControl() {
   }
 
   status.classList.remove("error");
+  classificationList.removeAttribute("aria-busy");
   const options = spherexVettingOptions();
-  select.size = Math.min(12, Math.max(3, options.length));
-  select.innerHTML = options.map((option) => {
-    const selected = state.spherexVettingSelection.has(option.value) ? " selected" : "";
+  classificationList.innerHTML = options.map((option) => {
+    const checked = state.spherexVettingSelection.has(option.value) ? " checked" : "";
     const missingClass = option.value === spherexMissingVettingClassification
-      ? ' class="spherex-vetting-missing"'
+      ? " spherex-vetting-missing"
       : "";
-    const label = option.value === spherexMissingVettingClassification ? "Missing" : option.value;
-    return `<option value="${escapeHtml(option.value)}"${missingClass}${selected}>${escapeHtml(label)} (${option.count.toLocaleString()})</option>`;
+    const label = spherexVettingClassificationLabel(option.value);
+    return `<label class="spherex-vetting-choice${missingClass}">`
+      + `<input type="checkbox" value="${escapeHtml(option.value)}" data-spherex-vetting-classification${checked}>`
+      + `<span class="spherex-vetting-choice-label">${escapeHtml(label)}</span>`
+      + `<span class="spherex-vetting-choice-count">${option.count.toLocaleString()}</span>`
+      + "</label>";
   }).join("");
-  status.textContent = "No selection shows all classifications. Use Ctrl/Command-click to select more than one.";
+  status.textContent = "No selection shows all classifications. Checked classifications are combined.";
 }
 
 async function loadSpherexVetting(key) {
