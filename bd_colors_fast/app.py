@@ -60,6 +60,7 @@ def _np_trapezoid(y: Any, x: Any) -> Any:
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+EPHEMERIDES_DIR = STATIC_DIR / "ephemerides"
 
 DEFAULT_HOST = "mocadb.ca"
 DEFAULT_USERNAME = "public"
@@ -31083,6 +31084,18 @@ def eplv_collaborations_page():
 @app.get("/js/eplv_collaborations_globe")
 def eplv_collaborations_globe_page():
     return send_from_directory(STATIC_DIR, "eplv_collaborations_globe.html")
+
+
+@app.get("/ephemerides/<page_name>/")
+@app.get("/js/ephemerides/<page_name>/")
+def ephemerides_page(page_name: str):
+    return send_from_directory(EPHEMERIDES_DIR, f"{page_name}/index.html")
+
+
+@app.get("/ephemerides/<page_name>/<path:filename>")
+@app.get("/js/ephemerides/<page_name>/<path:filename>")
+def ephemerides_asset(page_name: str, filename: str):
+    return send_from_directory(EPHEMERIDES_DIR, f"{page_name}/{filename}")
 
 
 @app.get("/gaia-cmd")
