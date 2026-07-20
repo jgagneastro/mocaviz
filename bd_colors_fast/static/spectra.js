@@ -602,6 +602,7 @@ function renderSpectra() {
     return;
   }
   setSpectraLoading(true);
+  const nonCanonicalFluxUnitCount = updateSpectraFluxUnitControls();
   const processed = processSpectraPayload();
   speState.processed = processed;
   updateLowresToggleState(processed);
@@ -696,9 +697,12 @@ function renderSpectra() {
   const displayBinsText = displayResolutionDecreased
     ? ` Display resolving power is decreased to ${spectraDisplayBinsPerMicron().toLocaleString()} bins/μm${speEl["spe-xlog"].checked || speEl["spe-ylog"].checked ? " with log-space averaging for log axes" : ""}.`
     : "";
-  speEl["spe-hint"].textContent = (showSnr
+  const fluxUnitNotice = nonCanonicalFluxUnitCount
+    ? ` ${pluralize(nonCanonicalFluxUnitCount, "spectrum uses", "spectra use")} native or relative flux units; Jy conversion is disabled and unnormalized values retain the units recorded for each spectrum.`
+    : "";
+  speEl["spe-hint"].textContent = ((showSnr
     ? "Displayed values are flux divided by flux uncertainty per pixel."
-    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.")) + displayBinsText;
+    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.")) + fluxUnitNotice + displayBinsText).trim();
   renderSpectraTable();
   updateSpectraIgnoreControls();
   setSpectraLoading(false);
@@ -802,16 +806,19 @@ function processSpectraPayload() {
     return aOrder - bOrder;
   }).map((spectrum, index) => {
     const metadata = spectrum.metadata || {};
+    const fluxUnitInfo = spectrumFluxUnitInfo(metadata);
     const color = spectraColorForSpecid(Number(spectrum.moca_specid));
     const rawRows = (spectrum.rows || []).map((row, rowIndex) => {
       const lam = wavelengthMicron(row.lam);
       const ignored = ignoredFlag(row.ignored);
-      const rawFlambdaUm = Number(row.sp) * 10000.0;
-      const rawErrFlambdaUm = finite(row.esp) ? Number(row.esp) * 10000.0 : null;
-      const converted = useFnu && finite(lam)
+      const storedFlux = Number(row.sp);
+      const storedFluxUnc = finite(row.esp) ? Number(row.esp) : null;
+      const rawFlambdaUm = fluxUnitInfo.canonical ? storedFlux * 10000.0 : storedFlux;
+      const rawErrFlambdaUm = finite(storedFluxUnc) ? (fluxUnitInfo.canonical ? storedFluxUnc * 10000.0 : storedFluxUnc) : null;
+      const converted = useFnu && fluxUnitInfo.canonical && finite(lam)
         ? rawFlambdaUm * lam * lam * 1e20 / speSpeedOfLight
         : rawFlambdaUm;
-      const convertedErr = useFnu && finite(lam) && finite(rawErrFlambdaUm)
+      const convertedErr = useFnu && fluxUnitInfo.canonical && finite(lam) && finite(rawErrFlambdaUm)
         ? rawErrFlambdaUm * lam * lam * 1e20 / speSpeedOfLight
         : rawErrFlambdaUm;
       return {
@@ -853,6 +860,7 @@ function processSpectraPayload() {
           yerr,
           rawFlambdaUm: row.rawFlambdaUm,
           rawErrFlambdaUm: row.rawErrFlambdaUm,
+          rawFluxUnit: fluxUnitInfo.displayUnit,
           ignored: row.ignored,
           normalized: normalize,
           unit: yAxisUnit(),
@@ -879,6 +887,7 @@ function processSpectraPayload() {
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
+      fluxUnitInfo,
       name: spectrumLegendName(metadata, Number(spectrum.moca_specid), displayPoints),
       rawRows,
       points,
@@ -1381,8 +1390,8 @@ function hoverTemplate(customData) {
       ...referenceLines,
       "λ = %{x:.6g} μm",
       "S/N per pixel = %{y:.6g}",
-      "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
-      "stored error = %{customdata.rawErrFlambdaUm:.4e} W/m²/μm",
+      "stored Fλ = %{customdata.rawFlambdaUm:.4e} %{customdata.rawFluxUnit}",
+      "stored error = %{customdata.rawErrFlambdaUm:.4e} %{customdata.rawFluxUnit}",
       "ignored = %{customdata.ignored}",
       "<extra></extra>",
     ].join("<br>");
@@ -1396,7 +1405,7 @@ function hoverTemplate(customData) {
     "λ = %{x:.6g} μm",
     `${speEl["spe-normalize"].checked ? "Normalized flux" : "Flux"} = %{y:.6g} %{customdata.unit}`,
     "error = %{customdata.yerr:.3g} %{customdata.unit}",
-    "stored Fλ = %{customdata.rawFlambdaUm:.4e} W/m²/μm",
+    "stored Fλ = %{customdata.rawFlambdaUm:.4e} %{customdata.rawFluxUnit}",
     "ignored = %{customdata.ignored}",
     "<extra></extra>",
   ].join("<br>");
@@ -1475,7 +1484,7 @@ function renderSpectraTable() {
     speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["plot", "specid", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "ignored"];
+    const columns = ["plot", "specid", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flux_units", "ignored"];
     if (spectraManagementToolsVisible()) columns.splice(3, 0, "row_id");
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
@@ -1486,7 +1495,8 @@ function renderSpectraTable() {
       wavelength_um: formatNumber(point.lam, 6),
       display_flux: formatScientific(point.y),
       display_error: finite(point.yerr) ? formatScientific(point.yerr) : "",
-      raw_flambda_w_m2_um: formatScientific(point.rawFlambdaUm),
+      raw_flambda: formatScientific(point.rawFlambdaUm),
+      raw_flux_units: point.rawFluxUnit || "",
       ignored: point.ignored,
     }));
     speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "reference"]) });
@@ -1501,6 +1511,7 @@ function renderSpectraTable() {
       object: spectrum.metadata?.designation || "",
       spectral_type: spectrum.metadata?.spectral_type || "",
       instrument: instrumentLabel(spectrum.metadata),
+      flux_units: spectrum.metadata?.flux_units || "",
       reference: spectrumReferenceHtml(spectrum.metadata),
       rows: spectrum.rawRows.length.toLocaleString(),
       resolving_power: finite(spectrum.averageResolvingPower) ? Math.round(Number(spectrum.averageResolvingPower)).toLocaleString() : "",
@@ -1509,7 +1520,7 @@ function renderSpectraTable() {
   });
   speEl["spe-table-title"].textContent = `Selected spectra (${pluralize(rows.length, "spectrum", "spectra")})`;
   speEl["spe-table-subtitle"].textContent = "Click or box-select plotted points to inspect spectral rows.";
-  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "reference", "report"]) });
+  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "flux_units", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "reference", "report"]) });
 }
 
 function spectraColorForSpecid(specid) {
@@ -1766,8 +1777,8 @@ function renderEmptySpectra(message) {
   updateSpectraIgnoreControls();
 }
 
-const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda_w_m2_angstrom", "flux_flambda_unc_w_m2_angstrom", "ignored"];
-const rawSpectrumNumericExportColumns = new Set(rawSpectrumExportColumns);
+const rawSpectrumExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "flux_flambda", "flux_flambda_unc", "flux_units", "ignored"];
+const rawSpectrumNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "flux_flambda", "flux_flambda_unc", "ignored"]);
 
 function rawSpectrumExportRows(spectrum) {
   const metadata = spectrum.metadata || {};
@@ -1775,8 +1786,9 @@ function rawSpectrumExportRows(spectrum) {
     moca_specid: spectrum.moca_specid,
     moca_oid: metadata.moca_oid || "",
     wavelength_um: row.lam,
-    flux_flambda_w_m2_angstrom: row.sp,
-    flux_flambda_unc_w_m2_angstrom: row.esp ?? "",
+    flux_flambda: row.sp,
+    flux_flambda_unc: row.esp ?? "",
+    flux_units: metadata.flux_units || "unknown",
     ignored: ignoredFlag(row.ignored),
   }));
 }
@@ -1805,8 +1817,8 @@ function downloadRawSpectrum(specid, format = "csv") {
   downloadBlob(lines.join("\n"), `mocadb_spectrum_specid${specid}.csv`, "text/csv;charset=utf-8");
 }
 
-const plottedSpectraExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "display_unit", "normalized", "ignored"];
-const plottedSpectraNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda_w_m2_um", "raw_flambda_unc_w_m2_um", "normalized", "ignored"]);
+const plottedSpectraExportColumns = ["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flambda_unc", "raw_flux_units", "display_unit", "normalized", "ignored"];
+const plottedSpectraNumericExportColumns = new Set(["moca_specid", "moca_oid", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flambda_unc", "normalized", "ignored"]);
 
 function exportPlottedSpectra(format) {
   const columns = plottedSpectraExportColumns;
@@ -1819,8 +1831,9 @@ function exportPlottedSpectra(format) {
         wavelength_um: point.lam,
         display_flux: point.y,
         display_error: point.yerr ?? "",
-        raw_flambda_w_m2_um: point.rawFlambdaUm,
-        raw_flambda_unc_w_m2_um: point.rawErrFlambdaUm ?? "",
+        raw_flambda: point.rawFlambdaUm,
+        raw_flambda_unc: point.rawErrFlambdaUm ?? "",
+        raw_flux_units: point.rawFluxUnit || spectrum.fluxUnitInfo?.displayUnit || "unknown",
         display_unit: yAxisUnit(),
         normalized: speEl["spe-snr"].checked ? 0 : (speEl["spe-normalize"].checked ? 1 : 0),
         ignored: point.ignored,
@@ -1935,13 +1948,48 @@ function yAxisTitle() {
   }
   return speEl["spe-fnu"].checked
     ? "Flux density <i>F</i><sub>ν</sub> (Jy)"
-    : "Spectral flux density <i>F</i><sub>λ</sub> (W/m²/μm)";
+    : `Spectral flux density <i>F</i><sub>λ</sub> (${spectrumDisplayFluxUnit()})`;
 }
 
 function yAxisUnit() {
   if (speEl["spe-snr"].checked) return "S/N";
   if (speEl["spe-normalize"].checked) return "relative";
-  return speEl["spe-fnu"].checked ? "Jy" : "W/m²/μm";
+  return speEl["spe-fnu"].checked ? "Jy" : spectrumDisplayFluxUnit();
+}
+
+function spectrumFluxUnitInfo(metadata = {}) {
+  const storedUnit = String(metadata?.flux_units || "").trim();
+  const normalized = storedUnit.toLowerCase().replace(/[µμ]/g, "u").replace(/å/g, "angstrom");
+  const explicitlyRelative = !storedUnit || normalized === "no_units" || normalized.startsWith("relative");
+  const hasWatts = /(?:^|[^a-z])w(?:$|[^a-z])/.test(normalized);
+  const perSquareMeter = /m\s*(?:\^\s*)?-\s*2/.test(normalized) || /\/\s*m\s*(?:\^\s*)?2/.test(normalized) || normalized.includes("m²");
+  const perAngstrom = normalized.includes("angstrom") || /\/\s*\[?\s*a\s*\]?(?:$|[^a-z])/.test(normalized) || /(?:^|[^a-z])a\s*(?:\^\s*)?-\s*1(?:$|[^a-z])/.test(normalized);
+  const canonical = !explicitlyRelative && hasWatts && perSquareMeter && perAngstrom;
+  return {
+    canonical,
+    storedUnit: storedUnit || "unknown",
+    displayUnit: canonical ? "W/m²/μm" : (storedUnit || "native units"),
+  };
+}
+
+function spectrumDisplayFluxUnit() {
+  const infos = (speState.payload?.spectra || []).map((spectrum) => spectrumFluxUnitInfo(spectrum.metadata || {}));
+  if (!infos.length || infos.every((info) => info.canonical)) return "W/m²/μm";
+  const units = [...new Set(infos.map((info) => info.displayUnit))];
+  return units.length === 1 ? units[0] : "native units vary by spectrum";
+}
+
+function updateSpectraFluxUnitControls() {
+  const infos = (speState.payload?.spectra || []).map((spectrum) => spectrumFluxUnitInfo(spectrum.metadata || {}));
+  const nonCanonicalCount = infos.filter((info) => !info.canonical).length;
+  const fnu = speEl["spe-fnu"];
+  if (!fnu) return nonCanonicalCount;
+  if (nonCanonicalCount && fnu.checked) fnu.checked = false;
+  fnu.disabled = nonCanonicalCount > 0;
+  fnu.title = nonCanonicalCount
+    ? "Jy conversion requires every loaded spectrum to have absolute F_lambda units in W m^-2 Angstrom^-1."
+    : "";
+  return nonCanonicalCount;
 }
 
 function spectrumName(metadata, specid) {
