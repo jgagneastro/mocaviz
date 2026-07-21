@@ -1,7 +1,8 @@
 # MOCAdb Index Recommendations
 
-These are optional schema-change recommendations for the fast BD colors page.
-They are not applied by this prototype.
+These are optional schema-change recommendations for the MOCAviz pages. They
+are not applied by the application. Reviewable statements are grouped under
+`../sql/indexes/`.
 
 I checked these against live MOCAdb metadata from
 `information_schema.STATISTICS` and `information_schema.TABLES` on

@@ -1,4 +1,4 @@
--- Optional indexes for the bd_colors_fast prototype.
+-- Optional indexes for the maintained MOCAviz application.
 -- Compared against live information_schema.STATISTICS on 2026-05-08.
 -- Review with SHOW INDEX / EXPLAIN before applying to MOCAdb.
 -- Target database: mocadb_private_tables, not the public view database.

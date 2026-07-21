@@ -9,7 +9,7 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
-from bd_colors_fast.app import EPHEMERIDES_DIR, STATIC_DIR, app
+from mocaviz.app import EPHEMERIDES_DIR, STATIC_DIR, app
 
 
 PAGE_NAME = "page_occultation_2026"

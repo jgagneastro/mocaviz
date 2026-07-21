@@ -10,9 +10,9 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-import bd_colors_fast.app as app_module
+import mocaviz.app as app_module
 
-from bd_colors_fast.app import (
+from mocaviz.app import (
     GAIA_CMD_MEMBERSHIP_DOWNLOAD_FLOOR,
     GAIA_CMD_SEQUENCE_MAX_POINTS,
     _BoundedCache,
@@ -375,11 +375,13 @@ class JsPageOptimizationTests(unittest.TestCase):
             "moca_banyan_sigma_models": {"moca_bsmdid", "adopted", "public_adopted"},
             "calc_banyan_sigma": {"moca_oid", "moca_bsmdid", "max_observables", "is_public"},
         }
-        with (
-            patch.object(app_module, "_db_table_exists", return_value=True),
-            patch.object(app_module, "_db_table_columns", side_effect=lambda _conn, table: table_columns.get(table, set())),
-        ):
-            sql, _params = app_module._companion_explorer_common_ctes(object(), {})
+        with patch.object(app_module, "_db_table_exists", return_value=True):
+            with patch.object(
+                app_module,
+                "_db_table_columns",
+                side_effect=lambda _conn, table: table_columns.get(table, set()),
+            ):
+                sql, _params = app_module._companion_explorer_common_ctes(object(), {})
         self.assertNotIn("ROW_NUMBER()", sql)
         self.assertIn("STRAIGHT_JOIN data_distances dd", sql)
         self.assertIn("STRAIGHT_JOIN data_spectral_types dst", sql)
@@ -560,16 +562,14 @@ class JsPageOptimizationTests(unittest.TestCase):
         dual = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
         app_module._XYZUVW_SURFACE_CACHE.clear()
         with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch.object(app_module, "SHARED_PAGE_CACHE_DIR", Path(directory)),
-                patch.object(
+            with patch.object(app_module, "SHARED_PAGE_CACHE_DIR", Path(directory)):
+                with patch.object(
                     app_module,
                     "_xyzuvw_model_surfaces",
                     side_effect=lambda _models, axes: [{"axes": "".join(axes)}],
-                ) as generator,
-            ):
-                _xyzuvw_payload_from_base(single, base, "single-surface-test", 1.0)
-                payload = _xyzuvw_payload_from_base(dual, base, "dual-surface-test", 1.0)
+                ) as generator:
+                    _xyzuvw_payload_from_base(single, base, "single-surface-test", 1.0)
+                    payload = _xyzuvw_payload_from_base(dual, base, "dual-surface-test", 1.0)
         app_module._XYZUVW_CACHE.clear()
         app_module._XYZUVW_SURFACE_CACHE.clear()
         self.assertEqual(generator.call_count, 2)

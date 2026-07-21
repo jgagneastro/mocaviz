@@ -26,7 +26,7 @@ class DeprecatedDashArchiveTests(unittest.TestCase):
         )
 
     def test_production_python_entry_points_do_not_import_dash(self) -> None:
-        for relative_path in ("app.py", "bd_colors_fast/app.py"):
+        for relative_path in ("app.py", "mocaviz/app.py"):
             source_path = REPOSITORY_ROOT / relative_path
             tree = ast.parse(source_path.read_text(encoding="utf-8"))
             imported_roots: set[str] = set()

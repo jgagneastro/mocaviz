@@ -4,9 +4,9 @@ import gzip
 import json
 import unittest
 
-import bd_colors_fast.app as app_module
+import mocaviz.app as app_module
 
-from bd_colors_fast.app import app
+from mocaviz.app import app
 
 
 def decoded_json(response):

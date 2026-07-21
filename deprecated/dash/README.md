@@ -2,7 +2,7 @@
 
 This directory is an unsupported archive of the former MOCAviz Dash
 application. Production does not import, mount, or deploy this application.
-New features and fixes belong in `bd_colors_fast/`.
+New features and fixes belong in `mocaviz/`.
 
 The archive includes every former Dash page, including the retired
 `mcmc-rvs`, `oage-pdfs`, and `trueflow-age-pdfs` applications. The production

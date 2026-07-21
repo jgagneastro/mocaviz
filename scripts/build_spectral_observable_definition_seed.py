@@ -1274,7 +1274,7 @@ def write_seed_sql(
     ]
     sql = [
         "-- Seed metadata parsed from spectra_index.pro.",
-        "-- Apply recommended_spectral_observable_definitions_schema.sql first.",
+        "-- Apply sql/schema/recommended_spectral_observable_definitions_schema.sql first.",
         "-- Rows are marked quality_status='review' until publication/id mappings are audited.",
         "",
         _insert_sql(

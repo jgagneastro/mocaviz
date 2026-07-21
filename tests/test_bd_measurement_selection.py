@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-import bd_colors_fast.app as app_module
+import mocaviz.app as app_module
 
 
 class BdMeasurementSelectionTests(unittest.TestCase):

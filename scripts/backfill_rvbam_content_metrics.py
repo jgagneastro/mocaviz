@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Backfill persisted RVBAM RV-content metrics in MOCAdb.
 
-This script reuses the RV-content diagnostic code from bd_colors_fast.app so
+This script reuses the RV-content diagnostic code from mocaviz.app so
 the stored values match the current RVBAM explorer definitions.
 """
 
@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from bd_colors_fast import app as mocaviz_app  # noqa: E402
+from mocaviz import app as mocaviz_app  # noqa: E402
 
 
 METHOD = "rvbam.segment_rv_content"

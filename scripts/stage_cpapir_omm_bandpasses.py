@@ -147,7 +147,7 @@ def build_sql() -> str:
 
 
 def main() -> None:
-    output = Path("bd_colors_fast/stage_omm_cpapir_bandpasses.sql")
+    output = Path("sql/staging/stage_omm_cpapir_bandpasses.sql")
     output.write_text(build_sql(), encoding="utf-8")
     print(output)
 

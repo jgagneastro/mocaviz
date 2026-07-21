@@ -15,7 +15,7 @@ from werkzeug.serving import run_simple
 
 load_dotenv()
 
-from bd_colors_fast.app import app as production_app
+from mocaviz.app import app as production_app
 
 
 # Phusion Passenger imports this module and serves ``application``.

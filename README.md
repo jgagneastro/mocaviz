@@ -8,7 +8,11 @@ application is retained only as an unsupported archive under
 ## Repository layout
 
 - `app.py`: production WSGI entry point used by Passenger.
-- `bd_colors_fast/`: maintained Flask application, static pages, and APIs.
+- `mocaviz/`: maintained Flask application package, static pages, and APIs.
+- `bd_colors_fast/`: compatibility launcher for older local automation; it
+  delegates to `mocaviz/` and contains no maintained application code.
+- `sql/`: manually reviewed database indexes, schema changes, staging scripts,
+  and views, grouped by purpose.
 - `scripts/`: maintenance, browser-probe, and benchmark helpers.
 - `tests/`: production regression tests.
 - `deprecated/dash/`: retired Dash entry point, pages, assets, and helpers.

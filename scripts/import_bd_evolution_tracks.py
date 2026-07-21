@@ -20,7 +20,7 @@ DEFAULT_USERNAME = "public"
 DEFAULT_PASSWORD = "z@nUg_2h7_%?31y88"
 DEFAULT_DBNAME = "mocadb"
 DEFAULT_CSV = (
-    Path(__file__).resolve().parents[1] / "bd_colors_fast" / "data" / "moca_stitched.csv"
+    Path(__file__).resolve().parents[1] / "mocaviz" / "data" / "moca_stitched.csv"
 )
 TRACK_NAME = "Sonora Diamondback extended with MOCAdb empirical tracks"
 ORIGIN = "mocaviz/scripts/import_bd_evolution_tracks.py"
