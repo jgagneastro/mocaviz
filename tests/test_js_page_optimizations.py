@@ -674,6 +674,43 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("Loading best-fit comparison", "".join(upper_loader))
         self.assertIn("Loading χ² map", "".join(lower_loader))
 
+    def test_spectral_pages_share_extended_lty_feature_catalog(self):
+        catalog = (app_module.STATIC_DIR / "brown_dwarf_spectral_features.js").read_text(encoding="utf-8")
+        for formula in (
+            'feature("MgH"',
+            'feature("CaOH"',
+            'feature("Li I"',
+            'feature("CrH"',
+            'feature("CH4"',
+            'feature("NH3"',
+            'feature("LiCl"',
+            'feature("H2 CIA far-IR"',
+        ):
+            self.assertIn(formula, catalog)
+        self.assertIn("[0.4215, 0.4240]", catalog)
+        self.assertIn("[20.0000, 50.0000]", catalog)
+        self.assertIn('"Y model"', catalog)
+
+        for html_name, script_name in (
+            ("spectra.html", "spectra.js"),
+            ("spectral_typing.html", "spectral_typing.js"),
+        ):
+            with self.subTest(html_name=html_name):
+                html = (app_module.STATIC_DIR / html_name).read_text(encoding="utf-8")
+                source = (app_module.STATIC_DIR / script_name).read_text(encoding="utf-8")
+                self.assertIn("Show L/T/Y chemical features (0.4–50 μm)", html)
+                self.assertLess(
+                    html.index("brown_dwarf_spectral_features.js"),
+                    html.index(script_name),
+                )
+                self.assertIn("mocaBrownDwarfSpectralFeatureBands", source)
+                self.assertIn("mocaBrownDwarfSpectralFeatureBandsInRange", source)
+
+        typing_source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        self.assertIn('norm: "0.400-50.000", bins: 50', typing_source)
+        self.assertIn("featureShapes(xRange)", typing_source)
+        self.assertIn("featureAnnotations(xRange)", typing_source)
+
     def test_spectral_typing_has_global_chi2_rank_navigation(self):
         html = self.client.get("/js/spectral-typing").get_data(as_text=True)
         source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")

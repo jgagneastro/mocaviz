@@ -4,7 +4,7 @@ const sptNormPresets = [
   { value: "red-visible", label: "Red-visible", norm: "0.520-0.900", bins: 800 },
   { value: sptDefaultNormPreset, label: "NIR ground-based", norm: sptDefaultNormText },
   { value: "nir-space", label: "NIR space-based (JWST NIRSpec Prism, SPHEREx)", norm: "0.800-5.000" },
-  { value: "extended-bd-sed", label: "Extended BD SED", norm: "0.800-20.000" },
+  { value: "extended-bd-sed", label: "Extended L/T/Y SED (0.4–50 μm)", norm: "0.400-50.000", bins: 50 },
 ];
 const sptNormPresetByValue = new Map(sptNormPresets.map((preset) => [preset.value, preset]));
 const sptDefaultBins = 200;
@@ -21,28 +21,7 @@ const sptStandardRed = "#E41A1C";
 const sptStandardPalette = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF"];
 const sptCompositeColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#666666"];
 
-const sptFeatureBands = [
-  { name: "H2O", range: [0.92, 0.96], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "FeH", range: [0.985, 1.005], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "VO", range: [1.045, 1.08], fill: "rgba(0,139,0,0.10)", text: "rgba(0,139,0,0.65)" },
-  { name: "H2O", range: [1.13, 1.17], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "VO", range: [1.17, 1.2], fill: "rgba(0,139,0,0.10)", text: "rgba(0,139,0,0.65)" },
-  { name: "FeH", range: [1.19, 1.24], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "Na", range: [1.137, 1.142], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)", labelY: 0.875 },
-  { name: "K", range: [1.169, 1.181], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)", labelY: 0.835 },
-  { name: "K", range: [1.243, 1.253], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)" },
-  { name: "H2O", range: [1.32, 1.35], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "H2O", range: [1.5, 1.62], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "FeH", range: [1.583, 1.62], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "CH4", range: [1.6, 1.68], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "CH4", range: [1.72, 1.78], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "H2O", range: [1.95, 2.11], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "Na", range: [2.195, 2.205], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)" },
-  { name: "CH4", range: [2.2, 2.27], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "CO", range: [2.293, 2.4], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "CO2", range: [4.15, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "CO", range: [4.4, 4.95], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-];
+const sptFeatureBands = globalThis.mocaBrownDwarfSpectralFeatureBands || [];
 
 const sptState = {
   gridOptions: [],
@@ -1455,9 +1434,9 @@ function renderSpectrumPlot(payload, entry) {
       zeroline: false,
     },
     legend: { orientation: "v", x: 1.02, xanchor: "left", y: 1, bgcolor: "rgba(255,255,255,0.75)" },
-    shapes: sptEl["spt-showfeatures"].checked ? featureShapes() : [],
+    shapes: sptEl["spt-showfeatures"].checked ? featureShapes(xRange) : [],
     annotations: [
-      ...(sptEl["spt-showfeatures"].checked ? featureAnnotations() : []),
+      ...(sptEl["spt-showfeatures"].checked ? featureAnnotations(xRange) : []),
       metricAnnotation(entry, payload),
     ].filter(Boolean),
   };
@@ -2070,31 +2049,57 @@ function splitRowsByWavelengthGap(rows) {
   return chunks.filter((chunk) => chunk.length >= 2);
 }
 
-function featureShapes() {
-  return sptFeatureBands.map((band) => ({
-    type: "rect",
-    x0: band.range[0],
-    x1: band.range[1],
-    xref: "x",
-    y0: 0,
-    y1: 0.94,
-    yref: "paper",
-    fillcolor: band.fill,
-    line: { width: 0 },
-    layer: "below",
-  }));
+function visibleSpectralTypingFeatureBands(xRange) {
+  if (typeof globalThis.mocaBrownDwarfSpectralFeatureBandsInRange === "function") {
+    return globalThis.mocaBrownDwarfSpectralFeatureBandsInRange(xRange);
+  }
+  const xmin = Math.min(...xRange);
+  const xmax = Math.max(...xRange);
+  return sptFeatureBands.filter((band) => band.range[1] >= xmin && band.range[0] <= xmax);
 }
 
-function featureAnnotations() {
-  return sptFeatureBands.map((band, index) => ({
-    x: 0.5 * (band.range[0] + band.range[1]),
-    xref: "x",
-    y: band.labelY ?? 0.98 - 0.035 * (index % 3),
-    yref: "paper",
-    text: band.name,
-    showarrow: false,
-    font: { size: 12, color: band.text },
-  }));
+function visibleSpectralTypingFeatureRange(band, xRange) {
+  if (typeof globalThis.mocaClippedSpectralFeatureBandRange === "function") {
+    return globalThis.mocaClippedSpectralFeatureBandRange(band, xRange);
+  }
+  const xmin = Math.min(...xRange);
+  const xmax = Math.max(...xRange);
+  return [Math.max(band.range[0], xmin), Math.min(band.range[1], xmax)];
+}
+
+function featureShapes(xRange) {
+  return visibleSpectralTypingFeatureBands(xRange).map((band) => {
+    const visibleRange = visibleSpectralTypingFeatureRange(band, xRange);
+    return {
+      type: "rect",
+      x0: visibleRange[0],
+      x1: visibleRange[1],
+      xref: "x",
+      y0: 0,
+      y1: 0.94,
+      yref: "paper",
+      fillcolor: band.fill,
+      line: { width: 0 },
+      layer: "below",
+    };
+  });
+}
+
+function featureAnnotations(xRange) {
+  return visibleSpectralTypingFeatureBands(xRange).map((band) => {
+    const visibleRange = visibleSpectralTypingFeatureRange(band, xRange);
+    return {
+      x: 0.5 * (visibleRange[0] + visibleRange[1]),
+      xref: "x",
+      y: 0.98 - 0.035 * (Number(band.labelTier) || 0),
+      yref: "paper",
+      text: band.name,
+      showarrow: false,
+      font: { size: 10, color: band.text },
+      textangle: -90,
+      yanchor: "top",
+    };
+  });
 }
 
 function metricAnnotation(entry, payload = null) {

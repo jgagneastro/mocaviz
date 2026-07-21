@@ -107,7 +107,7 @@
               <option value="red-visible">Red-visible</option>
               <option value="nir-ground" selected>NIR ground-based</option>
               <option value="nir-space">NIR space-based (JWST NIRSpec Prism, SPHEREx)</option>
-              <option value="extended-bd-sed">Extended BD SED</option>
+              <option value="extended-bd-sed">Extended L/T/Y SED (0.4–50 μm)</option>
             </select>
           </label>
           <label>
@@ -137,7 +137,7 @@
           </label>
           <label class="checkline">
             <input id="spt-showfeatures" type="checkbox" checked>
-            <span>Show chemical features</span>
+            <span>Show L/T/Y chemical features (0.4–50 μm)</span>
           </label>
           <label class="checkline">
             <input id="spt-disable-lowres" type="checkbox">
@@ -297,6 +297,7 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a"></script>
+  <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
+  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a"></script>
 </body>
 </html>

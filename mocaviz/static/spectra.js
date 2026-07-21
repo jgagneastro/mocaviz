@@ -8,38 +8,7 @@ const speLowResolutionResolvingPowerPerPixelThreshold = 45;
 const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
-const speFeatureBands = [
-  { name: "H2O", range: [0.92, 0.96], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "FeH", range: [0.985, 1.005], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "VO", range: [1.045, 1.08], fill: "rgba(0,139,0,0.10)", text: "rgba(0,139,0,0.65)" },
-  { name: "H2O", range: [1.13, 1.17], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "VO", range: [1.17, 1.2], fill: "rgba(0,139,0,0.10)", text: "rgba(0,139,0,0.65)" },
-  { name: "FeH", range: [1.19, 1.24], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "Na", range: [1.137, 1.142], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)", labelY: 0.98 },
-  { name: "K", range: [1.169, 1.181], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)", labelY: 0.955 },
-  { name: "K", range: [1.243, 1.253], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)" },
-  { name: "H2O", range: [1.32, 1.35], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "H2O", range: [1.5, 1.62], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "FeH", range: [1.583, 1.62], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "CH4", range: [1.6, 1.68], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "CH4", range: [1.72, 1.78], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "H2O", range: [1.95, 2.11], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "Na", range: [2.195, 2.205], fill: "rgba(139,100,0,0.10)", text: "rgba(139,100,0,0.65)" },
-  { name: "CH4", range: [2.2, 2.27], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "CO", range: [2.293, 2.4], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "H2O", range: [2.5, 3.1], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "CH4", range: [3.15, 3.45], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "NH3", range: [3.9, 4.5], fill: "rgba(20,120,120,0.10)", text: "rgba(20,110,110,0.65)" },
-  { name: "PH3", range: [4.2, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)", labelY: 0.955 },
-  { name: "CO2", range: [4.15, 4.35], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)", labelY: 0.98 },
-  { name: "CO", range: [4.4, 4.95], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "H2O", range: [5.0, 7.0], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)" },
-  { name: "CH4", range: [7.0, 9.2], fill: "rgba(139,69,139,0.10)", text: "rgba(139,69,139,0.65)" },
-  { name: "Silicates", range: [9.0, 13.0], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "NH3", range: [10.0, 11.0], fill: "rgba(20,120,120,0.10)", text: "rgba(20,110,110,0.65)", labelY: 0.955 },
-  { name: "CO2", range: [14.7, 15.3], fill: "rgba(90,90,90,0.08)", text: "rgba(60,60,60,0.65)" },
-  { name: "H2O", range: [15.0, 20.0], fill: "rgba(0,0,139,0.10)", text: "rgba(0,0,139,0.65)", labelY: 0.955 },
-];
+const speFeatureBands = globalThis.mocaBrownDwarfSpectralFeatureBands || [];
 
 const speState = {
   selected: [],
@@ -1252,14 +1221,19 @@ function spectraLayout(processed) {
   const xmin = xRange ? xRange[0] : NaN;
   const xmax = xRange ? xRange[1] : NaN;
   if (speEl["spe-showfeatures"].checked && finite(xmin) && finite(xmax)) {
-    for (const band of speFeatureBands) {
-      if (band.range[1] < xmin || band.range[0] > xmax) continue;
+    const visibleBands = typeof globalThis.mocaBrownDwarfSpectralFeatureBandsInRange === "function"
+      ? globalThis.mocaBrownDwarfSpectralFeatureBandsInRange([xmin, xmax])
+      : speFeatureBands.filter((band) => band.range[1] >= xmin && band.range[0] <= xmax);
+    for (const band of visibleBands) {
+      const visibleRange = typeof globalThis.mocaClippedSpectralFeatureBandRange === "function"
+        ? globalThis.mocaClippedSpectralFeatureBandRange(band, [xmin, xmax])
+        : [Math.max(band.range[0], xmin), Math.min(band.range[1], xmax)];
       shapes.push({
         type: "rect",
         xref: "x",
         yref: "paper",
-        x0: band.range[0],
-        x1: band.range[1],
+        x0: visibleRange[0],
+        x1: visibleRange[1],
         y0: 0,
         y1: 1,
         line: { width: 0 },
@@ -1267,8 +1241,8 @@ function spectraLayout(processed) {
         layer: "below",
       });
       annotations.push({
-        x: featureAnnotationX(band, xlog),
-        y: band.labelY || 0.992,
+        x: featureAnnotationX(visibleRange, xlog),
+        y: 0.992 - 0.037 * (Number(band.labelTier) || 0),
         xref: "x",
         yref: "paper",
         text: band.name,
@@ -1363,9 +1337,9 @@ function spectralPointInXRange(point, xRange) {
   return lam >= xRange[0] && lam <= xRange[1];
 }
 
-function featureAnnotationX(band, xlog) {
-  const x0 = Number(band.range?.[0]);
-  const x1 = Number(band.range?.[1]);
+function featureAnnotationX(range, xlog) {
+  const x0 = Number(range?.[0]);
+  const x1 = Number(range?.[1]);
   if (xlog && x0 > 0 && x1 > 0) return Math.log10(Math.sqrt(x0 * x1));
   return 0.5 * (x0 + x1);
 }
