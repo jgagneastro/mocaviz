@@ -107,7 +107,7 @@
           </div>
           <label class="checkline">
             <input id="atm-fit-outlier-mixture" type="checkbox" checked>
-            <span>Reject outliers with two-component likelihood</span>
+            <span>Robust measurement failures and stationary-source contaminants</span>
           </label>
           <label class="checkline">
             <input id="atm-fit-error-floor" type="checkbox" checked>
@@ -236,7 +236,7 @@
           <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated rows, or missions explicitly marked as display-ready, by default.</td></tr>
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
           <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
-          <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses the moving-star plus outlier likelihood during PM fits by default.</td></tr>
+          <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses a Gaussian moving-source likelihood plus a Student-t measurement-failure component, and activates a distinct stationary-source component only when supported by multiple separated measurements.</td></tr>
           <tr><td><code>fit_error_floor</code></td><td><code>0</code> disables it</td><td>Fits an extra RA/Decl. astrometric error floor by default.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
@@ -253,6 +253,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a"></script>
 </body>
 </html>

@@ -20128,75 +20128,204 @@ def _astrometry_curve_fit(arrays: Mapping[str, Any], p0: Any | None = None, sigm
         return _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
 
 
-def _astrometry_outlier_scales(arrays: Mapping[str, Any]) -> tuple[float, float]:
+ASTROMETRY_FAILURE_DOF = 4.0
+ASTROMETRY_BAD_PRIOR_ALPHA = 1.0
+ASTROMETRY_BAD_PRIOR_BETA = 19.0
+ASTROMETRY_STATIONARY_PRIOR_PROBABILITY = 0.10
+ASTROMETRY_STATIONARY_MIN_POSTERIOR_ODDS = 10.0
+ASTROMETRY_STATIONARY_MIN_EFFECTIVE_ROWS = 2.0
+ASTROMETRY_STATIONARY_MIN_SEPARATION = 3.0
+
+
+def _astrometry_effective_sigmas(
+    arrays: Mapping[str, Any],
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    floor_ra = max(float(error_floor_ra or 0.0), 0.0)
+    floor_dec = max(float(error_floor_dec or 0.0), 0.0)
+    return (
+        np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + floor_ra**2),
+        np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + floor_dec**2),
+    )
+
+
+def _astrometry_outlier_scales(arrays: Mapping[str, Any], params: Any | None = None) -> tuple[float, float]:
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     s_ra = np.asarray(arrays["s_ra"], dtype=float)
     s_dec = np.asarray(arrays["s_dec"], dtype=float)
+    if params is not None:
+        ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+        y_ra = y_ra - ra_model
+        y_dec = y_dec - dec_model
     mad_ra = np.nanmedian(np.abs(y_ra - np.nanmedian(y_ra)))
     mad_dec = np.nanmedian(np.abs(y_dec - np.nanmedian(y_dec)))
-    scale_ra = max(float(1.4826 * mad_ra) if np.isfinite(mad_ra) else 0.0, 4.0 * float(np.nanmedian(s_ra)), 1.0)
-    scale_dec = max(float(1.4826 * mad_dec) if np.isfinite(mad_dec) else 0.0, 4.0 * float(np.nanmedian(s_dec)), 1.0)
+    scale_ra = max(float(2.0 * 1.4826 * mad_ra) if np.isfinite(mad_ra) else 0.0, 4.0 * float(np.nanmedian(s_ra)), 1.0)
+    scale_dec = max(float(2.0 * 1.4826 * mad_dec) if np.isfinite(mad_dec) else 0.0, 4.0 * float(np.nanmedian(s_dec)), 1.0)
     return scale_ra, scale_dec
 
 
-def _astrometry_mixture_responsibilities(
+def _astrometry_normal_2d_logpdf(
+    residual_ra: Any,
+    residual_dec: Any,
+    sigma_ra: Any,
+    sigma_dec: Any,
+) -> np.ndarray:
+    sig_ra = np.clip(np.asarray(sigma_ra, dtype=float), 1e-6, np.inf)
+    sig_dec = np.clip(np.asarray(sigma_dec, dtype=float), 1e-6, np.inf)
+    return (
+        -0.5 * ((np.asarray(residual_ra, dtype=float) / sig_ra) ** 2 + (np.asarray(residual_dec, dtype=float) / sig_dec) ** 2)
+        - np.log(2.0 * math.pi * sig_ra * sig_dec)
+    )
+
+
+def _astrometry_student_t_2d_logpdf(
+    residual_ra: Any,
+    residual_dec: Any,
+    sigma_ra: Any,
+    sigma_dec: Any,
+    dof: float = ASTROMETRY_FAILURE_DOF,
+) -> np.ndarray:
+    nu = max(float(dof), 1e-3)
+    sig_ra = np.clip(np.asarray(sigma_ra, dtype=float), 1e-6, np.inf)
+    sig_dec = np.clip(np.asarray(sigma_dec, dtype=float), 1e-6, np.inf)
+    distance_sq = (
+        (np.asarray(residual_ra, dtype=float) / sig_ra) ** 2
+        + (np.asarray(residual_dec, dtype=float) / sig_dec) ** 2
+    )
+    normalizer = math.lgamma(0.5 * (nu + 2.0)) - math.lgamma(0.5 * nu) - math.log(nu * math.pi)
+    return normalizer - np.log(sig_ra * sig_dec) - 0.5 * (nu + 2.0) * np.log1p(distance_sq / nu)
+
+
+def _astrometry_component_log_probabilities(
     arrays: Mapping[str, Any],
     params: Any,
-    stationary_ra: float,
-    stationary_dec: float,
-    mixture_weight: float,
-    outlier_scale_ra: float,
-    outlier_scale_dec: float,
+    failure_scale_ra: float,
+    failure_scale_dec: float,
+    *,
     error_floor_ra: float = 0.0,
     error_floor_dec: float = 0.0,
+    stationary_ra: float | None = None,
+    stationary_dec: float | None = None,
 ) -> np.ndarray:
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
-    s_ra = np.asarray(arrays["s_ra"], dtype=float)
-    s_dec = np.asarray(arrays["s_dec"], dtype=float)
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
-    floor_ra = max(float(error_floor_ra or 0.0), 0.0)
-    floor_dec = max(float(error_floor_dec or 0.0), 0.0)
-    sig_ra_mov = np.sqrt(s_ra**2 + floor_ra**2)
-    sig_dec_mov = np.sqrt(s_dec**2 + floor_dec**2)
-    sig_ra_out = np.sqrt(sig_ra_mov**2 + float(outlier_scale_ra) ** 2)
-    sig_dec_out = np.sqrt(sig_dec_mov**2 + float(outlier_scale_dec) ** 2)
-    w = float(np.clip(mixture_weight, 1e-4, 1.0 - 1e-4))
-    log_mov = (
-        math.log(w)
-        - 0.5 * (((y_ra - ra_model) / sig_ra_mov) ** 2 + ((y_dec - dec_model) / sig_dec_mov) ** 2)
-        - np.log(2.0 * math.pi * sig_ra_mov * sig_dec_mov)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    sig_ra_failure = np.sqrt(sig_ra**2 + max(float(failure_scale_ra), 1e-3) ** 2)
+    sig_dec_failure = np.sqrt(sig_dec**2 + max(float(failure_scale_dec), 1e-3) ** 2)
+    columns = [
+        _astrometry_normal_2d_logpdf(y_ra - ra_model, y_dec - dec_model, sig_ra, sig_dec),
+        _astrometry_student_t_2d_logpdf(
+            y_ra - ra_model,
+            y_dec - dec_model,
+            sig_ra_failure,
+            sig_dec_failure,
+        ),
+    ]
+    if stationary_ra is not None and stationary_dec is not None:
+        columns.append(
+            _astrometry_normal_2d_logpdf(
+                y_ra - float(stationary_ra),
+                y_dec - float(stationary_dec),
+                sig_ra,
+                sig_dec,
+            )
+        )
+    return np.column_stack(columns)
+
+
+def _astrometry_component_responsibilities(
+    component_log_probabilities: Any,
+    component_weights: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    log_prob = np.asarray(component_log_probabilities, dtype=float)
+    weights = np.clip(np.asarray(component_weights, dtype=float), 1e-12, np.inf)
+    weights = weights / np.sum(weights)
+    weighted = log_prob + np.log(weights)[np.newaxis, :]
+    peak = np.max(weighted, axis=1, keepdims=True)
+    exp_shifted = np.exp(np.clip(weighted - peak, -745.0, 0.0))
+    denominator = np.sum(exp_shifted, axis=1, keepdims=True)
+    responsibilities = exp_shifted / np.clip(denominator, 1e-300, np.inf)
+    log_total = peak[:, 0] + np.log(np.clip(denominator[:, 0], 1e-300, np.inf))
+    return responsibilities, log_total
+
+
+def _astrometry_bad_fraction_posterior_mean(expected_bad_rows: float, n_rows: int) -> float:
+    return float(
+        np.clip(
+            (float(expected_bad_rows) + ASTROMETRY_BAD_PRIOR_ALPHA)
+            / (float(n_rows) + ASTROMETRY_BAD_PRIOR_ALPHA + ASTROMETRY_BAD_PRIOR_BETA),
+            1e-4,
+            1.0 - 1e-4,
+        )
     )
-    log_out = (
-        math.log(1.0 - w)
-        - 0.5 * (((y_ra - stationary_ra) / sig_ra_out) ** 2 + ((y_dec - stationary_dec) / sig_dec_out) ** 2)
-        - np.log(2.0 * math.pi * sig_ra_out * sig_dec_out)
+
+
+def _astrometry_motion_information_scale(
+    arrays: Mapping[str, Any],
+    params: Any,
+    responsibilities: Any,
+    failure_scale_ra: float,
+    failure_scale_dec: float,
+    error_floor_ra: float,
+    error_floor_dec: float,
+) -> np.ndarray:
+    probs = np.asarray(responsibilities, dtype=float)
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    sig_ra_failure = np.sqrt(sig_ra**2 + float(failure_scale_ra) ** 2)
+    sig_dec_failure = np.sqrt(sig_dec**2 + float(failure_scale_dec) ** 2)
+    failure_distance_sq = (
+        ((y_ra - ra_model) / sig_ra_failure) ** 2
+        + ((y_dec - dec_model) / sig_dec_failure) ** 2
     )
-    delta = np.clip(log_out - log_mov, -700.0, 700.0)
-    return 1.0 / (1.0 + np.exp(delta))
+    local_precision = (ASTROMETRY_FAILURE_DOF + 2.0) / (ASTROMETRY_FAILURE_DOF + failure_distance_sq)
+    moving_prob = probs[:, 0]
+    failure_prob = probs[:, 1] if probs.shape[1] > 1 else np.zeros_like(moving_prob)
+    scale_ra = moving_prob + failure_prob * local_precision * sig_ra**2 / sig_ra_failure**2
+    scale_dec = moving_prob + failure_prob * local_precision * sig_dec**2 / sig_dec_failure**2
+    return np.concatenate([
+        np.clip(scale_ra, 1e-6, 1.0),
+        np.clip(scale_dec, 1e-6, 1.0),
+    ])
 
 
 def _astrometry_stationary_offsets(
     arrays: Mapping[str, Any],
-    responsibilities: Any,
-    outlier_scale_ra: float,
-    outlier_scale_dec: float,
+    stationary_responsibility: Any,
     error_floor_ra: float = 0.0,
     error_floor_dec: float = 0.0,
 ) -> tuple[float, float]:
-    r = np.asarray(responsibilities, dtype=float)
+    r = np.clip(np.asarray(stationary_responsibility, dtype=float), 0.0, 1.0)
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
-    s_ra = np.asarray(arrays["s_ra"], dtype=float)
-    s_dec = np.asarray(arrays["s_dec"], dtype=float)
-    sig_ra_out = np.sqrt(s_ra**2 + max(float(error_floor_ra or 0.0), 0.0) ** 2 + float(outlier_scale_ra) ** 2)
-    sig_dec_out = np.sqrt(s_dec**2 + max(float(error_floor_dec or 0.0), 0.0) ** 2 + float(outlier_scale_dec) ** 2)
-    w_ra = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_ra_out, 1e-3, np.inf) ** 2
-    w_dec = (1.0 - np.clip(r, 0.0, 1.0)) / np.clip(sig_dec_out, 1e-3, np.inf) ** 2
+    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    w_ra = r / np.clip(sig_ra, 1e-3, np.inf) ** 2
+    w_dec = r / np.clip(sig_dec, 1e-3, np.inf) ** 2
     stationary_ra = float(np.sum(w_ra * y_ra) / np.sum(w_ra)) if np.sum(w_ra) > 0 else float(np.nanmedian(y_ra))
     stationary_dec = float(np.sum(w_dec * y_dec) / np.sum(w_dec)) if np.sum(w_dec) > 0 else float(np.nanmedian(y_dec))
     return stationary_ra, stationary_dec
+
+
+def _astrometry_stationary_separation(
+    arrays: Mapping[str, Any],
+    params: Any,
+    stationary_ra: float,
+    stationary_dec: float,
+    error_floor_ra: float,
+    error_floor_dec: float,
+) -> float:
+    ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    distance_sq = (
+        ((float(stationary_ra) - ra_model) / np.clip(sig_ra, 1e-3, np.inf)) ** 2
+        + ((float(stationary_dec) - dec_model) / np.clip(sig_dec, 1e-3, np.inf)) ** 2
+    )
+    return float(math.sqrt(max(float(np.nanmean(distance_sq)), 0.0)))
 
 
 def _astrometry_weighted_quantile(values: Any, weights: Any, quantile: float) -> float:
@@ -20270,8 +20399,21 @@ def _astrometry_raw_fit_result(
     stationary_ra: float | None = None,
     stationary_dec: float | None = None,
     mixture_weight: float | None = None,
+    failure_weight: float | None = None,
+    stationary_weight: float | None = None,
     outlier_scale_ra: float | None = None,
     outlier_scale_dec: float | None = None,
+    failure_dof: float | None = None,
+    stationary_model_active: bool = False,
+    stationary_model_considered: bool = False,
+    stationary_rejection_reason: str = "",
+    stationary_delta_bic: float | None = None,
+    stationary_log_bayes_factor: float | None = None,
+    stationary_log_posterior_odds: float | None = None,
+    stationary_effective_rows: float | None = None,
+    stationary_separation: float | None = None,
+    stationary_candidate_ra: float | None = None,
+    stationary_candidate_dec: float | None = None,
     error_floor: bool = False,
     error_floor_ra: float | None = None,
     error_floor_dec: float | None = None,
@@ -20280,9 +20422,29 @@ def _astrometry_raw_fit_result(
     cov = np.asarray(covariance, dtype=float)
     n = np.asarray(arrays["t"]).size
     if responsibilities is None:
-        r = np.ones(n, dtype=float)
+        component_probabilities = np.column_stack([
+            np.ones(n, dtype=float),
+            np.zeros(n, dtype=float),
+            np.zeros(n, dtype=float),
+        ])
     else:
-        r = np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+        raw_probabilities = np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+        if raw_probabilities.ndim == 1:
+            component_probabilities = np.column_stack([
+                raw_probabilities,
+                1.0 - raw_probabilities,
+                np.zeros(n, dtype=float),
+            ])
+        else:
+            component_probabilities = raw_probabilities
+            if component_probabilities.shape[1] < 3:
+                component_probabilities = np.column_stack([
+                    component_probabilities,
+                    np.zeros((n, 3 - component_probabilities.shape[1]), dtype=float),
+                ])
+    row_totals = np.sum(component_probabilities, axis=1, keepdims=True)
+    component_probabilities = component_probabilities / np.clip(row_totals, 1e-12, np.inf)
+    r = component_probabilities[:, 0]
     inlier_mask = r >= 0.5 if outlier_mixture else np.ones(n, dtype=bool)
     if int(np.sum(inlier_mask)) < int(arrays["min_rows"]):
         order = np.argsort(r)[::-1]
@@ -20305,6 +20467,12 @@ def _astrometry_raw_fit_result(
     diag = np.diag(cov) if cov.ndim == 2 and cov.shape[0] >= p.size else np.full(p.size, np.nan)
     unc = np.sqrt(np.maximum(diag * variance_scale, 0.0))
     ids = np.asarray(arrays["ids"], dtype=object)
+    component_index = np.argmax(component_probabilities, axis=1)
+    component_names = np.asarray(["moving", "measurement_failure", "stationary_source"], dtype=object)
+    failure_mask = (~inlier_mask) & (component_index == 1)
+    stationary_mask = (~inlier_mask) & (component_index == 2) & bool(stationary_model_active)
+    ambiguous_mask = (~inlier_mask) & ~(failure_mask | stationary_mask)
+    failure_mask |= ambiguous_mask
     return {
         "mode": arrays["mode"],
         "label": (
@@ -20317,11 +20485,23 @@ def _astrometry_raw_fit_result(
         "nRows": int(n),
         "nInliers": int(np.sum(inlier_mask)),
         "nOutliers": int(n - np.sum(inlier_mask)),
+        "nMeasurementFailures": int(np.sum(failure_mask)),
+        "nStationarySources": int(np.sum(stationary_mask)),
         "inlierIds": [str(value) for value in ids[inlier_mask]],
         "outlierIds": [str(value) for value in ids[~inlier_mask]],
+        "measurementFailureIds": [str(value) for value in ids[failure_mask]],
+        "stationarySourceIds": [str(value) for value in ids[stationary_mask]],
         "responsibilities": [
-            {"id": str(row_id), "inlierProbability": float(prob), "inlier": bool(mask)}
-            for row_id, prob, mask in zip(ids, r, inlier_mask)
+            {
+                "id": str(row_id),
+                "inlierProbability": float(probs[0]),
+                "measurementFailureProbability": float(probs[1]),
+                "stationaryProbability": float(probs[2]),
+                "outlierProbability": float(1.0 - probs[0]),
+                "component": str(component_names[index]),
+                "inlier": bool(mask),
+            }
+            for row_id, probs, index, mask in zip(ids, component_probabilities, component_index, inlier_mask)
         ],
         "t0": float(arrays["t0"]),
         "posRa": float(p[0]),
@@ -20341,8 +20521,21 @@ def _astrometry_raw_fit_result(
         "stationaryRa": float(stationary_ra) if stationary_ra is not None and np.isfinite(stationary_ra) else None,
         "stationaryDec": float(stationary_dec) if stationary_dec is not None and np.isfinite(stationary_dec) else None,
         "mixtureWeight": float(mixture_weight) if mixture_weight is not None and np.isfinite(mixture_weight) else None,
+        "failureWeight": float(failure_weight) if failure_weight is not None and np.isfinite(failure_weight) else None,
+        "stationaryWeight": float(stationary_weight) if stationary_weight is not None and np.isfinite(stationary_weight) else None,
         "outlierScaleRa": float(outlier_scale_ra) if outlier_scale_ra is not None and np.isfinite(outlier_scale_ra) else None,
         "outlierScaleDec": float(outlier_scale_dec) if outlier_scale_dec is not None and np.isfinite(outlier_scale_dec) else None,
+        "failureDof": float(failure_dof) if failure_dof is not None and np.isfinite(failure_dof) else None,
+        "stationaryModelActive": bool(stationary_model_active),
+        "stationaryModelConsidered": bool(stationary_model_considered),
+        "stationaryRejectionReason": str(stationary_rejection_reason or ""),
+        "stationaryDeltaBic": float(stationary_delta_bic) if stationary_delta_bic is not None and np.isfinite(stationary_delta_bic) else None,
+        "stationaryLogBayesFactor": float(stationary_log_bayes_factor) if stationary_log_bayes_factor is not None and np.isfinite(stationary_log_bayes_factor) else None,
+        "stationaryLogPosteriorOdds": float(stationary_log_posterior_odds) if stationary_log_posterior_odds is not None and np.isfinite(stationary_log_posterior_odds) else None,
+        "stationaryEffectiveRows": float(stationary_effective_rows) if stationary_effective_rows is not None and np.isfinite(stationary_effective_rows) else None,
+        "stationarySeparation": float(stationary_separation) if stationary_separation is not None and np.isfinite(stationary_separation) else None,
+        "stationaryCandidateRa": float(stationary_candidate_ra) if stationary_candidate_ra is not None and np.isfinite(stationary_candidate_ra) else None,
+        "stationaryCandidateDec": float(stationary_candidate_dec) if stationary_candidate_dec is not None and np.isfinite(stationary_candidate_dec) else None,
         "errorFloor": bool(error_floor),
         "errorFloorRa": float(floor_ra) if error_floor and np.isfinite(floor_ra) else None,
         "errorFloorDec": float(floor_dec) if error_floor and np.isfinite(floor_dec) else None,
@@ -20355,77 +20548,340 @@ def _astrometry_scipy_fit(
     error_floor: bool = True,
 ) -> dict[str, Any]:
     params, covariance = _astrometry_curve_fit(arrays)
-    stationary_ra = float(np.nanmedian(np.asarray(arrays["y_ra"], dtype=float)))
-    stationary_dec = float(np.nanmedian(np.asarray(arrays["y_dec"], dtype=float)))
-    mixture_weight = 1.0
-    outlier_scale_ra, outlier_scale_dec = _astrometry_outlier_scales(arrays)
-    responsibilities = np.ones(np.asarray(arrays["t"]).size, dtype=float)
+    n = int(np.asarray(arrays["t"]).size)
     error_floor_ra = 0.0
     error_floor_dec = 0.0
 
     if error_floor:
-        error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
+        error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params)
         working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
         params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
-    else:
-        working_arrays = dict(arrays)
+    if not outlier_mixture:
+        responsibilities = np.column_stack([
+            np.ones(n, dtype=float),
+            np.zeros(n, dtype=float),
+            np.zeros(n, dtype=float),
+        ])
+        for _ in range(4):
+            if not error_floor:
+                break
+            error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params)
+            working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+            params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
+        return {
+            "params": params,
+            "covariance": covariance,
+            "responsibilities": responsibilities,
+            "component_weights": np.array([1.0, 0.0, 0.0]),
+            "stationary_ra": None,
+            "stationary_dec": None,
+            "mixture_weight": 1.0,
+            "failure_weight": 0.0,
+            "stationary_weight": 0.0,
+            "outlier_scale_ra": None,
+            "outlier_scale_dec": None,
+            "failure_dof": None,
+            "stationary_model_active": False,
+            "stationary_model_considered": False,
+            "error_floor_ra": error_floor_ra,
+            "error_floor_dec": error_floor_dec,
+        }
 
-    if outlier_mixture:
-        mixture_weight = 0.8
-        for _ in range(18):
-            responsibilities = _astrometry_mixture_responsibilities(
-                arrays,
-                params,
-                stationary_ra,
-                stationary_dec,
-                mixture_weight,
-                outlier_scale_ra,
-                outlier_scale_dec,
-                error_floor_ra=error_floor_ra,
-                error_floor_dec=error_floor_dec,
-            )
-            if error_floor:
-                error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
-                working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
-            params, covariance = _astrometry_curve_fit(working_arrays, p0=params, sigma_scale=responsibilities)
-            stationary_ra, stationary_dec = _astrometry_stationary_offsets(
-                arrays,
-                responsibilities,
-                outlier_scale_ra,
-                outlier_scale_dec,
-                error_floor_ra=error_floor_ra,
-                error_floor_dec=error_floor_dec,
-            )
-            mixture_weight = float(np.clip(np.nanmean(responsibilities), 0.05, 0.98))
-        responsibilities = _astrometry_mixture_responsibilities(
+    baseline = _astrometry_scipy_failure_model(
+        arrays,
+        params,
+        covariance,
+        error_floor=error_floor,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
+    stationary_candidate = _astrometry_best_stationary_candidate(arrays, baseline, error_floor=error_floor)
+    if stationary_candidate is None:
+        selected = baseline
+        diagnostics = {
+            "stationary_model_active": False,
+            "stationary_model_considered": True,
+            "stationary_rejection_reason": "No distinct multi-point stationary locus was found.",
+            "stationary_delta_bic": None,
+            "stationary_log_posterior_odds": None,
+            "stationary_effective_rows": 0.0,
+            "stationary_separation": None,
+        }
+    else:
+        delta_parameters = 3
+        delta_bic = float(
+            2.0 * (stationary_candidate["loglike"] - baseline["loglike"])
+            - delta_parameters * math.log(max(n, 2))
+        )
+        log_prior_odds = math.log(
+            ASTROMETRY_STATIONARY_PRIOR_PROBABILITY
+            / (1.0 - ASTROMETRY_STATIONARY_PRIOR_PROBABILITY)
+        )
+        log_posterior_odds = 0.5 * delta_bic + log_prior_odds
+        effective_rows = float(np.sum(stationary_candidate["responsibilities"][:, 2]))
+        separation = _astrometry_stationary_separation(
+            arrays,
+            stationary_candidate["params"],
+            stationary_candidate["stationary_ra"],
+            stationary_candidate["stationary_dec"],
+            stationary_candidate["error_floor_ra"],
+            stationary_candidate["error_floor_dec"],
+        )
+        evidence_ok = log_posterior_odds >= math.log(ASTROMETRY_STATIONARY_MIN_POSTERIOR_ODDS)
+        membership_ok = effective_rows >= ASTROMETRY_STATIONARY_MIN_EFFECTIVE_ROWS
+        separation_ok = separation >= ASTROMETRY_STATIONARY_MIN_SEPARATION
+        active = bool(evidence_ok and membership_ok and separation_ok)
+        if not evidence_ok:
+            reason = "The stationary-source model was not favored strongly enough over the robust moving model."
+        elif not membership_ok:
+            reason = "The stationary-source candidate was not supported by multiple measurements."
+        elif not separation_ok:
+            reason = "The stationary-source locus overlaps the moving trajectory and was suppressed to protect slow movers."
+        else:
+            reason = ""
+        selected = stationary_candidate if active else baseline
+        diagnostics = {
+            "stationary_model_active": active,
+            "stationary_model_considered": True,
+            "stationary_rejection_reason": reason,
+            "stationary_delta_bic": delta_bic,
+            "stationary_log_posterior_odds": log_posterior_odds,
+            "stationary_effective_rows": effective_rows,
+            "stationary_separation": separation,
+            "stationary_candidate_ra": stationary_candidate["stationary_ra"],
+            "stationary_candidate_dec": stationary_candidate["stationary_dec"],
+        }
+    result = dict(selected)
+    result.update(diagnostics)
+    return result
+
+
+def _astrometry_scipy_failure_model(
+    arrays: Mapping[str, Any],
+    initial_params: Any,
+    initial_covariance: Any,
+    *,
+    error_floor: bool,
+    error_floor_ra: float,
+    error_floor_dec: float,
+) -> dict[str, Any]:
+    params = np.asarray(initial_params, dtype=float).copy()
+    covariance = np.asarray(initial_covariance, dtype=float).copy()
+    n = int(np.asarray(arrays["t"]).size)
+    failure_scale_ra, failure_scale_dec = _astrometry_outlier_scales(arrays, params)
+    q_failure = _astrometry_bad_fraction_posterior_mean(0.0, n)
+    component_weights = np.array([1.0 - q_failure, q_failure], dtype=float)
+
+    for _ in range(24):
+        log_components = _astrometry_component_log_probabilities(
             arrays,
             params,
-            stationary_ra,
-            stationary_dec,
-            mixture_weight,
-            outlier_scale_ra,
-            outlier_scale_dec,
+            failure_scale_ra,
+            failure_scale_dec,
             error_floor_ra=error_floor_ra,
             error_floor_dec=error_floor_dec,
         )
-    elif error_floor:
-        for _ in range(4):
-            error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params, responsibilities)
-            working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
-            params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
+        responsibilities, _ = _astrometry_component_responsibilities(log_components, component_weights)
+        if error_floor:
+            error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(
+                arrays,
+                params,
+                responsibilities[:, 0],
+            )
+        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+        information_scale = _astrometry_motion_information_scale(
+            arrays,
+            params,
+            responsibilities,
+            failure_scale_ra,
+            failure_scale_dec,
+            error_floor_ra,
+            error_floor_dec,
+        )
+        params, covariance = _astrometry_curve_fit(
+            working_arrays,
+            p0=params,
+            sigma_scale=information_scale,
+        )
+        q_failure = _astrometry_bad_fraction_posterior_mean(float(np.sum(responsibilities[:, 1])), n)
+        component_weights = np.array([1.0 - q_failure, q_failure], dtype=float)
 
+    log_components = _astrometry_component_log_probabilities(
+        arrays,
+        params,
+        failure_scale_ra,
+        failure_scale_dec,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
+    responsibilities, log_total = _astrometry_component_responsibilities(log_components, component_weights)
+    responsibilities = np.column_stack([responsibilities, np.zeros(n, dtype=float)])
     return {
         "params": params,
         "covariance": covariance,
         "responsibilities": responsibilities,
-        "stationary_ra": stationary_ra,
-        "stationary_dec": stationary_dec,
-        "mixture_weight": mixture_weight,
-        "outlier_scale_ra": outlier_scale_ra,
-        "outlier_scale_dec": outlier_scale_dec,
+        "component_weights": np.array([component_weights[0], component_weights[1], 0.0]),
+        "stationary_ra": None,
+        "stationary_dec": None,
+        "mixture_weight": float(component_weights[0]),
+        "failure_weight": float(component_weights[1]),
+        "stationary_weight": 0.0,
+        "outlier_scale_ra": failure_scale_ra,
+        "outlier_scale_dec": failure_scale_dec,
+        "failure_dof": ASTROMETRY_FAILURE_DOF,
+        "loglike": float(np.sum(log_total)),
+        "stationary_model_active": False,
         "error_floor_ra": error_floor_ra,
         "error_floor_dec": error_floor_dec,
     }
+
+
+def _astrometry_stationary_candidate_fit(
+    arrays: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+    stationary_seed_ra: float,
+    stationary_seed_dec: float,
+    *,
+    error_floor: bool,
+) -> dict[str, Any]:
+    params = np.asarray(baseline["params"], dtype=float).copy()
+    covariance = np.asarray(baseline["covariance"], dtype=float).copy()
+    failure_scale_ra = float(baseline["outlier_scale_ra"])
+    failure_scale_dec = float(baseline["outlier_scale_dec"])
+    error_floor_ra = float(baseline.get("error_floor_ra") or 0.0)
+    error_floor_dec = float(baseline.get("error_floor_dec") or 0.0)
+    stationary_ra = float(stationary_seed_ra)
+    stationary_dec = float(stationary_seed_dec)
+    n = int(np.asarray(arrays["t"]).size)
+    q_bad = max(float(baseline.get("failure_weight") or 0.0), 0.08)
+    stationary_fraction = 0.5
+    component_weights = np.array([
+        1.0 - q_bad,
+        q_bad * (1.0 - stationary_fraction),
+        q_bad * stationary_fraction,
+    ])
+
+    for _ in range(30):
+        log_components = _astrometry_component_log_probabilities(
+            arrays,
+            params,
+            failure_scale_ra,
+            failure_scale_dec,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
+            stationary_ra=stationary_ra,
+            stationary_dec=stationary_dec,
+        )
+        responsibilities, _ = _astrometry_component_responsibilities(log_components, component_weights)
+        if error_floor:
+            error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(
+                arrays,
+                params,
+                responsibilities[:, 0],
+            )
+        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
+        information_scale = _astrometry_motion_information_scale(
+            arrays,
+            params,
+            responsibilities,
+            failure_scale_ra,
+            failure_scale_dec,
+            error_floor_ra,
+            error_floor_dec,
+        )
+        params, covariance = _astrometry_curve_fit(
+            working_arrays,
+            p0=params,
+            sigma_scale=information_scale,
+        )
+        stationary_ra, stationary_dec = _astrometry_stationary_offsets(
+            arrays,
+            responsibilities[:, 2],
+            error_floor_ra,
+            error_floor_dec,
+        )
+        expected_bad = float(np.sum(responsibilities[:, 1] + responsibilities[:, 2]))
+        q_bad = _astrometry_bad_fraction_posterior_mean(expected_bad, n)
+        stationary_fraction = float(
+            np.clip(
+                (float(np.sum(responsibilities[:, 2])) + 1.0) / (expected_bad + 2.0),
+                1e-4,
+                1.0 - 1e-4,
+            )
+        )
+        component_weights = np.array([
+            1.0 - q_bad,
+            q_bad * (1.0 - stationary_fraction),
+            q_bad * stationary_fraction,
+        ])
+
+    log_components = _astrometry_component_log_probabilities(
+        arrays,
+        params,
+        failure_scale_ra,
+        failure_scale_dec,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+        stationary_ra=stationary_ra,
+        stationary_dec=stationary_dec,
+    )
+    responsibilities, log_total = _astrometry_component_responsibilities(log_components, component_weights)
+    return {
+        "params": params,
+        "covariance": covariance,
+        "responsibilities": responsibilities,
+        "component_weights": component_weights,
+        "stationary_ra": stationary_ra,
+        "stationary_dec": stationary_dec,
+        "mixture_weight": float(component_weights[0]),
+        "failure_weight": float(component_weights[1]),
+        "stationary_weight": float(component_weights[2]),
+        "outlier_scale_ra": failure_scale_ra,
+        "outlier_scale_dec": failure_scale_dec,
+        "failure_dof": ASTROMETRY_FAILURE_DOF,
+        "loglike": float(np.sum(log_total)),
+        "stationary_model_active": True,
+        "error_floor_ra": error_floor_ra,
+        "error_floor_dec": error_floor_dec,
+    }
+
+
+def _astrometry_best_stationary_candidate(
+    arrays: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+    *,
+    error_floor: bool,
+) -> dict[str, Any] | None:
+    y_ra = np.asarray(arrays["y_ra"], dtype=float)
+    y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    failure_probability = np.asarray(baseline["responsibilities"], dtype=float)[:, 1]
+    order = np.argsort(failure_probability)[::-1]
+    seeds: list[tuple[float, float]] = []
+    if float(np.sum(failure_probability)) > 0:
+        seeds.append((
+            float(np.sum(failure_probability * y_ra) / np.sum(failure_probability)),
+            float(np.sum(failure_probability * y_dec) / np.sum(failure_probability)),
+        ))
+    for index in order[: min(order.size, 12)]:
+        seeds.append((float(y_ra[index]), float(y_dec[index])))
+
+    best: dict[str, Any] | None = None
+    seen: set[tuple[float, float]] = set()
+    for seed_ra, seed_dec in seeds:
+        key = (round(seed_ra, 9), round(seed_dec, 9))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _astrometry_stationary_candidate_fit(
+            arrays,
+            baseline,
+            seed_ra,
+            seed_dec,
+            error_floor=error_floor,
+        )
+        if best is None or float(candidate["loglike"]) > float(best["loglike"]):
+            best = candidate
+    return best
 
 
 def _astrometry_ultranest_bounds(arrays: Mapping[str, Any], seed_params: Any) -> list[tuple[float, float]]:
@@ -20476,88 +20932,206 @@ def _astrometry_ultranest_fit(
 
     seed_params = np.asarray(seed_fit["params"], dtype=float)
     bounds = _astrometry_ultranest_bounds(arrays, seed_params)
-    param_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (["plx"] if arrays["is_parallax"] else [])
-    stationary_ra = float(seed_fit.get("stationary_ra") if seed_fit.get("stationary_ra") is not None else np.nanmedian(arrays["y_ra"]))
-    stationary_dec = float(seed_fit.get("stationary_dec") if seed_fit.get("stationary_dec") is not None else np.nanmedian(arrays["y_dec"]))
-    mixture_weight = float(seed_fit.get("mixture_weight") if seed_fit.get("mixture_weight") is not None else 0.8)
-    outlier_scale_ra = float(seed_fit.get("outlier_scale_ra") if seed_fit.get("outlier_scale_ra") is not None else _astrometry_outlier_scales(arrays)[0])
-    outlier_scale_dec = float(seed_fit.get("outlier_scale_dec") if seed_fit.get("outlier_scale_dec") is not None else _astrometry_outlier_scales(arrays)[1])
+    physical_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (["plx"] if arrays["is_parallax"] else [])
+    outlier_scale_ra = float(seed_fit.get("outlier_scale_ra") if seed_fit.get("outlier_scale_ra") is not None else _astrometry_outlier_scales(arrays, seed_params)[0])
+    outlier_scale_dec = float(seed_fit.get("outlier_scale_dec") if seed_fit.get("outlier_scale_dec") is not None else _astrometry_outlier_scales(arrays, seed_params)[1])
     error_floor_ra = max(float(seed_fit.get("error_floor_ra") or 0.0), 0.0) if error_floor else 0.0
     error_floor_dec = max(float(seed_fit.get("error_floor_dec") or 0.0), 0.0) if error_floor else 0.0
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
-    s_ra = np.asarray(arrays["s_ra"], dtype=float)
-    s_dec = np.asarray(arrays["s_dec"], dtype=float)
-    sig_ra_mov = np.sqrt(s_ra**2 + error_floor_ra**2)
-    sig_dec_mov = np.sqrt(s_dec**2 + error_floor_dec**2)
-    sig_ra_out = np.sqrt(sig_ra_mov**2 + outlier_scale_ra**2)
-    sig_dec_out = np.sqrt(sig_dec_mov**2 + outlier_scale_dec**2)
+    stationary_bounds = [
+        (
+            float(np.nanmin(y_ra) - outlier_scale_ra),
+            float(np.nanmax(y_ra) + outlier_scale_ra),
+        ),
+        (
+            float(np.nanmin(y_dec) - outlier_scale_dec),
+            float(np.nanmax(y_dec) + outlier_scale_dec),
+        ),
+    ]
 
-    def transform(unit_cube: Any) -> list[float]:
-        u = np.asarray(unit_cube, dtype=float)
-        return [lo + u[index] * (hi - lo) for index, (lo, hi) in enumerate(bounds)]
+    def beta_1_b_transform(unit_value: float, beta: float = ASTROMETRY_BAD_PRIOR_BETA) -> float:
+        u = float(np.clip(unit_value, 1e-12, 1.0 - 1e-12))
+        return float(1.0 - (1.0 - u) ** (1.0 / beta))
 
-    def loglike(theta: Any) -> float:
-        ra_model, dec_model = _astrometry_model_from_params(arrays, theta)
-        mov = (
-            -0.5 * (((y_ra - ra_model) / sig_ra_mov) ** 2 + ((y_dec - dec_model) / sig_dec_mov) ** 2)
-            - np.log(2.0 * math.pi * sig_ra_mov * sig_dec_mov)
+    def run_model(include_stationary: bool) -> dict[str, Any]:
+        param_names = list(physical_names)
+        if outlier_mixture:
+            param_names.append("bad_fraction")
+        if include_stationary:
+            param_names.extend(["stationary_fraction", "stationary_ra", "stationary_dec"])
+
+        def transform(unit_cube: Any) -> list[float]:
+            u = np.asarray(unit_cube, dtype=float)
+            transformed = [lo + u[index] * (hi - lo) for index, (lo, hi) in enumerate(bounds)]
+            cursor = len(bounds)
+            if outlier_mixture:
+                transformed.append(beta_1_b_transform(float(u[cursor])))
+                cursor += 1
+            if include_stationary:
+                transformed.extend([
+                    float(np.clip(u[cursor], 1e-6, 1.0 - 1e-6)),
+                    stationary_bounds[0][0] + float(u[cursor + 1]) * (stationary_bounds[0][1] - stationary_bounds[0][0]),
+                    stationary_bounds[1][0] + float(u[cursor + 2]) * (stationary_bounds[1][1] - stationary_bounds[1][0]),
+                ])
+            return transformed
+
+        def unpack(theta: Any) -> tuple[np.ndarray, np.ndarray, float | None, float | None]:
+            values = np.asarray(theta, dtype=float)
+            physical = values[: len(bounds)]
+            cursor = len(bounds)
+            if not outlier_mixture:
+                return physical, np.array([1.0, 0.0, 0.0]), None, None
+            q_bad = float(np.clip(values[cursor], 1e-8, 1.0 - 1e-8))
+            cursor += 1
+            if not include_stationary:
+                return physical, np.array([1.0 - q_bad, q_bad, 0.0]), None, None
+            stationary_fraction = float(np.clip(values[cursor], 1e-8, 1.0 - 1e-8))
+            stationary_ra = float(values[cursor + 1])
+            stationary_dec = float(values[cursor + 2])
+            weights = np.array([
+                1.0 - q_bad,
+                q_bad * (1.0 - stationary_fraction),
+                q_bad * stationary_fraction,
+            ])
+            return physical, weights, stationary_ra, stationary_dec
+
+        def loglike(theta: Any) -> float:
+            physical, weights, stationary_ra, stationary_dec = unpack(theta)
+            log_components = _astrometry_component_log_probabilities(
+                arrays,
+                physical,
+                outlier_scale_ra,
+                outlier_scale_dec,
+                error_floor_ra=error_floor_ra,
+                error_floor_dec=error_floor_dec,
+                stationary_ra=stationary_ra,
+                stationary_dec=stationary_dec,
+            )
+            if not outlier_mixture:
+                return float(np.nansum(log_components[:, 0]))
+            if not include_stationary:
+                log_components = log_components[:, :2]
+                weights = weights[:2]
+            _, log_total = _astrometry_component_responsibilities(log_components, weights)
+            return float(np.nansum(log_total))
+
+        model_name = "stationary" if include_stationary else "robust_moving"
+        log_dir = Path(tempfile.gettempdir()) / "mocaviz_astrometry_ultranest" / model_name
+        sampler = ultranest.ReactiveNestedSampler(
+            param_names=param_names,
+            loglike=loglike,
+            transform=transform,
+            resume="overwrite",
+            log_dir=str(log_dir),
         )
-        if not outlier_mixture:
-            return float(np.nansum(mov))
-        w = float(np.clip(mixture_weight, 1e-4, 1.0 - 1e-4))
-        out = (
-            -0.5 * (((y_ra - stationary_ra) / sig_ra_out) ** 2 + ((y_dec - stationary_dec) / sig_dec_out) ** 2)
-            - np.log(2.0 * math.pi * sig_ra_out * sig_dec_out)
+        sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
+        result = sampler.run(
+            min_num_live_points=int(os.environ.get("ASTROMETRY_ULTRANEST_LIVE_POINTS", "300")),
+            dlogz=float(os.environ.get("ASTROMETRY_ULTRANEST_DLOGZ", "0.5")),
         )
-        return float(np.nansum(np.logaddexp(math.log(w) + mov, math.log(1.0 - w) + out)))
-
-    log_dir = Path(tempfile.gettempdir()) / "mocaviz_astrometry_ultranest"
-    sampler = ultranest.ReactiveNestedSampler(
-        param_names=param_names,
-        loglike=loglike,
-        transform=transform,
-        resume="overwrite",
-        log_dir=str(log_dir),
-    )
-    sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
-    result = sampler.run(
-        min_num_live_points=int(os.environ.get("ASTROMETRY_ULTRANEST_LIVE_POINTS", "300")),
-        dlogz=float(os.environ.get("ASTROMETRY_ULTRANEST_DLOGZ", "0.5")),
-    )
-    posterior = result.get("posterior") if isinstance(result, Mapping) else None
-    if not posterior:
-        posterior = sampler.results.get("posterior")
-    mean = np.asarray(posterior["mean"], dtype=float)
-    stdev = np.asarray(posterior["stdev"], dtype=float)
-    covariance = np.diag(stdev**2)
-    responsibilities = (
-        _astrometry_mixture_responsibilities(
+        result_map = result if isinstance(result, Mapping) else sampler.results
+        posterior = result_map.get("posterior") or sampler.results.get("posterior")
+        mean = np.asarray(posterior["mean"], dtype=float)
+        stdev = np.asarray(posterior["stdev"], dtype=float)
+        physical, weights, stationary_ra, stationary_dec = unpack(mean)
+        log_components = _astrometry_component_log_probabilities(
             arrays,
-            mean,
-            stationary_ra,
-            stationary_dec,
-            mixture_weight,
+            physical,
             outlier_scale_ra,
             outlier_scale_dec,
             error_floor_ra=error_floor_ra,
             error_floor_dec=error_floor_dec,
+            stationary_ra=stationary_ra,
+            stationary_dec=stationary_dec,
         )
-        if outlier_mixture
-        else np.ones(np.asarray(arrays["t"]).size, dtype=float)
+        if not include_stationary:
+            log_components = log_components[:, :2]
+            local_weights = weights[:2]
+        else:
+            local_weights = weights
+        if outlier_mixture:
+            responsibilities, _ = _astrometry_component_responsibilities(log_components, local_weights)
+        else:
+            responsibilities = np.ones((y_ra.size, 1), dtype=float)
+        if responsibilities.shape[1] < 3:
+            responsibilities = np.column_stack([
+                responsibilities,
+                np.zeros((y_ra.size, 3 - responsibilities.shape[1]), dtype=float),
+            ])
+        logz_value = _safe_float(result_map.get("logz"))
+        if logz_value is None:
+            logz_value = _safe_float(sampler.results.get("logz"))
+        return {
+            "params": physical,
+            "covariance": np.diag(stdev[: len(bounds)] ** 2),
+            "responsibilities": responsibilities,
+            "component_weights": weights,
+            "stationary_ra": stationary_ra,
+            "stationary_dec": stationary_dec,
+            "mixture_weight": float(weights[0]),
+            "failure_weight": float(weights[1]),
+            "stationary_weight": float(weights[2]),
+            "outlier_scale_ra": outlier_scale_ra,
+            "outlier_scale_dec": outlier_scale_dec,
+            "failure_dof": ASTROMETRY_FAILURE_DOF if outlier_mixture else None,
+            "logz": logz_value,
+            "error_floor_ra": error_floor_ra,
+            "error_floor_dec": error_floor_dec,
+        }
+
+    baseline = run_model(False)
+    if not outlier_mixture:
+        baseline.update({
+            "stationary_model_active": False,
+            "stationary_model_considered": False,
+        })
+        return baseline
+
+    candidate = run_model(True)
+    if baseline.get("logz") is None or candidate.get("logz") is None:
+        raise RuntimeError("UltraNest did not return model evidences for stationary-source selection.")
+    log_bayes_factor = float(candidate["logz"] - baseline["logz"])
+    log_prior_odds = math.log(
+        ASTROMETRY_STATIONARY_PRIOR_PROBABILITY
+        / (1.0 - ASTROMETRY_STATIONARY_PRIOR_PROBABILITY)
     )
-    return {
-        "params": mean,
-        "covariance": covariance,
-        "responsibilities": responsibilities,
-        "stationary_ra": stationary_ra,
-        "stationary_dec": stationary_dec,
-        "mixture_weight": mixture_weight,
-        "outlier_scale_ra": outlier_scale_ra,
-        "outlier_scale_dec": outlier_scale_dec,
-        "error_floor_ra": error_floor_ra,
-        "error_floor_dec": error_floor_dec,
-    }
+    log_posterior_odds = log_bayes_factor + log_prior_odds
+    effective_rows = float(np.sum(candidate["responsibilities"][:, 2]))
+    separation = _astrometry_stationary_separation(
+        arrays,
+        candidate["params"],
+        candidate["stationary_ra"],
+        candidate["stationary_dec"],
+        error_floor_ra,
+        error_floor_dec,
+    )
+    evidence_ok = log_posterior_odds >= math.log(ASTROMETRY_STATIONARY_MIN_POSTERIOR_ODDS)
+    membership_ok = effective_rows >= ASTROMETRY_STATIONARY_MIN_EFFECTIVE_ROWS
+    separation_ok = separation >= ASTROMETRY_STATIONARY_MIN_SEPARATION
+    active = bool(evidence_ok and membership_ok and separation_ok)
+    if not evidence_ok:
+        reason = "The stationary-source model was not favored strongly enough over the robust moving model."
+    elif not membership_ok:
+        reason = "The stationary-source candidate was not supported by multiple measurements."
+    elif not separation_ok:
+        reason = "The stationary-source locus overlaps the moving trajectory and was suppressed to protect slow movers."
+    else:
+        reason = ""
+    selected = dict(candidate if active else baseline)
+    selected.update({
+        "stationary_model_active": active,
+        "stationary_model_considered": True,
+        "stationary_rejection_reason": reason,
+        "stationary_delta_bic": None,
+        "stationary_log_bayes_factor": log_bayes_factor,
+        "stationary_log_posterior_odds": log_posterior_odds,
+        "stationary_effective_rows": effective_rows,
+        "stationary_separation": separation,
+        "stationary_candidate_ra": candidate["stationary_ra"],
+        "stationary_candidate_dec": candidate["stationary_dec"],
+    })
+    return selected
 
 
 def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[str, Any]:
@@ -20588,8 +21162,21 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
         stationary_ra=raw_fit.get("stationary_ra"),
         stationary_dec=raw_fit.get("stationary_dec"),
         mixture_weight=raw_fit.get("mixture_weight"),
+        failure_weight=raw_fit.get("failure_weight"),
+        stationary_weight=raw_fit.get("stationary_weight"),
         outlier_scale_ra=raw_fit.get("outlier_scale_ra"),
         outlier_scale_dec=raw_fit.get("outlier_scale_dec"),
+        failure_dof=raw_fit.get("failure_dof"),
+        stationary_model_active=bool(raw_fit.get("stationary_model_active")),
+        stationary_model_considered=bool(raw_fit.get("stationary_model_considered")),
+        stationary_rejection_reason=str(raw_fit.get("stationary_rejection_reason") or ""),
+        stationary_delta_bic=raw_fit.get("stationary_delta_bic"),
+        stationary_log_bayes_factor=raw_fit.get("stationary_log_bayes_factor"),
+        stationary_log_posterior_odds=raw_fit.get("stationary_log_posterior_odds"),
+        stationary_effective_rows=raw_fit.get("stationary_effective_rows"),
+        stationary_separation=raw_fit.get("stationary_separation"),
+        stationary_candidate_ra=raw_fit.get("stationary_candidate_ra"),
+        stationary_candidate_dec=raw_fit.get("stationary_candidate_dec"),
         error_floor=error_floor,
         error_floor_ra=raw_fit.get("error_floor_ra"),
         error_floor_dec=raw_fit.get("error_floor_dec"),
@@ -20795,6 +21382,14 @@ def _astrometry_push_fit_provenance(fit: Mapping[str, Any], metadata: Mapping[st
     mode = str(fit.get("mode") or "pm").strip().lower()
     n_rows = _astrometry_push_nonnegative_int(fit.get("nRows", fit.get("n_rows")))
     n_inliers = _astrometry_push_nonnegative_int(fit.get("nInliers", fit.get("n_inliers")))
+    n_measurement_failures = _astrometry_push_nonnegative_int(
+        fit.get("nMeasurementFailures", fit.get("n_measurement_failures"))
+    )
+    n_stationary_sources = _astrometry_push_nonnegative_int(
+        fit.get("nStationarySources", fit.get("n_stationary_sources"))
+    )
+    stationary_model_raw = fit.get("stationaryModelActive", fit.get("stationary_model_active"))
+    stationary_model_active = not _as_false(stationary_model_raw) if stationary_model_raw is not None else False
     manual_rejected = _astrometry_push_manual_rejected_count(metadata)
     automatic_rejected = _astrometry_push_automatic_rejected_count(metadata, fit)
     mission_counts = _astrometry_push_mission_counts(metadata)
@@ -20806,6 +21401,9 @@ def _astrometry_push_fit_provenance(fit: Mapping[str, Any], metadata: Mapping[st
         f"fit_outlier_mixture={1 if outlier_mixture else 0}",
         f"n_fit_data={n_rows}" if n_rows is not None else "",
         f"n_fit_inliers={n_inliers}" if n_inliers is not None else "",
+        f"n_measurement_failures={n_measurement_failures}" if n_measurement_failures is not None else "",
+        f"n_stationary_contaminants={n_stationary_sources}" if n_stationary_sources is not None else "",
+        f"stationary_model_active={1 if stationary_model_active else 0}",
         f"n_manual_rejected={manual_rejected}",
         f"n_fit_rejected={automatic_rejected}",
         f"fit_missions={mission_counts_text}" if mission_counts_text else "",

@@ -1514,8 +1514,25 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
         : `${fitCurve.label}<br>%{x:.5g}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`,
     });
   }
-  const fitOutlierRows = astrometryFitOutlierRows(prepared);
-  if (fitOutlierRows.length) {
+  const fitOutlierStyles = [
+    {
+      component: "measurement_failure",
+      name: "Measurement failures",
+      color: "#d73027",
+      symbol: "x-thin",
+      size: 17,
+    },
+    {
+      component: "stationary_source",
+      name: "Stationary-source contaminants",
+      color: "#7b3294",
+      symbol: "diamond-open",
+      size: 15,
+    },
+  ];
+  fitOutlierStyles.forEach((style) => {
+    const fitOutlierRows = astrometryFitOutlierRows(prepared, style.component);
+    if (!fitOutlierRows.length) return;
     traces.push({
       x: fitOutlierRows.map((row) => row.plot_x),
       y: fitOutlierRows.map((row) => astrometryYValue(prepared, axis, row)),
@@ -1524,17 +1541,17 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
       type: "scatter",
       mode: "markers",
       marker: {
-        symbol: "x-thin",
-        size: 17,
-        color: "#d73027",
-        line: { width: 1, color: "#d73027" },
+        symbol: style.symbol,
+        size: style.size,
+        color: style.color,
+        line: { width: 1.5, color: style.color },
       },
-      name: "PM-fit outliers",
-      legendgroup: "astrometry-fit-outliers",
+      name: style.name,
+      legendgroup: `astrometry-fit-${style.component}`,
       showlegend: isRa,
       hovertemplate: "%{text}<extra></extra>",
     });
-  }
+  });
   const manualRejectedRows = astrometryManualRejectedRows(prepared);
   if (manualRejectedRows.length) {
     traces.push({
@@ -2070,10 +2087,13 @@ function setAstrometryPushStatus(content, mode = "", html = false) {
   atmEl["atm-push-status"].classList.toggle("error", mode === "error");
 }
 
-function astrometryFitOutlierRows(prepared) {
+function astrometryFitOutlierRows(prepared, component = null) {
   const ids = astrometryFitRejectedIdSet();
   if (!ids.size) return [];
-  return prepared.rows.filter((row) => ids.has(astrometryRowIdKey(row)));
+  return prepared.rows.filter((row) => (
+    ids.has(astrometryRowIdKey(row))
+    && (!component || astrometryFitOutlierComponent(row.id) === component)
+  ));
 }
 
 function astrometryManualRejectedRows(prepared) {
@@ -2081,19 +2101,41 @@ function astrometryManualRejectedRows(prepared) {
   return prepared.rows.filter((row) => isManuallyRejectedAstrometryRow(row));
 }
 
-function astrometryFitInlierProbability(rowId) {
+function astrometryFitResponsibility(rowId) {
   const fit = atmState.fitResult;
-  if (!Array.isArray(fit?.responsibilities)) return NaN;
-  const match = fit.responsibilities.find((row) => String(row.id) === String(rowId));
+  if (!Array.isArray(fit?.responsibilities)) return null;
+  return fit.responsibilities.find((row) => String(row.id) === String(rowId)) || null;
+}
+
+function astrometryFitInlierProbability(rowId) {
+  const match = astrometryFitResponsibility(rowId);
   return finite(match?.inlierProbability) ? Number(match.inlierProbability) : NaN;
 }
 
+function astrometryFitOutlierComponent(rowId) {
+  const match = astrometryFitResponsibility(rowId);
+  if (match?.component === "stationary_source" && atmState.fitResult?.stationaryModelActive) {
+    return "stationary_source";
+  }
+  return "measurement_failure";
+}
+
 function astrometryFitOutlierHoverText(row) {
-  const inlierProbability = astrometryFitInlierProbability(row.id);
-  const probabilityLine = finite(inlierProbability)
-    ? `<br><b>Fit inlier probability:</b> ${formatNumber(inlierProbability, 3)}`
-    : "";
-  return `${hoverText(row)}<br><b>PM-fit status:</b> rejected as outlier${probabilityLine}`;
+  const responsibility = astrometryFitResponsibility(row.id);
+  const component = astrometryFitOutlierComponent(row.id);
+  const status = component === "stationary_source" ? "stationary-source contaminant" : "measurement failure";
+  const probabilities = [
+    finite(responsibility?.inlierProbability)
+      ? `<br><b>Moving:</b> ${formatNumber(responsibility.inlierProbability, 3)}`
+      : "",
+    finite(responsibility?.measurementFailureProbability)
+      ? `<br><b>Measurement failure:</b> ${formatNumber(responsibility.measurementFailureProbability, 3)}`
+      : "",
+    finite(responsibility?.stationaryProbability)
+      ? `<br><b>Stationary source:</b> ${formatNumber(responsibility.stationaryProbability, 3)}`
+      : "",
+  ].join("");
+  return `${hoverText(row)}<br><b>PM-fit status:</b> ${status}${probabilities}`;
 }
 
 function astrometryManualRejectedHoverText(row) {
@@ -2399,6 +2441,9 @@ function astrometryFitMeta(fit) {
     const floorDec = finite(fit.errorFloorDec) ? formatNumber(fit.errorFloorDec, 1) : "?";
     parts.push(`error floor ${floorRa}/${floorDec} mas`);
   }
+  if (fit.outlierMixture) {
+    parts.push(fit.stationaryModelActive ? "stationary source selected" : "stationary source not supported");
+  }
   if (finite(fit.reducedChi2)) parts.push(`reduced chi2=${formatNumber(fit.reducedChi2, 2)}`);
   return parts.join("; ");
 }
@@ -2411,6 +2456,36 @@ function astrometryFitDiagnosticsLines(fit) {
   if (fit.outlierMixture && finite(fit.nInliers) && finite(fit.nRows)) {
     lines.push(astrometrySummaryTextLine("inliers", `${fit.nInliers}/${fit.nRows}`));
     if (finite(fit.nOutliers)) lines.push(astrometrySummaryTextLine("outliers", `${fit.nOutliers}`));
+    if (finite(fit.nMeasurementFailures)) {
+      lines.push(astrometrySummaryTextLine("measurement failures", `${fit.nMeasurementFailures}`));
+    }
+    if (finite(fit.nStationarySources)) {
+      lines.push(astrometrySummaryTextLine("stationary contaminants", `${fit.nStationarySources}`));
+    }
+    if (finite(fit.failureDof)) {
+      lines.push(astrometrySummaryTextLine("failure Student-t dof", formatNumber(fit.failureDof, 1)));
+    }
+    if (fit.stationaryModelConsidered) {
+      lines.push(astrometrySummaryTextLine(
+        "stationary model",
+        fit.stationaryModelActive ? "selected" : "not supported",
+      ));
+      if (fit.stationaryDeltaBic !== null && fit.stationaryDeltaBic !== undefined && finite(fit.stationaryDeltaBic)) {
+        lines.push(astrometrySummaryTextLine("stationary delta BIC", formatNumber(fit.stationaryDeltaBic, 2)));
+      }
+      if (fit.stationaryLogBayesFactor !== null && fit.stationaryLogBayesFactor !== undefined && finite(fit.stationaryLogBayesFactor)) {
+        lines.push(astrometrySummaryTextLine("stationary log Bayes factor", formatNumber(fit.stationaryLogBayesFactor, 2)));
+      }
+      if (fit.stationaryEffectiveRows !== null && fit.stationaryEffectiveRows !== undefined && finite(fit.stationaryEffectiveRows)) {
+        lines.push(astrometrySummaryTextLine("candidate stationary membership", formatNumber(fit.stationaryEffectiveRows, 2)));
+      }
+      if (fit.stationarySeparation !== null && fit.stationarySeparation !== undefined && finite(fit.stationarySeparation)) {
+        lines.push(astrometrySummaryTextLine("candidate separation", `${formatNumber(fit.stationarySeparation, 2)} sigma`));
+      }
+      if (!fit.stationaryModelActive && fit.stationaryRejectionReason) {
+        lines.push(astrometrySummaryTextLine("stationary decision", fit.stationaryRejectionReason));
+      }
+    }
   } else if (finite(fit.nRows)) {
     lines.push(astrometrySummaryTextLine("fit rows", `${fit.nRows}`));
   }
