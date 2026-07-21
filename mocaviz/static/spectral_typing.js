@@ -201,6 +201,8 @@ function collectSpectralElements() {
     "spt-standard-marks",
     "spt-prev-standard",
     "spt-next-standard",
+    "spt-next-best-chi2",
+    "spt-next-worse-chi2",
     "spt-bins",
     "spt-norm-preset",
     "spt-norm",
@@ -309,6 +311,8 @@ function bindSpectralControls() {
   });
   sptEl["spt-prev-standard"].addEventListener("click", () => moveStandard(-1));
   sptEl["spt-next-standard"].addEventListener("click", () => moveStandard(1));
+  sptEl["spt-next-best-chi2"].addEventListener("click", () => moveChi2Rank(-1));
+  sptEl["spt-next-worse-chi2"].addEventListener("click", () => moveChi2Rank(1));
   bindSpectralKeyboardNavigation();
   sptEl["spt-standards-source"].addEventListener("change", async () => {
     sptState.comparePayload = null;
@@ -1035,6 +1039,38 @@ function bestGlobalStandardEntry() {
   return best;
 }
 
+function globalChi2Ranking() {
+  const entries = sptState.comparePayload?.entries || [];
+  const gridOrder = new Map(currentGridValues().map((grid, index) => [String(grid), index]));
+  const nextLocalIndex = new Map();
+  return entries
+    .map((entry, sourceIndex) => {
+      const grid = String(entry.grid || "");
+      const localIndex = nextLocalIndex.get(grid) || 0;
+      nextLocalIndex.set(grid, localIndex + 1);
+      return {
+        entry,
+        sourceIndex,
+        grid,
+        localIndex,
+        reducedChi2: Number(entry.reduced_chi2),
+      };
+    })
+    .filter((candidate) => finiteNumber(candidate.entry.reduced_chi2))
+    .sort((a, b) => (
+      a.reducedChi2 - b.reducedChi2
+      || (gridOrder.get(a.grid) ?? Number.MAX_SAFE_INTEGER) - (gridOrder.get(b.grid) ?? Number.MAX_SAFE_INTEGER)
+      || Number(a.entry.spectral_type_number ?? Number.MAX_SAFE_INTEGER) - Number(b.entry.spectral_type_number ?? Number.MAX_SAFE_INTEGER)
+      || a.sourceIndex - b.sourceIndex
+    ));
+}
+
+function currentGlobalChi2Rank(ranking = globalChi2Ranking()) {
+  const currentEntry = currentSpectralEntry();
+  if (!currentEntry) return -1;
+  return ranking.findIndex((candidate) => candidate.entry === currentEntry);
+}
+
 function filteredEntries() {
   const payload = sptState.comparePayload;
   if (!payload) return [];
@@ -1642,6 +1678,14 @@ function updateNavigation(entries, entry) {
     sptEl["spt-count-summary"].hidden = true;
   }
   updateGridButtons();
+  updateChi2RankButtons();
+}
+
+function updateChi2RankButtons() {
+  const ranking = globalChi2Ranking();
+  const currentRank = currentGlobalChi2Rank(ranking);
+  sptEl["spt-next-best-chi2"].disabled = !ranking.length || currentRank === 0;
+  sptEl["spt-next-worse-chi2"].disabled = !ranking.length || currentRank === ranking.length - 1;
 }
 
 function updateLowResControl(payload = sptState.comparePayload) {
@@ -1779,6 +1823,7 @@ function renderEmptySpectralPlots(message) {
   renderCorrectionInfo();
   sptEl["spt-open-report"].disabled = true;
   sptEl["spt-open-standard-report"].disabled = true;
+  updateChi2RankButtons();
   setSpectralTypingExportDisabled(true);
   updateLowResControl(null);
   updateSpectralManagementControls();
@@ -1925,6 +1970,24 @@ function moveStandard(delta) {
   if (next === sptState.currentIndex) return false;
   sptState.currentIndex = next;
   sptState.hasAppliedInitialIndex = true;
+  updateSpectralUrl();
+  renderSpectralTyping();
+  return true;
+}
+
+function moveChi2Rank(delta) {
+  const ranking = globalChi2Ranking();
+  if (!ranking.length) return false;
+  const currentRank = currentGlobalChi2Rank(ranking);
+  const nextRank = currentRank < 0
+    ? (delta < 0 ? 0 : ranking.length - 1)
+    : currentRank + delta;
+  if (nextRank < 0 || nextRank >= ranking.length || nextRank === currentRank) return false;
+  const next = ranking[nextRank];
+  sptState.selectedGrid = next.grid;
+  sptState.currentIndex = next.localIndex;
+  sptState.hasAppliedInitialIndex = true;
+  sptEl["spt-grid-select"].value = next.grid;
   updateSpectralUrl();
   renderSpectralTyping();
   return true;

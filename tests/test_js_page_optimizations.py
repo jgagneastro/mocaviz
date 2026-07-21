@@ -674,6 +674,19 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("Loading best-fit comparison", "".join(upper_loader))
         self.assertIn("Loading χ² map", "".join(lower_loader))
 
+    def test_spectral_typing_has_global_chi2_rank_navigation(self):
+        html = self.client.get("/js/spectral-typing").get_data(as_text=True)
+        source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        self.assertIn('id="spt-next-best-chi2"', html)
+        self.assertIn('id="spt-next-worse-chi2"', html)
+        self.assertIn("Next best χ²", html)
+        self.assertIn("Next worse χ²", html)
+        self.assertIn("function globalChi2Ranking()", source)
+        self.assertIn(".filter((candidate) => finiteNumber(candidate.entry.reduced_chi2))", source)
+        self.assertIn("a.reducedChi2 - b.reducedChi2", source)
+        self.assertIn("function moveChi2Rank(delta)", source)
+        self.assertIn('sptEl["spt-grid-select"].value = next.grid', source)
+
     def test_spectral_typing_composite_stitching_is_order_independent(self):
         def spectrum_payload(specid, start, stop, factor):
             wavelength = np.arange(start, stop + 0.0001, 0.01)

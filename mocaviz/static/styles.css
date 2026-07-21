@@ -1516,13 +1516,21 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   font-size: 12px;
 }
 
+.spectral-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 4px 0 10px;
+}
+
 .spectral-nav-pad {
   display: grid;
   grid-template-columns: 30px 30px 30px;
   grid-template-rows: 30px 30px 30px;
   justify-content: center;
   gap: 5px;
-  margin: 4px 0 10px;
+  margin: 0;
 }
 
 .spectral-nav-button {
@@ -1574,6 +1582,41 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   background: #8a8490;
   grid-column: 2;
   grid-row: 2;
+}
+
+.spectral-chi2-nav {
+  display: grid;
+  gap: 7px;
+}
+
+.spectral-chi2-nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-width: 126px;
+  height: 34px;
+  padding: 0 10px;
+  border-color: #236a83;
+  background: #28758f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.spectral-chi2-nav-button:hover {
+  background: #1f5c71;
+}
+
+.spectral-chi2-nav-button:disabled {
+  cursor: not-allowed;
+}
+
+.spectral-chi2-nav-arrow {
+  min-width: 12px;
+  font-size: 17px;
+  line-height: 1;
+  text-align: center;
+  transform: translateY(-1px);
 }
 
 .standard-marks {
