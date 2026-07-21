@@ -1,8 +1,7 @@
-# Fast MOCAviz Prototype
+# MOCAviz Flask Application
 
-Standalone local prototype for a faster brown-dwarf color page.
-
-This directory is intentionally isolated from the existing Dash app.
+This directory contains the maintained production application. It is
+intentionally isolated from the archived Dash app in `deprecated/dash/`.
 
 ## Run Locally
 
@@ -42,10 +41,10 @@ The fast spatial-kinematic explorer prototype is served at:
 http://127.0.0.1:8061/xyzuvw
 ```
 
-The fast TrueFlow age-PDF prototype is served at:
+The age-PDF explorer is served at:
 
 ```text
-http://127.0.0.1:8061/trueflow-age-pdfs
+http://127.0.0.1:8061/age-pdfs
 ```
 
 The legacy MCMC radial-velocity diagnostics prototype is served at:
@@ -66,8 +65,9 @@ If another local copy is already using port 8061:
 BD_COLORS_FAST_PORT=8062 python app.py
 ```
 
-The server uses the same public MOCAdb defaults as `pages/bd_colors.py`, with
-optional overrides through environment variables:
+The server uses the same public MOCAdb defaults as the archived
+`deprecated/dash/pages/bd_colors.py`, with optional overrides through
+environment variables:
 
 ```bash
 MOCA_HOST=... MOCA_USERNAME=... MOCA_PASSWORD=... MOCA_DBNAME=... python app.py
@@ -81,7 +81,7 @@ http://127.0.0.1:8061/spectral-typing?mock=1&specid=450
 http://127.0.0.1:8061/astrometry?mock=1&moca_oid=602
 http://127.0.0.1:8061/spectra?mock=1&moca_specid=13510
 http://127.0.0.1:8061/xyzuvw?mock=1&axes=xyz&asso=HYA,TWA
-http://127.0.0.1:8061/trueflow-age-pdfs?mock=1&moca_oid=11266
+http://127.0.0.1:8061/age-pdfs?mock=1&moca_oid=11266
 http://127.0.0.1:8061/legacy-radial-velocities?mock=1
 http://127.0.0.1:8061/rvbam-explorer?mock=1
 ```

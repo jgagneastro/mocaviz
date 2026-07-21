@@ -82,7 +82,7 @@ class RootRoutingTests(unittest.TestCase):
                 self.assertTrue(root.json["ok"])
                 self.assertTrue(compatibility.json["ok"])
 
-    def test_dash_only_paths_redirect_to_production_equivalents(self) -> None:
+    def test_deprecated_dash_paths_redirect_to_production_equivalents(self) -> None:
         cases = {
             "/mcmc-rvs": "/legacy-radial-velocities?mock=1",
             "/oage-pdfs": "/age-pdfs?mock=1",

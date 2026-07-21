@@ -1,99 +1,52 @@
 # MOCAviz
 
-This repository contains the interactive visualization tools for the MOCA
-database. The maintained Flask application is the production site; the older
-Dash implementation remains in `pages/` for reference during migration.
+MOCAviz contains the interactive visualization tools for the MOCA database.
+The maintained Flask application is the production site. The former Dash
+application is retained only as an unsupported archive under
+`deprecated/dash/` and is never imported by the production entry point.
 
-Run the production WSGI entry point locally with:
+## Repository layout
+
+- `app.py`: production WSGI entry point used by Passenger.
+- `bd_colors_fast/`: maintained Flask application, static pages, and APIs.
+- `scripts/`: maintenance, browser-probe, and benchmark helpers.
+- `tests/`: production regression tests.
+- `deprecated/dash/`: retired Dash entry point, pages, assets, and helpers.
+
+Production pages use canonical root-level URLs such as `/bd-colors`. Existing
+`/js/...` bookmarks and API clients remain supported by mounting the same Flask
+application at `/js`. Deprecated Dash-only URLs redirect to maintained
+replacements where one exists; they do not start or import the Dash archive.
+
+## Run locally
+
+Create and activate a virtual environment, then install the production
+dependencies:
 
 ```bash
-python /path/mocaviz/app.py
+python -m venv mocaviz-env
+source mocaviz-env/bin/activate
+pip install -r requirements.txt
 ```
 
-Then open `http://127.0.0.1:8050/`. Production pages use root-level URLs such
-as `http://127.0.0.1:8050/bd-colors`. Existing `/js/...` bookmarks and API
-clients remain supported through a compatibility mount of the same application.
+Start the production entry point:
 
-If you would like to ensure you are running exactly the right versions of each Python package, "cd" into your local mocaviz directory and create a virtual environment with:
+```bash
+python app.py
+```
 
-`python -m venv mocaviz-env`
-
-Then activate the virtual environment with:
-
-`source mocaviz-env/bin/activate`
-
-Then exact required packages can then be installed using:
-
-`pip install -r requirements.txt`
+Then open `http://127.0.0.1:8050/`. A network-free page check can use
+`http://127.0.0.1:8050/bd-colors?mock=1`.
 
 MOCAviz is tested with Python 3.11+.
 
-The features that have been implemented as of Feb 23, 2023 are:
+## Test
 
-- Visualizing the CMD, XYZ, UVW and projections in XYZUVW.
-- Cross-filtering across diagrams.
-- Selecting among associations using a Dropdown menu.
-- Dynamic update based on the (private) mocadb server upon selection of new associations only.
-- A table showing basic data for the selected stars.
-- Gaia activity index vs G-R
-- Prot vs G-R
-- H-alpha vs G-R
-- Lithium EW vs G-R
+Run the unit suite from the repository root:
 
-The features I still want to implement are:
+```bash
+python -m unittest discover -s tests -v
+```
 
-- Better visuals especially marker style and transparency style.
-- Adding the following figures:
-  - Individual RV, PM, PLX epochs + spectrum when selecting one data point.
-  - Galex colors
-  - ROSAT X-ray flux and hardness ratio
-  - Teff vs Age
-  - Distance vs Age
-  - Mass vs Age
-  - Mass vs Distance
-  - Initial mass functions
-  - Log R'HK index vs G-R
-  - Spectral types of components in binary systems
-  - Exoplanet Prot/radius and AU/mass
-  - SpT vs color
-  
-I also want to eventually implement other data control centers (in distinct .py files):
-
-- Brown dwarf dataviz:
-  - Near-infrared CMD
-  - Table view
-  - Individual RV, PLX, PM, spectrum
-  - SpT vs EW for several gravity-sensitive features
-  - SpT vs various colors
-  - Various color-color plots
-
-- Rotation dataviz (maybe Leslie will do it):
-  - Gaia CMD
-  - vsini vs G-R
-  - inclinations from DB
-  - prot vs G-R
-  - binary flags
-  - Table view
-  - Available TESS panels
-  - Individual lightcurves (pulled from the database)
-
-- Photometry viztool:
-  - Gaia CMD
-  - Table view
-  - Various color plots
-  - Various CMDs
-  - Various SpT vs color
-  - All photometry for various filters when a single star is selected
-  
-- Astrometry viztool:
-  - Gaia CMD
-  - Table view
-  - All epochs of ra,dec,plx,pm,rv when selected
-  - Sky maps of ra,dec and gl,gb
-  - pmra vs pmdec
-  - XYZ
-  - UVW
-
-The more long-term features:
-
-- Selecting data points in 3D scatter plots (not yet allowed by plotly)
+For rendered-page checks, use `scripts/chromium_probe.mjs` as documented in
+`AGENTS.md`.
