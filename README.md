@@ -1,13 +1,18 @@
-# mocaviz
-This repository contains plotly dash tools to visualize data from the MOCA database.
+# MOCAviz
 
-For now we have only one file, load_mocadash.py which allows to visualize basic data from the Database by calling it in this way:
+This repository contains the interactive visualization tools for the MOCA
+database. The maintained Flask application is the production site; the older
+Dash implementation remains in `pages/` for reference during migration.
 
-`python /path/mocaviz/app.py`
+Run the production WSGI entry point locally with:
 
-And then open a web browser and type in the address:
+```bash
+python /path/mocaviz/app.py
+```
 
-127.0.0.1:8050
+Then open `http://127.0.0.1:8050/`. Production pages use root-level URLs such
+as `http://127.0.0.1:8050/bd-colors`. Existing `/js/...` bookmarks and API
+clients remain supported through a compatibility mount of the same application.
 
 If you would like to ensure you are running exactly the right versions of each Python package, "cd" into your local mocaviz directory and create a virtual environment with:
 
@@ -21,7 +26,7 @@ Then exact required packages can then be installed using:
 
 `pip install -r requirements.txt`
 
-Note that this package has been tested with Python 3.11+.
+MOCAviz is tested with Python 3.11+.
 
 The features that have been implemented as of Feb 23, 2023 are:
 

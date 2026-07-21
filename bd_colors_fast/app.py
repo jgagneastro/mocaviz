@@ -31014,12 +31014,7 @@ def _retrieval_solar_references() -> list[dict[str, Any]]:
 
 @app.get("/")
 def index():
-    if str(request.script_root or "").rstrip("/").endswith("/js"):
-        return send_from_directory(STATIC_DIR, "js_index.html")
-    prefix = str(request.script_root or "").rstrip("/")
-    target = f"{prefix}/js/"
-    query = request.query_string.decode("utf-8")
-    return redirect(f"{target}?{query}" if query else target, code=302)
+    return send_from_directory(STATIC_DIR, "js_index.html")
 
 
 @app.get("/js")
@@ -31278,6 +31273,7 @@ def _redirect_with_query(path: str):
 @app.get("/trueflow-age-pdfs")
 @app.get("/trueflow_age_pdfs")
 @app.get("/trueflow-agepdfs")
+@app.get("/oage-pdfs")
 def age_pdfs_legacy_redirect():
     return _redirect_with_query("/age-pdfs")
 
@@ -31285,8 +31281,9 @@ def age_pdfs_legacy_redirect():
 @app.get("/js/trueflow-age-pdfs")
 @app.get("/js/trueflow_age_pdfs")
 @app.get("/js/trueflow-agepdfs")
+@app.get("/js/oage-pdfs")
 def js_age_pdfs_legacy_redirect():
-    return _redirect_with_query("/js/age-pdfs")
+    return _redirect_with_query("/age-pdfs")
 
 
 @app.get("/age-pdfs")
@@ -31317,6 +31314,12 @@ def moca_flows_page():
 @app.get("/js/legacy_rvs")
 def legacy_radial_velocities_page():
     return send_from_directory(STATIC_DIR, "legacy_radial_velocities.html")
+
+
+@app.get("/mcmc-rvs")
+@app.get("/js/mcmc-rvs")
+def mcmc_rvs_legacy_redirect():
+    return _redirect_with_query("/legacy-radial-velocities")
 
 
 @app.get("/moranta26-rotation")

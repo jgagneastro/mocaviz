@@ -1,5 +1,5 @@
 (function () {
-  const DATAVIZ_HOME_URL = "https://dataviz.mocadb.ca/js/";
+  const DATAVIZ_HOME_URL = "https://dataviz.mocadb.ca/";
   const BUG_REPORT_URL = "https://github.com/mocadb/mocadb-project/issues";
   const BD_PHOTOMETRY_DISCUSSION_URL = "https://github.com/orgs/mocadb/discussions/43";
   const BD_EVOLUTION_DISCUSSION_URL = "https://github.com/orgs/mocadb/discussions/44";

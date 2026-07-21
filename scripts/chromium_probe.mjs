@@ -92,7 +92,7 @@ function usage() {
     "  --expect-plotly 'SEL::traces>=1,shapes>=0,points>=1'",
     "",
     "Examples:",
-    "  node scripts/chromium_probe.mjs --url http://127.0.0.1:8074/js/spectral-index-explorer?mock=1 --wait-js \"document.querySelector('#sie-plot')?.data?.length > 0\" --expect-plotly '#sie-plot::traces>=1,shapes>=2' --expect-count '#sie-band-table tbody tr>=2'",
+    "  node scripts/chromium_probe.mjs --url http://127.0.0.1:8074/spectral-index-explorer?mock=1 --wait-js \"document.querySelector('#sie-plot')?.data?.length > 0\" --expect-plotly '#sie-plot::traces>=1,shapes>=2' --expect-count '#sie-band-table tbody tr>=2'",
   ].join("\n");
 }
 

@@ -3,99 +3,98 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MOCAdb JavaScript Visualizations</title>
-  <link rel="stylesheet" href="/js/static/styles.css?v=dataviz-links-20260626a">
-  <script src="/js/static/auth_theme.js?v=request-coordinator-20260709a"></script>
+  <title>MOCAdb Visualizations</title>
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
 </head>
 <body class="js-landing-page">
   <div class="js-landing-shell">
     <header class="js-landing-header">
-      <h1>MOCAdb JavaScript data visualizations</h1>
+      <h1>MOCAdb data visualizations</h1>
     </header>
     <main class="js-landing-content">
       <p>
-        This page lists the faster JavaScript versions of the MOCAdb visualization
-        tools. Choose one of the following tools:
+        Choose one of the following MOCAdb visualization tools:
       </p>
       <ul class="js-page-list">
         <li>
-          <a data-js-page href="/js/bd-colors">Brown Dwarf Photometry Explorer</a>
+          <a data-js-page href="/bd-colors">Brown Dwarf Photometry Explorer</a>
           <p class="js-tool-description">Compare MOCAdb objects against photometric, chemical equivalent width or spectral index sequences versus colors or spectral types with MOCAdb sequence overlays.</p>
         </li>
         <li>
-          <a data-js-page href="/js/bd-evolution">Brown Dwarf Evolution Explorer</a>
+          <a data-js-page href="/bd-evolution">Brown Dwarf Evolution Explorer</a>
           <p class="js-tool-description">Compare MOCAdb brown dwarfs with adopted or BANYAN Sigma membership ages against Sonora Diamondback extended evolutionary tracks with selectable physical axes.</p>
         </li>
         <li>
-          <a data-js-page href="/js/companion-explorer">Companion Explorer</a>
+          <a data-js-page href="/companion-explorer">Companion Explorer</a>
           <p class="js-tool-description">Plot MOCAdb companion-pair properties from summary_all_companions with selectable axes, CoMover filters, parent-age coloring, error bars, and designation or CID highlighting.</p>
         </li>
         <li>
-          <a data-js-page href="/js/exoplanets-explorer">Exoplanets Explorer</a>
+          <a data-js-page href="/exoplanets-explorer">Exoplanets Explorer</a>
           <p class="js-tool-description">Plot confirmed NASA exoplanets and TESS candidates around MOCAdb hosts with selectable physical axes, host-age coloring, error bars, and host report links.</p>
         </li>
         <li>
-          <a data-js-page href="/js/gaia-cmd">Gaia CMD Explorer</a>
+          <a data-js-page href="/gaia-cmd">Gaia CMD Explorer</a>
           <p class="js-tool-description">Inspect Gaia color-magnitude diagrams for selected associations and individual MOCAdb objects.</p>
         </li>
         <li hidden>
-          <a data-js-page href="/js/moca-explorer">MOCA Explorer</a>
+          <a data-js-page href="/moca-explorer">MOCA Explorer</a>
           <p class="js-tool-description">Browse selected association members across CMD, XYZ/UVW, rotation, Gaia activity, H-alpha, and lithium panels with shared object selection.</p>
         </li>
         <li>
-          <a data-js-page href="/js/banyan-sigma">BANYAN Sigma</a>
+          <a data-js-page href="/banyan-sigma">BANYAN Sigma</a>
           <p class="js-tool-description">Run BANYAN Sigma from manual observables or MOCAdb-loaded values, with compact top-result and stored MOCAdb comparisons.</p>
         </li>
         <li>
-          <a data-js-page href="/js/group-hierarchy">Group Hierarchy</a>
+          <a data-js-page href="/group-hierarchy">Group Hierarchy</a>
           <p class="js-tool-description">Browse the parent-child structure of MOCAdb associations and jump from selected branches into reports, member queries, and JS XYZ maps.</p>
         </li>
         <li>
-          <a data-js-page href="/js/spectral-typing">Spectral Typing</a>
+          <a data-js-page href="/spectral-typing">Spectral Typing</a>
           <p class="js-tool-description">Fit and compare near-infrared spectra against standards, with optional dereddening or slope corrections.</p>
         </li>
         <li>
-          <a data-js-page href="/js/spectra">Spectral Explorer</a>
+          <a data-js-page href="/spectra">Spectral Explorer</a>
           <p class="js-tool-description">Load, normalize, and compare selected MOCAdb spectra in an interactive Plotly viewer.</p>
         </li>
         <li>
-          <a data-js-page href="/js/spectral-index-explorer">Spectral Index Explorer</a>
+          <a data-js-page href="/spectral-index-explorer">Spectral Index Explorer</a>
           <p class="js-tool-description">Inspect one spectrum with the MOCAdb wavelength windows, continuum model, and calculated spectral-index or equivalent-width components.</p>
         </li>
         <li>
-          <a data-js-page href="/js/sed">SED Explorer</a>
+          <a data-js-page href="/sed">SED Explorer</a>
           <p class="js-tool-description">Inspect object-level photometry, spectra, bandpass responses, scaled templates, and empirical bolometric SED integrations.</p>
         </li>
         <li data-private-auth-only hidden>
-          <a data-js-page href="/js/retrieval-explorer">Atmospheric Retrieval Explorer</a>
+          <a data-js-page href="/retrieval-explorer">Atmospheric Retrieval Explorer</a>
           <p class="js-tool-description">Explore MOCAdb retrieval T/P profiles, cloud parameters, chemical abundances, contribution functions, and retrieval diagnostics.</p>
         </li>
         <li>
-          <a data-js-page href="/js/astrometry">Astrometric Explorer</a>
+          <a data-js-page href="/astrometry">Astrometric Explorer</a>
           <p class="js-tool-description">Visualize equatorial-coordinate measurements over time with proper-motion, parallax, reference, and recalibration controls.</p>
         </li>
         <li>
-          <a data-js-page href="/js/xyz">Spatial-kinematic Explorer</a>
+          <a data-js-page href="/xyz">Spatial-kinematic Explorer</a>
           <p class="js-tool-description">Explore XYZ positions and UVW velocities for association members, candidate objects, and model ellipsoids.</p>
         </li>
         <li>
-          <a data-js-page href="/js/xyz-dual">Dual XYZ/UVW Explorer</a>
+          <a data-js-page href="/xyz-dual">Dual XYZ/UVW Explorer</a>
           <p class="js-tool-description">Inspect fixed XYZ and UVW 3D views side by side with shared controls, native camera navigation, and the ESO Galaxy background in XYZ.</p>
         </li>
         <li>
-          <a data-js-page href="/js/age-pdfs">Age PDF Explorer</a>
+          <a data-js-page href="/age-pdfs">Age PDF Explorer</a>
           <p class="js-tool-description">Review available age probability density functions including those from MOCAFlows for objects or associations, including summary table metadata.</p>
         </li>
         <li data-private-auth-only hidden>
-          <a data-js-page href="/js/moca-flows">MOCA Flows</a>
+          <a data-js-page href="/moca-flows">MOCA Flows</a>
           <p class="js-tool-description">Inspect MOCAFlows observable age PDFs, association stacks, full forward-model products, and Fe/H-aware panel metadata.</p>
         </li>
         <li data-private-schema-only hidden>
-          <a data-js-page href="/js/rvbam-explorer">RVBAM Explorer</a>
+          <a data-js-page href="/rvbam-explorer">RVBAM Explorer</a>
           <p class="js-tool-description">Browse RVBAM sampling runs, segment radial velocities, diagnostic figures, parameter summaries, and bounded posterior-sample views.</p>
         </li>
         <li>
-          <a data-js-page href="/js/moranta26-rotation">Moranta et al. 2026 Rotation Explorer</a>
+          <a data-js-page href="/moranta26-rotation">Moranta et al. 2026 Rotation Explorer</a>
           <p class="js-tool-description">Explore transferred Mora26 TESS rotation periods across lambda m values, classifiers, literature periods, and linked light curves.</p>
         </li>
       </ul>
@@ -160,7 +159,7 @@
       carryParam("mock", "mock");
 
       if (connectionParams.toString()) {
-        document.querySelectorAll("a[data-js-page], a[href^='/js/']").forEach((link) => {
+        document.querySelectorAll("a[data-js-page]").forEach((link) => {
           const href = link.getAttribute("href");
           if (!href) return;
           const url = new URL(href, window.location.origin);
