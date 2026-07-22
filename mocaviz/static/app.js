@@ -303,6 +303,7 @@ function collectElements() {
     "export-sequence-csv",
     "sequence-fit-smoothing",
     "sequence-fit-smoothing-output",
+    "sequence-fit-selected-only",
     "visual-area",
     "plot",
     "plot-loader",
@@ -371,6 +372,7 @@ function readInitialUrlState() {
   state.sequenceFitEnabled = asBool(params.get("sequence_fit"));
   state.sequenceFitAppliedSmoothingWidth = sequenceFitSmoothingWidth(params.get("sequence_smoothing"));
   el["sequence-fit-smoothing"].value = String(state.sequenceFitAppliedSmoothingWidth);
+  el["sequence-fit-selected-only"].checked = asBool(params.get("sequence_selected_only"));
   if (!sequenceFitEligible()) state.sequenceFitEnabled = false;
   const wantsGravityColor = asBool(params.get("gravitycolor")) || asBool(params.get("gravity_color")) || asBool(params.get("color_by_gravity"));
   el["color-by-age"].checked = asBool(params.get("agecolor")) && !wantsGravityColor;
@@ -628,6 +630,9 @@ function bindControls() {
   el["sequence-fit-smoothing"].addEventListener("change", () => {
     updateSequenceFitSmoothingOutput();
     scheduleSequenceFitRender();
+  });
+  el["sequence-fit-selected-only"].addEventListener("change", () => {
+    render();
   });
   el["export-sequence-csv"].addEventListener("click", exportFittedSequenceCsv);
   el["bulk-preload"]?.addEventListener("click", bulkPreloadAll);
@@ -970,6 +975,7 @@ function updateUrlFromControls() {
   params.set("richgravity", el["rich-gravity-categories"].checked ? "1" : "0");
   params.set("sequence_fit", state.sequenceFitEnabled ? "1" : "0");
   params.set("sequence_smoothing", formatSequenceFitSmoothingWidth(sequenceFitSmoothingWidth()));
+  params.set("sequence_selected_only", sequenceFitSelectedOnly() ? "1" : "0");
   params.delete("gravity_color");
   params.delete("color_by_gravity");
   params.delete("rich_gravity");
@@ -2401,7 +2407,10 @@ function renderPlotHint() {
   if (hasSpectralTypeAxis()) jitterParts.push("spectral-type axes use ±0.3 subtype jitter");
   if (hasTeffAxis() && teffJitterK() > 0) jitterParts.push(`${teffAxisLabelHtml} axes use ±${teffJitterK().toLocaleString()} K jitter`);
   const jitterText = jitterParts.length ? ` ${jitterParts.join("; ")}.` : "";
-  el["plot-hint"].innerHTML = `Click a data point to select it${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
+  const clickText = sequenceFitSelectedOnly()
+    ? "Click data points to add or remove them from the fitted subset"
+    : "Click a data point to select it";
+  el["plot-hint"].innerHTML = `${clickText}${jitterText}<br>Double-click an empty region of the plot to reset Plotly selection`;
 }
 
 function hasSpectralTypeAxis() {
@@ -2417,6 +2426,10 @@ function sequenceFitSmoothingWidth(value = el["sequence-fit-smoothing"]?.value) 
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return sequenceFitDefaultSmoothingWidth;
   return clamp(numeric, sequenceFitMinSmoothingWidth, sequenceFitMaxSmoothingWidth);
+}
+
+function sequenceFitSelectedOnly() {
+  return Boolean(el["sequence-fit-selected-only"]?.checked);
 }
 
 function formatSequenceFitSmoothingWidth(value) {
@@ -2475,20 +2488,32 @@ function updateSequenceFitControl(model = null) {
   if (!button || !status) return;
   const eligible = sequenceFitEligible();
   const smoothing = el["sequence-fit-smoothing"];
+  const selectedOnly = el["sequence-fit-selected-only"];
   button.disabled = !eligible;
   if (smoothing) smoothing.disabled = !eligible;
   smoothing?.closest("label")?.classList.toggle("is-disabled", !eligible);
+  if (selectedOnly) selectedOnly.disabled = !eligible;
+  selectedOnly?.closest("label")?.classList.toggle("is-disabled", !eligible);
   button.setAttribute("aria-pressed", state.sequenceFitEnabled ? "true" : "false");
   button.textContent = sequenceFitButtonLabel();
   if (exportButton) exportButton.disabled = !state.sequenceFitEnabled || !model?.points?.length;
   if (!eligible) {
     status.textContent = "Both axes already show spectral type, so there is no observable axis to fit.";
   } else if (!state.sequenceFitEnabled) {
-    status.textContent = "Fits weighted medians and MAD scatter every 0.1 subtype, then smooths both over one-third of the data-window width.";
+    status.textContent = sequenceFitSelectedOnly()
+      ? "Fits only selected data points with weighted medians and MAD scatter every 0.1 subtype, then smooths both over one-third of the data-window width."
+      : "Fits weighted medians and MAD scatter every 0.1 subtype, then smooths both over one-third of the data-window width.";
   } else if (model?.points?.length >= 2) {
-    status.textContent = `${model.sourceCount.toLocaleString()} plotted objects; ${model.points.length} weighted-median fit points at 0.1-subtype spacing; ${formatSequenceFitSmoothingWidth(model.smoothingWidth)}-subtype data window; ${formatSequenceFitPostSmoothingWidth(model.postSmoothingWidth)}-subtype median and MAD smoothing.`;
+    const sourceLabel = model.selectedOnly ? "selected data points" : "plotted data points";
+    status.textContent = `${model.sourceCount.toLocaleString()} ${sourceLabel}; ${model.points.length} weighted-median fit points at 0.1-subtype spacing; ${formatSequenceFitSmoothingWidth(model.smoothingWidth)}-subtype data window; ${formatSequenceFitPostSmoothingWidth(model.postSmoothingWidth)}-subtype median and MAD smoothing.`;
+  } else if (model?.selectedOnly && model.sourceCount === 0) {
+    status.textContent = "Select data points in the plot to fit a sequence.";
+  } else if (model?.selectedOnly && model.sourceCount === 1) {
+    status.textContent = "1 selected data point; select at least one more point at a different spectral type.";
   } else if (state.raw) {
-    status.textContent = "Need at least two fit locations with two plotted objects in the smoothing window.";
+    status.textContent = model?.selectedOnly
+      ? `${model.sourceCount.toLocaleString()} selected data points; the selection must span at least two spectral-type locations.`
+      : "Need at least two fit locations with two plotted data points in the smoothing window.";
   } else {
     status.textContent = "Waiting for plotted data.";
   }
@@ -2995,6 +3020,9 @@ function matchesGravityText(text, tokens) {
 
 function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   const renderToken = ++state.plotRenderToken;
+  if (state.sequenceFitEnabled && sequenceFitSelectedOnly() && state.selectedRowIds.length) {
+    unbindPlotEvents();
+  }
   const rangeSignature = options.rangeSignature || axisRangeSignature();
   const xLabel = plottedRows[0]?.x_label || rows[0]?.x_label || fallbackAxisLabel("x");
   const yLabel = plottedRows[0]?.y_label || rows[0]?.y_label || fallbackAxisLabel("y");
@@ -3061,12 +3089,12 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
   traces.push(...medianColorTraces());
   traces.push(...sequenceTraces());
   traces.push(...binaryOverlayTraces(regularRows, opacityByOid, pointOpacity));
-  if (sequenceFitTraces.line) traces.push(sequenceFitTraces.line);
 
   if (highlightedRows.length) {
     traces.push(...highlightedPointTraces(highlightedRows));
   }
   traces.push(selectedPointTrace(selectedMarkerRows(plottedRows)));
+  if (sequenceFitTraces.line) traces.push(sequenceFitTraces.line);
 
   const plotSize = syncPlotGeometry();
   const layout = {
@@ -4078,7 +4106,10 @@ function fittedSequenceModel(rows) {
   if (!state.sequenceFitEnabled || !sequenceFitEligible()) return null;
   const xIsSpt = el["x-axis-type"].value === "spectral_type";
   const yIsSpt = el["y-axis-type"].value === "spectral_type";
+  const selectedOnly = sequenceFitSelectedOnly();
+  const selectedRowIds = selectedOnly ? new Set(state.selectedRowIds) : null;
   const sourceRows = rows.filter((row) => (
+    (!selectedRowIds || selectedRowIds.has(row.row_id)) &&
     Number.isFinite(Number(row.spectral_type_number)) &&
     Number.isFinite(Number(row.x)) &&
     Number.isFinite(Number(row.y))
@@ -4086,8 +4117,9 @@ function fittedSequenceModel(rows) {
   const smoothingWidth = state.sequenceFitAppliedSmoothingWidth;
   const postSmoothingWidth = smoothingWidth * sequenceFitPostSmoothingFraction;
   if (sourceRows.length < sequenceFitMinObjectsPerWindow) {
-    return { points: [], sourceCount: sourceRows.length, smoothingWidth, postSmoothingWidth };
+    return { points: [], sourceCount: sourceRows.length, selectedOnly, smoothingWidth, postSmoothingWidth };
   }
+  const minObjectsPerWindow = selectedOnly ? 1 : sequenceFitMinObjectsPerWindow;
   const spectralTypes = sourceRows.map((row) => Number(row.spectral_type_number));
   const minSpt = Math.min(...spectralTypes);
   const maxSpt = Math.max(...spectralTypes);
@@ -4103,7 +4135,7 @@ function fittedSequenceModel(rows) {
         weight: sequenceFitWindowWeight(Number(row.spectral_type_number), subtype, smoothingWidth),
       }))
       .filter((item) => item.weight > 0);
-    if (weightedRows.length < sequenceFitMinObjectsPerWindow) continue;
+    if (weightedRows.length < minObjectsPerWindow) continue;
     const weights = weightedRows.map((item) => item.weight);
     const xValues = weightedRows.map((item) => Number(item.row.x));
     const yValues = weightedRows.map((item) => Number(item.row.y));
@@ -4124,7 +4156,7 @@ function fittedSequenceModel(rows) {
     });
   }
   if (localPoints.length < 2) {
-    return { points: [], sourceCount: sourceRows.length, smoothingWidth, postSmoothingWidth };
+    return { points: [], sourceCount: sourceRows.length, selectedOnly, smoothingWidth, postSmoothingWidth };
   }
   const points = smoothSequenceFitPoints(localPoints, postSmoothingWidth, xIsSpt, yIsSpt);
   return {
@@ -4132,6 +4164,7 @@ function fittedSequenceModel(rows) {
     xIsSpt,
     yIsSpt,
     sourceCount: sourceRows.length,
+    selectedOnly,
     smoothingWidth,
     postSmoothingWidth,
   };
@@ -4179,7 +4212,7 @@ function fittedSequenceTraces(model) {
   if (!model?.points?.length) return { band: null, line: null, image: null };
   const band = fittedSequenceBand(model);
   const image = band ? null : fittedSequenceRibbonMask(model);
-  const line = fittedSequenceLineCoordinates(model.points);
+  const line = fittedSequenceLineCoordinates(model.points, model.selectedOnly);
   const hoverText = model.points.map((point) => {
     const parts = [
       `Spectral type: ${formatSequenceFitSptLabel(point.subtype)}`,
@@ -4220,7 +4253,7 @@ function fittedSequenceTraces(model) {
       mode: "lines",
       x: line.x,
       y: line.y,
-      text: withSequenceFitGapSeparators(model.points, hoverText),
+      text: withSequenceFitGapSeparators(model.points, hoverText, model.selectedOnly),
       hoverinfo: "text",
       line: { color: "#000000", width: sequenceFitLineWidth },
       connectgaps: false,
@@ -4508,17 +4541,17 @@ function sequenceFitRibbonBounds(geometry) {
   return { xMin, xMax, yMin, yMax, width, height };
 }
 
-function fittedSequenceLineCoordinates(points) {
+function fittedSequenceLineCoordinates(points, connectGaps = false) {
   return {
-    x: withSequenceFitGapSeparators(points, points.map((point) => point.x)),
-    y: withSequenceFitGapSeparators(points, points.map((point) => point.y)),
+    x: withSequenceFitGapSeparators(points, points.map((point) => point.x), connectGaps),
+    y: withSequenceFitGapSeparators(points, points.map((point) => point.y), connectGaps),
   };
 }
 
-function withSequenceFitGapSeparators(points, values) {
+function withSequenceFitGapSeparators(points, values, connectGaps = false) {
   const output = [];
   for (let index = 0; index < points.length; index += 1) {
-    if (index > 0 && !sequenceFitPointsAreAdjacent(points[index - 1], points[index])) output.push(null);
+    if (!connectGaps && index > 0 && !sequenceFitPointsAreAdjacent(points[index - 1], points[index])) output.push(null);
     output.push(values[index]);
   }
   return output;
@@ -4780,32 +4813,17 @@ function errorSpec(rows, field, opacity = 0.2, style = {}) {
 }
 
 function bindPlotEvents() {
-  if (state.plotBound && el.plot.removeAllListeners) {
-    el.plot.removeAllListeners("plotly_selected");
-    el.plot.removeAllListeners("plotly_deselect");
-    el.plot.removeAllListeners("plotly_click");
-    el.plot.removeAllListeners("plotly_legendclick");
-    el.plot.removeAllListeners("plotly_legenddoubleclick");
-    el.plot.removeAllListeners("plotly_relayout");
-  }
+  unbindPlotEvents();
   el.plot.on("plotly_selected", (event) => {
     if (window.MocaPlotlySelection?.isDegenerate(el.plot, event)) return;
-    state.selectedRowIds = selectedPlotRowIds(event);
-    renderTable(state.selectedRowIds);
-    updateSelectedPointMarker();
+    applyPlotSelection(selectedPlotRowIds(event));
   });
   el.plot.on("plotly_deselect", () => {
-    state.selectedRowIds = [];
-    renderTable([]);
-    updateSelectedPointMarker();
+    applyPlotSelection([]);
   });
   el.plot.on("plotly_click", (event) => {
-    const rowId = clickedPlotRowId(event);
-    if (rowId) {
-      state.selectedRowIds = [rowId];
-      renderTable(state.selectedRowIds);
-      updateSelectedPointMarker();
-    }
+    const rowIds = clickedPlotSelection(event);
+    if (rowIds) applyPlotSelection(rowIds);
   });
   el.plot.on("plotly_legendclick", (event) => {
     const trace = event?.fullData?.[event.curveNumber] || event?.data?.[event.curveNumber];
@@ -4819,6 +4837,27 @@ function bindPlotEvents() {
     renderCountSummary(state.rows);
   });
   state.plotBound = true;
+}
+
+function unbindPlotEvents() {
+  if (!state.plotBound || !el.plot?.removeAllListeners) return;
+  el.plot.removeAllListeners("plotly_selected");
+  el.plot.removeAllListeners("plotly_deselect");
+  el.plot.removeAllListeners("plotly_click");
+  el.plot.removeAllListeners("plotly_legendclick");
+  el.plot.removeAllListeners("plotly_legenddoubleclick");
+  el.plot.removeAllListeners("plotly_relayout");
+  state.plotBound = false;
+}
+
+function applyPlotSelection(rowIds) {
+  state.selectedRowIds = rowIds;
+  renderTable(state.selectedRowIds);
+  if (state.sequenceFitEnabled && sequenceFitSelectedOnly()) {
+    render();
+  } else {
+    updateSelectedPointMarker();
+  }
 }
 
 function plotRowIdFromCustomdata(customdata) {
@@ -4839,6 +4878,16 @@ function clickedPlotRowId(event) {
     if (rowId) return rowId;
   }
   return "";
+}
+
+function clickedPlotSelection(event) {
+  const rowId = clickedPlotRowId(event);
+  if (!rowId) return null;
+  if (!sequenceFitSelectedOnly()) return [rowId];
+  const selected = new Set(state.selectedRowIds);
+  if (selected.has(rowId)) selected.delete(rowId);
+  else selected.add(rowId);
+  return [...selected];
 }
 
 function handleLegendClick(trace) {

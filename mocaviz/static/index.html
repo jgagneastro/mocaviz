@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Brown Dwarf Photometry Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-sequence-fit-20260716b-azul-byw-20260716a-spherex-vetting-20260717a">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-sequence-fit-20260716b-azul-byw-20260716a-spherex-vetting-20260717a-selected-fit-20260722a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -203,6 +203,10 @@
                   <span></span><span></span><span></span><span></span>
                 </div>
               </div>
+            </label>
+            <label class="checkline sequence-fit-selected-only">
+              <input id="sequence-fit-selected-only" type="checkbox">
+              <span>Fit selected data points only</span>
             </label>
             <button id="fit-sequence" class="sequence-fit-button" type="button" aria-pressed="false">Fit X &amp; Y vs spectral type</button>
             <button id="export-sequence-csv" class="sequence-fit-export-button" type="button" disabled>Export sequence as CSV</button>
@@ -423,6 +427,11 @@
             <td><code>false</code></td>
             <td>Fits each non-spectral-type axis with weighted medians as a smooth function of fractional spectral type, draws the resulting sequence as a thick black line, and shades the local ±1 weighted-MAD region in gray.</td>
           </tr>
+          <tr>
+            <td><code>sequence_selected_only</code></td>
+            <td><code>false</code></td>
+            <td>Restricts the fitted sequence to data points selected in the plot.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -462,6 +471,6 @@
     </footer>
   </div>
 
-  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a-spherex-vetting-20260717f-best-measurement-20260717b-teff-20260717i"></script>
+  <script src="static/app.js?v=api-routing-20260710a-parallax-20260715a-photdist-20260715d-sequence-fit-20260716i-azul-byw-20260716a-highlight-errors-20260716a-index-calculation-20260716a-yrange-padding-20260716b-deemphasized-ranges-20260716a-rich-gravity-20260716a-spherex-vetting-20260717f-best-measurement-20260717b-teff-20260717i-selected-fit-20260722g"></script>
 </body>
 </html>

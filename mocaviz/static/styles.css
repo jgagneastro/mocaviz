@@ -566,6 +566,10 @@ body.is-mocadb-team textarea:focus {
   opacity: .72;
 }
 
+.sequence-fit-selected-only {
+  margin: 0 0 10px;
+}
+
 .sequence-fit-button {
   width: 100%;
   height: auto;

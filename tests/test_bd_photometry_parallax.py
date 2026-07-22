@@ -154,6 +154,16 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn('id="fit-sequence"', html)
         self.assertIn('id="fit-sequence-status"', html)
         self.assertIn('id="sequence-fit-smoothing"', html)
+        self.assertIn('id="sequence-fit-selected-only" type="checkbox"', html)
+        self.assertIn("Fit selected data points only", html)
+        self.assertLess(
+            html.index('id="sequence-fit-smoothing"'),
+            html.index('id="sequence-fit-selected-only"'),
+        )
+        self.assertLess(
+            html.index('id="sequence-fit-selected-only"'),
+            html.index('id="fit-sequence"'),
+        )
         self.assertIn('class="sequence-fit-ticks" aria-hidden="true"', html)
         self.assertEqual(html.split('class="sequence-fit-ticks"', 1)[1].split("</div>", 1)[0].count("<span>"), 16)
         self.assertIn('id="export-sequence-csv"', html)
@@ -166,6 +176,20 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("function scheduleSequenceFitRender()", script)
         self.assertIn('el["sequence-fit-smoothing"].addEventListener("change", () => {', script)
         self.assertIn('textContent = "Release the smoothing slider to refit."', script)
+        self.assertIn('el["sequence-fit-selected-only"].checked = asBool(params.get("sequence_selected_only"))', script)
+        self.assertIn('params.set("sequence_selected_only", sequenceFitSelectedOnly() ? "1" : "0")', script)
+        self.assertIn("const selectedRowIds = selectedOnly ? new Set(state.selectedRowIds) : null", script)
+        self.assertIn("(!selectedRowIds || selectedRowIds.has(row.row_id))", script)
+        self.assertIn("const minObjectsPerWindow = selectedOnly ? 1 : sequenceFitMinObjectsPerWindow", script)
+        self.assertIn("if (weightedRows.length < minObjectsPerWindow) continue", script)
+        self.assertIn("function applyPlotSelection(rowIds)", script)
+        self.assertIn("if (state.sequenceFitEnabled && sequenceFitSelectedOnly())", script)
+        self.assertIn("function unbindPlotEvents()", script)
+        self.assertIn("unbindPlotEvents();", script)
+        self.assertIn('el.plot.removeAllListeners("plotly_selected")', script)
+        self.assertIn('el.plot.removeAllListeners("plotly_deselect")', script)
+        self.assertIn("if (selected.has(rowId)) selected.delete(rowId)", script)
+        self.assertIn("else selected.add(rowId)", script)
         self.assertIn("function smoothSequenceFitPoints(points, width, xIsSpt, yIsSpt)", script)
         self.assertIn("item.point.xMad ** 2", script)
         self.assertIn("item.point.yMad ** 2", script)
@@ -183,6 +207,13 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("sequenceFitRibbonBounds", script)
         self.assertIn("sequenceFitContinuousNormals", script)
         self.assertIn("withSequenceFitGapSeparators", script)
+        self.assertLess(
+            script.index("traces.push(selectedPointTrace(selectedMarkerRows(plottedRows)))"),
+            script.index("if (sequenceFitTraces.line) traces.push(sequenceFitTraces.line)"),
+        )
+        self.assertIn("fittedSequenceLineCoordinates(model.points, model.selectedOnly)", script)
+        self.assertIn("withSequenceFitGapSeparators(model.points, hoverText, model.selectedOnly)", script)
+        self.assertIn("function withSequenceFitGapSeparators(points, values, connectGaps = false)", script)
         self.assertIn('const yReversed = el["y-axis-type"]?.value === "absolute_magnitude"', script)
         self.assertIn("const image = band ? null : fittedSequenceRibbonMask(model)", script)
         self.assertIn("if (hasTeffAxis()) return sequenceFitParametricBandCoordinates(model)", script)
