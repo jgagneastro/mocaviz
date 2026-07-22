@@ -341,6 +341,46 @@ SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
 SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
+SPT_RESOLUTION_MATCH_VERSION = "resolution-match-v3"
+SPT_GAUSSIAN_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
+SPT_BOXCAR_EQUIVALENT_GAUSSIAN_FWHM = SPT_GAUSSIAN_FWHM / math.sqrt(12.0)
+# Externally calibrated spectrum (ECS) FWHM values from Montegriffo et al.
+# 2023, A&A 674, A3, Table 1. Wavelengths and FWHM values are in nm.
+SPT_GAIA_XP_ECS_FWHM_NM = (
+    (350.0, 4.893),
+    (370.0, 5.508),
+    (390.0, 6.355),
+    (410.0, 7.417),
+    (430.0, 8.611),
+    (450.0, 9.994),
+    (470.0, 11.36),
+    (490.0, 12.88),
+    (510.0, 14.56),
+    (530.0, 16.31),
+    (550.0, 18.31),
+    (570.0, 20.11),
+    (590.0, 23.12),
+    (610.0, 24.21),
+    (630.0, 28.63),
+    (640.0, 8.576),
+    (660.0, 8.478),
+    (680.0, 8.741),
+    (700.0, 9.116),
+    (720.0, 9.662),
+    (740.0, 10.11),
+    (760.0, 10.69),
+    (780.0, 11.33),
+    (800.0, 11.95),
+    (820.0, 12.60),
+    (840.0, 13.24),
+    (860.0, 13.85),
+    (880.0, 14.50),
+    (900.0, 15.47),
+    (920.0, 16.07),
+    (940.0, 17.13),
+    (960.0, 17.86),
+    (980.0, 18.83),
+)
 SPT_COMPOSITE_MAX_SELECTED = max(2, int(os.environ.get("SPT_COMPOSITE_MAX_SELECTED", "8")))
 SPT_COMPOSITE_MIN_OVERLAP_POINTS = max(3, int(os.environ.get("SPT_COMPOSITE_MIN_OVERLAP_POINTS", "5")))
 SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
@@ -3464,6 +3504,232 @@ def _spt_average_resolving_power(wavelengths: Any) -> float | None:
     return float(np.nanmean(mid[valid] / dwv[valid]))
 
 
+def _spt_resolution_value(values: Mapping[str, Any] | None) -> float | None:
+    if values is None:
+        return None
+    for key in (
+        "instrumental_resolving_power",
+        "median_spectral_resolving_power",
+        "stored_average_resolving_power",
+    ):
+        value = _spt_float(values.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _spt_payload_instrumental_resolving_power(payload: Mapping[str, Any]) -> float | None:
+    value = _spt_resolution_value(payload.get("meta"))
+    if value is None:
+        value = _spt_resolution_value(payload.get("metadata"))
+    if value is not None:
+        return value
+    # Preserve compatibility with mock and older payloads that only supplied the
+    # historical field. New DB payloads always distinguish sampling from the LSF.
+    meta = payload.get("meta") or {}
+    fallback = _spt_float(meta.get("average_resolving_power"))
+    return fallback if fallback is not None and fallback > 0 else None
+
+
+def _spt_payload_sampling_resolving_power(payload: Mapping[str, Any]) -> float | None:
+    meta = payload.get("meta") or {}
+    for key in ("sampling_resolving_power", "grid_average_resolving_power"):
+        value = _spt_float(meta.get(key))
+        if value is not None and value > 0:
+            return value
+    # An old-style average is a sampling estimate only when no explicit
+    # instrumental value accompanies it.
+    if _spt_resolution_value(meta) is None and _spt_resolution_value(payload.get("metadata")) is None:
+        value = _spt_float(meta.get("average_resolving_power"))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _spt_is_gaia_xp_metadata(metadata: Mapping[str, Any] | None) -> bool:
+    if metadata is None:
+        return False
+    text = " ".join(
+        str(metadata.get(key) or "")
+        for key in ("instrument_name", "instrument_mode_name", "spectrum_name", "comments")
+    ).lower()
+    return (
+        "gaia bp/rp" in text
+        or "xp_continuous" in text
+        or "externally calibrated xp" in text
+    )
+
+
+def _spt_gaia_xp_fwhm_um(wavelength_um: Any) -> np.ndarray:
+    wavelength = np.asarray(wavelength_um, dtype=float)
+    table = np.asarray(SPT_GAIA_XP_ECS_FWHM_NM, dtype=float)
+    wavelength_nm = wavelength * 1000.0
+    fwhm_nm = np.interp(
+        wavelength_nm,
+        table[:, 0],
+        table[:, 1],
+        left=np.nan,
+        right=np.nan,
+    )
+    return fwhm_nm / 1000.0
+
+
+def _spt_instrument_fwhm_um(
+    wavelength_um: Any,
+    resolving_power: Any,
+    metadata: Mapping[str, Any] | None = None,
+) -> np.ndarray:
+    wavelength = np.asarray(wavelength_um, dtype=float)
+    if _spt_is_gaia_xp_metadata(metadata):
+        # Do not extrapolate the Gaia ECS calibration into wavelength ranges
+        # where Gaia XP has no response.
+        return _spt_gaia_xp_fwhm_um(wavelength)
+    resolution = _spt_float(resolving_power)
+    return (
+        wavelength / resolution
+        if resolution is not None and resolution > 0
+        else np.full_like(wavelength, np.nan, dtype=float)
+    )
+
+
+def _spt_resolution_segments(wavelength_um: np.ndarray) -> list[tuple[int, int]]:
+    if wavelength_um.size == 0:
+        return []
+    if wavelength_um.size == 1:
+        return [(0, 1)]
+    steps = np.diff(wavelength_um)
+    positive_steps = steps[np.isfinite(steps) & (steps > 0)]
+    if positive_steps.size == 0:
+        return [(0, wavelength_um.size)]
+    typical_step = float(np.nanmedian(positive_steps))
+    breaks = np.flatnonzero((~np.isfinite(steps)) | (steps <= 0) | (steps > 4.0 * typical_step)) + 1
+    bounds = np.concatenate(([0], breaks, [wavelength_um.size]))
+    return [
+        (int(start), int(stop))
+        for start, stop in zip(bounds[:-1], bounds[1:])
+        if stop > start
+    ]
+
+
+def _spt_match_standard_resolution(
+    standard: pd.DataFrame,
+    standard_resolving_power: Any,
+    comparison_resolving_power: Any,
+    *,
+    standard_metadata: Mapping[str, Any] | None = None,
+    comparison_metadata: Mapping[str, Any] | None = None,
+    comparison_wavelengths: Any | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    source_resolution = _spt_float(standard_resolving_power)
+    target_resolution = _spt_float(comparison_resolving_power)
+    target_is_gaia_xp = _spt_is_gaia_xp_metadata(comparison_metadata)
+    mode = "gaia_xp_wavelength_dependent_lsf" if target_is_gaia_xp else "constant_resolving_power"
+    info: dict[str, Any] = {
+        "applied": False,
+        "mode": mode,
+        "standard_resolving_power": _pythonize(source_resolution),
+        "comparison_resolving_power": _pythonize(target_resolution),
+        "target_fwhm_min_nm": None,
+        "target_fwhm_max_nm": None,
+        "kernel_fwhm_max_nm": None,
+    }
+    if standard.empty or "wv" not in standard.columns or "sp" not in standard.columns:
+        info["reason"] = "empty_standard"
+        return standard.copy(), info
+    if source_resolution is None or source_resolution <= 0:
+        info["reason"] = "missing_standard_resolving_power"
+        return standard.copy(), info
+    if (target_resolution is None or target_resolution <= 0) and not target_is_gaia_xp:
+        info["reason"] = "missing_comparison_resolving_power"
+        return standard.copy(), info
+
+    work = standard.copy()
+    for column in ("wv", "sp", "esp"):
+        if column in work.columns:
+            work[column] = pd.to_numeric(work[column], errors="coerce")
+    work = work.dropna(subset=["wv", "sp"]).sort_values("wv", kind="mergesort").reset_index(drop=True)
+    if work.empty:
+        info["reason"] = "empty_standard"
+        return work, info
+
+    wavelength = work["wv"].to_numpy(dtype=float)
+    flux = work["sp"].to_numpy(dtype=float)
+    uncertainty = (
+        work["esp"].to_numpy(dtype=float)
+        if "esp" in work.columns
+        else np.full_like(flux, np.nan, dtype=float)
+    )
+    source_fwhm = _spt_instrument_fwhm_um(wavelength, source_resolution, standard_metadata)
+    target_fwhm = _spt_instrument_fwhm_um(wavelength, target_resolution, comparison_metadata)
+    relevant = np.ones_like(wavelength, dtype=bool)
+    if comparison_wavelengths is not None:
+        comparison_wavelength = np.asarray(comparison_wavelengths, dtype=float)
+        comparison_wavelength = np.sort(comparison_wavelength[np.isfinite(comparison_wavelength)])
+        if comparison_wavelength.size:
+            relevant = np.zeros_like(wavelength, dtype=bool)
+            for comparison_start, comparison_stop in _spt_resolution_segments(comparison_wavelength):
+                comparison_segment = comparison_wavelength[comparison_start:comparison_stop]
+                if comparison_segment.size:
+                    relevant |= (wavelength >= float(comparison_segment[0])) & (wavelength <= float(comparison_segment[-1]))
+    finite_target = target_fwhm[relevant & np.isfinite(target_fwhm) & (target_fwhm > 0)]
+    if finite_target.size:
+        info["target_fwhm_min_nm"] = _pythonize(float(np.nanmin(finite_target) * 1000.0))
+        info["target_fwhm_max_nm"] = _pythonize(float(np.nanmax(finite_target) * 1000.0))
+
+    output_flux = flux.copy()
+    output_uncertainty = uncertainty.copy()
+    maximum_kernel_fwhm = 0.0
+    applied = False
+    for start, stop in _spt_resolution_segments(wavelength):
+        segment_wavelength = wavelength[start:stop]
+        if segment_wavelength.size < 2:
+            continue
+        steps = np.diff(segment_wavelength)
+        steps = steps[np.isfinite(steps) & (steps > 0)]
+        if steps.size == 0:
+            continue
+        sampling_fwhm = SPT_BOXCAR_EQUIVALENT_GAUSSIAN_FWHM * float(np.nanmedian(steps))
+        effective_source_fwhm = np.sqrt(np.square(source_fwhm[start:stop]) + sampling_fwhm**2)
+        kernel_fwhm = np.sqrt(np.maximum(np.square(target_fwhm[start:stop]) - np.square(effective_source_fwhm), 0.0))
+        for local_index, fwhm in enumerate(kernel_fwhm):
+            if not relevant[start + local_index]:
+                continue
+            if not np.isfinite(fwhm) or fwhm <= 0:
+                continue
+            sigma = float(fwhm / SPT_GAUSSIAN_FWHM)
+            if not math.isfinite(sigma) or sigma <= 0.05 * float(np.nanmedian(steps)):
+                continue
+            center = float(segment_wavelength[local_index])
+            left = int(np.searchsorted(segment_wavelength, center - 4.0 * sigma, side="left"))
+            right = int(np.searchsorted(segment_wavelength, center + 4.0 * sigma, side="right"))
+            neighbor_wavelength = segment_wavelength[left:right]
+            neighbor_flux = flux[start + left:start + right]
+            valid_flux = np.isfinite(neighbor_wavelength) & np.isfinite(neighbor_flux)
+            if np.count_nonzero(valid_flux) < 2:
+                continue
+            weights = np.exp(-0.5 * np.square((neighbor_wavelength[valid_flux] - center) / sigma))
+            weight_sum = float(np.sum(weights))
+            if not math.isfinite(weight_sum) or weight_sum <= 0:
+                continue
+            weights = weights / weight_sum
+            output_flux[start + local_index] = float(np.sum(weights * neighbor_flux[valid_flux]))
+            neighbor_uncertainty = uncertainty[start + left:start + right][valid_flux]
+            if np.all(np.isfinite(neighbor_uncertainty) & (neighbor_uncertainty >= 0)):
+                output_uncertainty[start + local_index] = float(
+                    np.sqrt(np.sum(np.square(weights * neighbor_uncertainty)))
+                )
+            maximum_kernel_fwhm = max(maximum_kernel_fwhm, float(fwhm))
+            applied = True
+
+    work["sp"] = output_flux
+    if "esp" in work.columns:
+        work["esp"] = output_uncertainty
+    info["applied"] = applied
+    info["kernel_fwhm_max_nm"] = _pythonize(maximum_kernel_fwhm * 1000.0) if applied else None
+    info["reason"] = "degraded_standard" if applied else "standard_not_higher_resolution"
+    return work, info
+
+
 def _spectra_lowres_resolving_power_per_pixel(
     median_spectral_resolving_power: Any,
     pix_per_res_element: Any,
@@ -3864,14 +4130,27 @@ def _spt_comparison_from_payloads(
     if len(set(specids)) != len(specids):
         raise ValueError("Each moca_specid can only be selected once.")
     sources = [dict(item[2]) for item in prepared]
-    resolving_powers = [
-        _spt_float(payload.get("meta", {}).get("average_resolving_power"))
+    instrumental_resolving_powers = [
+        _spt_payload_instrumental_resolving_power(payload)
         for payload in payloads
     ]
-    resolving_powers = [value for value in resolving_powers if value is not None]
+    instrumental_resolving_powers = [
+        value for value in instrumental_resolving_powers
+        if value is not None and value > 0
+    ]
+    sampling_resolving_powers = [
+        _spt_payload_sampling_resolving_power(payload)
+        for payload in payloads
+    ]
+    sampling_resolving_powers = [
+        value for value in sampling_resolving_powers
+        if value is not None and value > 0
+    ]
     if len(prepared) == 1:
         specid, _frame, metadata = prepared[0]
         metadata["moca_specids"] = [int(specid)]
+        instrumental_resolution = instrumental_resolving_powers[0] if instrumental_resolving_powers else None
+        sampling_resolution = sampling_resolving_powers[0] if sampling_resolving_powers else None
         return {
             "comparison_raw": pd.DataFrame(payloads[0].get("spectrum") or []),
             "comparison_metadata": metadata,
@@ -3884,7 +4163,9 @@ def _spt_comparison_from_payloads(
                 "overlaps": [],
                 "warnings": [],
             },
-            "average_resolving_power": resolving_powers[0] if resolving_powers else None,
+            "instrumental_resolving_power": instrumental_resolution,
+            "sampling_resolving_power": sampling_resolution,
+            "average_resolving_power": instrumental_resolution or sampling_resolution,
         }
     oids = [_spt_int_value(metadata.get("moca_oid")) for _, _, metadata in prepared]
     if any(oid is None for oid in oids):
@@ -3924,7 +4205,13 @@ def _spt_comparison_from_payloads(
         "data_collection_date": None,
         "spectrum_name": "Composite of " + ", ".join(f"specid{specid}" for specid in specids),
         "label": "Composite: " + ", ".join(f"specid{specid}" for specid in specids),
+        "median_spectral_resolving_power": (
+            min(instrumental_resolving_powers) if instrumental_resolving_powers else None
+        ),
+        "pix_per_res_element": None,
     })
+    instrumental_resolution = min(instrumental_resolving_powers) if instrumental_resolving_powers else None
+    sampling_resolution = min(sampling_resolving_powers) if sampling_resolving_powers else None
     return {
         "comparison_raw": comparison_raw,
         "comparison_metadata": base_metadata,
@@ -3947,7 +4234,9 @@ def _spt_comparison_from_payloads(
             "warnings": warnings,
             "merge_method": "inverse_variance_with_between_spectrum_scatter",
         },
-        "average_resolving_power": min(resolving_powers) if resolving_powers else None,
+        "instrumental_resolving_power": instrumental_resolution,
+        "sampling_resolving_power": sampling_resolution,
+        "average_resolving_power": instrumental_resolution or sampling_resolution,
     }
 
 
@@ -4654,29 +4943,54 @@ def _spt_processed_standard_from_cache(
     common_wv: np.ndarray,
     norm_regions_param: list[tuple[float, float]],
     bins_per_micron: int,
-) -> pd.DataFrame:
+    standard_metadata: Mapping[str, Any],
+    comparison_metadata: Mapping[str, Any],
+    comparison_resolving_power: Any,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    standard_resolving_power = _spt_resolution_value(standard_metadata)
+    target_resolving_power = _spt_float(comparison_resolving_power)
     cache_key = "|".join([
         _spt_db_cache_key(args),
         "standard-process",
+        SPT_RESOLUTION_MATCH_VERSION,
         str(int(std_specid)),
         str(int(bins_per_micron)),
+        f"std-r:{standard_resolving_power or 0:.8g}",
+        f"target-r:{target_resolving_power or 0:.8g}",
+        f"target-gaia-xp:{int(_spt_is_gaia_xp_metadata(comparison_metadata))}",
         _spt_format_norm_regions(norm_regions_param),
         _spt_common_wavelength_key(common_wv),
     ])
     now = time.time()
     cached = _SPT_STANDARD_PROCESS_CACHE.get(cache_key)
     if cached and now - cached[0] < CACHE_SECONDS:
-        return cached[1].copy(deep=True)
-    processed = _spt_process_spectrum(
+        cached_processed, cached_matched, cached_info = cached[1]
+        return (
+            cached_processed.copy(deep=True),
+            cached_matched.copy(deep=True),
+            copy.deepcopy(cached_info),
+        )
+    matched_raw, resolution_match = _spt_match_standard_resolution(
         std_raw,
+        standard_resolving_power,
+        target_resolving_power,
+        standard_metadata=standard_metadata,
+        comparison_metadata=comparison_metadata,
+        comparison_wavelengths=common_wv,
+    )
+    processed = _spt_process_spectrum(
+        matched_raw,
         bins_per_micron=bins_per_micron,
         common_wv=common_wv,
         norm_regions_param=norm_regions_param,
     )
     if not processed.empty:
         processed["esp_calc"] = _spt_prepare_errors(processed["spn"], processed.get("espn"))
-    _SPT_STANDARD_PROCESS_CACHE[cache_key] = (now, processed.copy(deep=True))
-    return processed
+    _SPT_STANDARD_PROCESS_CACHE[cache_key] = (
+        now,
+        (processed.copy(deep=True), matched_raw.copy(deep=True), copy.deepcopy(resolution_match)),
+    )
+    return processed, matched_raw, resolution_match
 
 
 def _spt_rescale_standard_to_comparison(
@@ -4916,12 +5230,15 @@ def _spt_pickles_spectral_type(spectrum_name: Any) -> tuple[str, float, str, str
 
 
 def _spt_pickles_grid_rows(conn) -> list[dict[str, Any]]:
-    rows = _records(_read_sql(conn, """
+    resolution_metadata_select = _spectra_resolution_metadata_select(conn)
+    rows = _records(_read_sql(conn, f"""
         SELECT
             ms.moca_specid,
             ms.moca_oid,
             ms.moca_pid,
             ms.spectrum_name,
+            ms.instrument_mode_name,
+            {resolution_metadata_select},
             mo.designation AS object_designation,
             ms.comments,
             COALESCE(ms.bibcode, mp.bibcode) AS bibcode
@@ -4961,6 +5278,9 @@ def _spt_pickles_grid_rows(conn) -> list[dict[str, Any]]:
             "metallicity_variant": metallicity_variant,
             "metallicity_label": SPT_PICKLES_METALLICITY_GRID_LABELS.get(metallicity_variant, "solar M/H"),
             "pickles_template": True,
+            "instrument_mode_name": row.get("instrument_mode_name"),
+            "median_spectral_resolving_power": _pythonize(row.get("median_spectral_resolving_power")),
+            "pix_per_res_element": _pythonize(row.get("pix_per_res_element")),
         })
     pickles_rows.sort(key=_spt_pickles_grid_row_sort_key)
     return pickles_rows
@@ -4987,7 +5307,7 @@ def _load_spt_grid_from_db(
         }
         if standard_specid_set:
             standard_specid_key = ",".join(str(specid) for specid in sorted(standard_specid_set))
-    cache_key = f"{_spt_db_cache_key(args)}|grid|source:{standards_source}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|grid|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_GRID_CACHE,
@@ -5015,6 +5335,7 @@ def _load_spt_grid_from_db(
 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
+        resolution_metadata_select = _spectra_resolution_metadata_select(conn)
         if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
             grid_rows = _spt_pickles_grid_rows(conn)
             pickles_template_count = len(grid_rows)
@@ -5031,6 +5352,9 @@ def _load_spt_grid_from_db(
                     dstg.spectral_type,
                     dstg.spectral_type_number,
                     dstg.short_object_designation AS designation,
+                    ms.spectrum_name,
+                    ms.instrument_mode_name,
+                    {resolution_metadata_select},
                     CONCAT(dstg.spectral_type, ' (', dstg.short_object_designation, ')') AS label,
                     CASE WHEN mstg.moca_sptgridid = 'extremely low gravity' THEN 'delta'
                          WHEN mstg.moca_sptgridid = 'very low gravity' THEN 'gamma'
@@ -5151,7 +5475,8 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
 
     engine = _engine(_connection_string(args))
     with engine.connect() as conn:
-        metadata_rows = _records(_read_sql(conn, """
+        resolution_metadata_select = _spectra_resolution_metadata_select(conn)
+        metadata_rows = _records(_read_sql(conn, f"""
             SELECT
                 ms.moca_specid,
                 ms.moca_oid,
@@ -5159,6 +5484,7 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
+                {resolution_metadata_select},
                 mo.designation,
                 spt.spectral_type
             FROM moca_spectra ms
@@ -5211,13 +5537,23 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
     if mode:
         label += f" in {mode} mode"
 
+    sampling_resolving_power = (
+        _spt_average_resolving_power(rows_df["wv"].to_numpy(dtype=float))
+        if not rows_df.empty else None
+    )
+    instrumental_resolving_power = _spt_resolution_value(meta)
     payload = {
         "metadata": {**meta, "label": label},
         "spectrum": _records(rows_df),
         "meta": {
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "row_count": int(len(rows_df)),
-            "average_resolving_power": _spt_average_resolving_power(rows_df["wv"].to_numpy(dtype=float)) if not rows_df.empty else None,
+            "average_resolving_power": instrumental_resolving_power or sampling_resolving_power,
+            "instrumental_resolving_power": _pythonize(instrumental_resolving_power),
+            "median_spectral_resolving_power": _pythonize(instrumental_resolving_power),
+            "sampling_resolving_power": _pythonize(sampling_resolving_power),
+            "grid_average_resolving_power": _pythonize(sampling_resolving_power),
+            "pix_per_res_element": _pythonize(_spt_float(meta.get("pix_per_res_element"))),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
     }
@@ -5398,7 +5734,7 @@ def _precompute_spt_comparison(
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
     specid_key = ",".join(str(specid) for specid in requested_specids)
-    cache_key = f"{_spt_db_cache_key(args)}|compare|source:{standards_source}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_COMPARE_CACHE,
@@ -5418,6 +5754,8 @@ def _precompute_spt_comparison(
     spectrum_payloads = [_load_spt_spectrum_from_db(args, specid) for specid in requested_specids]
     comparison_input = _spt_comparison_from_payloads(spectrum_payloads, bins)
     comparison_raw = comparison_input["comparison_raw"]
+    comparison_metadata = comparison_input["comparison_metadata"]
+    comparison_resolving_power = comparison_input.get("instrumental_resolving_power")
     grid_raw = pd.DataFrame(grid_payload["gridSpectra"])
     grid_data = pd.DataFrame(grid_payload["gridData"])
     if only_standard_specid is not None and not grid_data.empty and "moca_specid" in grid_data.columns:
@@ -5469,13 +5807,16 @@ def _precompute_spt_comparison(
         raw_flux = pd.to_numeric(std_raw.get("sp"), errors="coerce").to_numpy(dtype=float)
         if raw_flux.size == 0 or float(np.nansum(raw_flux)) == 0:
             continue
-        std_df = _spt_processed_standard_from_cache(
+        std_df, matched_std_raw, resolution_match = _spt_processed_standard_from_cache(
             args,
             std_specid,
             std_raw,
             common_wv,
             norm_regions_param,
             bins,
+            row,
+            comparison_metadata,
+            comparison_resolving_power,
         )
         if std_df.empty:
             continue
@@ -5483,7 +5824,7 @@ def _precompute_spt_comparison(
         spectrum_display = None
         if lowres_comparison:
             std_display_df = _spt_process_spectrum(
-                std_raw,
+                matched_std_raw,
                 bins_per_micron=SPT_LOWRES_DISPLAY_BINS_PER_MICRON,
                 norm_regions_param=norm_regions_param,
             )
@@ -5498,6 +5839,7 @@ def _precompute_spt_comparison(
             "segments": _spt_standard_segments(std_df, comparison_regions, cloud_lambda0),
             "spectrum_original": _spt_spectrum_records(std_df),
             "spectrum_display": spectrum_display,
+            "resolution_match": resolution_match,
             "av_list": [None] * len(norm_regions_param),
             "rv_list": [None] * len(norm_regions_param),
             "cloud_tau_list": [None] * len(norm_regions_param),
@@ -5554,6 +5896,7 @@ def _precompute_spt_comparison(
         std_df = item["std_df"]
         spectrum_original = item["spectrum_original"]
         spectrum_display = item.get("spectrum_display")
+        resolution_match = item.get("resolution_match") or {}
         spectrum_dereddened: list[dict[str, Any]] | None = None
         spectrum_cloud: list[dict[str, Any]] | None = None
         av_list = list(item["av_list"])
@@ -5700,6 +6043,13 @@ def _precompute_spt_comparison(
             "comments": row.get("comments"),
             "bibcode": row.get("bibcode"),
             "gravity_class": row.get("gravity_class"),
+            "standard_resolving_power": _pythonize(
+                resolution_match.get("standard_resolving_power")
+            ),
+            "comparison_resolving_power": _pythonize(
+                resolution_match.get("comparison_resolving_power")
+            ),
+            "resolution_match": resolution_match,
             "spectrum": spectrum_original,
             "spectrum_display": spectrum_display,
             "spectrum_dered": spectrum_dereddened,
@@ -5742,6 +6092,13 @@ def _precompute_spt_comparison(
             "cloud_alpha_fixed": bool(cloud_alpha_fixed),
             "cloud_lambda0": _pythonize(float(cloud_lambda0)),
             "average_resolving_power": comparison_input.get("average_resolving_power"),
+            "instrumental_resolving_power": comparison_input.get("instrumental_resolving_power"),
+            "sampling_resolving_power": comparison_input.get("sampling_resolving_power"),
+            "resolution_match_mode": (
+                "gaia_xp_wavelength_dependent_lsf"
+                if _spt_is_gaia_xp_metadata(comparison_metadata)
+                else "constant_resolving_power"
+            ),
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,

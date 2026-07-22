@@ -724,6 +724,94 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("function moveChi2Rank(delta)", source)
         self.assertIn('sptEl["spt-grid-select"].value = next.grid', source)
 
+    def test_gaia_xp_resolution_curve_matches_published_ecs_values(self):
+        fwhm_um = app_module._spt_gaia_xp_fwhm_um([0.86, 0.88, 0.90, 0.92])
+        np.testing.assert_allclose(
+            fwhm_um,
+            np.asarray([13.85, 14.50, 15.47, 16.07]) / 1000.0,
+            rtol=0,
+            atol=1e-12,
+        )
+
+    def test_spectral_typing_degrades_high_resolution_standard_to_gaia_xp_lsf(self):
+        wavelength = np.arange(0.84, 0.941, 0.0005)
+        flux = 1.0 + np.exp(-0.5 * ((wavelength - 0.90) / 0.0006) ** 2)
+        standard = pd.DataFrame({
+            "wv": wavelength,
+            "sp": flux,
+            "esp": np.full_like(wavelength, 0.01),
+        })
+        matched, info = app_module._spt_match_standard_resolution(
+            standard,
+            2000.0,
+            58.0,
+            standard_metadata={},
+            comparison_metadata={
+                "instrument_mode_name": "Gaia DR3 externally calibrated XP continuous mean spectrum",
+            },
+            comparison_wavelengths=np.arange(0.86, 0.921, 0.002),
+        )
+        line = matched["sp"].to_numpy(dtype=float) - 1.0
+        above_half_max = wavelength[line >= 0.5 * float(np.nanmax(line))]
+        measured_fwhm = float(above_half_max[-1] - above_half_max[0])
+        self.assertTrue(info["applied"])
+        self.assertEqual(info["mode"], "gaia_xp_wavelength_dependent_lsf")
+        self.assertAlmostEqual(info["comparison_resolving_power"], 58.0)
+        self.assertLessEqual(info["target_fwhm_max_nm"], 16.08)
+        self.assertGreater(measured_fwhm, 0.013)
+        self.assertLess(measured_fwhm, 0.018)
+        self.assertLess(float(np.nanmax(line)), 0.15)
+
+    def test_spectral_typing_does_not_smooth_standard_below_target_resolution(self):
+        wavelength = np.arange(0.86, 0.94, 0.002)
+        standard = pd.DataFrame({
+            "wv": wavelength,
+            "sp": 1.0 + 0.1 * np.sin(100.0 * wavelength),
+            "esp": np.full_like(wavelength, 0.02),
+        })
+        matched, info = app_module._spt_match_standard_resolution(
+            standard,
+            30.0,
+            58.0,
+        )
+        np.testing.assert_allclose(matched["sp"], standard["sp"], rtol=0, atol=0)
+        self.assertFalse(info["applied"])
+        self.assertEqual(info["reason"], "standard_not_higher_resolution")
+
+    def test_spectral_typing_prefers_stored_resolution_over_sampling_density(self):
+        wavelength = np.arange(0.86, 0.921, 0.002)
+        sampling_resolution = app_module._spt_average_resolving_power(wavelength)
+        payload = {
+            "metadata": {
+                "moca_specid": 800572,
+                "moca_oid": 2513,
+                "median_spectral_resolving_power": 58.0,
+                "pix_per_res_element": 6.5,
+                "instrument_mode_name": "Gaia DR3 externally calibrated XP continuous mean spectrum",
+            },
+            "spectrum": [
+                {"moca_specid": 800572, "wv": float(wv), "sp": 1.0, "esp": 0.02}
+                for wv in wavelength
+            ],
+            "meta": {
+                "average_resolving_power": 58.0,
+                "instrumental_resolving_power": 58.0,
+                "median_spectral_resolving_power": 58.0,
+                "sampling_resolving_power": sampling_resolution,
+            },
+        }
+        comparison = app_module._spt_comparison_from_payloads([payload], 200)
+        self.assertEqual(comparison["instrumental_resolving_power"], 58.0)
+        self.assertEqual(comparison["average_resolving_power"], 58.0)
+        self.assertAlmostEqual(comparison["sampling_resolving_power"], sampling_resolution)
+        self.assertGreater(comparison["sampling_resolving_power"], 400.0)
+
+    def test_spectral_typing_reports_resolution_matching_in_standard_metadata(self):
+        source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        self.assertIn("resolutionMatch?.applied", source)
+        self.assertIn("Gaia XP wavelength-dependent LSF", source)
+        self.assertIn("maximum smoothing-kernel FWHM", source)
+
     def test_spectral_typing_composite_stitching_is_order_independent(self):
         def spectrum_payload(specid, start, stop, factor):
             wavelength = np.arange(start, stop + 0.0001, 0.01)

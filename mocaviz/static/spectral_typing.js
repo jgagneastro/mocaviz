@@ -1729,6 +1729,24 @@ function updateMetadata(payload, entry) {
   parts.push(`<strong>${escapeHtml(entry.spectral_type || "Standard")} standard</strong>`);
   parts.push(`Standard: ${escapeHtml(entry.object_designation || entry.designation || "None")}`);
   parts.push(`Standard moca_specid: ${escapeHtml(entry.moca_specid ?? "None")}`);
+  const resolutionMatch = entry?.resolution_match;
+  if (resolutionMatch?.applied) {
+    const standardR = finiteNumber(resolutionMatch.standard_resolving_power)
+      ? formatNumber(resolutionMatch.standard_resolving_power, 0)
+      : "unknown";
+    const comparisonR = finiteNumber(resolutionMatch.comparison_resolving_power)
+      ? formatNumber(resolutionMatch.comparison_resolving_power, 0)
+      : "wavelength-dependent";
+    const mode = resolutionMatch.mode === "gaia_xp_wavelength_dependent_lsf"
+      ? "Gaia XP wavelength-dependent LSF"
+      : "constant resolving power";
+    const kernel = finiteNumber(resolutionMatch.kernel_fwhm_max_nm)
+      ? `; maximum smoothing-kernel FWHM ${formatNumber(resolutionMatch.kernel_fwhm_max_nm, 2)} nm`
+      : "";
+    parts.push(`<strong>Resolution match:</strong> standard <i>R</i> ${escapeHtml(standardR)} degraded to comparison <i>R</i> ${escapeHtml(comparisonR)} (${escapeHtml(mode)}${escapeHtml(kernel)}).`);
+  } else if (resolutionMatch?.reason) {
+    parts.push(`<strong>Resolution match:</strong> ${escapeHtml(String(resolutionMatch.reason).replaceAll("_", " "))}.`);
+  }
   if (entry.bibcode) {
     const url = `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(entry.bibcode)}/abstract`;
     parts.push(`Bibcode for standard: <a href="${url}" target="_blank" rel="noopener">${escapeHtml(entry.bibcode)}</a>`);
