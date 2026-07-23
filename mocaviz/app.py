@@ -17565,6 +17565,8 @@ def _tfage_fetch_referenced_prior_curves(
         "eps_lo",
         "eps_hi",
         "metadata_json",
+        "created_timestamp",
+        "modified_timestamp",
     ]
     wanted_prior_cols = [
         "id",
@@ -17578,11 +17580,15 @@ def _tfage_fetch_referenced_prior_curves(
         "log_pdf_blob",
         "source",
         "metadata_json",
+        "created_timestamp",
+        "modified_timestamp",
     ]
     blob_aliases = {
         "id": "parent_id",
         "curve_role": "parent_curve_role",
         "metadata_json": "parent_metadata_json",
+        "created_timestamp": "parent_created_timestamp",
+        "modified_timestamp": "parent_modified_timestamp",
     }
     select_blob = ",\n               ".join(
         f"b.{_tfage_qid(col)} AS {_tfage_qid(blob_aliases.get(col, col))}"
@@ -17693,6 +17699,8 @@ def _tfage_fetch_blob_curves(
         "eps_lo",
         "eps_hi",
         "prior_id",
+        "created_timestamp",
+        "modified_timestamp",
     ]
     select_blob = ",\n               ".join(
         f"b.{_tfage_qid(col)} AS {_tfage_qid(col)}" for col in wanted_blob_cols if col in blob_cols
@@ -18434,8 +18442,10 @@ def _tfage_curve_payload(curve: _TfAgeCurve) -> dict[str, Any]:
             "method": _pythonize(scalar.get("method")),
             "method_detailed": _pythonize(scalar.get("method_detailed")),
             "comments": _pythonize(scalar.get("comments")),
-            "created_timestamp": _pythonize(scalar.get("created_timestamp")),
-            "modified_timestamp": _pythonize(scalar.get("modified_timestamp")),
+            "created_timestamp": _pythonize(meta.get("created_timestamp") or scalar.get("created_timestamp")),
+            "modified_timestamp": _pythonize(meta.get("modified_timestamp") or scalar.get("modified_timestamp")),
+            "age_created_timestamp": _pythonize(scalar.get("created_timestamp")),
+            "age_modified_timestamp": _pythonize(scalar.get("modified_timestamp")),
             "age_row_id": _pythonize(scalar.get("id")),
             "age_myr": _pythonize(scalar.get("age_myr")),
             "age_myr_unc": _pythonize(scalar.get("age_myr_unc")),
@@ -19436,6 +19446,9 @@ def _mflows_panel_from_curve(curve: Mapping[str, Any], index: int, mh_treatment:
             "peak_age_myr": _pythonize(meta.get("peak_age_myr")),
             "age_lo_myr": _pythonize(meta.get("age_lo_myr")),
             "age_hi_myr": _pythonize(meta.get("age_hi_myr")),
+            "peak_log10_age_myr": _pythonize(meta.get("peak_log10_age_myr")),
+            "log10_age_lo": _pythonize(meta.get("log10_age_lo")),
+            "log10_age_hi": _pythonize(meta.get("log10_age_hi")),
             "eps_peak": _pythonize(meta.get("eps_peak")),
             "eps_mean": _pythonize(meta.get("eps_mean")),
             "eps_lo": _pythonize(meta.get("eps_lo")),
@@ -19668,6 +19681,25 @@ def _mflows_mh_treatment_payload(mh_treatment: str, metallicity: dict[str, Any] 
     }
 
 
+def _mflows_global_timestamps(panels: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    created: list[str] = []
+    modified: list[str] = []
+    for panel in panels:
+        meta = panel.get("metadata") if isinstance(panel.get("metadata"), Mapping) else {}
+        curve = panel.get("curve") if isinstance(panel.get("curve"), Mapping) else {}
+        curve_meta = curve.get("metadata") if isinstance(curve.get("metadata"), Mapping) else {}
+        created_value = meta.get("created_timestamp") or curve_meta.get("created_timestamp")
+        modified_value = meta.get("modified_timestamp") or curve_meta.get("modified_timestamp")
+        if created_value not in (None, ""):
+            created.append(str(_pythonize(created_value)))
+        if modified_value not in (None, ""):
+            modified.append(str(_pythonize(modified_value)))
+    return {
+        "global_created_timestamp": min(created) if created else None,
+        "global_modified_timestamp": max(modified) if modified else None,
+    }
+
+
 def _mflows_payload_from_tfage(
     args: dict[str, Any],
     tf_payload: dict[str, Any],
@@ -19703,6 +19735,7 @@ def _mflows_payload_from_tfage(
         "mh_treatment": mh_treatment,
         "curve_role": curve_role,
         "load_posteriors": curve_role == "posterior",
+        **_mflows_global_timestamps(panels),
     })
     return {
         "selection": selection,
@@ -19764,7 +19797,7 @@ def _load_mflows_payload_from_db(args: dict[str, Any]) -> dict[str, Any]:
     allow_likelihood_fallback = bool(curve_role == "posterior" and not _tfage_has_explicit_curve_role(args))
     cache_key = "|".join([
         _tfage_cache_key(args, scope, target),
-        "mflows-data-v9",
+        "mflows-data-v10",
         stack_mode,
         mh_treatment,
         str(int(show_measurements)),
@@ -19985,6 +20018,8 @@ def _mock_mflows_curve_payload(
     pdf = _tfage_normalize_pdf(age_grid, pdf)
     pct = _tfage_percentiles(age_grid, pdf) or (center * 0.8, center, center * 1.2)
     peak = float(age_grid[int(np.nanargmax(pdf))])
+    log_pdf = pdf * age_grid * np.log(10.0)
+    log_peak = float(np.log10(age_grid[int(np.nanargmax(log_pdf))]))
     calc_method = ("mfhbmfeh_" if hbm else "mfafeh_") + result_key[:10].replace("_", "")
     return {
         "key": f"mock-{result_key}-{curve_role}-{'hbm' if hbm else 'normal'}",
@@ -20013,6 +20048,9 @@ def _mock_mflows_curve_payload(
             "peak_age_myr": peak,
             "age_lo_myr": float(pct[0]),
             "age_hi_myr": float(pct[2]),
+            "peak_log10_age_myr": log_peak,
+            "log10_age_lo": float(np.log10(pct[0])),
+            "log10_age_hi": float(np.log10(pct[2])),
             "eps_peak": 0.08 if hbm else None,
             "eps_mean": 0.09 if hbm else None,
             "eps_lo": 0.04 if hbm else None,
@@ -20085,8 +20123,12 @@ def _mock_mflows_payload(args: dict[str, Any]) -> dict[str, Any]:
         )
         for result_key, center, sigma, n_contributors, secondary in specs
     ]
-    for curve in curves:
+    mock_created = datetime(2026, 7, 22, 14, 35, 40)
+    for index, curve in enumerate(curves):
         result_key = curve["metadata"]["result_key"]
+        created_timestamp = mock_created + timedelta(seconds=index)
+        curve["metadata"]["created_timestamp"] = created_timestamp.isoformat(timespec="seconds")
+        curve["metadata"]["modified_timestamp"] = (created_timestamp + timedelta(minutes=3)).isoformat(timespec="seconds")
         if result_key in {"gaia_cmd", "full_forward_model"}:
             curve["metadata"]["metadata_json"]["age_feh_map"] = _mock_mflows_map(
                 age_grid,

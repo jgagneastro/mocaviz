@@ -5,6 +5,7 @@ const mflowsDefaultModelVersion = "v1.0";
 const mflowsFullForwardResultKeys = new Set(["full_forward_model", "association_full_forward_model"]);
 const mflowsDynamicAgeMinMyr = 1;
 const mflowsDynamicAgeMaxMyr = 1.35e4;
+const mflowsPeakPlateauRelativeTolerance = 0.002;
 
 const mflowsState = {
   associations: [],
@@ -779,13 +780,10 @@ function mocaFlowsDisplayedPdfValue(ageMyr, pdfAge, perLogAge = false) {
   return perLogAge ? pdf * age * Math.LN10 : pdf;
 }
 
-function mocaFlowsPeakContainingInterval(paired, cdf, total, peakIndex, perLogAge = false, mass = 0.68) {
-  if (!Number.isFinite(total) || total <= 0 || !paired?.length || peakIndex < 0) return null;
+function mocaFlowsPeakContainingInterval(paired, cdf, total, peakCoord, perLogAge = false, mass = 0.68) {
+  if (!Number.isFinite(total) || total <= 0 || !paired?.length || !Number.isFinite(peakCoord)) return null;
   const target = Math.min(Math.max(mass, 0), 1) * total;
   if (!Number.isFinite(target) || target <= 0) return null;
-  const peakArea = cdf[peakIndex];
-  const peakCoord = paired[peakIndex]?.coord;
-  if (!Number.isFinite(peakArea) || !Number.isFinite(peakCoord)) return null;
 
   const coordAtArea = (area) => {
     const clamped = Math.min(Math.max(area, 0), total);
@@ -798,6 +796,27 @@ function mocaFlowsPeakContainingInterval(paired, cdf, total, peakIndex, perLogAg
     return paired[paired.length - 1].coord;
   };
 
+  const areaAtCoord = (coord) => {
+    if (coord <= paired[0].coord) return 0;
+    if (coord >= paired[paired.length - 1].coord) return total;
+    for (let index = 1; index < paired.length; index += 1) {
+      if (paired[index].coord < coord) continue;
+      const left = paired[index - 1];
+      const right = paired[index];
+      const dx = right.coord - left.coord;
+      if (!(dx > 0)) return cdf[index - 1];
+      const fraction = Math.min(Math.max((coord - left.coord) / dx, 0), 1);
+      const partialArea = dx * (
+        left.density * fraction
+        + 0.5 * (right.density - left.density) * fraction * fraction
+      );
+      return cdf[index - 1] + partialArea;
+    }
+    return total;
+  };
+
+  const peakArea = areaAtCoord(peakCoord);
+  if (!Number.isFinite(peakArea)) return null;
   const lowerStart = Math.max(0, peakArea - target);
   const upperStart = Math.min(peakArea, total - target);
   const candidates = new Set([lowerStart, upperStart, 0, Math.max(0, total - target)]);
@@ -823,6 +842,48 @@ function mocaFlowsPeakContainingInterval(paired, cdf, total, peakIndex, perLogAg
   return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? { lo, hi } : null;
 }
 
+function mocaFlowsPeakPlateau(
+  paired,
+  tolerance = mflowsPeakPlateauRelativeTolerance,
+  perLogAge = false,
+) {
+  if (!paired?.length) return null;
+  const maxDensity = Math.max(...paired.map((row) => row.density));
+  if (!Number.isFinite(maxDensity) || maxDensity <= 0) return null;
+  const relativeTolerance = Math.min(Math.max(asNumber(tolerance) ?? 0, 0), 0.1);
+  const threshold = maxDensity - Math.max(
+    Math.abs(maxDensity) * relativeTolerance,
+    Number.EPSILON * Math.max(1, Math.abs(maxDensity)) * 16,
+  );
+  const runs = [];
+  let start = null;
+  for (let index = 0; index <= paired.length; index += 1) {
+    const onPlateau = index < paired.length && paired[index].density >= threshold;
+    if (onPlateau && start === null) start = index;
+    if (onPlateau || start === null) continue;
+    runs.push({ start, end: index - 1 });
+    start = null;
+  }
+  if (!runs.length) return null;
+  const plateau = runs.reduce((best, run) => {
+    const width = paired[run.end].coord - paired[run.start].coord;
+    if (!best || width > best.width) return { ...run, width };
+    return best;
+  }, null);
+  const loCoord = paired[plateau.start].coord;
+  const hiCoord = paired[plateau.end].coord;
+  const peakCoord = 0.5 * (loCoord + hiCoord);
+  return {
+    peak: perLogAge ? 10 ** peakCoord : peakCoord,
+    peakCoord,
+    peakDensity: maxDensity,
+    plateauLo: perLogAge ? 10 ** loCoord : loCoord,
+    plateauHi: perLogAge ? 10 ** hiCoord : hiCoord,
+    startIndex: plateau.start,
+    endIndex: plateau.end,
+  };
+}
+
 function mocaFlowsCurveDisplayStats(panel, options = {}) {
   const perLogAge = Boolean(options.perLogAge);
   const age = panel?.curve?.age_myr || [];
@@ -840,17 +901,9 @@ function mocaFlowsCurveDisplayStats(panel, options = {}) {
   }
   if (paired.length < 2) return null;
   paired.sort((a, b) => a.coord - b.coord);
-  let peak = null;
-  let peakDensity = -Infinity;
-  let peakIndex = -1;
-  for (let index = 0; index < paired.length; index += 1) {
-    const row = paired[index];
-    if (row.density > peakDensity) {
-      peakDensity = row.density;
-      peak = row.age;
-      peakIndex = index;
-    }
-  }
+  const plateau = mocaFlowsPeakPlateau(paired, mflowsPeakPlateauRelativeTolerance, perLogAge);
+  const peak = plateau?.peak;
+  const peakDensity = plateau?.peakDensity;
   const cdf = [0];
   for (let index = 1; index < paired.length; index += 1) {
     const dx = paired[index].coord - paired[index - 1].coord;
@@ -882,7 +935,7 @@ function mocaFlowsCurveDisplayStats(panel, options = {}) {
   const lo = quantile(0.16);
   const median = quantile(0.5);
   const hi = quantile(0.84);
-  const peakInterval = mocaFlowsPeakContainingInterval(paired, cdf, total, peakIndex, perLogAge, 0.68);
+  const peakInterval = mocaFlowsPeakContainingInterval(paired, cdf, total, plateau?.peakCoord, perLogAge, 0.68);
   return {
     peak: Number.isFinite(peak) && peak > 0 && peakDensity > 0 ? peak : null,
     lo: Number.isFinite(lo) && lo > 0 ? lo : null,
@@ -891,14 +944,32 @@ function mocaFlowsCurveDisplayStats(panel, options = {}) {
     hi: Number.isFinite(hi) && hi > 0 ? hi : null,
     bandLo: Number.isFinite(peakInterval?.lo) && peakInterval.lo > 0 ? peakInterval.lo : null,
     bandHi: Number.isFinite(peakInterval?.hi) && peakInterval.hi > 0 ? peakInterval.hi : null,
+    peakCoord: Number.isFinite(plateau?.peakCoord) ? plateau.peakCoord : null,
+    plateauLo: Number.isFinite(plateau?.plateauLo) ? plateau.plateauLo : null,
+    plateauHi: Number.isFinite(plateau?.plateauHi) ? plateau.plateauHi : null,
+    summarySpace: perLogAge ? "log" : "linear",
   };
 }
 
-function mocaFlowsMetaDisplayStats(panel) {
-  const meta = panel?.metadata || panel?.curve?.metadata || {};
-  const peak = asNumber(meta.peak_age_myr);
-  const lo = asNumber(meta.age_lo_myr);
-  const hi = asNumber(meta.age_hi_myr);
+function mocaFlowsMetaDisplayStats(panel, options = {}) {
+  const panelMeta = panel?.metadata || {};
+  const curveMeta = panel?.curve?.metadata || {};
+  const meta = { ...curveMeta, ...panelMeta };
+  const perLogAge = Boolean(options.perLogAge);
+  const hasStoredProductSummary = String(meta.curve_role || "").toLowerCase() !== "prior";
+  const peakCoord = hasStoredProductSummary
+    ? asNumber(perLogAge ? meta.peak_log10_age_myr : meta.peak_age_myr)
+    : null;
+  const loCoord = hasStoredProductSummary
+    ? asNumber(perLogAge ? meta.log10_age_lo : meta.age_lo_myr)
+    : null;
+  const hiCoord = hasStoredProductSummary
+    ? asNumber(perLogAge ? meta.log10_age_hi : meta.age_hi_myr)
+    : null;
+  const toAge = (value) => perLogAge ? 10 ** value : value;
+  const peak = Number.isFinite(peakCoord) ? toAge(peakCoord) : null;
+  const lo = Number.isFinite(loCoord) ? toAge(loCoord) : null;
+  const hi = Number.isFinite(hiCoord) ? toAge(hiCoord) : null;
   return {
     peak: Number.isFinite(peak) && peak > 0 ? peak : null,
     lo: Number.isFinite(lo) && lo > 0 ? lo : null,
@@ -907,11 +978,23 @@ function mocaFlowsMetaDisplayStats(panel) {
     hi: Number.isFinite(hi) && hi > 0 ? hi : null,
     bandLo: Number.isFinite(lo) && lo > 0 ? lo : null,
     bandHi: Number.isFinite(hi) && hi > 0 ? hi : null,
+    peakCoord: Number.isFinite(peakCoord) ? peakCoord : null,
+    bandLoCoord: Number.isFinite(loCoord) ? loCoord : null,
+    bandHiCoord: Number.isFinite(hiCoord) ? hiCoord : null,
+    summarySpace: perLogAge ? "log" : "linear",
   };
 }
 
 function mocaFlowsPanelDisplayStats(panel, options = {}) {
-  return mocaFlowsCurveDisplayStats(panel, options) || mocaFlowsMetaDisplayStats(panel);
+  const curveStats = mocaFlowsCurveDisplayStats(panel, options);
+  const storedStats = mocaFlowsMetaDisplayStats(panel, options);
+  if (!curveStats) return storedStats;
+  return {
+    ...curveStats,
+    peak: curveStats.peak ?? storedStats.peak,
+    bandLo: curveStats.bandLo ?? storedStats.bandLo,
+    bandHi: curveStats.bandHi ?? storedStats.bandHi,
+  };
 }
 
 function renderMocaFlowsMap(plot, panel, payload) {
@@ -980,9 +1063,9 @@ function renderMocaFlowsMap(plot, panel, payload) {
 
 function mocaFlowsCurveMarkerShapes(panel, layer = "below", options = {}) {
   const stats = mocaFlowsPanelDisplayStats(panel, options);
-  const average = stats?.mean;
-  const lo = stats?.lo;
-  const hi = stats?.hi;
+  const peak = stats?.peak;
+  const lo = stats?.bandLo;
+  const hi = stats?.bandHi;
   const shapes = [];
   if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
     shapes.push({
@@ -998,13 +1081,13 @@ function mocaFlowsCurveMarkerShapes(panel, layer = "below", options = {}) {
       layer: "below",
     });
   }
-  if (Number.isFinite(average) && average > 0) {
+  if (Number.isFinite(peak) && peak > 0) {
     shapes.push({
       type: "line",
       xref: "x",
       yref: "paper",
-      x0: average,
-      x1: average,
+      x0: peak,
+      x1: peak,
       y0: 0,
       y1: 1,
       line: { color: "#d33f49", width: 2.4 },
@@ -1286,8 +1369,8 @@ function mocaFlowsAgeRange(values, pdfValues, payload, panel) {
       }
     }
   }
-  const meta = panel.metadata || panel.curve?.metadata || {};
-  for (const value of [mocaFlowsPanelAverageAge(panel), mocaFlowsPanelPeakAge(panel), meta.age_lo_myr, meta.age_hi_myr]) {
+  const displayStats = mocaFlowsPanelDisplayStats(panel, { perLogAge: mflowsEl["mflows-log-x"].checked });
+  for (const value of [displayStats?.mean, displayStats?.peak, displayStats?.bandLo, displayStats?.bandHi]) {
     const number = asNumber(value);
     if (Number.isFinite(number) && number > 0) ages.push(number);
   }
@@ -1340,8 +1423,10 @@ function mocaFlowsFixedAgeRange(payload, fallbackValues = [], options = {}) {
   for (const panel of payload?.panels || []) {
     addAgeArray(panel?.curve?.age_myr);
     addAgeArray(panel?.map?.age_myr);
-    const meta = panel?.metadata || panel?.curve?.metadata || {};
-    for (const value of [mocaFlowsPanelAverageAge(panel), mocaFlowsPanelPeakAge(panel), meta.age_lo_myr, meta.age_hi_myr]) addAge(value);
+    const stats = mocaFlowsPanelDisplayStats(panel, {
+      perLogAge: Boolean(options.log ?? mflowsEl["mflows-log-x"].checked),
+    });
+    for (const value of [stats?.mean, stats?.peak, stats?.bandLo, stats?.bandHi]) addAge(value);
   }
   const adopted = normalizeAgeMarker(payload?.membershipAge || payload?.adoptedAge);
   if (adopted) {
@@ -1367,6 +1452,11 @@ function mocaFlowsPanelInfoHtml(panel, payload) {
   const stats = mocaFlowsPanelDisplayStats(panel, { perLogAge });
   const lines = [];
   pushInfo(lines, "contributors", meta.n_contributors);
+  pushInfo(
+    lines,
+    perLogAge ? "PDF peak (log age)" : "PDF peak (linear age)",
+    pdfPeakAgeText(stats, { perLogAge }),
+  );
   pushInfo(lines, "PDF average age", pdfAverageAgeText(stats));
   const ageText = ageSummaryText(stats) || ageSummaryText(meta);
   pushInfo(lines, "PDF median age", ageText);
@@ -1385,6 +1475,8 @@ function mocaFlowsPanelInfoHtml(panel, payload) {
     pushInfo(lines, "HBM outliers", "not stored");
   }
   pushInfo(lines, "method", meta.calculation_method);
+  pushInfo(lines, "created", formatMocaFlowsTimestamp(mocaFlowsPanelTimestamp(panel, "created_timestamp")));
+  pushInfo(lines, "modified", formatMocaFlowsTimestamp(mocaFlowsPanelTimestamp(panel, "modified_timestamp")));
   return lines.length ? lines.join("") : "<div>No panel metadata</div>";
 }
 
@@ -1477,7 +1569,23 @@ function mocaFlowsRunMetadataFieldHtml(label, value) {
 function formatMocaFlowsTimestamp(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  return text.replace("T", " ").replace(/\.\d+$/, "");
+  return text.replace("T", " ").replace(/\.\d+(?=Z?$)/, "");
+}
+
+function mocaFlowsPanelTimestamp(panel, key) {
+  const meta = panel?.metadata || {};
+  const curveMeta = panel?.curve?.metadata || {};
+  return meta[key] || curveMeta[key] || "";
+}
+
+function mocaFlowsGlobalTimestamps(payload) {
+  const panels = mocaFlowsVisiblePanels(payload);
+  const created = panels.map((panel) => mocaFlowsPanelTimestamp(panel, "created_timestamp")).filter(Boolean).sort();
+  const modified = panels.map((panel) => mocaFlowsPanelTimestamp(panel, "modified_timestamp")).filter(Boolean).sort();
+  return {
+    created: created[0] || payload?.meta?.global_created_timestamp || "",
+    modified: modified[modified.length - 1] || payload?.meta?.global_modified_timestamp || "",
+  };
 }
 
 function isMocaFlowsHbmStack(payload) {
@@ -1613,6 +1721,15 @@ function pdfAverageAgeText(stats) {
   return ageIntervalText(mean, stats?.lo, stats?.hi);
 }
 
+function pdfPeakAgeText(stats) {
+  const peak = asNumber(stats?.peak);
+  const lo = asNumber(stats?.bandLo);
+  const hi = asNumber(stats?.bandHi);
+  if (!Number.isFinite(peak) || peak <= 0) return "";
+  const text = ageIntervalText(peak, lo, hi);
+  return text ? `${text} (68%)` : "";
+}
+
 function ageIntervalText(centerValue, lowerValue, upperValue, options = {}) {
   const center = asNumber(centerValue);
   if (!Number.isFinite(center) || center <= 0) return "";
@@ -1682,6 +1799,13 @@ function updateMocaFlowsSummary() {
 
 function mocaFlowsTopInfoHtml(payload) {
   const items = [];
+  const timestamps = mocaFlowsGlobalTimestamps(payload);
+  if (timestamps.created || timestamps.modified) {
+    const parts = [];
+    if (timestamps.created) parts.push(`<strong>global created:</strong> ${escapeHtml(formatMocaFlowsTimestamp(timestamps.created))}`);
+    if (timestamps.modified) parts.push(`<strong>global modified:</strong> ${escapeHtml(formatMocaFlowsTimestamp(timestamps.modified))}`);
+    items.push(parts.join("; "));
+  }
   const metallicity = mocaFlowsTopMetallicityHtml(payload?.metallicity);
   if (metallicity) items.push(metallicity);
   const ageMarker = normalizeAgeMarker(payload?.membershipAge || payload?.adoptedAge);
@@ -1696,9 +1820,10 @@ function mocaFlowsTopInfoHtml(payload) {
 
 function mocaFlowsMarkerLegendHtml(payload) {
   const panels = mocaFlowsVisiblePanels(payload);
-  const showAverage = panels.some((panel) => {
-    const average = mocaFlowsPanelAverageAge(panel, { perLogAge: mflowsEl["mflows-log-x"]?.checked });
-    return Number.isFinite(average) && average > 0;
+  const perLogAge = Boolean(mflowsEl["mflows-log-x"]?.checked);
+  const showPeak = panels.some((panel) => {
+    const peak = mocaFlowsPanelPeakAge(panel, { perLogAge });
+    return Number.isFinite(peak) && peak > 0;
   });
   const showAdopted = Boolean(normalizeAgeMarker(payload?.membershipAge || payload?.adoptedAge));
   const fullForwardAge = mocaFlowsFullForwardAge(payload, { perLogAge: mflowsEl["mflows-log-x"]?.checked });
@@ -1706,11 +1831,11 @@ function mocaFlowsMarkerLegendHtml(payload) {
     && Number.isFinite(fullForwardAge)
     && fullForwardAge > 0;
   const items = [];
-  if (showAverage) {
+  if (showPeak) {
     items.push([
       `<span class="mflows-line-legend-item">`,
       `<span class="mflows-line-legend-swatch is-peak"></span>`,
-      `<span>PDF average age</span>`,
+      `<span>PDF peak (${perLogAge ? "log age" : "linear age"}) with 68% region</span>`,
       `</span>`,
     ].join(""));
   }

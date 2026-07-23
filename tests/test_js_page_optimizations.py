@@ -532,6 +532,62 @@ class JsPageOptimizationTests(unittest.TestCase):
         legacy_rv = (app_module.STATIC_DIR / "legacy_radial_velocities.js").read_text(encoding="utf-8")
         self.assertNotIn("api-routing-20260710a", legacy_rv)
 
+    def test_moca_flows_mock_exposes_pdf_summaries_and_run_timestamps(self):
+        payload = decoded_json(self.client.get(
+            "/api/moca-flows/data?mock=1&target=association&moca_aid=THOR"
+            "&stack_mode=hbm&mh_treatment=db&curve_role=posterior"
+        ))
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["panels"])
+        created = []
+        modified = []
+        for panel in payload["panels"]:
+            metadata = panel["metadata"]
+            for key in (
+                "peak_age_myr",
+                "age_lo_myr",
+                "age_hi_myr",
+                "peak_log10_age_myr",
+                "log10_age_lo",
+                "log10_age_hi",
+                "created_timestamp",
+                "modified_timestamp",
+            ):
+                self.assertIsNotNone(metadata[key], (panel["result_key"], key))
+            self.assertLessEqual(metadata["age_lo_myr"], metadata["peak_age_myr"])
+            self.assertLessEqual(metadata["peak_age_myr"], metadata["age_hi_myr"])
+            self.assertLessEqual(metadata["log10_age_lo"], metadata["peak_log10_age_myr"])
+            self.assertLessEqual(metadata["peak_log10_age_myr"], metadata["log10_age_hi"])
+            created.append(metadata["created_timestamp"])
+            modified.append(metadata["modified_timestamp"])
+        self.assertEqual(payload["meta"]["global_created_timestamp"], min(created))
+        self.assertEqual(payload["meta"]["global_modified_timestamp"], max(modified))
+
+    def test_moca_flows_client_uses_axis_specific_peak_and_68_percent_region(self):
+        source = (app_module.STATIC_DIR / "moca_flows.js").read_text(encoding="utf-8")
+        marker = source.split("function mocaFlowsCurveMarkerShapes", 1)[1].split(
+            "function mocaFlowsPanelPeakAge",
+            1,
+        )[0]
+        self.assertIn("const peak = stats?.peak", marker)
+        self.assertIn("const lo = stats?.bandLo", marker)
+        self.assertIn("const hi = stats?.bandHi", marker)
+        self.assertNotIn("stats?.mean", marker)
+        self.assertIn('"PDF peak (log age)"', source)
+        self.assertIn('"PDF peak (linear age)"', source)
+        self.assertNotIn("log₁₀(age/yr)", source)
+        self.assertIn("mflowsPeakPlateauRelativeTolerance = 0.002", source)
+        self.assertIn("function mocaFlowsPeakPlateau", source)
+        self.assertIn("const peakCoord = 0.5 * (loCoord + hiCoord)", source)
+        self.assertIn("global created:", source)
+        self.assertIn("global modified:", source)
+        panel_info = source.split("function mocaFlowsPanelInfoHtml", 1)[1].split(
+            "function renderMocaFlowsRunMetadata",
+            1,
+        )[0]
+        self.assertIn('"created"', panel_info)
+        self.assertIn('"modified"', panel_info)
+
     def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
         selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
         base = {
