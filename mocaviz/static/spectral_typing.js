@@ -1777,6 +1777,7 @@ function renderCorrectionInfo(payload = sptState.comparePayload) {
       standards are adjusted with the near-infrared Cardelli, Clayton &amp; Mathis (1989) extinction law,
       <span class="spectral-correction-formula">A(λ) / A(V) = a(x) + b(x) / R<sub>V</sub>, x = 1 / λ</span>.
       The fit solves for A(V) in each normalization region and, when the fixed-value field is blank, also fits R<sub>V</sub>.
+      The corresponding color excess is reported as E(B-V) = A(V) / R<sub>V</sub>.
       <a href="https://ui.adsabs.harvard.edu/abs/1989ApJ...345..245C/abstract" target="_blank" rel="noopener">Reference</a>.
     `;
     return;
@@ -1913,13 +1914,26 @@ function spectralTypingExportRows() {
 function spectralTypingBestParameters(entry) {
   if (sptEl["spt-deredden"]?.checked && Array.isArray(entry.A_V)) {
     const rv = Array.isArray(entry.R_V) ? entry.R_V : [];
-    return entry.A_V.map((av, index) => `A(V)_${index + 1}=${formatNumber(av, 4)}${rv[index] !== undefined ? `; R(V)_${index + 1}=${formatNumber(rv[index], 4)}` : ""}`).join("; ");
+    return entry.A_V.map((av, index) => {
+      const regionRv = rv[index];
+      const colorExcess = spectralColorExcess(av, regionRv);
+      return [
+        `A(V)_${index + 1}=${formatNumber(av, 4)}`,
+        colorExcess === null ? "" : `E(B-V)_${index + 1}=${formatNumber(colorExcess, 4)}`,
+        regionRv === undefined ? "" : `R(V)_${index + 1}=${formatNumber(regionRv, 4)}`,
+      ].filter(Boolean).join("; ");
+    }).join("; ");
   }
   if (sptEl["spt-cloud"]?.checked && Array.isArray(entry.cloud_tau0)) {
     const alpha = Array.isArray(entry.cloud_alpha_values) ? entry.cloud_alpha_values : [];
     return entry.cloud_tau0.map((tau0, index) => `tau_${index + 1}=${formatNumber(tau0, 5)}${alpha[index] !== undefined ? `; alpha_${index + 1}=${formatNumber(alpha[index], 5)}` : ""}`).join("; ");
   }
   return "";
+}
+
+function spectralColorExcess(av, rv) {
+  if (!finiteNumber(av) || !finiteNumber(rv) || Number(rv) <= 0) return null;
+  return Number(av) / Number(rv);
 }
 
 function spectralStitchingComment(stitching) {
@@ -2134,7 +2148,9 @@ function metricAnnotation(entry, payload = null) {
     const showRv = !spectralRvIsFixed();
     entry.A_V.forEach((av, index) => {
       const rv = Array.isArray(entry.R_V) ? entry.R_V[index] : null;
+      const colorExcess = spectralColorExcess(av, rv);
       lines.push(`${fitLabel("A(V)", index)}: ${formatNumber(av, 2)}`);
+      if (colorExcess !== null) lines.push(`${fitLabel("E(B-V)", index)}: ${formatNumber(colorExcess, 2)}`);
       if (showRv) lines.push(`${fitLabel("R(V)", index)}: ${formatNumber(rv, 2)}`);
     });
   } else if (cloud && Array.isArray(entry.cloud_tau0)) {

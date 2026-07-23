@@ -24,6 +24,7 @@ const speState = {
   dragSpecid: null,
   logTickRefreshTimer: null,
   refreshingLogTicks: false,
+  renderToken: 0,
 };
 
 const speEl = {};
@@ -171,7 +172,10 @@ function bindSpectraControls() {
   for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-decrease-resolution", "spe-normalize"]) {
     speEl[id].addEventListener("change", () => {
       if (id === "spe-decrease-resolution") updateSpectraDisplayResolutionControls();
-      renderSpectra();
+      renderSpectra({
+        preserveViewport: true,
+        preserveYAxis: !["spe-snr", "spe-fnu", "spe-normalize"].includes(id),
+      });
       updateSpectraUrl();
     });
   }
@@ -180,13 +184,13 @@ function bindSpectraControls() {
       updateSpectraUrl();
       return;
     }
-    renderSpectra();
+    renderSpectra({ preserveViewport: true });
     updateSpectraUrl();
   }, 180);
   speEl["spe-display-bins"].addEventListener("input", renderDisplayBinning);
   speEl["spe-display-bins"].addEventListener("change", () => {
     updateSpectraDisplayResolutionControls();
-    renderSpectra();
+    renderSpectra({ preserveViewport: true });
     updateSpectraUrl();
   });
   const renderDisplayXRange = debounce(() => {
@@ -206,14 +210,14 @@ function bindSpectraControls() {
     renderSpectra();
     updateSpectraUrl();
   });
-  speEl["spe-hide-ignored"].addEventListener("change", loadSpectra);
+  speEl["spe-hide-ignored"].addEventListener("change", () => loadSpectra({ preserveViewport: true }));
   speEl["spe-normrange"].addEventListener("change", () => {
-    renderSpectra();
+    renderSpectra({ preserveViewport: true, preserveYAxis: false });
     updateSpectraUrl();
   });
   speEl["spe-reset-norm"].addEventListener("click", () => {
     speEl["spe-normrange"].value = speDefaultNorm;
-    renderSpectra();
+    renderSpectra({ preserveViewport: true, preserveYAxis: false });
     updateSpectraUrl();
   });
   if (speEl["spe-ignore-selected"]) {
@@ -518,7 +522,8 @@ function selectedSpectrumMetadata(item) {
   };
 }
 
-async function loadSpectra() {
+async function loadSpectra(options = {}) {
+  const preservedViewport = options?.preserveViewport ? spectraCurrentViewport() : null;
   updateSpectraUrl();
   if (!speState.selected.length) {
     renderEmptySpectra("Select one or more spectra");
@@ -561,15 +566,19 @@ async function loadSpectra() {
   renderSelectedSpectra();
   renderDownloadLinks();
   updateLowresToggleState();
-  renderSpectra();
+  renderSpectra({ viewport: preservedViewport });
   updateSpectraUrl();
 }
 
-function renderSpectra() {
+function renderSpectra(options = {}) {
   if (!speState.payload || !(speState.payload.spectra || []).length) {
     renderEmptySpectra("No spectra loaded");
     return;
   }
+  const preservedViewport = options.viewport || (
+    options.preserveViewport ? spectraCurrentViewport() : null
+  );
+  if (preservedViewport && options.preserveYAxis === false) preservedViewport.y = null;
   setSpectraLoading(true);
   const nonCanonicalFluxUnitCount = updateSpectraFluxUnitControls();
   const processed = processSpectraPayload();
@@ -653,8 +662,10 @@ function renderSpectra() {
     if (hasIgnoredPoints) traces.push(ignoredPointsTrace(spectrum, color));
   });
 
-  const layout = spectraLayout(processed);
-  Plotly.react(speEl["spe-plot"], traces, layout, plotConfig("mocadb_spectral_explorer"));
+  const layout = spectraLayout(processed, preservedViewport);
+  const renderToken = ++speState.renderToken;
+  const renderPromise = Plotly.react(speEl["spe-plot"], traces, layout, plotConfig("mocadb_spectral_explorer"));
+  restoreSpectraViewportAfterRender(renderPromise, preservedViewport, renderToken);
   bindSpectraPlotEvents();
   setSpectraExportDisabled(processed.every((spectrum) => !displayedSpectrumPoints(spectrum).length));
   const rowCount = processed.reduce((sum, spectrum) => sum + spectrum.rawRows.length, 0);
@@ -1208,7 +1219,7 @@ function colorWithAlpha(color, alpha) {
   return `rgba(55, 126, 184, ${clampedAlpha})`;
 }
 
-function spectraLayout(processed) {
+function spectraLayout(processed, viewport = null) {
   const xlog = speEl["spe-xlog"].checked;
   const ylog = speEl["spe-ylog"].checked;
   const shapes = [];
@@ -1291,7 +1302,10 @@ function spectraLayout(processed) {
       yaxis.ticktext = ticks.text;
     }
   }
+  applySpectraViewportToAxis(xaxis, viewport?.x);
+  applySpectraViewportToAxis(yaxis, viewport?.y, { majorLabelsOnly: true });
   return {
+    uirevision: spectraPlotUiRevision(),
     paper_bgcolor: "#eeeeef",
     plot_bgcolor: "#ffffff",
     margin: { l: 86, r: 34, t: 18, b: 90 },
@@ -1311,6 +1325,89 @@ function spectraLayout(processed) {
     shapes,
     annotations,
   };
+}
+
+function spectraCurrentViewport() {
+  const fullLayout = speEl["spe-plot"]?._fullLayout;
+  if (!fullLayout) return null;
+  return {
+    x: spectraAxisDataRange(fullLayout.xaxis),
+    y: spectraAxisDataRange(fullLayout.yaxis),
+  };
+}
+
+function spectraAxisDataRange(axis) {
+  const range = Array.isArray(axis?.range) ? axis.range.map(Number) : null;
+  if (!range || range.length < 2 || !range.every(finite) || range[0] === range[1]) return null;
+  if (axis?.type !== "log") return range;
+  const dataRange = range.map((value) => 10 ** value);
+  return dataRange.every((value) => finite(value) && value > 0) ? dataRange : null;
+}
+
+function applySpectraViewportToAxis(axis, dataRange, tickOptions = {}) {
+  if (!axis || !Array.isArray(dataRange) || dataRange.length < 2) return;
+  const range = spectraAxisLayoutRange(dataRange, axis.type === "log");
+  if (!range) return;
+  if (axis.type === "log") {
+    axis.range = range;
+    const dataValues = dataRange.map(Number);
+    const ticks = plainLogTicks(Math.min(...dataValues), Math.max(...dataValues), tickOptions);
+    axis.tickmode = "array";
+    axis.tickvals = ticks.values;
+    axis.ticktext = ticks.text;
+  } else {
+    axis.range = range;
+  }
+  axis.autorange = false;
+}
+
+function restoreSpectraViewportAfterRender(renderPromise, viewport, renderToken) {
+  if (!viewport || typeof Plotly === "undefined" || typeof Plotly.relayout !== "function") return;
+  const update = spectraViewportRelayoutUpdate(viewport);
+  if (!Object.keys(update).length) return;
+  Promise.resolve(renderPromise)
+    .then(() => {
+      if (renderToken !== speState.renderToken) return null;
+      return Plotly.relayout(speEl["spe-plot"], update);
+    })
+    .catch((error) => console.warn("Unable to restore spectral plot viewport", error));
+}
+
+function spectraViewportRelayoutUpdate(viewport) {
+  const update = {};
+  for (const [axisName, log] of [
+    ["xaxis", Boolean(speEl["spe-xlog"]?.checked)],
+    ["yaxis", Boolean(speEl["spe-ylog"]?.checked)],
+  ]) {
+    const dataRange = axisName === "xaxis" ? viewport?.x : viewport?.y;
+    const range = spectraAxisLayoutRange(dataRange, log);
+    if (!range) continue;
+    update[`${axisName}.autorange`] = false;
+    update[`${axisName}.range[0]`] = range[0];
+    update[`${axisName}.range[1]`] = range[1];
+  }
+  return update;
+}
+
+function spectraAxisLayoutRange(dataRange, log) {
+  if (!Array.isArray(dataRange) || dataRange.length < 2) return null;
+  const range = dataRange.map(Number);
+  if (!range.every(finite) || range[0] === range[1]) return null;
+  if (!log) return range;
+  if (!range.every((value) => value > 0)) return null;
+  return range.map((value) => Math.log10(value));
+}
+
+function spectraPlotUiRevision() {
+  const specids = (speState.selected || [])
+    .map((item) => Number(item?.specid))
+    .filter(Number.isFinite)
+    .join(",");
+  const explicitXRange = ["spe-xrange-min", "spe-xrange-max"]
+    .map((id) => parsePositiveNumber(speEl[id]?.value))
+    .map((value) => value === null ? "auto" : String(value))
+    .join(":");
+  return `spectra:${specids || "none"}:xrange:${explicitXRange}`;
 }
 
 function spectraYAxisValues(processed, ylog, options = {}) {
@@ -1742,6 +1839,7 @@ function renderEmptySpectra(message) {
       font: { size: 18 },
     }],
   };
+  ++speState.renderToken;
   Plotly.react(speEl["spe-plot"], [], layout, plotConfig("mocadb_spectral_explorer_empty"));
   speEl["spe-summary"].textContent = message;
   speEl["spe-table"].innerHTML = "";

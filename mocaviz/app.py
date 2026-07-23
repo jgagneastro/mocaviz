@@ -345,6 +345,54 @@ SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
 SPT_RESOLUTION_MATCH_VERSION = "resolution-match-v3"
 SPT_GAUSSIAN_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 SPT_BOXCAR_EQUIVALENT_GAUSSIAN_FWHM = SPT_GAUSSIAN_FWHM / math.sqrt(12.0)
+
+
+class _SptSpectrumDataError(ValueError):
+    def __init__(
+        self,
+        error_code: str,
+        specid: int,
+        wavelength_regions: Sequence[tuple[float, float]] | None = None,
+    ) -> None:
+        self.error_code = str(error_code)
+        self.specid = int(specid)
+        self.wavelength_regions = [
+            (float(start), float(end))
+            for start, end in (wavelength_regions or [])
+        ]
+        if self.error_code == "specid_not_found":
+            message = f"Specid {self.specid} does not exist."
+        elif self.error_code == "specid_no_valid_data":
+            message = f"Specid {self.specid} contains no valid data."
+        elif self.error_code == "specid_no_data_in_wavelength_range":
+            ranges = _spt_format_norm_regions(self.wavelength_regions)
+            noun = "range" if len(self.wavelength_regions) == 1 else "ranges"
+            message = (
+                f"Specid {self.specid} contains valid data only outside "
+                f"the wavelength {noun} {ranges} μm."
+            )
+        else:
+            message = f"Specid {self.specid} cannot be used for spectral typing."
+        super().__init__(message)
+
+    @property
+    def http_status(self) -> int:
+        return 404 if self.error_code == "specid_not_found" else 422
+
+    def response_fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "error": str(self),
+            "error_code": self.error_code,
+            "error_details": {"moca_specid": self.specid},
+        }
+        if self.wavelength_regions:
+            fields["error_details"]["wavelength_regions"] = [
+                [float(start), float(end)]
+                for start, end in self.wavelength_regions
+            ]
+        return fields
+
+
 # Externally calibrated spectrum (ECS) FWHM values from Montegriffo et al.
 # 2023, A&A 674, A3, Table 1. Wavelengths and FWHM values are in nm.
 SPT_GAIA_XP_ECS_FWHM_NM = (
@@ -3784,6 +3832,43 @@ def _spt_apply_wavelength_mask(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _spt_validate_spectrum_payload_for_regions(
+    payload: Mapping[str, Any],
+    wavelength_regions: Sequence[tuple[float, float]],
+) -> None:
+    metadata = dict(payload.get("metadata") or {})
+    frame = pd.DataFrame(payload.get("spectrum") or [])
+    raw_specid = metadata.get("moca_specid")
+    if raw_specid is None and not frame.empty and "moca_specid" in frame.columns:
+        raw_specid = frame["moca_specid"].iloc[0]
+    specid = _spt_int_value(raw_specid)
+    if specid is None:
+        return
+    if frame.empty or "wv" not in frame.columns or "sp" not in frame.columns:
+        raise _SptSpectrumDataError("specid_no_valid_data", specid)
+    work = frame.copy()
+    work["wv"] = pd.to_numeric(work["wv"], errors="coerce")
+    work["sp"] = pd.to_numeric(work["sp"], errors="coerce")
+    work = _spt_apply_wavelength_mask(work)
+    valid = (
+        np.isfinite(work["wv"].to_numpy(dtype=float))
+        & np.isfinite(work["sp"].to_numpy(dtype=float))
+        & (work["sp"].to_numpy(dtype=float) != 0)
+    )
+    work = work.loc[valid]
+    if work.empty:
+        raise _SptSpectrumDataError("specid_no_valid_data", specid)
+    in_requested_range = np.zeros(len(work), dtype=bool)
+    for start, end in wavelength_regions:
+        in_requested_range |= work["wv"].between(float(start), float(end)).to_numpy(dtype=bool)
+    if not np.any(in_requested_range):
+        raise _SptSpectrumDataError(
+            "specid_no_data_in_wavelength_range",
+            specid,
+            wavelength_regions,
+        )
+
+
 def _spt_prepare_errors(flux_values: Any, error_values: Any | None) -> np.ndarray:
     flux = np.asarray(flux_values, dtype=float)
     if error_values is None:
@@ -5485,6 +5570,7 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
                 ms.instrument_mode_name,
                 ms.spectrum_name,
                 ms.data_collection_date,
+                COALESCE(ms.ignored, 0) AS spectrum_ignored,
                 {resolution_metadata_select},
                 mo.designation,
                 spt.spectral_type
@@ -5496,7 +5582,6 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
                 WHERE adopted = 1
             ) spt USING(moca_oid)
             WHERE ms.moca_specid = :specid
-                AND COALESCE(ms.ignored, 0) = 0
             LIMIT 1
         """, {"specid": int(specid)}))
         rows_df = _read_sql(conn, """
@@ -5516,13 +5601,18 @@ def _load_spt_spectrum_from_db(args: dict[str, Any], specid: int) -> dict[str, A
             ORDER BY ds.wavelength_angstrom
         """, {"specid": int(specid)})
 
+    if not metadata_rows:
+        raise _SptSpectrumDataError("specid_not_found", specid)
+    if rows_df.empty:
+        raise _SptSpectrumDataError("specid_no_valid_data", specid)
+
     if not rows_df.empty:
         median = float(np.nanmedian(rows_df["sp"].to_numpy(dtype=float)))
         if np.isfinite(median) and median != 0:
             rows_df["esp"] = rows_df["esp"] / median
             rows_df["sp"] = rows_df["sp"] / median
 
-    meta = metadata_rows[0] if metadata_rows else {"moca_specid": int(specid)}
+    meta = metadata_rows[0]
     designation = meta.get("designation") or meta.get("spectrum_name") or f"specid{int(specid)}"
     spt = meta.get("spectral_type")
     inst = meta.get("moca_instid")
@@ -5753,6 +5843,8 @@ def _precompute_spt_comparison(
         standards_source=standards_source,
     )
     spectrum_payloads = [_load_spt_spectrum_from_db(args, specid) for specid in requested_specids]
+    for spectrum_payload in spectrum_payloads:
+        _spt_validate_spectrum_payload_for_regions(spectrum_payload, norm_regions_param)
     comparison_input = _spt_comparison_from_payloads(spectrum_payloads, bins)
     comparison_raw = comparison_input["comparison_raw"]
     comparison_metadata = comparison_input["comparison_metadata"]
@@ -6276,6 +6368,8 @@ def _mock_spt_compare(
     primary_specid = requested_specids[0]
     grid_payload = _mock_spt_grid_payload(standards_source=standards_source)
     spectrum_payloads = [_mock_spt_spectrum_payload(specid) for specid in requested_specids]
+    for spectrum_payload in spectrum_payloads:
+        _spt_validate_spectrum_payload_for_regions(spectrum_payload, norm_regions_param)
     temp_args = dict(args)
     temp_args["mock"] = "0"
     grid_cache_key = f"mock|grid"
@@ -33507,15 +33601,20 @@ def spectral_typing_spectrum(specid: int):
         payload = _load_spt_spectrum_from_db(args, specid)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
+        error_fields = (
+            exc.response_fields()
+            if isinstance(exc, _SptSpectrumDataError)
+            else {"error": f"{type(exc).__name__}: {exc}"}
+        )
         return jsonify({
             "ok": False,
             "source": "none",
-            "error": f"{type(exc).__name__}: {exc}",
+            **error_fields,
             "metadata": {"moca_specid": specid},
             "spectrum": [],
             "meta": {"row_count": 0},
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
 
 
 @app.post("/api/spectral-typing/compare")
@@ -33612,10 +33711,15 @@ def spectral_typing_compare():
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
+        error_fields = (
+            exc.response_fields()
+            if isinstance(exc, _SptSpectrumDataError)
+            else {"error": f"{type(exc).__name__}: {exc}"}
+        )
         return jsonify({
             "ok": False,
             "source": "none",
-            "error": f"{type(exc).__name__}: {exc}",
+            **error_fields,
             "comparison": [],
             "comparisonMetadata": {"moca_specid": specids[0] if len(specids) == 1 else None, "moca_specids": specids},
             "comparisonSources": [],
@@ -33638,7 +33742,7 @@ def spectral_typing_compare():
                 "standards_source": standards_source,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
 
 
 @app.post("/api/spectral-typing/standard")
@@ -33734,10 +33838,15 @@ def spectral_typing_standard():
         payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
+        error_fields = (
+            exc.response_fields()
+            if isinstance(exc, _SptSpectrumDataError)
+            else {"error": f"{type(exc).__name__}: {exc}"}
+        )
         return jsonify({
             "ok": False,
             "source": "none",
-            "error": f"{type(exc).__name__}: {exc}",
+            **error_fields,
             "comparison": [],
             "comparisonMetadata": {"moca_specid": specids[0] if len(specids) == 1 else None, "moca_specids": specids},
             "comparisonSources": [],
@@ -33761,7 +33870,7 @@ def spectral_typing_standard():
                 "standards_source": standards_source,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
-        }), 500
+        }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
 
 
 @app.post("/api/spectral-typing/push-spectral-type")
