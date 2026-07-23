@@ -1,7 +1,7 @@
 const mflowsDefaultOid = 11266;
 const mflowsDefaultAid = "ABDMG";
 const mflowsTeamUsers = new Set(["collaborators", "management"]);
-const mflowsDefaultModelVersion = "v1.0";
+const mflowsDefaultModelVersion = "v2.0";
 const mflowsFullForwardResultKeys = new Set(["full_forward_model", "association_full_forward_model"]);
 const mflowsDynamicAgeMinMyr = 1;
 const mflowsDynamicAgeMaxMyr = 1.35e4;
@@ -37,6 +37,7 @@ function mflowsAppUrl(path) {
 async function initMocaFlows() {
   collectMocaFlowsElements();
   readMocaFlowsUrlState();
+  updateMocaFlowsModelControls();
   bindMocaFlowsControls();
   updateMocaFlowsScopeControls();
   attachMocaFlowsAuth();
@@ -61,6 +62,7 @@ function collectMocaFlowsElements() {
     "mflows-load",
     "mflows-stack-section",
     "mflows-stack-mode",
+    "mflows-mh-section",
     "mflows-mh-treatment",
     "mflows-curve-role",
     "mflows-model-version",
@@ -120,7 +122,7 @@ function readMocaFlowsUrlState() {
     params.get("model_version")
       || params.get("mocaflows_model_version")
       || params.get("mflows_model_version")
-      || "",
+      || mflowsDefaultModelVersion,
   ).trim();
   mflowsState.requestedModelVersion = normalizeMocaFlowsModelVersionSelection(mflowsState.requestedModelVersion);
   mflowsEl["mflows-log-x"].checked = checkbox.has("log_x") || !params.has("checkbox");
@@ -152,6 +154,7 @@ function bindMocaFlowsControls() {
     mflowsEl[id].addEventListener("change", loadMocaFlowsData);
   }
   mflowsEl["mflows-model-version"].addEventListener("change", () => {
+    updateMocaFlowsModelControls();
     renderMocaFlowsPanels();
     updateMocaFlowsUrl();
   });
@@ -221,6 +224,13 @@ function updateMocaFlowsScopeControls() {
   mflowsEl["mflows-association-controls"].hidden = scope !== "association";
   mflowsEl["mflows-stack-section"].hidden = scope !== "association";
   mflowsEl["mflows-open-report"].disabled = !mocaFlowsReportUrl();
+}
+
+function updateMocaFlowsModelControls() {
+  const version = normalizeMocaFlowsModelVersionSelection(
+    mflowsEl["mflows-model-version"]?.value || mflowsState.requestedModelVersion,
+  );
+  mflowsEl["mflows-mh-section"].hidden = version === "v2.0";
 }
 
 async function loadMocaFlowsOptions() {
@@ -557,6 +567,7 @@ function syncMocaFlowsModelVersionOptions(payload) {
     : "";
   select.value = selected;
   mflowsState.requestedModelVersion = "";
+  updateMocaFlowsModelControls();
 }
 
 function mocaFlowsModelVersionOptions(payload) {

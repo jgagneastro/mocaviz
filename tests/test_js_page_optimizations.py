@@ -588,6 +588,15 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn('"created"', panel_info)
         self.assertIn('"modified"', panel_info)
 
+    def test_moca_flows_defaults_to_v2_and_hides_its_mh_pane(self):
+        source = (app_module.STATIC_DIR / "moca_flows.js").read_text(encoding="utf-8")
+        html = (app_module.STATIC_DIR / "moca_flows.html").read_text(encoding="utf-8")
+        self.assertIn('const mflowsDefaultModelVersion = "v2.0";', source)
+        self.assertIn("|| mflowsDefaultModelVersion,", source)
+        self.assertIn("function updateMocaFlowsModelControls()", source)
+        self.assertIn('mflowsEl["mflows-mh-section"].hidden = version === "v2.0";', source)
+        self.assertIn('id="mflows-mh-section"', html)
+
     def test_xyzuvw_dual_payload_builds_both_surface_slots_from_one_base(self):
         selection = _parse_xyzuvw_selection({"axes": "xyz", "dual": "1", "checkbox": "models"})
         base = {
