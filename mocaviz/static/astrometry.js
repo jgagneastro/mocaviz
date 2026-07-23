@@ -1704,16 +1704,29 @@ function buildAstrometryFitRequest(mode, prepared) {
     finite(row.plot_epoch_abs)
     && finite(row.base_rel_ra)
     && finite(row.base_rel_dec)
+    && Number(row.single_epoch) === 1
+    && Number(row.pm_corrected) === 0
+    && Number(row.plx_corrected) === 0
+    && String(row.point_of_view || "").trim().toLowerCase() === "earth"
     && !isManuallyRejectedAstrometryRow(row)
   )).map((row) => ({
     id: row.id,
     mission: row.mission,
     plot_epoch_abs: row.plot_epoch_abs,
     measurement_epoch_yr: row.measurement_epoch_yr,
+    measurement_epoch_yr_unc: finite(row.measurement_epoch_yr_unc)
+      ? Number(row.measurement_epoch_yr_unc)
+      : 0,
     base_rel_ra: row.base_rel_ra,
     base_rel_dec: row.base_rel_dec,
     ra_unc_mas: row.ra_unc_mas,
     dec_unc_mas: row.dec_unc_mas,
+    single_epoch: row.single_epoch,
+    pm_corrected: row.pm_corrected,
+    plx_corrected: row.plx_corrected,
+    point_of_view: row.point_of_view,
+    mission_name: row.mission_name,
+    data_release: row.data_release,
   }));
   return {
     mode,
@@ -2835,7 +2848,7 @@ function parallaxMotion(raDeg, decDeg, epoch) {
     const cosSun = Math.cos(sunLong);
     const sinSun = Math.sin(sunLong);
     return {
-      ra: (cosRa * cosObl * sinSun - sinRa * cosSun) * cosDec,
+      ra: cosRa * cosObl * sinSun - sinRa * cosSun,
       dec: cosDec * sinObl * sinSun - cosRa * sinDec * cosSun - sinRa * sinDec * cosObl * sinSun,
     };
   });

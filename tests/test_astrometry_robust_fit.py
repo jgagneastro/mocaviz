@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 from mocaviz import app as app_module
 
 
@@ -24,6 +26,11 @@ def astrometry_row(row_id, epoch, ra, dec, uncertainty=0.4):
         "base_rel_dec": dec,
         "ra_unc_mas": uncertainty,
         "dec_unc_mas": uncertainty,
+        "measurement_epoch_yr_unc": 0.0,
+        "single_epoch": 1,
+        "pm_corrected": 0,
+        "plx_corrected": 0,
+        "point_of_view": "Earth",
     }
 
 
@@ -110,6 +117,221 @@ class AstrometryRobustFitTests(unittest.TestCase):
         self.assertIn("stationaryProbability", script)
         self.assertIn("stationaryModelActive", script)
         self.assertIn("Robust measurement failures and stationary-source contaminants", html)
+
+    def test_uniform_volume_parallax_prior_transform(self):
+        prior = app_module._astrometry_uniform_volume_parallax_prior(
+            {
+                "kind": "uniform_volume",
+                "minDistancePc": 0.1,
+                "maxDistancePc": 10_000.0,
+            }
+        )
+        self.assertIsNotNone(prior)
+        self.assertAlmostEqual(
+            app_module._astrometry_uniform_volume_parallax_transform(0.0, prior),
+            10_000.0,
+        )
+        self.assertAlmostEqual(
+            app_module._astrometry_uniform_volume_parallax_transform(1.0, prior),
+            0.1,
+        )
+        median_parallax = app_module._astrometry_uniform_volume_parallax_transform(
+            0.5,
+            prior,
+        )
+        median_distance = 1000.0 / median_parallax
+        expected_median_distance = (
+            0.5 * (0.1**3 + 10_000.0**3)
+        ) ** (1.0 / 3.0)
+        self.assertAlmostEqual(median_distance, expected_median_distance)
+
+    def test_uniform_volume_prior_requires_finite_increasing_distance_bounds(self):
+        with self.assertRaisesRegex(ValueError, "maxDistancePc"):
+            app_module._astrometry_uniform_volume_parallax_prior(
+                {
+                    "kind": "uniform_volume",
+                    "minDistancePc": 10.0,
+                    "maxDistancePc": 10.0,
+                }
+            )
+
+    def test_parallax_bounds_reuse_the_null_model_bounds(self):
+        body = astrometry_fit_body(
+            [
+                astrometry_row(f"row-{index}", 2010.0 + index, index, -index)
+                for index in range(6)
+            ]
+        )
+        body["mode"] = "pm_plx"
+        arrays = app_module._astrometry_fit_arrays(body)
+        prior = app_module._astrometry_uniform_volume_parallax_prior(
+            {
+                "kind": "uniform_volume",
+                "minDistancePc": 0.1,
+                "maxDistancePc": 10_000.0,
+            }
+        )
+        common = [(-1.0, 1.0), (-2.0, 2.0), (-3.0, 3.0), (-4.0, 4.0)]
+        bounds = app_module._astrometry_ultranest_bounds(
+            arrays,
+            [0.0, 0.0, 0.0, 0.0, 1.0],
+            common_bounds=common,
+            parallax_prior=prior,
+        )
+        self.assertEqual(bounds[:4], common)
+        self.assertEqual(bounds[4], (0.1, 10_000.0))
+
+    def test_stationary_evidence_is_marginalized_with_model_prior(self):
+        logz, uncertainty = app_module._astrometry_marginal_log_evidence(
+            [-10.0, -10.0],
+            [0.9, 0.1],
+            [0.2, 0.2],
+        )
+        self.assertAlmostEqual(logz, -10.0)
+        self.assertAlmostEqual(
+            uncertainty,
+            ((0.9 * 0.2) ** 2 + (0.1 * 0.2) ** 2) ** 0.5,
+        )
+
+    def test_ra_star_parallax_factor_has_no_second_cosine_declination(self):
+        equator, _ = app_module._astrometry_parallax_factors(
+            120.0,
+            0.0,
+            np.array([2015.5]),
+        )
+        high_dec, _ = app_module._astrometry_parallax_factors(
+            120.0,
+            75.0,
+            np.array([2015.5]),
+        )
+        self.assertAlmostEqual(float(equator[0]), float(high_dec[0]))
+
+    def test_fit_rejects_ineligible_coordinate_semantics(self):
+        good = astrometry_row("good", 2010.0, 0.0, 0.0)
+        rows = [
+            good,
+            {**astrometry_row("merged", 2011.0, 1.0, 1.0), "single_epoch": 0},
+            {**astrometry_row("pm", 2012.0, 2.0, 2.0), "pm_corrected": 1},
+            {**astrometry_row("plx", 2013.0, 3.0, 3.0), "plx_corrected": 1},
+            {**astrometry_row("space", 2014.0, 4.0, 4.0), "point_of_view": "Gaia"},
+            astrometry_row("good-2", 2015.0, 5.0, 5.0),
+        ]
+        body = astrometry_fit_body(rows, error_floor=False)
+        body["outlierMixture"] = False
+        arrays = app_module._astrometry_fit_arrays(body)
+        self.assertEqual(list(arrays["ids"]), ["good", "good-2"])
+
+    def test_epoch_uncertainty_is_propagated_along_motion(self):
+        rows = []
+        for index, epoch in enumerate(range(2010, 2021)):
+            row = astrometry_row(
+                f"row-{index}",
+                epoch,
+                100.0 * (epoch - 2015.0),
+                0.0,
+                uncertainty=1.0,
+            )
+            row["measurement_epoch_yr_unc"] = 0.1
+            rows.append(row)
+        body = astrometry_fit_body(rows, error_floor=False)
+        body["outlierMixture"] = False
+        fit = app_module._run_astrometry_fit(body, {})["fit"]
+        self.assertAlmostEqual(fit["pmra"], 100.0, places=6)
+        responsibility = fit["responsibilities"][0]
+        self.assertGreater(responsibility["effectiveRaUncertaintyMas"], 10.0)
+        self.assertAlmostEqual(
+            responsibility["effectiveDecUncertaintyMas"],
+            1.0,
+            places=6,
+        )
+
+    def test_same_group_duplicates_do_not_add_information(self):
+        single_rows = []
+        duplicate_rows = []
+        for index, epoch in enumerate(range(2010, 2016)):
+            row = astrometry_row(
+                f"row-{index}",
+                epoch,
+                2.0 * (epoch - 2012.5),
+                -3.0 * (epoch - 2012.5),
+                uncertainty=1.0,
+            )
+            row["independent_group"] = f"group-{index}"
+            single_rows.append(row)
+            for duplicate in range(4):
+                duplicate_rows.append(
+                    {
+                        **row,
+                        "id": f"row-{index}-{duplicate}",
+                    }
+                )
+        single_body = astrometry_fit_body(single_rows, error_floor=False)
+        duplicate_body = astrometry_fit_body(duplicate_rows, error_floor=False)
+        single_body["outlierMixture"] = False
+        duplicate_body["outlierMixture"] = False
+        single_fit = app_module._run_astrometry_fit(single_body, {})["fit"]
+        duplicate_fit = app_module._run_astrometry_fit(duplicate_body, {})["fit"]
+        self.assertEqual(duplicate_fit["nIndependentGroups"], 6)
+        self.assertAlmostEqual(
+            single_fit["pmraUnc"],
+            duplicate_fit["pmraUnc"],
+            places=8,
+        )
+
+    def test_fixed_object_floor_and_parameter_covariance_are_reported(self):
+        rows = [
+            astrometry_row(
+                f"row-{index}",
+                2010.0 + index,
+                float(index),
+                -float(index),
+                uncertainty=1.0,
+            )
+            for index in range(6)
+        ]
+        body = astrometry_fit_body(rows, error_floor=False)
+        body["outlierMixture"] = False
+        body["objectErrorFloor"] = {
+            "raMas": 3.0,
+            "decMas": 4.0,
+            "source": "object-floor-test",
+        }
+        fit = app_module._run_astrometry_fit(body, {})["fit"]
+        self.assertEqual(fit["objectErrorFloorRa"], 3.0)
+        self.assertEqual(fit["objectErrorFloorDec"], 4.0)
+        self.assertEqual(fit["objectErrorFloorSource"], "object-floor-test")
+        self.assertEqual(
+            np.asarray(fit["parameterCovariance"]).shape,
+            (4, 4),
+        )
+        self.assertAlmostEqual(
+            fit["responsibilities"][0]["effectiveRaUncertaintyMas"],
+            np.hypot(1.0, 3.0),
+        )
+
+    def test_parallax_uncertainty_becomes_shared_gaussian_constraint(self):
+        rows = [
+            astrometry_row(
+                f"row-{index}",
+                2010.0 + index,
+                float(index),
+                -float(index),
+                uncertainty=10.0,
+            )
+            for index in range(6)
+        ]
+        body = astrometry_fit_body(rows, error_floor=False)
+        body["outlierMixture"] = False
+        body["parallax"] = {"value": 25.0, "uncertainty": 2.0}
+        fit = app_module._run_astrometry_fit(body, {})["fit"]
+        self.assertIsNotNone(fit["plx"])
+        self.assertIsNotNone(fit["plxUnc"])
+        self.assertEqual(fit["parallaxPrior"]["kind"], "gaussian")
+        self.assertEqual(len(fit["parameterNames"]), 5)
+        self.assertEqual(
+            np.asarray(fit["parameterCovariance"]).shape,
+            (5, 5),
+        )
 
 
 if __name__ == "__main__":

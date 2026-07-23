@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
+from statistics import NormalDist
 from threading import Event, Lock
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote_plus
@@ -20300,7 +20301,7 @@ def _astrometry_parallax_factors(ra_deg: float, dec_deg: float, epochs: Any) -> 
     cos_sun = np.cos(sun_long)
     sin_sun = np.sin(sun_long)
 
-    pra = (cos_ra * cos_obl * sin_sun - sin_ra * cos_sun) * cos_dec
+    pra = cos_ra * cos_obl * sin_sun - sin_ra * cos_sun
     pdec = cos_dec * sin_obl * sin_sun - cos_ra * sin_dec * cos_sun - sin_ra * sin_dec * cos_obl * sin_sun
     return np.asarray(pra, dtype=float), np.asarray(pdec, dtype=float)
 
@@ -20328,6 +20329,38 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
         fixed_plx = _safe_float(parallax.get("value"))
     if fixed_plx is None:
         fixed_plx = 0.0
+    fixed_plx_unc = _safe_float(parallax.get("uncertainty"))
+    if fixed_plx_unc is not None and fixed_plx_unc < 0.0:
+        raise ValueError("Parallax uncertainty must be non-negative.")
+    gaussian_plx_prior = (
+        {
+            "kind": "gaussian",
+            "meanMas": float(fixed_plx),
+            "sigmaMas": float(fixed_plx_unc),
+        }
+        if fixed_plx_unc is not None and fixed_plx_unc > 0.0
+        else None
+    )
+    fit_parallax = bool(is_parallax or gaussian_plx_prior is not None)
+    object_error_floor = (
+        body.get("objectErrorFloor")
+        if isinstance(body.get("objectErrorFloor"), Mapping)
+        else {}
+    )
+    object_error_floor_ra = _safe_float(
+        object_error_floor.get("raMas", object_error_floor.get("ra"))
+    )
+    object_error_floor_dec = _safe_float(
+        object_error_floor.get("decMas", object_error_floor.get("dec"))
+    )
+    for name, value in (
+        ("R.A.", object_error_floor_ra),
+        ("Decl.", object_error_floor_dec),
+    ):
+        if value is not None and value < 0.0:
+            raise ValueError(f"The fixed object {name} error floor must be non-negative.")
+    object_error_floor_ra = float(object_error_floor_ra or 0.0)
+    object_error_floor_dec = float(object_error_floor_dec or 0.0)
 
     ids: list[str] = []
     missions: list[str] = []
@@ -20336,15 +20369,31 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
     rel_dec: list[float] = []
     sig_ra: list[float] = []
     sig_dec: list[float] = []
+    epoch_uncertainties: list[float] = []
+    independent_groups: list[str] = []
 
     for index, raw_row in enumerate(rows_in):
         if not isinstance(raw_row, Mapping):
+            continue
+        point_of_view = str(raw_row.get("point_of_view") or "").strip().casefold()
+        if not (
+            _safe_float(raw_row.get("single_epoch")) == 1.0
+            and _safe_float(raw_row.get("pm_corrected")) == 0.0
+            and _safe_float(raw_row.get("plx_corrected")) == 0.0
+            and point_of_view == "earth"
+        ):
             continue
         epoch = _astrometry_first_float(raw_row, "plot_epoch_abs", "measurement_epoch_yr", "epoch")
         y_ra = _astrometry_first_float(raw_row, "base_rel_ra", "rel_ra", "ra_offset_mas")
         y_dec = _astrometry_first_float(raw_row, "base_rel_dec", "rel_dec", "dec_offset_mas")
         e_ra = _astrometry_first_float(raw_row, "ra_unc_mas", "era_mas", "ra_unc")
         e_dec = _astrometry_first_float(raw_row, "dec_unc_mas", "edec_mas", "dec_unc")
+        epoch_uncertainty = _astrometry_first_float(
+            raw_row,
+            "measurement_epoch_yr_unc",
+            "epoch_uncertainty_yr",
+            "epoch_unc",
+        )
         if epoch is None or y_ra is None or y_dec is None:
             continue
         e_ra = max(float(e_ra if e_ra is not None else 1.0), 1e-3)
@@ -20356,6 +20405,20 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
         rel_dec.append(float(y_dec))
         sig_ra.append(e_ra)
         sig_dec.append(e_dec)
+        epoch_uncertainties.append(
+            max(float(epoch_uncertainty or 0.0), 0.0)
+        )
+        supplied_group = str(raw_row.get("independent_group") or "").strip()
+        if supplied_group:
+            independent_groups.append(supplied_group)
+        else:
+            night = math.floor(float(epoch) * 365.25 + 0.5)
+            instrument = str(
+                raw_row.get("mission_name")
+                or raw_row.get("mission")
+                or f"unknown-row-{index}"
+            ).strip()
+            independent_groups.append(f"{night}|{instrument}")
 
     if not epochs:
         raise ValueError("No usable astrometry rows were supplied for fitting.")
@@ -20365,14 +20428,18 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
     y_dec_arr = np.asarray(rel_dec, dtype=float)
     s_ra_arr = np.asarray(sig_ra, dtype=float)
     s_dec_arr = np.asarray(sig_dec, dtype=float)
+    epoch_unc_arr = np.asarray(epoch_uncertainties, dtype=float)
+    independent_group_arr = np.asarray(independent_groups, dtype=object)
     valid = (
         np.isfinite(t)
         & np.isfinite(y_ra_arr)
         & np.isfinite(y_dec_arr)
         & np.isfinite(s_ra_arr)
         & np.isfinite(s_dec_arr)
+        & np.isfinite(epoch_unc_arr)
         & (s_ra_arr > 0)
         & (s_dec_arr > 0)
+        & (epoch_unc_arr >= 0)
     )
     if not np.any(valid):
         raise ValueError("No finite astrometry rows were supplied for fitting.")
@@ -20384,12 +20451,51 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
     y_dec_arr = y_dec_arr[valid]
     s_ra_arr = s_ra_arr[valid]
     s_dec_arr = s_dec_arr[valid]
-    t0 = float(ref_epoch if ref_epoch is not None else np.nanmedian(t))
+    epoch_unc_arr = epoch_unc_arr[valid]
+    independent_group_arr = independent_group_arr[valid]
+    unique_groups, inverse_groups, group_counts = np.unique(
+        independent_group_arr,
+        return_inverse=True,
+        return_counts=True,
+    )
+    group_weight = 1.0 / group_counts[inverse_groups].astype(float)
+    joint_precision = group_weight * (
+        1.0
+        / (
+            np.square(s_ra_arr)
+            + object_error_floor_ra * object_error_floor_ra
+        )
+        + 1.0
+        / (
+            np.square(s_dec_arr)
+            + object_error_floor_dec * object_error_floor_dec
+        )
+    )
+    if np.any(np.isfinite(joint_precision) & (joint_precision > 0.0)):
+        t0 = float(np.average(t, weights=joint_precision))
+    else:
+        t0 = float(ref_epoch if ref_epoch is not None else np.nanmedian(t))
     pra, pdec = _astrometry_parallax_factors(ref_ra, ref_dec, t)
+    derivative_step_yr = 1e-4
+    pra_plus, pdec_plus = _astrometry_parallax_factors(
+        ref_ra,
+        ref_dec,
+        t + derivative_step_yr,
+    )
+    pra_minus, pdec_minus = _astrometry_parallax_factors(
+        ref_ra,
+        ref_dec,
+        t - derivative_step_yr,
+    )
+    dpra_dt = (pra_plus - pra_minus) / (2.0 * derivative_step_yr)
+    dpdec_dt = (pdec_plus - pdec_minus) / (2.0 * derivative_step_yr)
 
-    min_rows = 3 if is_parallax else 2
-    if t.size < min_rows:
-        raise ValueError(f"Need at least {min_rows} usable measurements for this fit.")
+    min_rows = 3 if fit_parallax else 2
+    if unique_groups.size < min_rows:
+        raise ValueError(
+            f"Need at least {min_rows} independent same-night/instrument "
+            "groups for this fit."
+        )
 
     return {
         "mode": mode,
@@ -20402,45 +20508,78 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
         "y_dec": y_dec_arr,
         "s_ra": s_ra_arr,
         "s_dec": s_dec_arr,
+        "epoch_unc": epoch_unc_arr,
+        "independent_group": independent_group_arr,
+        "independent_group_weight": group_weight,
+        "n_independent_groups": int(unique_groups.size),
         "pra": pra,
         "pdec": pdec,
+        "dpra_dt": dpra_dt,
+        "dpdec_dt": dpdec_dt,
         "t0": t0,
         "ref_ra": float(ref_ra),
         "ref_dec": float(ref_dec),
         "fixed_plx": float(fixed_plx),
-        "n_params": 5 if is_parallax else 4,
+        "fixed_plx_unc": (
+            float(fixed_plx_unc) if fixed_plx_unc is not None else None
+        ),
+        "gaussian_plx_prior": gaussian_plx_prior,
+        "object_error_floor_ra": object_error_floor_ra,
+        "object_error_floor_dec": object_error_floor_dec,
+        "object_error_floor_source": str(
+            object_error_floor.get("source") or ""
+        ),
+        "fit_parallax": fit_parallax,
+        "n_params": 5 if fit_parallax else 4,
         "min_rows": min_rows,
     }
 
 
-def _astrometry_design_matrix(arrays: Mapping[str, Any], sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _astrometry_design_matrix(
+    arrays: Mapping[str, Any],
+    *,
+    params: Any | None = None,
+    sigma_scale: Any | None = None,
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     dt = np.asarray(arrays["dt"], dtype=float)
     pra = np.asarray(arrays["pra"], dtype=float)
     pdec = np.asarray(arrays["pdec"], dtype=float)
     n = dt.size
-    is_parallax = bool(arrays["is_parallax"])
+    fit_parallax = bool(arrays["fit_parallax"])
     n_params = int(arrays["n_params"])
     design = np.zeros((2 * n, n_params), dtype=float)
     design[:n, 0] = 1.0
     design[:n, 1] = dt
     design[n:, 2] = 1.0
     design[n:, 3] = dt
-    if is_parallax:
+    if fit_parallax:
         design[:n, 4] = pra
         design[n:, 4] = pdec
 
     y_ra = np.asarray(arrays["y_ra"], dtype=float).copy()
     y_dec = np.asarray(arrays["y_dec"], dtype=float).copy()
-    if not is_parallax:
+    if not fit_parallax:
         fixed_plx = float(arrays.get("fixed_plx") or 0.0)
         y_ra -= fixed_plx * pra
         y_dec -= fixed_plx * pdec
     y = np.concatenate([y_ra, y_dec])
 
-    sigma = np.concatenate([
-        np.asarray(arrays["s_ra"], dtype=float),
-        np.asarray(arrays["s_dec"], dtype=float),
-    ])
+    sig_ra, sig_dec = _astrometry_effective_sigmas(
+        arrays,
+        params=params,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
+    sigma = np.concatenate([sig_ra, sig_dec])
+    group_weight = np.asarray(
+        arrays.get("independent_group_weight", np.ones(n)),
+        dtype=float,
+    )
+    sigma = sigma / np.sqrt(
+        np.clip(np.concatenate([group_weight, group_weight]), 1e-12, None)
+    )
     if sigma_scale is not None:
         scale = np.asarray(sigma_scale, dtype=float)
         if scale.size == n:
@@ -20450,18 +20589,50 @@ def _astrometry_design_matrix(arrays: Mapping[str, Any], sigma_scale: Any | None
     return design, y, sigma
 
 
-def _astrometry_linear_fit(arrays: Mapping[str, Any], sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray]:
-    design, y, sigma = _astrometry_design_matrix(arrays, sigma_scale=sigma_scale)
-    aw = design / sigma[:, np.newaxis]
-    yw = y / sigma
-    normal = aw.T @ aw
-    rhs = aw.T @ yw
-    try:
-        covariance = np.linalg.inv(normal)
-        params = covariance @ rhs
-    except np.linalg.LinAlgError:
-        covariance = np.linalg.pinv(normal)
-        params = covariance @ rhs
+def _astrometry_linear_fit(
+    arrays: Mapping[str, Any],
+    *,
+    p0: Any | None = None,
+    sigma_scale: Any | None = None,
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    n_params = int(arrays["n_params"])
+    params = (
+        np.asarray(p0, dtype=float).copy()
+        if p0 is not None
+        else np.zeros(n_params, dtype=float)
+    )
+    if p0 is None and bool(arrays["fit_parallax"]):
+        params[4] = float(arrays.get("fixed_plx") or 0.0)
+    covariance = np.eye(n_params, dtype=float)
+    for _ in range(6):
+        design, y, sigma = _astrometry_design_matrix(
+            arrays,
+            params=params,
+            sigma_scale=sigma_scale,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
+        )
+        aw = design / sigma[:, np.newaxis]
+        yw = y / sigma
+        normal = aw.T @ aw
+        rhs = aw.T @ yw
+        gaussian_prior = arrays.get("gaussian_plx_prior")
+        if gaussian_prior is not None and n_params > 4:
+            prior_precision = 1.0 / float(gaussian_prior["sigmaMas"]) ** 2
+            normal[4, 4] += prior_precision
+            rhs[4] += float(gaussian_prior["meanMas"]) * prior_precision
+        try:
+            covariance = np.linalg.inv(normal)
+            updated = covariance @ rhs
+        except np.linalg.LinAlgError:
+            covariance = np.linalg.pinv(normal)
+            updated = covariance @ rhs
+        if np.allclose(updated, params, rtol=1e-10, atol=1e-10):
+            params = updated
+            break
+        params = updated
     return np.asarray(params, dtype=float), np.asarray(covariance, dtype=float)
 
 
@@ -20470,61 +20641,32 @@ def _astrometry_model_from_params(arrays: Mapping[str, Any], params: Any) -> tup
     dt = np.asarray(arrays["dt"], dtype=float)
     pra = np.asarray(arrays["pra"], dtype=float)
     pdec = np.asarray(arrays["pdec"], dtype=float)
-    plx = float(p[4]) if bool(arrays["is_parallax"]) else float(arrays.get("fixed_plx") or 0.0)
+    plx = (
+        float(p[4])
+        if bool(arrays["fit_parallax"])
+        else float(arrays.get("fixed_plx") or 0.0)
+    )
     ra_model = p[0] + p[1] * dt + plx * pra
     dec_model = p[2] + p[3] * dt + plx * pdec
     return np.asarray(ra_model, dtype=float), np.asarray(dec_model, dtype=float)
 
 
-def _astrometry_curve_fit(arrays: Mapping[str, Any], p0: Any | None = None, sigma_scale: Any | None = None) -> tuple[np.ndarray, np.ndarray]:
-    try:
-        from scipy.optimize import curve_fit
-    except Exception:
-        return _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
-
-    if p0 is None:
-        p0, _ = _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
-    xdata = np.vstack([
-        np.asarray(arrays["dt"], dtype=float),
-        np.asarray(arrays["pra"], dtype=float),
-        np.asarray(arrays["pdec"], dtype=float),
-    ])
-    ydata = np.concatenate([
-        np.asarray(arrays["y_ra"], dtype=float),
-        np.asarray(arrays["y_dec"], dtype=float),
-    ])
-    sigma = np.concatenate([
-        np.asarray(arrays["s_ra"], dtype=float),
-        np.asarray(arrays["s_dec"], dtype=float),
-    ])
-    if sigma_scale is not None:
-        scale = np.asarray(sigma_scale, dtype=float)
-        if scale.size == np.asarray(arrays["dt"]).size:
-            scale = np.concatenate([scale, scale])
-        sigma = sigma / np.sqrt(np.clip(scale, 1e-6, None))
-    sigma = np.clip(sigma, 1e-3, np.inf)
-
-    def model(xvals: Any, *theta: float) -> np.ndarray:
-        local = dict(arrays)
-        local["dt"] = np.asarray(xvals[0], dtype=float)
-        local["pra"] = np.asarray(xvals[1], dtype=float)
-        local["pdec"] = np.asarray(xvals[2], dtype=float)
-        ra_model, dec_model = _astrometry_model_from_params(local, theta)
-        return np.concatenate([ra_model, dec_model])
-
-    try:
-        popt, pcov = curve_fit(
-            model,
-            xdata,
-            ydata,
-            p0=np.asarray(p0, dtype=float),
-            sigma=sigma,
-            absolute_sigma=True,
-            maxfev=20000,
-        )
-        return np.asarray(popt, dtype=float), np.asarray(pcov, dtype=float)
-    except Exception:
-        return _astrometry_linear_fit(arrays, sigma_scale=sigma_scale)
+def _astrometry_curve_fit(
+    arrays: Mapping[str, Any],
+    p0: Any | None = None,
+    sigma_scale: Any | None = None,
+    *,
+    error_floor_ra: float = 0.0,
+    error_floor_dec: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve the exact linear trajectory with iterated epoch-error weights."""
+    return _astrometry_linear_fit(
+        arrays,
+        p0=p0,
+        sigma_scale=sigma_scale,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
 
 
 ASTROMETRY_FAILURE_DOF = 4.0
@@ -20538,14 +20680,52 @@ ASTROMETRY_STATIONARY_MIN_SEPARATION = 3.0
 
 def _astrometry_effective_sigmas(
     arrays: Mapping[str, Any],
+    params: Any | None = None,
     error_floor_ra: float = 0.0,
     error_floor_dec: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     floor_ra = max(float(error_floor_ra or 0.0), 0.0)
     floor_dec = max(float(error_floor_dec or 0.0), 0.0)
+    fixed_object_floor_ra = max(
+        float(arrays.get("object_error_floor_ra") or 0.0),
+        0.0,
+    )
+    fixed_object_floor_dec = max(
+        float(arrays.get("object_error_floor_dec") or 0.0),
+        0.0,
+    )
+    epoch_uncertainty = np.asarray(
+        arrays.get("epoch_unc", np.zeros_like(arrays["s_ra"])),
+        dtype=float,
+    )
+    if params is None:
+        pmra = 0.0
+        pmdec = 0.0
+        parallax = float(arrays.get("fixed_plx") or 0.0)
+    else:
+        values = np.asarray(params, dtype=float)
+        pmra = float(values[1])
+        pmdec = float(values[3])
+        parallax = (
+            float(values[4])
+            if bool(arrays["fit_parallax"])
+            else float(arrays.get("fixed_plx") or 0.0)
+        )
+    rate_ra = pmra + parallax * np.asarray(arrays["dpra_dt"], dtype=float)
+    rate_dec = pmdec + parallax * np.asarray(arrays["dpdec_dt"], dtype=float)
     return (
-        np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + floor_ra**2),
-        np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + floor_dec**2),
+        np.sqrt(
+            np.asarray(arrays["s_ra"], dtype=float) ** 2
+            + fixed_object_floor_ra**2
+            + floor_ra**2
+            + np.square(rate_ra * epoch_uncertainty)
+        ),
+        np.sqrt(
+            np.asarray(arrays["s_dec"], dtype=float) ** 2
+            + fixed_object_floor_dec**2
+            + floor_dec**2
+            + np.square(rate_dec * epoch_uncertainty)
+        ),
     )
 
 
@@ -20611,7 +20791,12 @@ def _astrometry_component_log_probabilities(
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
-    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(
+        arrays,
+        params=params,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
     sig_ra_failure = np.sqrt(sig_ra**2 + max(float(failure_scale_ra), 1e-3) ** 2)
     sig_dec_failure = np.sqrt(sig_dec**2 + max(float(failure_scale_dec), 1e-3) ** 2)
     columns = [
@@ -20651,7 +20836,10 @@ def _astrometry_component_responsibilities(
     return responsibilities, log_total
 
 
-def _astrometry_bad_fraction_posterior_mean(expected_bad_rows: float, n_rows: int) -> float:
+def _astrometry_bad_fraction_posterior_mean(
+    expected_bad_rows: float,
+    n_rows: float,
+) -> float:
     return float(
         np.clip(
             (float(expected_bad_rows) + ASTROMETRY_BAD_PRIOR_ALPHA)
@@ -20675,7 +20863,12 @@ def _astrometry_motion_information_scale(
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
-    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(
+        arrays,
+        params=params,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
     sig_ra_failure = np.sqrt(sig_ra**2 + float(failure_scale_ra) ** 2)
     sig_dec_failure = np.sqrt(sig_dec**2 + float(failure_scale_dec) ** 2)
     failure_distance_sq = (
@@ -20702,9 +20895,17 @@ def _astrometry_stationary_offsets(
     r = np.clip(np.asarray(stationary_responsibility, dtype=float), 0.0, 1.0)
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
-    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
-    w_ra = r / np.clip(sig_ra, 1e-3, np.inf) ** 2
-    w_dec = r / np.clip(sig_dec, 1e-3, np.inf) ** 2
+    sig_ra, sig_dec = _astrometry_effective_sigmas(
+        arrays,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
+    group_weight = np.asarray(
+        arrays["independent_group_weight"],
+        dtype=float,
+    )
+    w_ra = group_weight * r / np.clip(sig_ra, 1e-3, np.inf) ** 2
+    w_dec = group_weight * r / np.clip(sig_dec, 1e-3, np.inf) ** 2
     stationary_ra = float(np.sum(w_ra * y_ra) / np.sum(w_ra)) if np.sum(w_ra) > 0 else float(np.nanmedian(y_ra))
     stationary_dec = float(np.sum(w_dec * y_dec) / np.sum(w_dec)) if np.sum(w_dec) > 0 else float(np.nanmedian(y_dec))
     return stationary_ra, stationary_dec
@@ -20719,12 +20920,28 @@ def _astrometry_stationary_separation(
     error_floor_dec: float,
 ) -> float:
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
-    sig_ra, sig_dec = _astrometry_effective_sigmas(arrays, error_floor_ra, error_floor_dec)
+    sig_ra, sig_dec = _astrometry_effective_sigmas(
+        arrays,
+        params=params,
+        error_floor_ra=error_floor_ra,
+        error_floor_dec=error_floor_dec,
+    )
     distance_sq = (
         ((float(stationary_ra) - ra_model) / np.clip(sig_ra, 1e-3, np.inf)) ** 2
         + ((float(stationary_dec) - dec_model) / np.clip(sig_dec, 1e-3, np.inf)) ** 2
     )
-    return float(math.sqrt(max(float(np.nanmean(distance_sq)), 0.0)))
+    group_weight = np.asarray(
+        arrays["independent_group_weight"],
+        dtype=float,
+    )
+    return float(
+        math.sqrt(
+            max(
+                float(np.average(distance_sq, weights=group_weight)),
+                0.0,
+            )
+        )
+    )
 
 
 def _astrometry_weighted_quantile(values: Any, weights: Any, quantile: float) -> float:
@@ -20751,26 +20968,89 @@ def _astrometry_residual_error_floor(
     responsibilities: Any | None = None,
 ) -> tuple[float, float]:
     n = np.asarray(arrays["t"]).size
-    weights = np.ones(n, dtype=float) if responsibilities is None else np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+    weights = (
+        np.ones(n, dtype=float)
+        if responsibilities is None
+        else np.clip(np.asarray(responsibilities, dtype=float), 0.0, 1.0)
+    )
+    weights *= np.asarray(
+        arrays.get("independent_group_weight", np.ones(n)),
+        dtype=float,
+    )
     weights = np.maximum(weights, 1e-3)
     ra_model, dec_model = _astrometry_model_from_params(arrays, params)
+    base_sigma_ra, base_sigma_dec = _astrometry_effective_sigmas(
+        arrays,
+        params=params,
+    )
 
     def axis_floor(residual: Any, sigma: Any) -> float:
-        abs_resid = np.abs(np.asarray(residual, dtype=float))
+        residual_array = np.asarray(residual, dtype=float)
         sig = np.asarray(sigma, dtype=float)
-        med_abs = _astrometry_weighted_quantile(abs_resid, weights, 0.5)
-        med_sigma = _astrometry_weighted_quantile(sig, weights, 0.5)
-        if not np.isfinite(med_abs) or not np.isfinite(med_sigma):
+        valid = (
+            np.isfinite(residual_array)
+            & np.isfinite(sig)
+            & (sig > 0.0)
+            & np.isfinite(weights)
+            & (weights > 0.0)
+        )
+        if not np.any(valid):
             return 0.0
-        robust_sigma = med_abs / 0.67448975
-        floor_sq = robust_sigma**2 - med_sigma**2
-        if not np.isfinite(floor_sq) or floor_sq <= 0:
+        residual_array = residual_array[valid]
+        sig = sig[valid]
+        local_weights = weights[valid]
+        scale = max(
+            float(np.nanmax(np.abs(residual_array))),
+            4.0 * float(np.nanmedian(sig)),
+            1.0,
+        )
+
+        def objective(floor: float) -> float:
+            variance = np.square(sig) + float(floor) ** 2
+            return float(
+                0.5
+                * np.sum(
+                    local_weights
+                    * (
+                        np.square(residual_array) / variance
+                        + np.log(variance)
+                    )
+                )
+            )
+
+        try:
+            from scipy.optimize import minimize_scalar
+
+            result = minimize_scalar(
+                objective,
+                bounds=(0.0, scale),
+                method="bounded",
+                options={"xatol": 1e-6},
+            )
+            if result.success and np.isfinite(result.x):
+                return max(float(result.x), 0.0)
+        except Exception:
+            pass
+        med_abs = _astrometry_weighted_quantile(
+            np.abs(residual_array),
+            local_weights,
+            0.5,
+        )
+        med_sigma = _astrometry_weighted_quantile(sig, local_weights, 0.5)
+        floor_sq = (med_abs / 0.67448975) ** 2 - med_sigma**2
+        if not np.isfinite(floor_sq) or floor_sq <= 0.0:
             return 0.0
         return float(math.sqrt(floor_sq))
 
     return (
-        axis_floor(np.asarray(arrays["y_ra"], dtype=float) - ra_model, arrays["s_ra"]),
-        axis_floor(np.asarray(arrays["y_dec"], dtype=float) - dec_model, arrays["s_dec"]),
+        axis_floor(
+            np.asarray(arrays["y_ra"], dtype=float) - ra_model,
+            base_sigma_ra,
+        ),
+        axis_floor(
+            np.asarray(arrays["y_dec"], dtype=float) - dec_model,
+            base_sigma_dec,
+        ),
     )
 
 
@@ -20816,6 +21096,12 @@ def _astrometry_raw_fit_result(
     error_floor: bool = False,
     error_floor_ra: float | None = None,
     error_floor_dec: float | None = None,
+    model_log_likelihood: float | None = None,
+    model_bic: float | None = None,
+    model_log_evidence: float | None = None,
+    model_log_evidence_uncertainty: float | None = None,
+    astrometry_prior_bounds: Any | None = None,
+    parallax_prior: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     p = np.asarray(params, dtype=float)
     cov = np.asarray(covariance, dtype=float)
@@ -20853,18 +21139,39 @@ def _astrometry_raw_fit_result(
     ra_model, dec_model = _astrometry_model_from_params(arrays, p)
     floor_ra = max(float(error_floor_ra or 0.0), 0.0) if error_floor else 0.0
     floor_dec = max(float(error_floor_dec or 0.0), 0.0) if error_floor else 0.0
-    s_ra_eff = np.sqrt(np.asarray(arrays["s_ra"], dtype=float) ** 2 + floor_ra**2)
-    s_dec_eff = np.sqrt(np.asarray(arrays["s_dec"], dtype=float) ** 2 + floor_dec**2)
+    s_ra_eff, s_dec_eff = _astrometry_effective_sigmas(
+        arrays,
+        params=p,
+        error_floor_ra=floor_ra,
+        error_floor_dec=floor_dec,
+    )
+    group_weight = np.asarray(
+        arrays["independent_group_weight"],
+        dtype=float,
+    )
     chi2_per_row = (
         ((np.asarray(arrays["y_ra"]) - ra_model) / s_ra_eff) ** 2
         + ((np.asarray(arrays["y_dec"]) - dec_model) / s_dec_eff) ** 2
     )
-    chi2 = float(np.nansum(chi2_per_row[inlier_mask]))
-    dof = max(2 * int(np.sum(inlier_mask)) - int(arrays["n_params"]), 1)
+    chi2 = float(
+        np.nansum(group_weight[inlier_mask] * chi2_per_row[inlier_mask])
+    )
+    effective_inlier_groups = float(np.sum(group_weight[inlier_mask]))
+    dof = max(
+        2.0 * effective_inlier_groups - int(arrays["n_params"]),
+        1.0,
+    )
     reduced_chi2 = chi2 / dof
-    variance_scale = max(reduced_chi2, 1.0)
+    variance_scale = (
+        1.0 if fitter == "ultranest" else max(reduced_chi2, 1.0)
+    )
     diag = np.diag(cov) if cov.ndim == 2 and cov.shape[0] >= p.size else np.full(p.size, np.nan)
     unc = np.sqrt(np.maximum(diag * variance_scale, 0.0))
+    parameter_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (
+        ["plx"] if arrays["fit_parallax"] else []
+    )
+    formal_covariance = cov[: p.size, : p.size]
+    scaled_covariance = formal_covariance * variance_scale
     ids = np.asarray(arrays["ids"], dtype=object)
     component_index = np.argmax(component_probabilities, axis=1)
     component_names = np.asarray(["moving", "measurement_failure", "stationary_source"], dtype=object)
@@ -20876,12 +21183,14 @@ def _astrometry_raw_fit_result(
         "mode": arrays["mode"],
         "label": (
             f"{'UltraNest' if fitter == 'ultranest' else 'SciPy'} "
-            f"{'PM + parallax' if arrays['is_parallax'] else 'PM'}"
+            f"{'PM + parallax' if arrays['fit_parallax'] else 'PM'}"
         ),
         "fitter": fitter,
         "fitterLabel": "UltraNest" if fitter == "ultranest" else "SciPy",
         "outlierMixture": bool(outlier_mixture),
         "nRows": int(n),
+        "nIndependentGroups": int(arrays["n_independent_groups"]),
+        "nEffectiveInlierGroups": effective_inlier_groups,
         "nInliers": int(np.sum(inlier_mask)),
         "nOutliers": int(n - np.sum(inlier_mask)),
         "nMeasurementFailures": int(np.sum(failure_mask)),
@@ -20899,23 +21208,49 @@ def _astrometry_raw_fit_result(
                 "outlierProbability": float(1.0 - probs[0]),
                 "component": str(component_names[index]),
                 "inlier": bool(mask),
+                "independentGroup": str(group),
+                "independentGroupWeight": float(weight),
+                "effectiveRaUncertaintyMas": float(effective_ra),
+                "effectiveDecUncertaintyMas": float(effective_dec),
             }
-            for row_id, probs, index, mask in zip(ids, component_probabilities, component_index, inlier_mask)
+            for (
+                row_id,
+                probs,
+                index,
+                mask,
+                group,
+                weight,
+                effective_ra,
+                effective_dec,
+            ) in zip(
+                ids,
+                component_probabilities,
+                component_index,
+                inlier_mask,
+                arrays["independent_group"],
+                group_weight,
+                s_ra_eff,
+                s_dec_eff,
+            )
         ],
         "t0": float(arrays["t0"]),
         "posRa": float(p[0]),
         "pmra": float(p[1]),
         "posDec": float(p[2]),
         "pmdec": float(p[3]),
-        "plx": float(p[4]) if arrays["is_parallax"] else None,
-        "fixedPlx": None if arrays["is_parallax"] else float(arrays.get("fixed_plx") or 0.0),
+        "plx": float(p[4]) if arrays["fit_parallax"] else None,
+        "fixedPlx": (
+            None
+            if arrays["fit_parallax"]
+            else float(arrays.get("fixed_plx") or 0.0)
+        ),
         "posRaUnc": float(unc[0]) if unc.size > 0 and np.isfinite(unc[0]) else None,
         "pmraUnc": float(unc[1]) if unc.size > 1 and np.isfinite(unc[1]) else None,
         "posDecUnc": float(unc[2]) if unc.size > 2 and np.isfinite(unc[2]) else None,
         "pmdecUnc": float(unc[3]) if unc.size > 3 and np.isfinite(unc[3]) else None,
-        "plxUnc": float(unc[4]) if arrays["is_parallax"] and unc.size > 4 and np.isfinite(unc[4]) else None,
+        "plxUnc": float(unc[4]) if arrays["fit_parallax"] and unc.size > 4 and np.isfinite(unc[4]) else None,
         "chi2": chi2,
-        "dof": int(dof),
+        "dof": float(dof),
         "reducedChi2": float(reduced_chi2),
         "stationaryRa": float(stationary_ra) if stationary_ra is not None and np.isfinite(stationary_ra) else None,
         "stationaryDec": float(stationary_dec) if stationary_dec is not None and np.isfinite(stationary_dec) else None,
@@ -20938,6 +21273,36 @@ def _astrometry_raw_fit_result(
         "errorFloor": bool(error_floor),
         "errorFloorRa": float(floor_ra) if error_floor and np.isfinite(floor_ra) else None,
         "errorFloorDec": float(floor_dec) if error_floor and np.isfinite(floor_dec) else None,
+        "fittedErrorFloorRa": float(floor_ra) if error_floor and np.isfinite(floor_ra) else None,
+        "fittedErrorFloorDec": float(floor_dec) if error_floor and np.isfinite(floor_dec) else None,
+        "objectErrorFloorRa": float(arrays["object_error_floor_ra"]),
+        "objectErrorFloorDec": float(arrays["object_error_floor_dec"]),
+        "objectErrorFloorSource": str(
+            arrays.get("object_error_floor_source") or ""
+        ),
+        "parameterNames": parameter_names,
+        "formalParameterCovariance": formal_covariance.tolist(),
+        "parameterCovariance": scaled_covariance.tolist(),
+        "pmraPmdecCovariance": float(scaled_covariance[1, 3]),
+        "pmraPlxCovariance": (
+            float(scaled_covariance[1, 4])
+            if arrays["fit_parallax"]
+            else None
+        ),
+        "pmdecPlxCovariance": (
+            float(scaled_covariance[3, 4])
+            if arrays["fit_parallax"]
+            else None
+        ),
+        "modelLogLikelihood": float(model_log_likelihood) if model_log_likelihood is not None and np.isfinite(model_log_likelihood) else None,
+        "modelBic": float(model_bic) if model_bic is not None and np.isfinite(model_bic) else None,
+        "modelLogEvidence": float(model_log_evidence) if model_log_evidence is not None and np.isfinite(model_log_evidence) else None,
+        "modelLogEvidenceUncertainty": float(model_log_evidence_uncertainty) if model_log_evidence_uncertainty is not None and np.isfinite(model_log_evidence_uncertainty) else None,
+        "astrometryPriorBounds": [
+            [float(bound[0]), float(bound[1])]
+            for bound in (astrometry_prior_bounds or [])
+        ] or None,
+        "parallaxPrior": dict(parallax_prior) if parallax_prior is not None else None,
     }
 
 
@@ -20948,13 +21313,22 @@ def _astrometry_scipy_fit(
 ) -> dict[str, Any]:
     params, covariance = _astrometry_curve_fit(arrays)
     n = int(np.asarray(arrays["t"]).size)
+    n_independent = float(arrays["n_independent_groups"])
+    group_weight = np.asarray(
+        arrays["independent_group_weight"],
+        dtype=float,
+    )
     error_floor_ra = 0.0
     error_floor_dec = 0.0
 
     if error_floor:
         error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params)
-        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
-        params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
+        params, covariance = _astrometry_curve_fit(
+            arrays,
+            p0=params,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
+        )
     if not outlier_mixture:
         responsibilities = np.column_stack([
             np.ones(n, dtype=float),
@@ -20965,8 +21339,12 @@ def _astrometry_scipy_fit(
             if not error_floor:
                 break
             error_floor_ra, error_floor_dec = _astrometry_residual_error_floor(arrays, params)
-            working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
-            params, covariance = _astrometry_curve_fit(working_arrays, p0=params)
+            params, covariance = _astrometry_curve_fit(
+                arrays,
+                p0=params,
+                error_floor_ra=error_floor_ra,
+                error_floor_dec=error_floor_dec,
+            )
         return {
             "params": params,
             "covariance": covariance,
@@ -21010,14 +21388,19 @@ def _astrometry_scipy_fit(
         delta_parameters = 3
         delta_bic = float(
             2.0 * (stationary_candidate["loglike"] - baseline["loglike"])
-            - delta_parameters * math.log(max(n, 2))
+            - delta_parameters * math.log(max(n_independent, 2.0))
         )
         log_prior_odds = math.log(
             ASTROMETRY_STATIONARY_PRIOR_PROBABILITY
             / (1.0 - ASTROMETRY_STATIONARY_PRIOR_PROBABILITY)
         )
         log_posterior_odds = 0.5 * delta_bic + log_prior_odds
-        effective_rows = float(np.sum(stationary_candidate["responsibilities"][:, 2]))
+        effective_rows = float(
+            np.sum(
+                group_weight
+                * stationary_candidate["responsibilities"][:, 2]
+            )
+        )
         separation = _astrometry_stationary_separation(
             arrays,
             stationary_candidate["params"],
@@ -21052,6 +21435,23 @@ def _astrometry_scipy_fit(
         }
     result = dict(selected)
     result.update(diagnostics)
+    loglike = _safe_float(result.get("loglike"))
+    if loglike is not None:
+        effective_parameters = int(arrays["n_params"])
+        if error_floor:
+            effective_parameters += 2
+        if outlier_mixture:
+            effective_parameters += 3
+        if bool(result.get("stationary_model_active")):
+            effective_parameters += 3
+        result["model_log_likelihood"] = loglike
+        result["model_bic"] = float(
+            -2.0 * loglike
+            + effective_parameters
+            * math.log(
+                max(2.0 * float(arrays["n_independent_groups"]), 2.0)
+            )
+        )
     return result
 
 
@@ -21067,8 +21467,13 @@ def _astrometry_scipy_failure_model(
     params = np.asarray(initial_params, dtype=float).copy()
     covariance = np.asarray(initial_covariance, dtype=float).copy()
     n = int(np.asarray(arrays["t"]).size)
+    group_weight = np.asarray(arrays["independent_group_weight"], dtype=float)
+    n_independent = float(arrays["n_independent_groups"])
     failure_scale_ra, failure_scale_dec = _astrometry_outlier_scales(arrays, params)
-    q_failure = _astrometry_bad_fraction_posterior_mean(0.0, n)
+    q_failure = _astrometry_bad_fraction_posterior_mean(
+        0.0,
+        n_independent,
+    )
     component_weights = np.array([1.0 - q_failure, q_failure], dtype=float)
 
     for _ in range(24):
@@ -21087,7 +21492,6 @@ def _astrometry_scipy_failure_model(
                 params,
                 responsibilities[:, 0],
             )
-        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
         information_scale = _astrometry_motion_information_scale(
             arrays,
             params,
@@ -21098,11 +21502,16 @@ def _astrometry_scipy_failure_model(
             error_floor_dec,
         )
         params, covariance = _astrometry_curve_fit(
-            working_arrays,
+            arrays,
             p0=params,
             sigma_scale=information_scale,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
         )
-        q_failure = _astrometry_bad_fraction_posterior_mean(float(np.sum(responsibilities[:, 1])), n)
+        q_failure = _astrometry_bad_fraction_posterior_mean(
+            float(np.sum(group_weight * responsibilities[:, 1])),
+            n_independent,
+        )
         component_weights = np.array([1.0 - q_failure, q_failure], dtype=float)
 
     log_components = _astrometry_component_log_probabilities(
@@ -21128,7 +21537,7 @@ def _astrometry_scipy_failure_model(
         "outlier_scale_ra": failure_scale_ra,
         "outlier_scale_dec": failure_scale_dec,
         "failure_dof": ASTROMETRY_FAILURE_DOF,
-        "loglike": float(np.sum(log_total)),
+        "loglike": float(np.sum(group_weight * log_total)),
         "stationary_model_active": False,
         "error_floor_ra": error_floor_ra,
         "error_floor_dec": error_floor_dec,
@@ -21152,6 +21561,8 @@ def _astrometry_stationary_candidate_fit(
     stationary_ra = float(stationary_seed_ra)
     stationary_dec = float(stationary_seed_dec)
     n = int(np.asarray(arrays["t"]).size)
+    group_weight = np.asarray(arrays["independent_group_weight"], dtype=float)
+    n_independent = float(arrays["n_independent_groups"])
     q_bad = max(float(baseline.get("failure_weight") or 0.0), 0.08)
     stationary_fraction = 0.5
     component_weights = np.array([
@@ -21178,7 +21589,6 @@ def _astrometry_stationary_candidate_fit(
                 params,
                 responsibilities[:, 0],
             )
-        working_arrays = _astrometry_arrays_with_error_floor(arrays, error_floor_ra, error_floor_dec)
         information_scale = _astrometry_motion_information_scale(
             arrays,
             params,
@@ -21189,9 +21599,11 @@ def _astrometry_stationary_candidate_fit(
             error_floor_dec,
         )
         params, covariance = _astrometry_curve_fit(
-            working_arrays,
+            arrays,
             p0=params,
             sigma_scale=information_scale,
+            error_floor_ra=error_floor_ra,
+            error_floor_dec=error_floor_dec,
         )
         stationary_ra, stationary_dec = _astrometry_stationary_offsets(
             arrays,
@@ -21199,11 +21611,23 @@ def _astrometry_stationary_candidate_fit(
             error_floor_ra,
             error_floor_dec,
         )
-        expected_bad = float(np.sum(responsibilities[:, 1] + responsibilities[:, 2]))
-        q_bad = _astrometry_bad_fraction_posterior_mean(expected_bad, n)
+        expected_bad = float(
+            np.sum(
+                group_weight
+                * (responsibilities[:, 1] + responsibilities[:, 2])
+            )
+        )
+        q_bad = _astrometry_bad_fraction_posterior_mean(
+            expected_bad,
+            n_independent,
+        )
         stationary_fraction = float(
             np.clip(
-                (float(np.sum(responsibilities[:, 2])) + 1.0) / (expected_bad + 2.0),
+                (
+                    float(np.sum(group_weight * responsibilities[:, 2]))
+                    + 1.0
+                )
+                / (expected_bad + 2.0),
                 1e-4,
                 1.0 - 1e-4,
             )
@@ -21238,7 +21662,7 @@ def _astrometry_stationary_candidate_fit(
         "outlier_scale_ra": failure_scale_ra,
         "outlier_scale_dec": failure_scale_dec,
         "failure_dof": ASTROMETRY_FAILURE_DOF,
-        "loglike": float(np.sum(log_total)),
+        "loglike": float(np.sum(group_weight * log_total)),
         "stationary_model_active": True,
         "error_floor_ra": error_floor_ra,
         "error_floor_dec": error_floor_dec,
@@ -21254,12 +21678,23 @@ def _astrometry_best_stationary_candidate(
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
     failure_probability = np.asarray(baseline["responsibilities"], dtype=float)[:, 1]
-    order = np.argsort(failure_probability)[::-1]
+    group_weight = np.asarray(
+        arrays["independent_group_weight"],
+        dtype=float,
+    )
+    weighted_failure_probability = group_weight * failure_probability
+    order = np.argsort(weighted_failure_probability)[::-1]
     seeds: list[tuple[float, float]] = []
-    if float(np.sum(failure_probability)) > 0:
+    if float(np.sum(weighted_failure_probability)) > 0:
         seeds.append((
-            float(np.sum(failure_probability * y_ra) / np.sum(failure_probability)),
-            float(np.sum(failure_probability * y_dec) / np.sum(failure_probability)),
+            float(
+                np.sum(weighted_failure_probability * y_ra)
+                / np.sum(weighted_failure_probability)
+            ),
+            float(
+                np.sum(weighted_failure_probability * y_dec)
+                / np.sum(weighted_failure_probability)
+            ),
         ))
     for index in order[: min(order.size, 12)]:
         seeds.append((float(y_ra[index]), float(y_dec[index])))
@@ -21283,7 +21718,116 @@ def _astrometry_best_stationary_candidate(
     return best
 
 
-def _astrometry_ultranest_bounds(arrays: Mapping[str, Any], seed_params: Any) -> list[tuple[float, float]]:
+def _astrometry_uniform_volume_parallax_prior(
+    value: Any,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("parallaxPrior must be an object")
+    kind = str(value.get("kind") or "").strip().lower()
+    if kind != "uniform_volume":
+        raise ValueError("parallaxPrior.kind must be uniform_volume")
+    minimum = _safe_float(value.get("minDistancePc"))
+    maximum = _safe_float(value.get("maxDistancePc"))
+    if minimum is None or minimum <= 0:
+        raise ValueError("uniform-volume parallax prior needs positive minDistancePc")
+    if maximum is None or maximum <= minimum:
+        raise ValueError(
+            "uniform-volume parallax prior maxDistancePc must exceed minDistancePc"
+        )
+    return {
+        "kind": "uniform_volume",
+        "density": "uniform_spatial",
+        "distancePower": 2.0,
+        "minDistancePc": float(minimum),
+        "maxDistancePc": float(maximum),
+    }
+
+
+def _astrometry_common_prior_bounds(value: Any) -> list[tuple[float, float]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("astrometryPriorBounds must be a list")
+    if len(value) < 4:
+        raise ValueError("astrometryPriorBounds must contain four shared bounds")
+    bounds: list[tuple[float, float]] = []
+    for raw in value[:4]:
+        if (
+            not isinstance(raw, Sequence)
+            or isinstance(raw, (str, bytes))
+            or len(raw) != 2
+        ):
+            raise ValueError("each astrometry prior bound must contain [low, high]")
+        low = _safe_float(raw[0])
+        high = _safe_float(raw[1])
+        if low is None or high is None or high <= low:
+            raise ValueError("astrometry prior bounds must be finite and increasing")
+        bounds.append((float(low), float(high)))
+    return bounds
+
+
+def _astrometry_uniform_volume_parallax_transform(
+    unit_value: float,
+    prior: Mapping[str, Any],
+) -> float:
+    distance_min_cubed = float(prior["minDistancePc"]) ** 3
+    distance_max_cubed = float(prior["maxDistancePc"]) ** 3
+    distance = (
+        distance_min_cubed
+        + float(np.clip(unit_value, 0.0, 1.0))
+        * (distance_max_cubed - distance_min_cubed)
+    ) ** (1.0 / 3.0)
+    return 1000.0 / distance
+
+
+def _astrometry_marginal_log_evidence(
+    log_evidences: Sequence[float],
+    prior_probabilities: Sequence[float],
+    uncertainties: Sequence[float | None],
+) -> tuple[float, float | None]:
+    logz = np.asarray(log_evidences, dtype=float)
+    prior = np.asarray(prior_probabilities, dtype=float)
+    if (
+        logz.ndim != 1
+        or prior.shape != logz.shape
+        or len(uncertainties) != logz.size
+        or np.any(~np.isfinite(logz))
+        or np.any(~np.isfinite(prior))
+        or np.any(prior <= 0)
+    ):
+        raise ValueError("model evidences and positive prior probabilities are required")
+    prior = prior / np.sum(prior)
+    weighted_logz = np.log(prior) + logz
+    peak_logz = float(np.max(weighted_logz))
+    marginal_logz = float(
+        peak_logz + math.log(float(np.sum(np.exp(weighted_logz - peak_logz))))
+    )
+    model_probabilities = np.exp(weighted_logz - marginal_logz)
+    parsed_uncertainties = [_safe_float(value) for value in uncertainties]
+    marginal_uncertainty = None
+    if all(value is not None for value in parsed_uncertainties):
+        uncertainty_array = np.asarray(parsed_uncertainties, dtype=float)
+        marginal_uncertainty = float(
+            math.sqrt(
+                float(
+                    np.sum(
+                        np.square(model_probabilities * uncertainty_array)
+                    )
+                )
+            )
+        )
+    return marginal_logz, marginal_uncertainty
+
+
+def _astrometry_ultranest_bounds(
+    arrays: Mapping[str, Any],
+    seed_params: Any,
+    *,
+    common_bounds: list[tuple[float, float]] | None = None,
+    parallax_prior: Mapping[str, Any] | None = None,
+) -> list[tuple[float, float]]:
     seed = np.asarray(seed_params, dtype=float)
     ra_model, dec_model = _astrometry_model_from_params(arrays, seed)
     ra_resid = np.asarray(arrays["y_ra"], dtype=float) - ra_model
@@ -21303,8 +21847,25 @@ def _astrometry_ultranest_bounds(arrays: Mapping[str, Any], seed_params: Any) ->
         (float(seed[2] - 8.0 * pos_scale), float(seed[2] + 8.0 * pos_scale)),
         (float(seed[3] - 8.0 * pm_scale), float(seed[3] + 8.0 * pm_scale)),
     ]
-    if bool(arrays["is_parallax"]):
-        bounds.append((float(seed[4] - 8.0 * plx_scale), float(seed[4] + 8.0 * plx_scale)))
+    if common_bounds is not None:
+        bounds = list(common_bounds)
+    if bool(arrays["fit_parallax"]):
+        if parallax_prior is not None:
+            minimum_distance = float(parallax_prior["minDistancePc"])
+            maximum_distance = float(parallax_prior["maxDistancePc"])
+            bounds.append(
+                (
+                    1000.0 / maximum_distance,
+                    1000.0 / minimum_distance,
+                )
+            )
+        elif arrays.get("gaussian_plx_prior") is not None:
+            gaussian_prior = arrays["gaussian_plx_prior"]
+            mean = float(gaussian_prior["meanMas"])
+            sigma = float(gaussian_prior["sigmaMas"])
+            bounds.append((mean - 8.0 * sigma, mean + 8.0 * sigma))
+        else:
+            bounds.append((float(seed[4] - 8.0 * plx_scale), float(seed[4] + 8.0 * plx_scale)))
     min_widths = [2.0, 0.2, 2.0, 0.2, 0.1]
     widened: list[tuple[float, float]] = []
     for index, (lo, hi) in enumerate(bounds):
@@ -21323,6 +21884,9 @@ def _astrometry_ultranest_fit(
     seed_fit: Mapping[str, Any],
     outlier_mixture: bool,
     error_floor: bool = True,
+    *,
+    common_prior_bounds: list[tuple[float, float]] | None = None,
+    parallax_prior: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not _astrometry_ultranest_available():
         raise RuntimeError("UltraNest is not installed in this Python environment.")
@@ -21330,14 +21894,41 @@ def _astrometry_ultranest_fit(
     import ultranest.stepsampler
 
     seed_params = np.asarray(seed_fit["params"], dtype=float)
-    bounds = _astrometry_ultranest_bounds(arrays, seed_params)
-    physical_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (["plx"] if arrays["is_parallax"] else [])
+    bounds = _astrometry_ultranest_bounds(
+        arrays,
+        seed_params,
+        common_bounds=common_prior_bounds,
+        parallax_prior=parallax_prior,
+    )
+    physical_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (
+        ["plx"] if arrays["fit_parallax"] else []
+    )
     outlier_scale_ra = float(seed_fit.get("outlier_scale_ra") if seed_fit.get("outlier_scale_ra") is not None else _astrometry_outlier_scales(arrays, seed_params)[0])
     outlier_scale_dec = float(seed_fit.get("outlier_scale_dec") if seed_fit.get("outlier_scale_dec") is not None else _astrometry_outlier_scales(arrays, seed_params)[1])
-    error_floor_ra = max(float(seed_fit.get("error_floor_ra") or 0.0), 0.0) if error_floor else 0.0
-    error_floor_dec = max(float(seed_fit.get("error_floor_dec") or 0.0), 0.0) if error_floor else 0.0
+    seed_error_floor_ra = max(float(seed_fit.get("error_floor_ra") or 0.0), 0.0) if error_floor else 0.0
+    seed_error_floor_dec = max(float(seed_fit.get("error_floor_dec") or 0.0), 0.0) if error_floor else 0.0
     y_ra = np.asarray(arrays["y_ra"], dtype=float)
     y_dec = np.asarray(arrays["y_dec"], dtype=float)
+    error_floor_bounds = [
+        (
+            0.0,
+            max(
+                8.0 * seed_error_floor_ra,
+                outlier_scale_ra,
+                4.0 * float(np.nanmedian(arrays["s_ra"])),
+                1.0,
+            ),
+        ),
+        (
+            0.0,
+            max(
+                8.0 * seed_error_floor_dec,
+                outlier_scale_dec,
+                4.0 * float(np.nanmedian(arrays["s_dec"])),
+                1.0,
+            ),
+        ),
+    ]
     stationary_bounds = [
         (
             float(np.nanmin(y_ra) - outlier_scale_ra),
@@ -21348,6 +21939,14 @@ def _astrometry_ultranest_fit(
             float(np.nanmax(y_dec) + outlier_scale_dec),
         ),
     ]
+    run_log_root = (
+        Path(tempfile.gettempdir())
+        / "mocaviz_astrometry_ultranest"
+        / (
+            f"{os.getpid()}-{time.time_ns()}-"
+            f"{random.getrandbits(32):08x}"
+        )
+    )
 
     def beta_1_b_transform(unit_value: float, beta: float = ASTROMETRY_BAD_PRIOR_BETA) -> float:
         u = float(np.clip(unit_value, 1e-12, 1.0 - 1e-12))
@@ -21355,6 +21954,8 @@ def _astrometry_ultranest_fit(
 
     def run_model(include_stationary: bool) -> dict[str, Any]:
         param_names = list(physical_names)
+        if error_floor:
+            param_names.extend(["error_floor_ra", "error_floor_dec"])
         if outlier_mixture:
             param_names.append("bad_fraction")
         if include_stationary:
@@ -21363,7 +21964,42 @@ def _astrometry_ultranest_fit(
         def transform(unit_cube: Any) -> list[float]:
             u = np.asarray(unit_cube, dtype=float)
             transformed = [lo + u[index] * (hi - lo) for index, (lo, hi) in enumerate(bounds)]
+            if bool(arrays["fit_parallax"]) and parallax_prior is not None:
+                transformed[4] = _astrometry_uniform_volume_parallax_transform(
+                    float(u[4]),
+                    parallax_prior,
+                )
+            elif (
+                bool(arrays["fit_parallax"])
+                and arrays.get("gaussian_plx_prior") is not None
+            ):
+                gaussian_prior = arrays["gaussian_plx_prior"]
+                transformed[4] = (
+                    float(gaussian_prior["meanMas"])
+                    + float(gaussian_prior["sigmaMas"])
+                    * NormalDist().inv_cdf(
+                        float(np.clip(u[4], 1e-12, 1.0 - 1e-12))
+                    )
+                )
             cursor = len(bounds)
+            if error_floor:
+                transformed.extend(
+                    [
+                        error_floor_bounds[0][0]
+                        + float(u[cursor])
+                        * (
+                            error_floor_bounds[0][1]
+                            - error_floor_bounds[0][0]
+                        ),
+                        error_floor_bounds[1][0]
+                        + float(u[cursor + 1])
+                        * (
+                            error_floor_bounds[1][1]
+                            - error_floor_bounds[1][0]
+                        ),
+                    ]
+                )
+                cursor += 2
             if outlier_mixture:
                 transformed.append(beta_1_b_transform(float(u[cursor])))
                 cursor += 1
@@ -21375,16 +22011,45 @@ def _astrometry_ultranest_fit(
                 ])
             return transformed
 
-        def unpack(theta: Any) -> tuple[np.ndarray, np.ndarray, float | None, float | None]:
+        def unpack(
+            theta: Any,
+        ) -> tuple[
+            np.ndarray,
+            np.ndarray,
+            float | None,
+            float | None,
+            float,
+            float,
+        ]:
             values = np.asarray(theta, dtype=float)
             physical = values[: len(bounds)]
             cursor = len(bounds)
+            local_floor_ra = 0.0
+            local_floor_dec = 0.0
+            if error_floor:
+                local_floor_ra = max(float(values[cursor]), 0.0)
+                local_floor_dec = max(float(values[cursor + 1]), 0.0)
+                cursor += 2
             if not outlier_mixture:
-                return physical, np.array([1.0, 0.0, 0.0]), None, None
+                return (
+                    physical,
+                    np.array([1.0, 0.0, 0.0]),
+                    None,
+                    None,
+                    local_floor_ra,
+                    local_floor_dec,
+                )
             q_bad = float(np.clip(values[cursor], 1e-8, 1.0 - 1e-8))
             cursor += 1
             if not include_stationary:
-                return physical, np.array([1.0 - q_bad, q_bad, 0.0]), None, None
+                return (
+                    physical,
+                    np.array([1.0 - q_bad, q_bad, 0.0]),
+                    None,
+                    None,
+                    local_floor_ra,
+                    local_floor_dec,
+                )
             stationary_fraction = float(np.clip(values[cursor], 1e-8, 1.0 - 1e-8))
             stationary_ra = float(values[cursor + 1])
             stationary_dec = float(values[cursor + 2])
@@ -21393,30 +22058,56 @@ def _astrometry_ultranest_fit(
                 q_bad * (1.0 - stationary_fraction),
                 q_bad * stationary_fraction,
             ])
-            return physical, weights, stationary_ra, stationary_dec
+            return (
+                physical,
+                weights,
+                stationary_ra,
+                stationary_dec,
+                local_floor_ra,
+                local_floor_dec,
+            )
 
         def loglike(theta: Any) -> float:
-            physical, weights, stationary_ra, stationary_dec = unpack(theta)
+            (
+                physical,
+                weights,
+                stationary_ra,
+                stationary_dec,
+                local_floor_ra,
+                local_floor_dec,
+            ) = unpack(theta)
             log_components = _astrometry_component_log_probabilities(
                 arrays,
                 physical,
                 outlier_scale_ra,
                 outlier_scale_dec,
-                error_floor_ra=error_floor_ra,
-                error_floor_dec=error_floor_dec,
+                error_floor_ra=local_floor_ra,
+                error_floor_dec=local_floor_dec,
                 stationary_ra=stationary_ra,
                 stationary_dec=stationary_dec,
             )
             if not outlier_mixture:
-                return float(np.nansum(log_components[:, 0]))
+                return float(
+                    np.nansum(
+                        np.asarray(arrays["independent_group_weight"])
+                        * log_components[:, 0]
+                    )
+                )
             if not include_stationary:
                 log_components = log_components[:, :2]
                 weights = weights[:2]
             _, log_total = _astrometry_component_responsibilities(log_components, weights)
-            return float(np.nansum(log_total))
+            return float(
+                np.nansum(
+                    np.asarray(arrays["independent_group_weight"]) * log_total
+                )
+            )
 
-        model_name = "stationary" if include_stationary else "robust_moving"
-        log_dir = Path(tempfile.gettempdir()) / "mocaviz_astrometry_ultranest" / model_name
+        model_name = (
+            f"{arrays['mode']}-"
+            f"{'stationary' if include_stationary else 'robust_moving'}"
+        )
+        log_dir = run_log_root / model_name
         sampler = ultranest.ReactiveNestedSampler(
             param_names=param_names,
             loglike=loglike,
@@ -21433,14 +22124,21 @@ def _astrometry_ultranest_fit(
         posterior = result_map.get("posterior") or sampler.results.get("posterior")
         mean = np.asarray(posterior["mean"], dtype=float)
         stdev = np.asarray(posterior["stdev"], dtype=float)
-        physical, weights, stationary_ra, stationary_dec = unpack(mean)
+        (
+            physical,
+            weights,
+            stationary_ra,
+            stationary_dec,
+            fitted_floor_ra,
+            fitted_floor_dec,
+        ) = unpack(mean)
         log_components = _astrometry_component_log_probabilities(
             arrays,
             physical,
             outlier_scale_ra,
             outlier_scale_dec,
-            error_floor_ra=error_floor_ra,
-            error_floor_dec=error_floor_dec,
+            error_floor_ra=fitted_floor_ra,
+            error_floor_dec=fitted_floor_dec,
             stationary_ra=stationary_ra,
             stationary_dec=stationary_dec,
         )
@@ -21461,9 +22159,36 @@ def _astrometry_ultranest_fit(
         logz_value = _safe_float(result_map.get("logz"))
         if logz_value is None:
             logz_value = _safe_float(sampler.results.get("logz"))
+        logz_uncertainty = _safe_float(result_map.get("logzerr"))
+        if logz_uncertainty is None:
+            logz_uncertainty = _safe_float(sampler.results.get("logzerr"))
+        weighted_samples = result_map.get("weighted_samples") or {}
+        points = np.asarray(weighted_samples.get("points", []), dtype=float)
+        sample_weights = np.asarray(
+            weighted_samples.get("weights", []),
+            dtype=float,
+        )
+        if (
+            points.ndim == 2
+            and points.shape[1] >= len(bounds)
+            and sample_weights.ndim == 1
+            and sample_weights.size == points.shape[0]
+            and np.sum(sample_weights) > 0.0
+        ):
+            sample_weights = sample_weights / np.sum(sample_weights)
+            physical_points = points[:, : len(bounds)]
+            centered = physical_points - np.sum(
+                sample_weights[:, np.newaxis] * physical_points,
+                axis=0,
+            )
+            physical_covariance = (
+                centered.T * sample_weights
+            ) @ centered
+        else:
+            physical_covariance = np.diag(stdev[: len(bounds)] ** 2)
         return {
             "params": physical,
-            "covariance": np.diag(stdev[: len(bounds)] ** 2),
+            "covariance": physical_covariance,
             "responsibilities": responsibilities,
             "component_weights": weights,
             "stationary_ra": stationary_ra,
@@ -21475,8 +22200,14 @@ def _astrometry_ultranest_fit(
             "outlier_scale_dec": outlier_scale_dec,
             "failure_dof": ASTROMETRY_FAILURE_DOF if outlier_mixture else None,
             "logz": logz_value,
-            "error_floor_ra": error_floor_ra,
-            "error_floor_dec": error_floor_dec,
+            "logzerr": logz_uncertainty,
+            "error_floor_ra": fitted_floor_ra,
+            "error_floor_dec": fitted_floor_dec,
+            "error_floor_prior_bounds": error_floor_bounds if error_floor else None,
+            "astrometry_prior_bounds": bounds,
+            "parallax_prior": (
+                parallax_prior or arrays.get("gaussian_plx_prior")
+            ),
         }
 
     baseline = run_model(False)
@@ -21484,6 +22215,8 @@ def _astrometry_ultranest_fit(
         baseline.update({
             "stationary_model_active": False,
             "stationary_model_considered": False,
+            "model_log_evidence": baseline.get("logz"),
+            "model_log_evidence_uncertainty": baseline.get("logzerr"),
         })
         return baseline
 
@@ -21496,14 +22229,19 @@ def _astrometry_ultranest_fit(
         / (1.0 - ASTROMETRY_STATIONARY_PRIOR_PROBABILITY)
     )
     log_posterior_odds = log_bayes_factor + log_prior_odds
-    effective_rows = float(np.sum(candidate["responsibilities"][:, 2]))
+    effective_rows = float(
+        np.sum(
+            np.asarray(arrays["independent_group_weight"])
+            * candidate["responsibilities"][:, 2]
+        )
+    )
     separation = _astrometry_stationary_separation(
         arrays,
         candidate["params"],
         candidate["stationary_ra"],
         candidate["stationary_dec"],
-        error_floor_ra,
-        error_floor_dec,
+        float(candidate.get("error_floor_ra") or 0.0),
+        float(candidate.get("error_floor_dec") or 0.0),
     )
     evidence_ok = log_posterior_odds >= math.log(ASTROMETRY_STATIONARY_MIN_POSTERIOR_ODDS)
     membership_ok = effective_rows >= ASTROMETRY_STATIONARY_MIN_EFFECTIVE_ROWS
@@ -21518,6 +22256,16 @@ def _astrometry_ultranest_fit(
     else:
         reason = ""
     selected = dict(candidate if active else baseline)
+    branch_logz, branch_logz_uncertainty = (
+        _astrometry_marginal_log_evidence(
+            [float(baseline["logz"]), float(candidate["logz"])],
+            [
+                1.0 - ASTROMETRY_STATIONARY_PRIOR_PROBABILITY,
+                ASTROMETRY_STATIONARY_PRIOR_PROBABILITY,
+            ],
+            [baseline.get("logzerr"), candidate.get("logzerr")],
+        )
+    )
     selected.update({
         "stationary_model_active": active,
         "stationary_model_considered": True,
@@ -21529,6 +22277,10 @@ def _astrometry_ultranest_fit(
         "stationary_separation": separation,
         "stationary_candidate_ra": candidate["stationary_ra"],
         "stationary_candidate_dec": candidate["stationary_dec"],
+        "model_log_evidence": branch_logz,
+        "model_log_evidence_uncertainty": branch_logz_uncertainty,
+        "astrometry_prior_bounds": bounds,
+        "parallax_prior": parallax_prior,
     })
     return selected
 
@@ -21540,6 +22292,22 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
         raise ValueError("Fit method must be 'scipy' or 'ultranest'.")
     outlier_mixture = not _as_false(body.get("outlierMixture", body.get("outlier_mixture", True)))
     error_floor = not _as_false(body.get("errorFloor", body.get("error_floor", True)))
+    common_prior_bounds = _astrometry_common_prior_bounds(
+        body.get("astrometryPriorBounds")
+    )
+    parallax_prior = _astrometry_uniform_volume_parallax_prior(
+        body.get("parallaxPrior")
+    )
+    if parallax_prior is not None and not bool(arrays["fit_parallax"]):
+        raise ValueError("parallaxPrior can only be used with mode='pm_plx'")
+    if (
+        parallax_prior is not None
+        and arrays.get("gaussian_plx_prior") is not None
+    ):
+        raise ValueError(
+            "A uniform-volume parallax prior cannot be combined with a "
+            "measured/distance Gaussian parallax constraint."
+        )
 
     scipy_fit = _astrometry_scipy_fit(arrays, outlier_mixture=outlier_mixture, error_floor=error_floor)
     if fitter == "ultranest":
@@ -21547,7 +22315,14 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
         ultranest_capability = capabilities["fitters"]["ultranest"]
         if not ultranest_capability["enabled"]:
             raise RuntimeError(ultranest_capability["message"] or "UltraNest fitting is not available.")
-        raw_fit = _astrometry_ultranest_fit(arrays, scipy_fit, outlier_mixture=outlier_mixture, error_floor=error_floor)
+        raw_fit = _astrometry_ultranest_fit(
+            arrays,
+            scipy_fit,
+            outlier_mixture=outlier_mixture,
+            error_floor=error_floor,
+            common_prior_bounds=common_prior_bounds,
+            parallax_prior=parallax_prior,
+        )
     else:
         raw_fit = scipy_fit
 
@@ -21579,6 +22354,17 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
         error_floor=error_floor,
         error_floor_ra=raw_fit.get("error_floor_ra"),
         error_floor_dec=raw_fit.get("error_floor_dec"),
+        model_log_likelihood=raw_fit.get("model_log_likelihood"),
+        model_bic=raw_fit.get("model_bic"),
+        model_log_evidence=raw_fit.get("model_log_evidence"),
+        model_log_evidence_uncertainty=raw_fit.get(
+            "model_log_evidence_uncertainty"
+        ),
+        astrometry_prior_bounds=raw_fit.get("astrometry_prior_bounds"),
+        parallax_prior=(
+            raw_fit.get("parallax_prior")
+            or arrays.get("gaussian_plx_prior")
+        ),
     )
     return {"fit": _pythonize(fit), "capabilities": _astrometry_fit_capabilities(args)}
 
@@ -22350,6 +23136,9 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 deq.`dec` - IFNULL(deq.calibration_delta_dec_mas / (3600 * 1000), 0) AS raw_dec,
                 deq.measurement_epoch_yr,
                 deq.single_epoch,
+                deq.pm_corrected,
+                deq.plx_corrected,
+                deq.point_of_view,
                 deq.ra_unc_mas,
                 deq.dec_unc_mas,
                 COALESCE(deq.measurement_epoch_yr_unc, 0) AS measurement_epoch_yr_unc,
@@ -22478,6 +23267,9 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
             "raw_dec": round(dec + (0.006 if calibrated else 0.0) / (3600 * 1000), 9),
             "measurement_epoch_yr": round(float(epoch), 6),
             "single_epoch": 1,
+            "pm_corrected": 0,
+            "plx_corrected": 0,
+            "point_of_view": "earth",
             "ra_unc_mas": round(float(rng.uniform(8, 32)), 3),
             "dec_unc_mas": round(float(rng.uniform(8, 32)), 3),
             "measurement_epoch_yr_unc": 0.0,
@@ -22510,6 +23302,9 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
                 "raw_dec": round(dec, 9),
                 "measurement_epoch_yr": round(float(epoch), 6),
                 "single_epoch": 0,
+                "pm_corrected": 0,
+                "plx_corrected": 0,
+                "point_of_view": "earth",
                 "ra_unc_mas": round(float(rng.uniform(12, 28)), 3),
                 "dec_unc_mas": round(float(rng.uniform(12, 28)), 3),
                 "measurement_epoch_yr_unc": 0.0,
