@@ -707,22 +707,34 @@ function shouldRenderMocaFlowsMap(panel) {
   return mflowsEl["mflows-mh-treatment"].value === "copula2d" && panel.map;
 }
 
+function mocaFlowsPanelCurveRole(panel) {
+  return normalizeMocaFlowsCurveRole(
+    panel?.curve_role
+      || panel?.metadata?.curve_role
+      || panel?.curve?.metadata?.curve_role,
+  );
+}
+
 function renderMocaFlowsAgePanel(plot, panel, payload) {
   const curve = panel.curve || {};
   const age = (curve.age_myr || []).map(Number);
   const pdf = (curve.pdf_age || []).map(Number);
   const logX = mflowsEl["mflows-log-x"].checked;
+  const curveRole = mocaFlowsPanelCurveRole(panel);
+  const isLikelihood = curveRole === "likelihood";
   const x = [];
   const y = [];
   for (let i = 0; i < age.length; i += 1) {
     if (Number.isFinite(age[i]) && age[i] > 0 && Number.isFinite(pdf[i])) {
       x.push(age[i]);
-      y.push(mocaFlowsDisplayedPdfValue(age[i], pdf[i], logX));
+      y.push(mocaFlowsDisplayedPdfValue(age[i], pdf[i], logX, curveRole));
     }
   }
   const logY = mflowsEl["mflows-log-y"].checked;
   const yRange = mocaFlowsPdfYRange(y, logY);
-  const densityLabel = logX ? "Relative density per log age" : "Relative density";
+  const densityLabel = isLikelihood
+    ? "Relative likelihood"
+    : (logX ? "Relative density per log age" : "Relative density");
   const trace = {
     x,
     y,
@@ -767,7 +779,12 @@ function renderMocaFlowsAgePanel(plot, panel, payload) {
       ...tickOptions,
     },
     yaxis: {
-      title: { text: logX ? "Relative probability density per log age" : "Relative probability density", font: { size: 12 } },
+      title: {
+        text: isLikelihood
+          ? "Relative likelihood"
+          : (logX ? "Relative probability density per log age" : "Relative probability density"),
+        font: { size: 12 },
+      },
       type: logY ? "log" : "linear",
       showline: true,
       linewidth: 1.3,
@@ -784,11 +801,12 @@ function renderMocaFlowsAgePanel(plot, panel, payload) {
   Plotly.react(plot, [trace], layout, mocaFlowsPlotConfig(panel.result_key || "mocaflows"));
 }
 
-function mocaFlowsDisplayedPdfValue(ageMyr, pdfAge, perLogAge = false) {
+function mocaFlowsDisplayedPdfValue(ageMyr, pdfAge, perLogAge = false, curveRole = "posterior") {
   const age = Number(ageMyr);
   const pdf = Number(pdfAge);
   if (!Number.isFinite(age) || age <= 0 || !Number.isFinite(pdf)) return NaN;
-  return perLogAge ? pdf * age * Math.LN10 : pdf;
+  const isLikelihood = normalizeMocaFlowsCurveRole(curveRole) === "likelihood";
+  return perLogAge && !isLikelihood ? pdf * age * Math.LN10 : pdf;
 }
 
 function mocaFlowsPeakContainingInterval(paired, cdf, total, peakCoord, perLogAge = false, mass = 0.68) {
@@ -897,12 +915,13 @@ function mocaFlowsPeakPlateau(
 
 function mocaFlowsCurveDisplayStats(panel, options = {}) {
   const perLogAge = Boolean(options.perLogAge);
+  const curveRole = mocaFlowsPanelCurveRole(panel);
   const age = panel?.curve?.age_myr || [];
   const pdf = panel?.curve?.pdf_age || [];
   const paired = [];
   for (let index = 0; index < age.length; index += 1) {
     const ageValue = asNumber(age[index]);
-    const yValue = mocaFlowsDisplayedPdfValue(ageValue, pdf[index], perLogAge);
+    const yValue = mocaFlowsDisplayedPdfValue(ageValue, pdf[index], perLogAge, curveRole);
     if (!Number.isFinite(ageValue) || ageValue <= 0 || !Number.isFinite(yValue) || yValue < 0) continue;
     paired.push({
       age: ageValue,

@@ -588,6 +588,18 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn('"created"', panel_info)
         self.assertIn('"modified"', panel_info)
 
+    def test_moca_flows_log_axis_keeps_likelihood_in_raw_relative_space(self):
+        source = (app_module.STATIC_DIR / "moca_flows.js").read_text(encoding="utf-8")
+        displayed_value = source.split("function mocaFlowsDisplayedPdfValue", 1)[1].split(
+            "function mocaFlowsPeakContainingInterval",
+            1,
+        )[0]
+        self.assertIn('normalizeMocaFlowsCurveRole(curveRole) === "likelihood"', displayed_value)
+        self.assertIn("perLogAge && !isLikelihood ? pdf * age * Math.LN10 : pdf", displayed_value)
+        self.assertIn('const curveRole = mocaFlowsPanelCurveRole(panel);', source)
+        self.assertIn('text: isLikelihood', source)
+        self.assertIn('"Relative likelihood"', source)
+
     def test_moca_flows_defaults_to_v2_and_hides_its_mh_pane(self):
         source = (app_module.STATIC_DIR / "moca_flows.js").read_text(encoding="utf-8")
         html = (app_module.STATIC_DIR / "moca_flows.html").read_text(encoding="utf-8")
