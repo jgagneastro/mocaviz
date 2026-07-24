@@ -173,6 +173,7 @@ function collectSpectralElements() {
     "spt-stitch-summary",
     "spt-stitch-content",
     "spt-standards-source",
+    "spt-only-field",
     "spt-grid-select",
     "spt-prev-grid",
     "spt-next-grid",
@@ -243,6 +244,8 @@ function readSpectralUrlState() {
   sptEl["spt-showfeatures"].checked = !asFalse(params.get("showfeatures"));
   sptEl["spt-disable-lowres"].checked = asSpectralBool(params.get("disable_lowres"));
   sptEl["spt-standards-source"].value = spectralStandardsSourceUrlValue(params);
+  sptEl["spt-only-field"].checked = asSpectralBool(params.get("only_field"))
+    || asSpectralBool(params.get("only_field_objects"));
   if (sptEl["spt-cloud"].checked) sptEl["spt-deredden"].checked = false;
   sptState.fixedRvValue = spectralFixedRvUrlValue(params);
   sptState.cloudAlphaValue = spectralCloudAlphaUrlValue(params);
@@ -293,21 +296,8 @@ function bindSpectralControls() {
   sptEl["spt-next-best-chi2"].addEventListener("click", () => moveChi2Rank(-1));
   sptEl["spt-next-worse-chi2"].addEventListener("click", () => moveChi2Rank(1));
   bindSpectralKeyboardNavigation();
-  sptEl["spt-standards-source"].addEventListener("change", async () => {
-    sptState.comparePayload = null;
-    sptState.selectedGrid = "";
-    sptState.currentIndex = 0;
-    sptState.initialGridParam = "";
-    sptState.initialGridIndexParam = null;
-    sptState.hasAppliedInitialIndex = false;
-    updateSpectralUrl();
-    await loadSpectralGrid();
-    if (selectedComparisonSpecids().length) {
-      await computeSpectralComparison();
-    } else {
-      renderEmptySpectralPlots("Select a comparison spectrum");
-    }
-  });
+  sptEl["spt-standards-source"].addEventListener("change", reloadSpectralStandards);
+  sptEl["spt-only-field"].addEventListener("change", reloadSpectralStandards);
   sptEl["spt-deredden"].addEventListener("change", () => {
     if (sptEl["spt-deredden"].checked) sptEl["spt-cloud"].checked = false;
     updateProcessingModeControls();
@@ -380,6 +370,22 @@ function bindSpectralControls() {
   updateProcessingModeControls();
 }
 
+async function reloadSpectralStandards() {
+  sptState.comparePayload = null;
+  sptState.selectedGrid = "";
+  sptState.currentIndex = 0;
+  sptState.initialGridParam = "";
+  sptState.initialGridIndexParam = null;
+  sptState.hasAppliedInitialIndex = false;
+  updateSpectralUrl();
+  await loadSpectralGrid();
+  if (selectedComparisonSpecids().length) {
+    await computeSpectralComparison();
+  } else {
+    renderEmptySpectralPlots("Select a comparison spectrum");
+  }
+}
+
 function bindSpectralKeyboardNavigation() {
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -442,6 +448,7 @@ async function loadSpectralGrid() {
   setSpectralStatus("Loading standards grid", "loading");
   const params = new URLSearchParams();
   params.set("standards_source", selectedStandardsSource());
+  if (onlyFieldObjectsEnabled()) params.set("only_field", "1");
   const suffix = params.toString();
   const payload = await fetchSpectralJson(`api/spectral-typing/grid${suffix ? `?${suffix}` : ""}`);
   if (!payload.ok) {
@@ -873,6 +880,7 @@ async function computeSpectralComparison(options = {}) {
     fix_rv: deredden ? (fixedValue || null) : null,
     priority_standard_specid: priorityStandardSpecid || null,
     standards_source: selectedStandardsSource(),
+    only_field: onlyFieldObjectsEnabled(),
   };
   if (canShowQuickStandard) {
     const quickToken = ++sptState.quickComputeToken;
@@ -2391,6 +2399,9 @@ function updateSpectralUrl() {
   else params.delete("disable_lowres");
   if (selectedStandardsSource() === sptStandardsSourcePickles) params.set("standards_source", sptStandardsSourcePickles);
   else params.delete("standards_source");
+  if (onlyFieldObjectsEnabled()) params.set("only_field", "1");
+  else params.delete("only_field");
+  params.delete("only_field_objects");
   params.delete("extend_pickles");
   params.delete("pickles");
   params.delete("pickles_standards");
@@ -2426,6 +2437,10 @@ function selectedStandardsSource() {
   return sptEl["spt-standards-source"]?.value === sptStandardsSourcePickles
     ? sptStandardsSourcePickles
     : sptStandardsSourceMoca;
+}
+
+function onlyFieldObjectsEnabled() {
+  return Boolean(sptEl["spt-only-field"]?.checked);
 }
 
 function spectralStandardsSourceUrlValue(params) {

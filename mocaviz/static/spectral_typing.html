@@ -52,6 +52,10 @@
               <option value="pickles">Pickles Spectral Library</option>
             </select>
           </label>
+          <label class="checkline">
+            <input id="spt-only-field" type="checkbox">
+            <span>Only consider field, solar-metallicity objects</span>
+          </label>
           <label>
             Spectral grid
             <select id="spt-grid-select"></select>
@@ -281,6 +285,11 @@
             <td><code>moca</code> or <code>pickles</code></td>
             <td>Selects either the MOCA UCD template grids or Pickles luminosity and metallicity grids.</td>
           </tr>
+          <tr>
+            <td><code>only_field</code></td>
+            <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
+            <td>Limits MOCA UCD templates to the <code>field</code> grid, or Pickles templates to <code>V solar M/H</code>.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -298,6 +307,6 @@
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
-  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a"></script>
+  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a-field-only-20260724a"></script>
 </body>
 </html>

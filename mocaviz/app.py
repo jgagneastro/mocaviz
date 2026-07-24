@@ -436,6 +436,7 @@ SPT_DEFAULT_CLOUD_ALPHA = float(os.environ.get("SPT_CLOUD_ALPHA", "1.7"))
 SPT_DEFAULT_CLOUD_LAMBDA0 = float(os.environ.get("SPT_CLOUD_LAMBDA0", "1.25"))
 SPT_STANDARDS_SOURCE_MOCA = "moca"
 SPT_STANDARDS_SOURCE_PICKLES = "pickles"
+SPT_PICKLES_DEFAULT_GRID = "V solar M/H"
 SPT_PICKLES_LUMINOSITY_CLASS_ORDER = {"V": 0, "IV": 1, "III": 2, "II": 3, "I": 4}
 SPT_PICKLES_METALLICITY_ORDER = {"strong": 0, "solar": 1, "weak": 2}
 SPT_PICKLES_METALLICITY_GRID_LABELS = {
@@ -961,6 +962,32 @@ def _spt_standards_source(args: Mapping[str, Any], body: Mapping[str, Any] | Non
     if body is not None and any(_as_bool(body.get(key)) for key in legacy_keys):
         return SPT_STANDARDS_SOURCE_PICKLES
     return SPT_STANDARDS_SOURCE_MOCA
+
+
+def _spt_only_field_objects(args: Mapping[str, Any], body: Mapping[str, Any] | None = None) -> bool:
+    keys = ("only_field", "only_field_objects")
+    values = [args.get(key) for key in keys]
+    if body is not None:
+        values.extend(body.get(key) for key in keys)
+    return any(_as_bool(value) for value in values)
+
+
+def _spt_field_grid_name(standards_source: str) -> str:
+    if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
+        return SPT_PICKLES_DEFAULT_GRID
+    return "field"
+
+
+def _spt_field_grid_rows(
+    rows: Sequence[dict[str, Any]],
+    standards_source: str,
+) -> list[dict[str, Any]]:
+    field_grid = _spt_field_grid_name(standards_source).casefold()
+    return [
+        row
+        for row in rows
+        if str(row.get("grid") or "").strip().casefold() == field_grid
+    ]
 
 
 def _safe_float(value: Any) -> float | None:
@@ -5379,6 +5406,7 @@ def _load_spt_grid_from_db(
     bins_per_micron: int | None = None,
     standard_specids: list[int] | tuple[int, ...] | None = None,
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
+    only_field_objects: bool = False,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     region_key = _spt_format_norm_regions(list(wavelength_regions or [])) if wavelength_regions else "all"
@@ -5393,7 +5421,7 @@ def _load_spt_grid_from_db(
         }
         if standard_specid_set:
             standard_specid_key = ",".join(str(specid) for specid in sorted(standard_specid_set))
-    cache_key = f"{_spt_db_cache_key(args)}|grid|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|grid|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|field:{int(only_field_objects)}|spectra:{int(include_spectra)}|standards:{standard_specid_key}|regions:{region_key}|bins:{bins_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_GRID_CACHE,
@@ -5424,7 +5452,6 @@ def _load_spt_grid_from_db(
         resolution_metadata_select = _spectra_resolution_metadata_select(conn)
         if standards_source == SPT_STANDARDS_SOURCE_PICKLES:
             grid_rows = _spt_pickles_grid_rows(conn)
-            pickles_template_count = len(grid_rows)
         else:
             grid_rows = _records(_read_sql(conn, f"""
                 SELECT
@@ -5458,7 +5485,9 @@ def _load_spt_grid_from_db(
                     {private_public_clause}
                 ORDER BY mstg.display_order, dstg.grid_index
             """))
-            pickles_template_count = 0
+        if only_field_objects:
+            grid_rows = _spt_field_grid_rows(grid_rows, standards_source)
+        pickles_template_count = len(grid_rows) if standards_source == SPT_STANDARDS_SOURCE_PICKLES else 0
         specids = sorted({
             int(row["moca_specid"])
             for row in grid_rows
@@ -5533,6 +5562,7 @@ def _load_spt_grid_from_db(
             "grid_count": len(grids),
             "standard_count": len(grid_rows),
             "standards_source": standards_source,
+            "only_field_objects": bool(only_field_objects),
             "pickles_template_count": int(pickles_template_count),
             "spectrum_row_count": int(len(spectra_df)),
             "spectrum_regions": list(wavelength_regions or []),
@@ -5798,6 +5828,7 @@ def _precompute_spt_comparison(
     only_standard_specid: int | None = None,
     priority_standard_specid: int | None = None,
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
+    only_field_objects: bool = False,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     requested_specids = _spt_parse_specid_values(specids)
@@ -5825,7 +5856,7 @@ def _precompute_spt_comparison(
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
     specid_key = ",".join(str(specid) for specid in requested_specids)
-    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|field:{int(only_field_objects)}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_COMPARE_CACHE,
@@ -5841,6 +5872,7 @@ def _precompute_spt_comparison(
         bins_per_micron=bins,
         standard_specids=[int(only_standard_specid)] if only_standard_specid is not None else None,
         standards_source=standards_source,
+        only_field_objects=only_field_objects,
     )
     spectrum_payloads = [_load_spt_spectrum_from_db(args, specid) for specid in requested_specids]
     for spectrum_payload in spectrum_payloads:
@@ -6195,6 +6227,7 @@ def _precompute_spt_comparison(
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
+            "only_field_objects": bool(only_field_objects),
             "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -6209,7 +6242,10 @@ def _precompute_spt_comparison(
     return payload
 
 
-def _mock_spt_grid_payload(standards_source: str = SPT_STANDARDS_SOURCE_MOCA) -> dict[str, Any]:
+def _mock_spt_grid_payload(
+    standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
+    only_field_objects: bool = False,
+) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     rows = []
     spectra = []
@@ -6294,6 +6330,20 @@ def _mock_spt_grid_payload(standards_source: str = SPT_STANDARDS_SOURCE_MOCA) ->
                 flux = np.clip(slope - water - methane, 0.02, None)
                 for x, y in zip(wv, flux):
                     spectra.append({"moca_specid": specid, "wv": round(float(x), 6), "sp": round(float(y), 8), "esp": 0.02})
+    if only_field_objects:
+        rows = _spt_field_grid_rows(rows, standards_source)
+        allowed_specids = {
+            int(row["moca_specid"])
+            for row in rows
+            if row.get("moca_specid") is not None
+        }
+        spectra = [
+            row
+            for row in spectra
+            if int(row.get("moca_specid")) in allowed_specids
+        ]
+        field_grid = _spt_field_grid_name(standards_source)
+        grids = [(field_grid, 0.0)] if rows else []
     return {
         "options": [{"label": grid, "value": grid} for grid, _offset in grids],
         "gridData": rows,
@@ -6304,6 +6354,7 @@ def _mock_spt_grid_payload(standards_source: str = SPT_STANDARDS_SOURCE_MOCA) ->
             "grid_count": len(grids),
             "standard_count": len(rows),
             "standards_source": standards_source,
+            "only_field_objects": bool(only_field_objects),
             "pickles_template_count": len(rows) if standards_source == SPT_STANDARDS_SOURCE_PICKLES else 0,
             "spectrum_row_count": len(spectra),
         },
@@ -6360,19 +6411,23 @@ def _mock_spt_compare(
     only_standard_specid: int | None = None,
     priority_standard_specid: int | None = None,
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
+    only_field_objects: bool = False,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     requested_specids = sorted(_spt_parse_specid_values(specids))
     if not requested_specids:
         raise ValueError("At least one numeric comparison specid is required.")
     primary_specid = requested_specids[0]
-    grid_payload = _mock_spt_grid_payload(standards_source=standards_source)
+    grid_payload = _mock_spt_grid_payload(
+        standards_source=standards_source,
+        only_field_objects=only_field_objects,
+    )
     spectrum_payloads = [_mock_spt_spectrum_payload(specid) for specid in requested_specids]
     for spectrum_payload in spectrum_payloads:
         _spt_validate_spectrum_payload_for_regions(spectrum_payload, norm_regions_param)
     temp_args = dict(args)
     temp_args["mock"] = "0"
-    grid_cache_key = f"mock|grid"
+    grid_cache_key = f"mock|grid|source:{standards_source}|field:{int(only_field_objects)}"
     _SPT_GRID_CACHE[grid_cache_key] = (time.time(), grid_payload)
     for specid, spectrum_payload in zip(requested_specids, spectrum_payloads):
         spectrum_cache_key = f"mock|spectrum|{int(specid)}"
@@ -6508,6 +6563,7 @@ def _mock_spt_compare(
             "standard_count": len(results),
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
+            "only_field_objects": bool(only_field_objects),
             "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
@@ -33493,11 +33549,23 @@ def spectral_typing_grid():
     args = dict(request.args)
     include_spectra = _as_bool(args.get("include_spectra"))
     standards_source = _spt_standards_source(args)
+    only_field_objects = _spt_only_field_objects(args)
     try:
         if args.get("mock") in {"1", "true", "yes"}:
-            payload = _spt_grid_response_payload(_mock_spt_grid_payload(standards_source=standards_source), include_spectra)
+            payload = _spt_grid_response_payload(
+                _mock_spt_grid_payload(
+                    standards_source=standards_source,
+                    only_field_objects=only_field_objects,
+                ),
+                include_spectra,
+            )
             return jsonify({"ok": True, "source": "mock", **payload})
-        payload = _load_spt_grid_from_db(args, include_spectra=include_spectra, standards_source=standards_source)
+        payload = _load_spt_grid_from_db(
+            args,
+            include_spectra=include_spectra,
+            standards_source=standards_source,
+            only_field_objects=only_field_objects,
+        )
         payload = _spt_grid_response_payload(payload, include_spectra)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
@@ -33622,6 +33690,7 @@ def spectral_typing_compare():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
+    only_field_objects = _spt_only_field_objects(args, body)
     try:
         specids = _spt_requested_specids(body, args)
     except ValueError as exc:
@@ -33691,6 +33760,7 @@ def spectral_typing_compare():
                 cloud_alpha_fixed,
                 cloud_lambda0,
                 standards_source=standards_source,
+                only_field_objects=only_field_objects,
             )
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
@@ -33707,6 +33777,7 @@ def spectral_typing_compare():
             cloud_lambda0=cloud_lambda0,
             priority_standard_specid=priority_standard_specid,
             standards_source=standards_source,
+            only_field_objects=only_field_objects,
         )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
@@ -33740,6 +33811,7 @@ def spectral_typing_compare():
                 "cloud_alpha_fixed": cloud_alpha_fixed,
                 "cloud_lambda0": cloud_lambda0,
                 "standards_source": standards_source,
+                "only_field_objects": bool(only_field_objects),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
@@ -33750,6 +33822,7 @@ def spectral_typing_standard():
     args = dict(request.args)
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
+    only_field_objects = _spt_only_field_objects(args, body)
     raw_standard_specid = (
         body.get("standard_specid")
         or body.get("moca_standard_specid")
@@ -33818,6 +33891,7 @@ def spectral_typing_standard():
                 cloud_lambda0,
                 only_standard_specid=standard_specid,
                 standards_source=standards_source,
+                only_field_objects=only_field_objects,
             )
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
@@ -33834,6 +33908,7 @@ def spectral_typing_standard():
             cloud_lambda0=cloud_lambda0,
             only_standard_specid=standard_specid,
             standards_source=standards_source,
+            only_field_objects=only_field_objects,
         )
         payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
@@ -33868,6 +33943,7 @@ def spectral_typing_standard():
                 "cloud_alpha_fixed": cloud_alpha_fixed,
                 "cloud_lambda0": cloud_lambda0,
                 "standards_source": standards_source,
+                "only_field_objects": bool(only_field_objects),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
