@@ -1,7 +1,7 @@
 const sptDefaultNormText = "0.860-1.350, 1.445-1.800, 2.010-2.400";
 const sptDefaultNormPreset = "nir-ground";
 const sptNormPresets = [
-  { value: "red-visible", label: "Red-visible", norm: "0.520-0.900", bins: 800 },
+  { value: "red-visible", label: "Red-optical", norm: "0.520-0.900", bins: 800 },
   { value: sptDefaultNormPreset, label: "NIR ground-based", norm: sptDefaultNormText },
   { value: "nir-space", label: "NIR space-based (JWST NIRSpec Prism, SPHEREx)", norm: "0.800-5.000" },
   { value: "extended-bd-sed", label: "Extended L/T/Y SED (0.4–50 μm)", norm: "0.400-50.000", bins: 50 },
@@ -1782,7 +1782,8 @@ function renderCorrectionInfo(payload = sptState.comparePayload) {
   if (deredden) {
     target.innerHTML = `
       <strong>Extinction fit:</strong>
-      standards are adjusted with the near-infrared Cardelli, Clayton &amp; Mathis (1989) extinction law,
+      standards are adjusted with the optical and near-infrared branches of the
+      Cardelli, Clayton &amp; Mathis (1989) extinction law,
       <span class="spectral-correction-formula">A(λ) / A(V) = a(x) + b(x) / R<sub>V</sub>, x = 1 / λ</span>.
       The fit solves for A(V) in each normalization region and, when the fixed-value field is blank, also fits R<sub>V</sub>.
       The corresponding color excess is reported as E(B-V) = A(V) / R<sub>V</sub>.

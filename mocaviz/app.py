@@ -4358,11 +4358,33 @@ def _spt_cardelli_ab(wavelength: Any) -> tuple[np.ndarray, np.ndarray]:
     x = 1.0 / wv
     a = np.zeros_like(x)
     b = np.zeros_like(x)
-    opt_nir = (x >= 0.3) & (x < 3.3)
-    if np.any(opt_nir):
-        y = x[opt_nir]
-        a[opt_nir] = 0.574 * y**1.61
-        b[opt_nir] = -0.527 * y**1.61
+    near_ir = (x >= 0.3) & (x < 1.1)
+    if np.any(near_ir):
+        y = x[near_ir]
+        a[near_ir] = 0.574 * y**1.61
+        b[near_ir] = -0.527 * y**1.61
+    optical = (x >= 1.1) & (x < 3.3)
+    if np.any(optical):
+        y = x[optical] - 1.82
+        a[optical] = (
+            1.0
+            + 0.17699 * y
+            - 0.50447 * y**2
+            - 0.02427 * y**3
+            + 0.72085 * y**4
+            + 0.01979 * y**5
+            - 0.77530 * y**6
+            + 0.32999 * y**7
+        )
+        b[optical] = (
+            1.41338 * y
+            + 2.28305 * y**2
+            + 1.07233 * y**3
+            - 5.38434 * y**4
+            - 0.62251 * y**5
+            + 5.30260 * y**6
+            - 2.09002 * y**7
+        )
     mid_ir = x < 0.3
     if np.any(mid_ir):
         a[mid_ir] = 0.574 * (0.3**1.61)
