@@ -33706,6 +33706,7 @@ def spectral_typing_search():
                     "row_count": len(options),
                     "required_moca_oid": required_oid,
                     "excluded_specids": sorted(excluded),
+                    "private_db": _is_private_db(args),
                 },
             })
         payload = _search_spt_spectra_from_db(
@@ -33715,6 +33716,7 @@ def spectral_typing_search():
             required_oid=required_oid,
             excluded_specids=excluded_specids,
         )
+        payload.setdefault("meta", {})["private_db"] = _is_private_db(args)
         return jsonify({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         return jsonify({

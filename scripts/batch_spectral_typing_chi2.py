@@ -98,6 +98,7 @@ class SpectralTypingApi:
         self.base_url = base_url.rstrip("/")
         self.timeout = max(1.0, float(timeout))
         self.retries = max(0, int(retries))
+        self.requested_dbase = str(dbase or "").strip().strip("`").casefold()
         self.auth_headers = {
             key: value
             for key, value in {
@@ -115,6 +116,7 @@ class SpectralTypingApi:
             "api/spectral-typing/search",
             params={"moca_oid": int(moca_oid)},
         )
+        self._validate_database_access(payload, "spectral-typing search")
         return list(payload.get("options") or [])
 
     def compare(self, specids: Sequence[int], settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -136,7 +138,32 @@ class SpectralTypingApi:
             body["specid"] = selected[0]
         else:
             body["specids"] = selected
-        return self._request("POST", "api/spectral-typing/compare", body=body)
+        payload = self._request("POST", "api/spectral-typing/compare", body=body)
+        self._validate_database_access(payload, "spectral-typing comparison")
+        return payload
+
+    def _validate_database_access(
+        self,
+        payload: Mapping[str, Any],
+        operation: str,
+    ) -> None:
+        if self.requested_dbase != DEFAULT_DBNAME.casefold():
+            return
+        meta = payload.get("meta")
+        private_db = meta.get("private_db") if isinstance(meta, Mapping) else None
+        if private_db is True:
+            return
+        if private_db is False:
+            detail = "the server reported a public-database response"
+        else:
+            detail = "the server did not confirm private-database access"
+        raise ApiError(
+            f"Private database access was requested, but {detail} during "
+            f"{operation}. Refusing to write incomplete public-grid results. "
+            "Verify the credentials and deploy a MOCAviz version that supports "
+            "X-MOCA authentication headers.",
+            error_code="private_database_not_confirmed",
+        )
 
     def _request(
         self,
@@ -529,6 +556,8 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
                 error_code=error.error_code,
                 error=str(error),
             ))
+            if error.error_code == "private_database_not_confirmed":
+                raise SystemExit(str(error)) from None
         except Exception as error:
             failures += 1
             append_manifest(manifest_path, manifest_row(

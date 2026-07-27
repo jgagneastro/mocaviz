@@ -81,6 +81,11 @@ CSV for every spectrum belonging to an object. Use `--spectrum-policy
 composite` to type all spectra from one object together, or
 `--spectrum-policy first` to explicitly select its lowest numbered
 `moca_specid`. Composite comparisons normally accept at most eight spectra.
+When `mocadb_private_tables` is requested, both search and comparison
+responses must explicitly confirm private-database access. The command stops
+without writing incomplete public-grid results if credentials were not
+accepted or if the deployed server does not support the authentication
+headers.
 
 Successful outputs are skipped automatically when the command is rerun.
 Transient failures are retried, and failed comparisons remain eligible on the

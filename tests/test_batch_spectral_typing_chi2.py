@@ -61,6 +61,18 @@ class FakeSpectralTypingApi:
         }
 
 
+class PublicFallbackApi:
+    def __init__(self) -> None:
+        self.search_calls: list[int] = []
+
+    def search_spectra(self, moca_oid: int):
+        self.search_calls.append(moca_oid)
+        raise batch.ApiError(
+            "Private database access was not confirmed.",
+            error_code="private_database_not_confirmed",
+        )
+
+
 class BatchSpectralTypingChi2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = app_module.app.test_client()
@@ -141,7 +153,11 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"ok": True, "options": []}).encode("utf-8")
+                return json.dumps({
+                    "ok": True,
+                    "options": [],
+                    "meta": {"private_db": True},
+                }).encode("utf-8")
 
         captured = {}
 
@@ -165,6 +181,51 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
         self.assertEqual(captured["headers"]["X-moca-user"], "collaborators")
         self.assertEqual(captured["headers"]["X-moca-password"], "secret")
         self.assertEqual(captured["headers"]["X-moca-database"], "mocadb_private_tables")
+
+    def test_api_client_rejects_public_or_unconfirmed_private_database_access(self):
+        api = batch.SpectralTypingApi(
+            "https://dataviz.mocadb.ca",
+            user="collaborators",
+            password="secret",
+            dbase="mocadb_private_tables",
+        )
+        settings = {
+            "bins": 200,
+            "norm": batch.DEFAULT_NORM,
+            "deredden": False,
+            "cloud": False,
+            "cloud_alpha": 1.7,
+            "fit_cloud_alpha": False,
+            "standards_source": "moca",
+            "only_field": False,
+            "fix_rv": None,
+        }
+
+        for meta in ({"private_db": False, "standard_count": 6}, {}):
+            with self.subTest(meta=meta), patch.object(
+                api,
+                "_request",
+                return_value={"ok": True, "entries": [], "meta": meta},
+            ):
+                with self.assertRaises(batch.ApiError) as raised:
+                    api.compare([1195448], settings)
+                self.assertEqual(
+                    raised.exception.error_code,
+                    "private_database_not_confirmed",
+                )
+                self.assertIn(
+                    "Refusing to write incomplete public-grid results",
+                    str(raised.exception),
+                )
+
+    def test_search_response_reports_effective_database_access(self):
+        response = self.client.get(
+            "/api/spectral-typing/search?mock=1&moca_oid=990602",
+            headers={"X-MOCA-Database": "mocadb_private_tables"},
+        ).get_json()
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["meta"]["private_db"])
 
     def test_input_reader_accepts_header_and_oid_labels(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -218,6 +279,25 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
             resumed_api = FakeSpectralTypingApi()
             self.assertEqual(batch.run_batch(args, api=resumed_api), 0)
             self.assertEqual(resumed_api.compare_calls, [])
+
+    def test_batch_stops_after_first_unconfirmed_private_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "oids.csv"
+            output_dir = root / "output"
+            input_path.write_text("moca_oid\n602\n603\n", encoding="utf-8")
+            args = batch.parse_args([
+                str(input_path),
+                "--output-dir", str(output_dir),
+                "--mock",
+            ])
+            api = PublicFallbackApi()
+
+            with self.assertRaisesRegex(SystemExit, "not confirmed"):
+                batch.run_batch(args, api=api)
+
+            self.assertEqual(api.search_calls, [602])
+            self.assertEqual(list((output_dir / "chi2").glob("*_chi2.csv")), [])
 
 
 if __name__ == "__main__":
