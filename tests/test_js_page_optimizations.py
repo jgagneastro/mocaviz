@@ -901,6 +901,8 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("resolutionMatch?.applied", source)
         self.assertIn("Gaia XP wavelength-dependent LSF", source)
         self.assertIn("maximum smoothing-kernel FWHM", source)
+        self.assertIn("standard <i>R</i> &asymp;", source)
+        self.assertIn("comparison <i>R</i> &asymp;", source)
 
     def test_spectral_typing_composite_stitching_is_order_independent(self):
         def spectrum_payload(specid, start, stop, factor):

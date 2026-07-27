@@ -1754,7 +1754,7 @@ function updateMetadata(payload, entry) {
     const kernel = finiteNumber(resolutionMatch.kernel_fwhm_max_nm)
       ? `; maximum smoothing-kernel FWHM ${formatNumber(resolutionMatch.kernel_fwhm_max_nm, 2)} nm`
       : "";
-    parts.push(`<strong>Resolution match:</strong> standard <i>R</i> ${escapeHtml(standardR)} degraded to comparison <i>R</i> ${escapeHtml(comparisonR)} (${escapeHtml(mode)}${escapeHtml(kernel)}).`);
+    parts.push(`<strong>Resolution match:</strong> standard <i>R</i> &asymp; ${escapeHtml(standardR)} degraded to comparison <i>R</i> &asymp; ${escapeHtml(comparisonR)} (${escapeHtml(mode)}${escapeHtml(kernel)}).`);
   } else if (resolutionMatch?.reason) {
     parts.push(`<strong>Resolution match:</strong> ${escapeHtml(String(resolutionMatch.reason).replaceAll("_", " "))}.`);
   }
