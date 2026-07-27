@@ -214,6 +214,7 @@ function collectSpectralElements() {
     "spt-export-tsv",
     "spt-export-fits",
     "spt-export-votable",
+    "spt-export-chi2-csv",
     "spt-clear-cache",
     "spt-clear-cache-status",
   ].forEach((id) => {
@@ -347,6 +348,7 @@ function bindSpectralControls() {
   sptEl["spt-export-tsv"].addEventListener("click", () => exportSpectralTyping("tsv"));
   sptEl["spt-export-fits"].addEventListener("click", () => exportSpectralTyping("fits"));
   sptEl["spt-export-votable"].addEventListener("click", () => exportSpectralTyping("votable"));
+  sptEl["spt-export-chi2-csv"].addEventListener("click", exportSpectralChi2Csv);
   sptEl["spt-clear-cache"].addEventListener("click", () => clearSpectralCache());
   sptEl["spt-push-spectral-type"]?.addEventListener("click", () => pushCurrentSpectralType());
   for (const id of ["spt-management-rls", "spt-management-author"]) {
@@ -867,6 +869,7 @@ async function computeSpectralComparison(options = {}) {
   let fullCompleted = false;
   setTopLoading(!canShowQuickStandard);
   setChi2Loading(true);
+  setSpectralTypingExportDisabled(true);
   setSpectralStatus("Computing spectral comparison", "loading");
   updateSpectralUrl();
   const body = {
@@ -1838,6 +1841,8 @@ function renderEmptySpectralPlots(message) {
 
 const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_specids", "comparison_oid", "source_specids", "source_count", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
 const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "source_count", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2"]);
+const spectralChi2ExportColumns = ["comparison_specid", "comparison_specids", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "reduced_chi2", "best_parameters", "designation", "bibcode"];
+const spectralChi2NumericExportColumns = new Set(["comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "spectral_type_number", "reduced_chi2"]);
 
 function exportSpectralTyping(format) {
   const rows = spectralTypingExportRows();
@@ -1850,6 +1855,19 @@ function exportSpectralTyping(format) {
     tableName: "mocadb_spectral_typing",
     resourceName: "MOCAdb Spectral Typing",
     extName: "SPTYPING",
+  });
+}
+
+function exportSpectralChi2Csv() {
+  const rows = spectralTypingExportRows().filter((row) => row.row_type === "chi2_grid");
+  if (!rows.length) return;
+  MocaExport.saveTable("csv", {
+    rows,
+    columns: spectralChi2ExportColumns,
+    numericColumns: spectralChi2NumericExportColumns,
+    filenameBase: `mocadb_spectral_typing_chi2_${comparisonIdentifier()}`,
+    tableName: "mocadb_spectral_typing_chi2",
+    resourceName: "MOCAdb Spectral Typing Chi-Squared Values",
   });
 }
 
@@ -1963,7 +1981,7 @@ function spectralStitchingComment(stitching) {
 }
 
 function setSpectralTypingExportDisabled(disabled) {
-  for (const id of ["spt-export-csv", "spt-export-tsv", "spt-export-fits", "spt-export-votable"]) {
+  for (const id of ["spt-export-csv", "spt-export-tsv", "spt-export-fits", "spt-export-votable", "spt-export-chi2-csv"]) {
     if (sptEl[id]) sptEl[id].disabled = disabled;
   }
 }

@@ -801,6 +801,19 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("function moveChi2Rank(delta)", source)
         self.assertIn('sptEl["spt-grid-select"].value = next.grid', source)
 
+    def test_spectral_typing_has_dedicated_chi2_csv_download(self):
+        html = self.client.get("/js/spectral-typing").get_data(as_text=True)
+        source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
+        chi2_plot_index = html.index('id="spt-chi2-plot"')
+        chi2_export_index = html.index('id="spt-export-chi2-csv"')
+        self.assertGreater(chi2_export_index, chi2_plot_index)
+        self.assertIn("Download χ² table (CSV)", html)
+        self.assertIn('sptEl["spt-export-chi2-csv"].addEventListener("click", exportSpectralChi2Csv)', source)
+        self.assertIn("function exportSpectralChi2Csv()", source)
+        self.assertIn('.filter((row) => row.row_type === "chi2_grid")', source)
+        self.assertIn('"reduced_chi2"', source)
+        self.assertIn("mocadb_spectral_typing_chi2_${comparisonIdentifier()}", source)
+
     def test_gaia_xp_resolution_curve_matches_published_ecs_values(self):
         fwhm_um = app_module._spt_gaia_xp_fwhm_um([0.86, 0.88, 0.90, 0.92])
         np.testing.assert_allclose(
