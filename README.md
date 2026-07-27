@@ -44,6 +44,53 @@ Then open `http://127.0.0.1:8050/`. A network-free page check can use
 
 MOCAviz is tested with Python 3.11+.
 
+## Batch spectral-typing chi-squared exports
+
+`scripts/batch_spectral_typing_chi2.py` processes a CSV, TSV, or
+one-value-per-line list of `moca_oid` values without opening browser tabs. It
+resolves each object to its spectra, requests compact spectral-typing results,
+and writes:
+
+- one chi-squared CSV per comparison under `chi2/`;
+- `combined_chi2.csv` containing every successful result;
+- an append-only `manifest.csv` with successes, missing spectra, and errors;
+- `run_config.json`, which prevents incompatible processing settings from
+  being mixed in one output directory.
+
+An input file may be as simple as:
+
+```csv
+moca_oid
+602
+10995
+```
+
+Run the private-database batch with:
+
+```bash
+python scripts/batch_spectral_typing_chi2.py moca_oids.csv \
+  --user collaborators \
+  --dbase mocadb_private_tables \
+  --output-dir student_chi2
+```
+
+The command prompts for the password. For unattended execution, set
+`MOCAVIZ_PASSWORD` in the environment; do not put the password in a command,
+URL, or input file. The default `--spectrum-policy all` produces a separate
+CSV for every spectrum belonging to an object. Use `--spectrum-policy
+composite` to type all spectra from one object together, or
+`--spectrum-policy first` to explicitly select its lowest numbered
+`moca_specid`. Composite comparisons normally accept at most eight spectra.
+
+Successful outputs are skipped automatically when the command is rerun.
+Transient failures are retried, and failed comparisons remain eligible on the
+next run. Start with the default single worker; use `--workers 2` only when
+the server has capacity. See every processing and recovery option with:
+
+```bash
+python scripts/batch_spectral_typing_chi2.py --help
+```
+
 ## Test
 
 Run the unit suite from the repository root:

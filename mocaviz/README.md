@@ -109,7 +109,9 @@ http://127.0.0.1:8050/rvbam-explorer?mock=1
 - The MOCAdb spectral typing page uses Flask JSON endpoints instead of Dash
   callbacks. The server caches the standards grid, raw spectra, and computed
   comparison payloads; the browser handles navigation, Plotly rendering, URL
-  state, and cache clearing.
+  state, and cache clearing. Batch clients can request `summary_only` compare
+  payloads that retain chi-squared and fit metadata while omitting spectral
+  arrays.
 - The astrometry page loads one target's single-epoch astrometry,
   adopted PM/parallax, designations, and mission metadata through compact JSON
   endpoints; the browser handles mission toggles, residual transforms, binned

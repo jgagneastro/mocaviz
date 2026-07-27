@@ -166,6 +166,9 @@ def _encoded_response_cache_key() -> str:
         request.headers.get("Accept-Encoding", ""),
         request.headers.get("Authorization", ""),
         request.headers.get("Cookie", ""),
+        request.headers.get("X-MOCA-User", ""),
+        request.headers.get("X-MOCA-Password", ""),
+        request.headers.get("X-MOCA-Database", ""),
     ))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -3532,6 +3535,20 @@ def _spt_requested_specids(body: Mapping[str, Any], args: Mapping[str, Any]) -> 
     return specids
 
 
+def _spt_request_args() -> dict[str, Any]:
+    """Accept batch credentials in headers while preserving browser query URLs."""
+    args = dict(request.args)
+    for key, header in (
+        ("user", "X-MOCA-User"),
+        ("pwd", "X-MOCA-Password"),
+        ("dbase", "X-MOCA-Database"),
+    ):
+        value = request.headers.get(header)
+        if value and key not in args:
+            args[key] = value
+    return args
+
+
 def _spt_parse_norm_regions(raw: str | None) -> list[tuple[float, float]]:
     if not raw:
         return [tuple(region) for region in SPT_DEFAULT_NORM_REGIONS]
@@ -6262,6 +6279,34 @@ def _precompute_spt_comparison(
         stored_at=now,
     )
     return payload
+
+
+_SPT_CHI2_SUMMARY_ENTRY_EXCLUDED_FIELDS = frozenset({
+    "spectrum",
+    "spectrum_display",
+    "spectrum_dered",
+    "spectrum_cloud",
+})
+
+
+def _spt_chi2_summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a compact comparison payload without mutating the cached payload."""
+    return {
+        **payload,
+        "comparison": [],
+        "entries": [
+            {
+                key: value
+                for key, value in entry.items()
+                if key not in _SPT_CHI2_SUMMARY_ENTRY_EXCLUDED_FIELDS
+            }
+            for entry in payload.get("entries", [])
+        ],
+        "meta": {
+            **(payload.get("meta") or {}),
+            "summary_only": True,
+        },
+    }
 
 
 def _mock_spt_grid_payload(
@@ -33605,7 +33650,7 @@ def spectral_typing_grid():
 
 @app.get("/api/spectral-typing/search")
 def spectral_typing_search():
-    args = dict(request.args)
+    args = _spt_request_args()
     query = args.get("q") or args.get("search") or ""
     required_oid = _spt_int_value(args.get("moca_oid") or args.get("oid"))
     excluded_specids = _spt_parse_specid_values(
@@ -33709,10 +33754,11 @@ def spectral_typing_spectrum(specid: int):
 
 @app.post("/api/spectral-typing/compare")
 def spectral_typing_compare():
-    args = dict(request.args)
+    args = _spt_request_args()
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
     only_field_objects = _spt_only_field_objects(args, body)
+    summary_only = _as_bool(body.get("summary_only")) or _as_bool(args.get("summary_only"))
     try:
         specids = _spt_requested_specids(body, args)
     except ValueError as exc:
@@ -33784,6 +33830,8 @@ def spectral_typing_compare():
                 standards_source=standards_source,
                 only_field_objects=only_field_objects,
             )
+            if summary_only:
+                payload = _spt_chi2_summary_payload(payload)
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
         payload = _precompute_spt_comparison(
@@ -33802,6 +33850,8 @@ def spectral_typing_compare():
             only_field_objects=only_field_objects,
         )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
+        if summary_only:
+            payload = _spt_chi2_summary_payload(payload)
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
     except Exception as exc:
         error_fields = (
@@ -33834,6 +33884,7 @@ def spectral_typing_compare():
                 "cloud_lambda0": cloud_lambda0,
                 "standards_source": standards_source,
                 "only_field_objects": bool(only_field_objects),
+                "summary_only": bool(summary_only),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
