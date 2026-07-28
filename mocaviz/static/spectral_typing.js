@@ -8,6 +8,7 @@ const sptNormPresets = [
 ];
 const sptNormPresetByValue = new Map(sptNormPresets.map((preset) => [preset.value, preset]));
 const sptDefaultBins = 200;
+const sptDefaultMinLogWavelengthOverlapPercent = 80;
 const sptDefaultSpecid = 450;
 const sptDefaultFixedRv = "3.1";
 const sptDefaultCloudAlpha = "1.7";
@@ -136,6 +137,17 @@ function defaultBinsForCurrentNormPreset() {
   return preset?.bins || sptDefaultBins;
 }
 
+function minimumLogWavelengthOverlapPercent() {
+  const value = Number(sptEl["spt-min-overlap"]?.value);
+  if (!Number.isFinite(value)) return sptDefaultMinLogWavelengthOverlapPercent;
+  return Math.min(100, Math.max(0, value));
+}
+
+function syncMinimumOverlapOutput() {
+  const output = sptEl["spt-min-overlap-output"];
+  if (output) output.value = `${minimumLogWavelengthOverlapPercent().toFixed(0)}%`;
+}
+
 async function initSpectralTyping() {
   collectSpectralElements();
   readSpectralUrlState();
@@ -187,6 +199,8 @@ function collectSpectralElements() {
     "spt-norm-preset",
     "spt-norm",
     "spt-reset-norm",
+    "spt-min-overlap",
+    "spt-min-overlap-output",
     "spt-deredden",
     "spt-cloud",
     "spt-fixed-param-wrap",
@@ -239,6 +253,15 @@ function readSpectralUrlState() {
   sptState.initialGridIndexParam = parseInteger(params.get("grid_index"));
   setNormText(params.get("norm") || sptDefaultNormText);
   sptEl["spt-bins"].value = params.get("bins") || String(defaultBinsForCurrentNormPreset());
+  const minOverlap = params.has("min_overlap")
+    ? Number(params.get("min_overlap"))
+    : Number.NaN;
+  sptEl["spt-min-overlap"].value = String(
+    Number.isFinite(minOverlap)
+      ? Math.min(100, Math.max(0, minOverlap))
+      : sptDefaultMinLogWavelengthOverlapPercent,
+  );
+  syncMinimumOverlapOutput();
   sptEl["spt-deredden"].checked = asSpectralBool(params.get("deredden"));
   sptEl["spt-cloud"].checked = asSpectralBool(params.get("cloud")) || asSpectralBool(params.get("cloud_correction"));
   sptEl["spt-allred"].checked = !asFalse(params.get("allred"));
@@ -322,6 +345,8 @@ function bindSpectralControls() {
     syncNormPresetFromText();
     computeSpectralComparison();
   });
+  sptEl["spt-min-overlap"].addEventListener("input", syncMinimumOverlapOutput);
+  sptEl["spt-min-overlap"].addEventListener("change", () => computeSpectralComparison());
   for (const id of ["spt-bins", "spt-fixed-param"]) {
     sptEl[id].addEventListener("change", () => computeSpectralComparison());
   }
@@ -876,6 +901,7 @@ async function computeSpectralComparison(options = {}) {
     ...(specids.length > 1 ? { specids } : { specid: specids[0] }),
     bins: parseInteger(sptEl["spt-bins"].value) || sptDefaultBins,
     norm: sptEl["spt-norm"].value || sptDefaultNormText,
+    min_overlap: minimumLogWavelengthOverlapPercent(),
     deredden: deredden ? "1" : "0",
     cloud_correction: cloud ? "1" : "0",
     cloud_alpha_fixed: cloud && fixedValue ? "1" : "0",
@@ -926,7 +952,9 @@ async function computeSpectralComparison(options = {}) {
   const timing = payload.meta?.timings?.compare_total;
   const timingText = finiteNumber(timing) ? Number(timing).toFixed(1) : "";
   const cacheText = payload.cache?.hit ? " from cache" : "";
-  setSpectralStatus(`Computed ${payload.meta?.standard_count || 0} standards${cacheText}${timingText ? ` in ${timingText}s` : ""}`, "");
+  const standardCount = Number(payload.meta?.standard_count || 0);
+  const eligibleCount = Number(payload.meta?.chi2_standard_count ?? standardCount);
+  setSpectralStatus(`Computed ${eligibleCount} χ²-eligible of ${standardCount} standards${cacheText}${timingText ? ` in ${timingText}s` : ""}`, "");
 }
 
 function applyQuickStandardPayload(payload) {
@@ -1457,10 +1485,19 @@ function renderSpectrumPlot(payload, entry) {
 function renderChi2Plot(payload, selectedEntry) {
   const entries = payload.entries || [];
   const adjustedEntries = adjustedChiEntries(entries);
-  const grids = orderedGridValues(adjustedEntries.map((entry) => entry.grid));
+  const chi2Entries = adjustedEntries.filter((entry) => (
+    finiteNumber(entry.spectral_type_number)
+    && finiteNumber(entry.reduced_chi2)
+    && Number(entry.reduced_chi2) > 0
+  ));
+  const grids = orderedGridValues(chi2Entries.map((entry) => entry.grid));
   const traces = [];
+  const minOverlap = Number(
+    payload.meta?.min_log_wavelength_overlap_percent
+      ?? minimumLogWavelengthOverlapPercent(),
+  );
   const selectedAdjusted = adjustedEntries.find((entry) => Number(entry.moca_specid) === Number(selectedEntry.moca_specid) && String(entry.grid) === String(selectedEntry.grid));
-  const selectedTrace = selectedAdjusted ? {
+  const selectedTrace = selectedAdjusted && finiteNumber(selectedAdjusted.reduced_chi2) ? {
       x: [selectedAdjusted.spectral_type_number],
       y: [selectedAdjusted.reduced_chi2],
       type: "scatter",
@@ -1471,8 +1508,8 @@ function renderChi2Plot(payload, selectedEntry) {
       customdata: [[selectedEntry.grid, sptState.currentIndex]],
     } : null;
   grids.forEach((grid, gridIndex) => {
-    const rows = adjustedEntries
-      .filter((entry) => String(entry.grid) === grid && finiteNumber(entry.spectral_type_number) && finiteNumber(entry.reduced_chi2) && entry.reduced_chi2 > 0)
+    const rows = chi2Entries
+      .filter((entry) => String(entry.grid) === grid)
       .sort((a, b) => a.spectral_type_number - b.spectral_type_number);
     const color = sptGridColors[gridIndex % sptGridColors.length];
     const spline = chi2InterpolatingSpline(rows);
@@ -1491,24 +1528,28 @@ function renderChi2Plot(payload, selectedEntry) {
       x: rows.map((row) => row.spectral_type_number),
       y: rows.map((row) => row.reduced_chi2),
       text: rows.map((row) => row.label || row.spectral_type || ""),
-      customdata: rows.map((row) => [row.grid, localIndexForEntry(row)]),
       type: "scatter",
       mode: "markers",
       name: grid,
       legendgroup: grid,
       showlegend: false,
       marker: { size: 9, color },
-      hovertemplate: "<b>%{text}</b><br>χ<sup>2</sup>: %{y:.2f}<extra></extra>",
+      customdata: rows.map((row) => [
+        row.grid,
+        localIndexForEntry(row),
+        row.log_wavelength_overlap_percent,
+      ]),
+      hovertemplate: "<b>%{text}</b><br>χ<sup>2</sup>: %{y:.2f}<br>log(λ) overlap: %{customdata[2]:.1f}%<extra></extra>",
     });
   });
   if (selectedTrace) traces.push(selectedTrace);
-  const finiteChi = adjustedEntries.map((entry) => entry.reduced_chi2).filter((value) => finiteNumber(value) && value > 0).sort((a, b) => a - b);
+  const finiteChi = chi2Entries.map((entry) => entry.reduced_chi2).sort((a, b) => a - b);
   const yTopCount = Math.max(1, Math.floor(finiteChi.length * 0.75));
   const topChi = finiteChi.slice(0, yTopCount);
   const yRange = topChi.length ? [Math.log10(Math.max(1e-12, topChi[0] * 0.85)), Math.log10(topChi[topChi.length - 1] * 1.6)] : undefined;
-  const visibleChiEntries = chiEntriesInsideRange(adjustedEntries, yRange);
+  const visibleChiEntries = chiEntriesInsideRange(chi2Entries, yRange);
   const finiteX = visibleChiEntries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
-  const fallbackX = adjustedEntries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
+  const fallbackX = chi2Entries.map((entry) => entry.spectral_type_number).filter(finiteNumber);
   const xValues = finiteX.length ? finiteX : fallbackX;
   const xMin = xValues.length ? Math.floor(Math.min(...xValues)) : 0;
   const xMax = xValues.length ? Math.ceil(Math.max(...xValues)) : 30;
@@ -1517,7 +1558,7 @@ function renderChi2Plot(payload, selectedEntry) {
   for (let value = xMin; value <= xMax; value += tickStep) tickvals.push(value);
   const yTickSpec = logTickSpecForRange(yRange);
   const layout = {
-    title: `Global goodness of fit for ${comparisonShortName(payload)}`,
+    title: `Global goodness of fit for ${comparisonShortName(payload)} (≥${formatNumber(minOverlap, 0)}% log(λ) overlap)`,
     paper_bgcolor: "#eeeeef",
     plot_bgcolor: "#ffffff",
     margin: { t: 44, r: 210, b: 86, l: 72 },
@@ -1554,6 +1595,15 @@ function renderChi2Plot(payload, selectedEntry) {
       font: { size: 11 },
       bgcolor: "rgba(255,255,255,0.86)",
     },
+    annotations: finiteChi.length ? [] : [{
+      x: 0.5,
+      y: 0.5,
+      xref: "paper",
+      yref: "paper",
+      text: `No templates meet the ${formatNumber(minOverlap, 0)}% minimum log-wavelength overlap`,
+      showarrow: false,
+      font: { size: 16 },
+    }],
   };
   Plotly.react(sptEl["spt-chi2-plot"], traces, layout, plotConfig(`global_chi2_${comparisonIdentifier(payload)}`));
   sptEl["spt-chi2-plot"].on("plotly_click", (event) => {
@@ -1740,6 +1790,18 @@ function updateMetadata(payload, entry) {
   parts.push(`<strong>${escapeHtml(entry.spectral_type || "Standard")} standard</strong>`);
   parts.push(`Standard: ${escapeHtml(entry.object_designation || entry.designation || "None")}`);
   parts.push(`Standard moca_specid: ${escapeHtml(entry.moca_specid ?? "None")}`);
+  if (finiteNumber(entry.log_wavelength_overlap_percent)) {
+    const overlap = formatNumber(entry.log_wavelength_overlap_percent, 1);
+    const minimum = formatNumber(
+      payload.meta?.min_log_wavelength_overlap_percent
+        ?? minimumLogWavelengthOverlapPercent(),
+      0,
+    );
+    const eligibility = entry.chi2_eligible === false
+      ? `; excluded from the χ² map because it is below the ${minimum}% minimum`
+      : "; included in the χ² map";
+    parts.push(`<strong>Log-wavelength overlap:</strong> ${escapeHtml(overlap)}% of the comparison coverage${escapeHtml(eligibility)}.`);
+  }
   const resolutionMatch = entry?.resolution_match;
   if (resolutionMatch?.applied) {
     const standardR = finiteNumber(resolutionMatch.standard_resolving_power)
@@ -1839,10 +1901,10 @@ function renderEmptySpectralPlots(message) {
   updateSpectralManagementControls();
 }
 
-const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_specids", "comparison_oid", "source_specids", "source_count", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
-const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "source_count", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "reduced_chi2"]);
-const spectralChi2ExportColumns = ["comparison_specid", "comparison_specids", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "reduced_chi2", "best_parameters", "designation", "bibcode"];
-const spectralChi2NumericExportColumns = new Set(["comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "spectral_type_number", "reduced_chi2"]);
+const spectralTypingExportColumns = ["row_type", "comparison_specid", "comparison_specids", "comparison_oid", "source_specids", "source_count", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "log_wavelength_overlap_percent", "chi2_eligible", "reduced_chi2", "correction", "best_parameters", "designation", "bibcode"];
+const spectralTypingNumericExportColumns = new Set(["comparison_specid", "comparison_oid", "source_count", "standard_specid", "standard_oid", "spectral_type_number", "wavelength_um", "normalized_flux", "normalized_flux_unc", "log_wavelength_overlap_percent", "reduced_chi2"]);
+const spectralChi2ExportColumns = ["comparison_specid", "comparison_specids", "comparison_oid", "standard_specid", "standard_oid", "grid", "spectral_type", "spectral_type_number", "log_wavelength_overlap_percent", "chi2_eligible", "reduced_chi2", "best_parameters", "designation", "bibcode"];
+const spectralChi2NumericExportColumns = new Set(["comparison_specid", "comparison_oid", "standard_specid", "standard_oid", "spectral_type_number", "log_wavelength_overlap_percent", "reduced_chi2"]);
 
 function exportSpectralTyping(format) {
   const rows = spectralTypingExportRows();
@@ -1904,6 +1966,8 @@ function spectralTypingExportRows() {
       grid: entry.grid || "",
       spectral_type: entry.spectral_type || "",
       spectral_type_number: entry.spectral_type_number ?? "",
+      log_wavelength_overlap_percent: entry.log_wavelength_overlap_percent ?? "",
+      chi2_eligible: entry.chi2_eligible ?? "",
       reduced_chi2: entry.reduced_chi2 ?? "",
       best_parameters: spectralTypingBestParameters(entry),
       designation: entry.designation || entry.object_designation || "",
@@ -1929,6 +1993,8 @@ function spectralTypingExportRows() {
       grid: candidate.grid || "",
       spectral_type: candidate.spectral_type || "",
       spectral_type_number: candidate.spectral_type_number ?? "",
+      log_wavelength_overlap_percent: candidate.log_wavelength_overlap_percent ?? "",
+      chi2_eligible: candidate.chi2_eligible ?? "",
       reduced_chi2: candidate.reduced_chi2 ?? "",
       best_parameters: spectralTypingBestParameters(candidate),
       designation: candidate.designation || candidate.object_designation || "",
@@ -2168,7 +2234,13 @@ function metricAnnotation(entry, payload = null) {
     ? Array.isArray(entry.spectrum_dered) && entry.spectrum_dered.length > 0
     : (!cloud || (Array.isArray(entry.spectrum_cloud) && entry.spectrum_cloud.length > 0));
   const correctionComputing = Boolean(payload?.meta?.progressive && (deredden || cloud) && !correctionReady);
-  const lines = [`χ<sup>2</sup>: ${correctionComputing ? "(computing)" : formatNumber(entry.reduced_chi2, 2)}`];
+  const chi2Text = entry.chi2_eligible === false
+    ? "excluded (insufficient overlap)"
+    : (correctionComputing ? "(computing)" : formatNumber(entry.reduced_chi2, 2));
+  const lines = [`χ<sup>2</sup>: ${chi2Text}`];
+  if (finiteNumber(entry.log_wavelength_overlap_percent)) {
+    lines.push(`log(λ) overlap: ${formatNumber(entry.log_wavelength_overlap_percent, 1)}%`);
+  }
   if (correctionComputing) {
     lines.push("best_parameters = (computing)");
   } else if (deredden && Array.isArray(entry.A_V)) {
@@ -2383,6 +2455,7 @@ function updateSpectralUrl() {
   else params.delete("grid_index");
   params.set("bins", sptEl["spt-bins"].value || String(sptDefaultBins));
   params.set("norm", sptEl["spt-norm"].value || sptDefaultNormText);
+  params.set("min_overlap", String(minimumLogWavelengthOverlapPercent()));
   if (sptEl["spt-deredden"].checked) params.set("deredden", "1");
   else {
     params.delete("deredden");

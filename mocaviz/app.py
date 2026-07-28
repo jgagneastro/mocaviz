@@ -344,8 +344,10 @@ SPT_MASKED_REGIONS = ((1.367, 1.424), (1.86, 2.0))
 SPT_DEFAULT_NORM_REGIONS = ((0.86, 1.35), (1.445, 1.8), (2.01, 2.4))
 SPT_PRE_SMOOTHING_MIN_BINS_PER_MICRON = 200
 SPT_DEFAULT_BINS_PER_MICRON = 200
+SPT_DEFAULT_MIN_LOG_WAVELENGTH_OVERLAP_PERCENT = 80.0
 SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
 SPT_RESOLUTION_MATCH_VERSION = "resolution-match-v3"
+SPT_LOG_WAVELENGTH_OVERLAP_VERSION = "log-overlap-v1"
 SPT_GAUSSIAN_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 SPT_BOXCAR_EQUIVALENT_GAUSSIAN_FWHM = SPT_GAUSSIAN_FWHM / math.sqrt(12.0)
 
@@ -3584,6 +3586,30 @@ def _spt_float(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _spt_min_log_wavelength_overlap_percent(
+    args: Mapping[str, Any],
+    body: Mapping[str, Any] | None = None,
+) -> float:
+    body = body or {}
+    raw_value = None
+    for key in (
+        "min_overlap",
+        "min_overlap_percent",
+        "min_log_wavelength_overlap",
+        "min_log_wavelength_overlap_percent",
+    ):
+        if body.get(key) is not None:
+            raw_value = body.get(key)
+            break
+        if args.get(key) is not None:
+            raw_value = args.get(key)
+            break
+    parsed = _spt_float(raw_value)
+    if parsed is None:
+        parsed = SPT_DEFAULT_MIN_LOG_WAVELENGTH_OVERLAP_PERCENT
+    return float(min(100.0, max(0.0, parsed)))
+
+
 def _spt_average_resolving_power(wavelengths: Any) -> float | None:
     wv = np.asarray(wavelengths, dtype=float)
     wv = np.unique(np.sort(wv[np.isfinite(wv)]))
@@ -4003,6 +4029,93 @@ def _spt_interp_without_large_gaps(x_values: Any, y_values: Any, target_wv: Any)
         if right - left > gap_limit:
             out[(target > left) & (target < right)] = np.nan
     return out
+
+
+def _spt_log_wavelength_coverage_intervals(wavelengths: Any) -> list[tuple[float, float]]:
+    values = np.asarray(wavelengths, dtype=float)
+    values = np.unique(values[np.isfinite(values) & (values > 0)])
+    if values.size < 2:
+        return []
+    values.sort()
+    steps = np.diff(values)
+    positive_steps = steps[np.isfinite(steps) & (steps > 0)]
+    if positive_steps.size == 0:
+        return []
+    typical_step = float(np.nanmedian(positive_steps))
+    gap_limit = 3.5 * typical_step
+    split_after = (
+        np.flatnonzero(steps > gap_limit)
+        if math.isfinite(gap_limit) and gap_limit > 0
+        else np.asarray([], dtype=int)
+    )
+    intervals: list[tuple[float, float]] = []
+    start = 0
+    for stop in [*(int(index) + 1 for index in split_after), int(values.size)]:
+        segment = values[start:stop]
+        if segment.size >= 2 and segment[-1] > segment[0]:
+            intervals.append((float(np.log(segment[0])), float(np.log(segment[-1]))))
+        start = stop
+    return intervals
+
+
+def _spt_interval_overlap_length(
+    first: Sequence[tuple[float, float]],
+    second: Sequence[tuple[float, float]],
+) -> float:
+    total = 0.0
+    first_index = 0
+    second_index = 0
+    while first_index < len(first) and second_index < len(second):
+        first_start, first_stop = first[first_index]
+        second_start, second_stop = second[second_index]
+        total += max(0.0, min(first_stop, second_stop) - max(first_start, second_start))
+        if first_stop <= second_stop:
+            first_index += 1
+        else:
+            second_index += 1
+    return float(total)
+
+
+def _spt_log_wavelength_overlap_percent(
+    comparison_df: pd.DataFrame,
+    standard_df: pd.DataFrame,
+    norm_regions_param: Sequence[tuple[float, float]],
+) -> float:
+    if (
+        comparison_df.empty
+        or standard_df.empty
+        or "wv" not in comparison_df
+        or "wv" not in standard_df
+    ):
+        return 0.0
+    comparison_log_width = 0.0
+    overlap_log_width = 0.0
+    for region_min, region_max in norm_regions_param:
+        comparison_intervals = _spt_log_wavelength_coverage_intervals(
+            comparison_df.loc[
+                comparison_df["wv"].between(region_min, region_max),
+                "wv",
+            ]
+        )
+        if not comparison_intervals:
+            continue
+        standard_intervals = _spt_log_wavelength_coverage_intervals(
+            standard_df.loc[
+                standard_df["wv"].between(region_min, region_max),
+                "wv",
+            ]
+        )
+        comparison_log_width += sum(
+            stop - start for start, stop in comparison_intervals
+        )
+        overlap_log_width += _spt_interval_overlap_length(
+            comparison_intervals,
+            standard_intervals,
+        )
+    if not math.isfinite(comparison_log_width) or comparison_log_width <= 0:
+        return 0.0
+    percent = 100.0 * overlap_log_width / comparison_log_width
+    return float(min(100.0, max(0.0, percent)))
 
 
 def _spt_composite_source_frame(payload: Mapping[str, Any]) -> tuple[int, pd.DataFrame, dict[str, Any]]:
@@ -5868,6 +5981,7 @@ def _precompute_spt_comparison(
     priority_standard_specid: int | None = None,
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
     only_field_objects: bool = False,
+    min_log_wavelength_overlap_percent: float = SPT_DEFAULT_MIN_LOG_WAVELENGTH_OVERLAP_PERCENT,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     requested_specids = _spt_parse_specid_values(specids)
@@ -5878,6 +5992,9 @@ def _precompute_spt_comparison(
     requested_specids = sorted(requested_specids)
     primary_specid = requested_specids[0]
     bins = max(1, min(int(bins_per_micron or SPT_DEFAULT_BINS_PER_MICRON), 2000))
+    min_log_wavelength_overlap_percent = float(
+        min(100.0, max(0.0, min_log_wavelength_overlap_percent))
+    )
     norm_key = _spt_format_norm_regions(norm_regions_param)
     fixed_key = "" if fixed_r_v is None else f"{fixed_r_v:.6g}"
     if cloud_correction:
@@ -5895,7 +6012,7 @@ def _precompute_spt_comparison(
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
     specid_key = ",".join(str(specid) for specid in requested_specids)
-    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|source:{standards_source}|field:{int(only_field_objects)}|specids:{specid_key}|{bins}|{norm_key}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|{SPT_LOG_WAVELENGTH_OVERLAP_VERSION}|source:{standards_source}|field:{int(only_field_objects)}|specids:{specid_key}|{bins}|{norm_key}|overlap:{min_log_wavelength_overlap_percent:.6g}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_COMPARE_CACHE,
@@ -6004,6 +6121,11 @@ def _precompute_spt_comparison(
             "spectrum_original": _spt_spectrum_records(std_df),
             "spectrum_display": spectrum_display,
             "resolution_match": resolution_match,
+            "log_wavelength_overlap_percent": _spt_log_wavelength_overlap_percent(
+                comparison_df,
+                std_df,
+                norm_regions_param,
+            ),
             "av_list": [None] * len(norm_regions_param),
             "rv_list": [None] * len(norm_regions_param),
             "cloud_tau_list": [None] * len(norm_regions_param),
@@ -6067,6 +6189,13 @@ def _precompute_spt_comparison(
         rv_list = list(item["rv_list"])
         cloud_tau_list = list(item["cloud_tau_list"])
         cloud_alpha_list = list(item["cloud_alpha_list"])
+        log_wavelength_overlap_percent = float(
+            item["log_wavelength_overlap_percent"]
+        )
+        chi2_eligible = (
+            log_wavelength_overlap_percent + 1e-9
+            >= min_log_wavelength_overlap_percent
+        )
         metric_df = std_df
         if deredden:
             std_df_dered = std_df.copy()
@@ -6192,6 +6321,8 @@ def _precompute_spt_comparison(
         else:
             reduced_chi2 = None
             mad = None
+        if not chi2_eligible:
+            reduced_chi2 = None
 
         results.append({
             "_spt_original_order": _pythonize(row.get("_spt_original_order")),
@@ -6225,6 +6356,15 @@ def _precompute_spt_comparison(
             "cloud_alpha_values": [_pythonize(value) for value in cloud_alpha_list],
             "cloud_alpha_fixed": bool(cloud_alpha_fixed),
             "cloud_lambda0": _pythonize(float(cloud_lambda0)),
+            "log_wavelength_overlap_percent": _pythonize(
+                round(log_wavelength_overlap_percent, 6)
+            ),
+            "chi2_eligible": bool(chi2_eligible),
+            "chi2_exclusion_reason": (
+                None
+                if chi2_eligible
+                else "insufficient_log_wavelength_overlap"
+            ),
             "reduced_chi2": _pythonize(reduced_chi2),
             "mad": _pythonize(mad),
         })
@@ -6267,6 +6407,12 @@ def _precompute_spt_comparison(
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
             "only_field_objects": bool(only_field_objects),
+            "min_log_wavelength_overlap_percent": _pythonize(
+                min_log_wavelength_overlap_percent
+            ),
+            "chi2_standard_count": sum(
+                1 for entry in results if entry.get("chi2_eligible")
+            ),
             "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
@@ -6479,12 +6625,16 @@ def _mock_spt_compare(
     priority_standard_specid: int | None = None,
     standards_source: str = SPT_STANDARDS_SOURCE_MOCA,
     only_field_objects: bool = False,
+    min_log_wavelength_overlap_percent: float = SPT_DEFAULT_MIN_LOG_WAVELENGTH_OVERLAP_PERCENT,
 ) -> dict[str, Any]:
     standards_source = SPT_STANDARDS_SOURCE_PICKLES if standards_source == SPT_STANDARDS_SOURCE_PICKLES else SPT_STANDARDS_SOURCE_MOCA
     requested_specids = sorted(_spt_parse_specid_values(specids))
     if not requested_specids:
         raise ValueError("At least one numeric comparison specid is required.")
     primary_specid = requested_specids[0]
+    min_log_wavelength_overlap_percent = float(
+        min(100.0, max(0.0, min_log_wavelength_overlap_percent))
+    )
     grid_payload = _mock_spt_grid_payload(
         standards_source=standards_source,
         only_field_objects=only_field_objects,
@@ -6540,6 +6690,15 @@ def _mock_spt_compare(
                 std_display_df = _spt_rescale_standard_to_comparison(std_display_df, comparison_df, norm_regions_param)
                 spectrum_display = _spt_spectrum_records(std_display_df)
         spectrum_original = _spt_spectrum_records(std_df)
+        log_wavelength_overlap_percent = _spt_log_wavelength_overlap_percent(
+            comparison_df,
+            std_df,
+            norm_regions_param,
+        )
+        chi2_eligible = (
+            log_wavelength_overlap_percent + 1e-9
+            >= min_log_wavelength_overlap_percent
+        )
         spectrum_cloud = None
         cloud_tau = [None] * len(norm_regions_param)
         cloud_alpha_values = [None] * len(norm_regions_param)
@@ -6585,6 +6744,8 @@ def _mock_spt_compare(
             reduced_chi2 = float(1e3 * np.nansum(all_residuals**2) / max(1, len(all_residuals) - len(norm_regions_param)))
         else:
             reduced_chi2 = None
+        if not chi2_eligible:
+            reduced_chi2 = None
         results.append({
             **row.to_dict(),
             "spectrum": spectrum_original,
@@ -6598,6 +6759,15 @@ def _mock_spt_compare(
             "cloud_alpha_values": [_pythonize(value) for value in cloud_alpha_values],
             "cloud_alpha_fixed": bool(cloud_alpha_fixed),
             "cloud_lambda0": _pythonize(float(cloud_lambda0)),
+            "log_wavelength_overlap_percent": _pythonize(
+                round(log_wavelength_overlap_percent, 6)
+            ),
+            "chi2_eligible": bool(chi2_eligible),
+            "chi2_exclusion_reason": (
+                None
+                if chi2_eligible
+                else "insufficient_log_wavelength_overlap"
+            ),
             "reduced_chi2": _pythonize(reduced_chi2),
             "mad": None,
         })
@@ -6631,6 +6801,12 @@ def _mock_spt_compare(
             "grid_count": len(grid_payload["options"]),
             "standards_source": standards_source,
             "only_field_objects": bool(only_field_objects),
+            "min_log_wavelength_overlap_percent": _pythonize(
+                min_log_wavelength_overlap_percent
+            ),
+            "chi2_standard_count": sum(
+                1 for entry in results if entry.get("chi2_eligible")
+            ),
             "pickles_template_count": int(grid_payload.get("meta", {}).get("pickles_template_count") or 0),
         },
         "cache": {"hit": False, "ttl_seconds": 0},
@@ -33760,6 +33936,9 @@ def spectral_typing_compare():
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
     only_field_objects = _spt_only_field_objects(args, body)
+    min_log_wavelength_overlap_percent = (
+        _spt_min_log_wavelength_overlap_percent(args, body)
+    )
     summary_only = _as_bool(body.get("summary_only")) or _as_bool(args.get("summary_only"))
     try:
         specids = _spt_requested_specids(body, args)
@@ -33831,6 +34010,7 @@ def spectral_typing_compare():
                 cloud_lambda0,
                 standards_source=standards_source,
                 only_field_objects=only_field_objects,
+                min_log_wavelength_overlap_percent=min_log_wavelength_overlap_percent,
             )
             if summary_only:
                 payload = _spt_chi2_summary_payload(payload)
@@ -33850,6 +34030,7 @@ def spectral_typing_compare():
             priority_standard_specid=priority_standard_specid,
             standards_source=standards_source,
             only_field_objects=only_field_objects,
+            min_log_wavelength_overlap_percent=min_log_wavelength_overlap_percent,
         )
         payload["meta"]["timings"] = {"compare_total": round(time.time() - started, 3)}
         if summary_only:
@@ -33886,6 +34067,7 @@ def spectral_typing_compare():
                 "cloud_lambda0": cloud_lambda0,
                 "standards_source": standards_source,
                 "only_field_objects": bool(only_field_objects),
+                "min_log_wavelength_overlap_percent": min_log_wavelength_overlap_percent,
                 "summary_only": bool(summary_only),
             },
             "cache": {"hit": False, "ttl_seconds": 0},
@@ -33898,6 +34080,9 @@ def spectral_typing_standard():
     body = request.get_json(silent=True) or {}
     standards_source = _spt_standards_source(args, body)
     only_field_objects = _spt_only_field_objects(args, body)
+    min_log_wavelength_overlap_percent = (
+        _spt_min_log_wavelength_overlap_percent(args, body)
+    )
     raw_standard_specid = (
         body.get("standard_specid")
         or body.get("moca_standard_specid")
@@ -33967,6 +34152,7 @@ def spectral_typing_standard():
                 only_standard_specid=standard_specid,
                 standards_source=standards_source,
                 only_field_objects=only_field_objects,
+                min_log_wavelength_overlap_percent=min_log_wavelength_overlap_percent,
             )
             return _jsonify_clean({"ok": True, "source": "mock", **payload})
         started = time.time()
@@ -33984,6 +34170,7 @@ def spectral_typing_standard():
             only_standard_specid=standard_specid,
             standards_source=standards_source,
             only_field_objects=only_field_objects,
+            min_log_wavelength_overlap_percent=min_log_wavelength_overlap_percent,
         )
         payload["meta"]["timings"] = {"standard_total": round(time.time() - started, 3)}
         return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
@@ -34019,6 +34206,7 @@ def spectral_typing_standard():
                 "cloud_lambda0": cloud_lambda0,
                 "standards_source": standards_source,
                 "only_field_objects": bool(only_field_objects),
+                "min_log_wavelength_overlap_percent": min_log_wavelength_overlap_percent,
             },
             "cache": {"hit": False, "ttl_seconds": 0},
         }), exc.http_status if isinstance(exc, _SptSpectrumDataError) else 500
