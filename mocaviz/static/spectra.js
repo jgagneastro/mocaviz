@@ -1549,17 +1549,27 @@ function originalSpectrumDownloadLinkHtml(spectrum) {
   return `<a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" download>${escapeHtml(label)}</a>`;
 }
 
+function spectralTypingLinkHtml(specid) {
+  const parsedSpecid = parseInteger(specid);
+  if (parsedSpecid === null || parsedSpecid <= 0) return "";
+  const params = apiParams();
+  params.set("specid", String(parsedSpecid));
+  const url = speAppUrl(`spectral-typing?${params.toString()}`);
+  return `<a class="button-link spectra-typing-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="Open spectral typing for specid ${parsedSpecid}">Spectral type</a>`;
+}
+
 function renderSpectraTable() {
   if (speState.selectedPoints.length) {
     speEl["spe-table-title"].textContent = `${speState.selectedPoints.length} selected spectral rows`;
     speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["plot", "specid", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flux_units", "ignored"];
+    const columns = ["plot", "specid", "typing", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flux_units", "ignored"];
     if (spectraManagementToolsVisible()) columns.splice(3, 0, "row_id");
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
+      typing: spectralTypingLinkHtml(point.specid),
       oid: point.oid,
       row_id: point.dataSpectraId ?? "",
       reference: spectrumReferenceHtml(point),
@@ -1570,7 +1580,7 @@ function renderSpectraTable() {
       raw_flux_units: point.rawFluxUnit || "",
       ignored: point.ignored,
     }));
-    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "reference"]) });
+    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "typing", "reference"]) });
     return;
   }
   const rows = (speState.processed || []).map((spectrum) => {
@@ -1581,6 +1591,7 @@ function renderSpectraTable() {
       oid: normalizedMocaOid(spectrum.metadata?.moca_oid),
       object: spectrum.metadata?.designation || "",
       spectral_type: spectrum.metadata?.spectral_type || "",
+      typing: spectralTypingLinkHtml(spectrum.specid),
       instrument: instrumentLabel(spectrum.metadata),
       flux_units: spectrum.metadata?.flux_units || "",
       reference: spectrumReferenceHtml(spectrum.metadata),
@@ -1591,7 +1602,7 @@ function renderSpectraTable() {
   });
   speEl["spe-table-title"].textContent = `Selected spectra (${pluralize(rows.length, "spectrum", "spectra")})`;
   speEl["spe-table-subtitle"].textContent = "Click or box-select plotted points to inspect spectral rows.";
-  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "instrument", "flux_units", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "reference", "report"]) });
+  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "typing", "instrument", "flux_units", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "typing", "reference", "report"]) });
 }
 
 function spectraColorForSpecid(specid) {
