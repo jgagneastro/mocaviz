@@ -307,6 +307,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Output directory (default: spectral_typing_chi2).",
     )
     parser.add_argument(
+        "--combined-only",
+        "--no-individual-csvs",
+        dest="combined_only",
+        action="store_true",
+        help=(
+            "Write result rows only to combined_chi2.csv without creating "
+            "per-comparison chi2/*.csv files. The manifest and run "
+            "configuration are still retained."
+        ),
+    )
+    parser.add_argument(
         "--base-url",
         default=os.environ.get("MOCAVIZ_BASE_URL", DEFAULT_BASE_URL),
         help=f"MOCAviz server URL (default: {DEFAULT_BASE_URL}).",
@@ -375,7 +386,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--resume",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Skip successful outputs recorded in the manifest (default: true).",
+        help=(
+            "Skip successful existing outputs (default: true). Combined-only "
+            "runs inspect combined_chi2.csv directly."
+        ),
     )
     parser.add_argument(
         "--plan-only",
@@ -669,13 +683,22 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
     )
     output_dir = args.output_dir.resolve()
     chi2_dir = output_dir / "chi2"
+    combined_path = output_dir / "combined_chi2.csv"
     manifest_path = output_dir / "manifest.csv"
     config_path = output_dir / "run_config.json"
     output_dir.mkdir(parents=True, exist_ok=True)
-    chi2_dir.mkdir(parents=True, exist_ok=True)
+    if not args.combined_only:
+        chi2_dir.mkdir(parents=True, exist_ok=True)
     ensure_run_config(config_path, run_configuration(args, settings))
 
-    completed = completed_target_keys(manifest_path, output_dir) if args.resume else set()
+    if args.resume:
+        completed = (
+            combined_target_keys(combined_path)
+            if args.combined_only
+            else completed_target_keys(manifest_path, output_dir)
+        )
+    else:
+        completed = set()
     tasks: list[BatchTask] = []
     failures = 0
     no_spectra = 0
@@ -779,17 +802,37 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
         f"{f'; skipping {skipped} completed' if skipped else ''}..."
     )
     successes = 0
+    combined_rows: list[dict[str, Any]] = []
+    if args.combined_only:
+        pending_keys = {task.target_key for task in pending}
+        combined_rows = [
+            row
+            for row in read_csv_rows(combined_path)
+            if chi2_row_target_key(row) not in pending_keys
+        ]
     if pending:
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            future_tasks: dict[Future[dict[str, str]], BatchTask] = {
-                executor.submit(process_task, client, task, settings, output_dir, args.pause): task
+            future_tasks: dict[
+                Future[tuple[dict[str, str], list[dict[str, Any]]]],
+                BatchTask,
+            ] = {
+                executor.submit(
+                    process_task,
+                    client,
+                    task,
+                    settings,
+                    output_dir,
+                    args.pause,
+                    not args.combined_only,
+                ): task
                 for task in pending
             }
             for completed_count, future in enumerate(as_completed(future_tasks), start=1):
-                row = future.result()
+                row, result_rows = future.result()
                 append_manifest(manifest_path, row)
                 if row["status"] == "success":
                     successes += 1
+                    combined_rows.extend(result_rows)
                 else:
                     failures += 1
                 print(
@@ -797,7 +840,12 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
                     f"{row['status']}"
                 )
 
-    combined_path, combined_count = rebuild_combined_csv(chi2_dir, output_dir / "combined_chi2.csv")
+    if args.combined_only:
+        combined_rows.sort(key=chi2_row_target_key)
+        write_csv_atomic(combined_path, CHI2_COLUMNS, combined_rows)
+        combined_count = len(combined_rows)
+    else:
+        combined_path, combined_count = rebuild_combined_csv(chi2_dir, combined_path)
     print(
         f"Finished: {successes} new success(es), {skipped} resumed, "
         f"{no_spectra} selection(s) without spectra, {failures} error(s)."
@@ -813,50 +861,62 @@ def process_task(
     settings: Mapping[str, Any],
     output_dir: Path,
     pause: float,
-) -> dict[str, str]:
+    write_individual_csv: bool = True,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
     started = time.monotonic()
     relative_path = Path("chi2") / f"{task.target_key}_chi2.csv"
     output_path = output_dir / relative_path
-    if output_path.is_file():
+    output_csv = str(relative_path) if write_individual_csv else "combined_chi2.csv"
+    if write_individual_csv and output_path.is_file():
         output_path.unlink()
     try:
         payload = api.compare(task.specids, settings)
         rows = chi2_rows(payload, task, settings)
         if not rows:
             raise ApiError("The spectral-typing response contained no chi-squared rows.")
-        write_csv_atomic(output_path, CHI2_COLUMNS, rows)
-        return manifest_row(
-            task.moca_oid,
-            task.spectrum_policy,
-            specids=task.specids,
-            target_key=task.target_key,
-            output_csv=str(relative_path),
-            status="success",
-            chi2_row_count=len(rows),
-            duration_seconds=time.monotonic() - started,
+        if write_individual_csv:
+            write_csv_atomic(output_path, CHI2_COLUMNS, rows)
+        return (
+            manifest_row(
+                task.moca_oid,
+                task.spectrum_policy,
+                specids=task.specids,
+                target_key=task.target_key,
+                output_csv=output_csv,
+                status="success",
+                chi2_row_count=len(rows),
+                duration_seconds=time.monotonic() - started,
+            ),
+            rows,
         )
     except ApiError as error:
-        return manifest_row(
-            task.moca_oid,
-            task.spectrum_policy,
-            specids=task.specids,
-            target_key=task.target_key,
-            output_csv=str(relative_path),
-            status="error",
-            duration_seconds=time.monotonic() - started,
-            error_code=error.error_code,
-            error=str(error),
+        return (
+            manifest_row(
+                task.moca_oid,
+                task.spectrum_policy,
+                specids=task.specids,
+                target_key=task.target_key,
+                output_csv=output_csv if write_individual_csv else "",
+                status="error",
+                duration_seconds=time.monotonic() - started,
+                error_code=error.error_code,
+                error=str(error),
+            ),
+            [],
         )
     except Exception as error:
-        return manifest_row(
-            task.moca_oid,
-            task.spectrum_policy,
-            specids=task.specids,
-            target_key=task.target_key,
-            output_csv=str(relative_path),
-            status="error",
-            duration_seconds=time.monotonic() - started,
-            error=error.__class__.__name__ + ": " + str(error),
+        return (
+            manifest_row(
+                task.moca_oid,
+                task.spectrum_policy,
+                specids=task.specids,
+                target_key=task.target_key,
+                output_csv=output_csv if write_individual_csv else "",
+                status="error",
+                duration_seconds=time.monotonic() - started,
+                error=error.__class__.__name__ + ": " + str(error),
+            ),
+            [],
         )
     finally:
         if pause > 0:
@@ -908,9 +968,53 @@ def completed_target_keys(manifest_path: Path, output_dir: Path) -> set[str]:
     with manifest_path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             output_csv = row.get("output_csv") or ""
-            if row.get("status") == "success" and output_csv and (output_dir / output_csv).is_file():
+            if (
+                row.get("status") == "success"
+                and output_csv
+                and output_csv != "combined_chi2.csv"
+                and (output_dir / output_csv).is_file()
+            ):
                 completed.add(row.get("target_key") or "")
     return completed
+
+
+def combined_target_keys(path: Path) -> set[str]:
+    return {
+        target_key
+        for row in read_csv_rows(path)
+        if (target_key := chi2_row_target_key(row))
+    }
+
+
+def chi2_row_target_key(row: Mapping[str, Any]) -> str:
+    try:
+        moca_oid = int(row.get("requested_moca_oid") or 0)
+        raw_specids = str(
+            row.get("comparison_specids")
+            or row.get("comparison_specid")
+            or ""
+        )
+        specids = tuple(sorted({
+            int(value.strip())
+            for value in raw_specids.split(",")
+            if value.strip()
+        }))
+    except (TypeError, ValueError):
+        return ""
+    if moca_oid <= 0 or not specids:
+        return ""
+    return BatchTask(
+        moca_oid,
+        specids,
+        str(row.get("spectrum_policy") or ""),
+    ).target_key
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
 
 
 def manifest_row(

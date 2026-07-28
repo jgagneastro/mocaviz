@@ -51,7 +51,7 @@ one-value-per-line list of `moca_oid` values without opening browser tabs. It
 resolves each object to its spectra, requests compact spectral-typing results,
 and writes:
 
-- one chi-squared CSV per comparison under `chi2/`;
+- by default, one chi-squared CSV per comparison under `chi2/`;
 - `combined_chi2.csv` containing every successful result;
 - an append-only `manifest.csv` with successes, missing spectra, and errors;
 - `run_config.json`, which prevents incompatible processing settings from
@@ -73,6 +73,21 @@ python scripts/batch_spectral_typing_chi2.py moca_oids.csv \
   --dbase mocadb_private_tables \
   --output-dir student_chi2
 ```
+
+Add `--combined-only` (or its alias `--no-individual-csvs`) to keep the
+chi-squared result rows only in `combined_chi2.csv` and avoid creating the
+per-comparison `chi2/*.csv` files:
+
+```bash
+python scripts/batch_spectral_typing_chi2.py moca_oids.csv \
+  --user collaborators \
+  --dbase mocadb_private_tables \
+  --output-dir student_chi2 \
+  --combined-only
+```
+
+The manifest and run configuration are still retained. In combined-only mode,
+automatic resume checks completed targets in `combined_chi2.csv` directly.
 
 The command prompts for the password. For unattended execution, set
 `MOCAVIZ_PASSWORD` in the environment; do not put the password in a command,

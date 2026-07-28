@@ -414,6 +414,51 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
             self.assertEqual(batch.run_batch(args, api=resumed_api), 0)
             self.assertEqual(resumed_api.compare_calls, [])
 
+    def test_combined_only_avoids_individual_csvs_and_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "output"
+            args = batch.parse_args([
+                "--oid", "602",
+                "--output-dir", str(output_dir),
+                "--combined-only",
+                "--mock",
+                "--pause", "0",
+                "--workers", "2",
+            ])
+            first_api = FakeSpectralTypingApi()
+
+            self.assertTrue(args.combined_only)
+            self.assertEqual(batch.run_batch(args, api=first_api), 0)
+            self.assertEqual(sorted(first_api.compare_calls), [(450,), (451,)])
+            self.assertFalse((output_dir / "chi2").exists())
+
+            with (output_dir / "combined_chi2.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                combined = list(csv.DictReader(handle))
+            self.assertEqual(len(combined), 4)
+
+            with (output_dir / "manifest.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                manifest = list(csv.DictReader(handle))
+            successful = [row for row in manifest if row["status"] == "success"]
+            self.assertEqual(
+                {row["output_csv"] for row in successful},
+                {"combined_chi2.csv"},
+            )
+
+            resumed_api = FakeSpectralTypingApi()
+            self.assertEqual(batch.run_batch(args, api=resumed_api), 0)
+            self.assertEqual(resumed_api.compare_calls, [])
+
+            (output_dir / "combined_chi2.csv").unlink()
+            rebuilt_api = FakeSpectralTypingApi()
+            self.assertEqual(batch.run_batch(args, api=rebuilt_api), 0)
+            self.assertEqual(sorted(rebuilt_api.compare_calls), [(450,), (451,)])
+
     def test_batch_stops_after_first_unconfirmed_private_response(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
