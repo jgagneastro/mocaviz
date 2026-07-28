@@ -18,7 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 DEFAULT_BASE_URL = "https://dataviz.mocadb.ca"
@@ -98,6 +98,7 @@ class SpectralTypingApi:
         self.base_url = base_url.rstrip("/")
         self.timeout = max(1.0, float(timeout))
         self.retries = max(0, int(retries))
+        self.mock = bool(mock)
         self.requested_dbase = str(dbase or "").strip().strip("`").casefold()
         self.auth_headers = {
             key: value
@@ -115,6 +116,15 @@ class SpectralTypingApi:
             "GET",
             "api/spectral-typing/search",
             params={"moca_oid": int(moca_oid)},
+        )
+        self._validate_database_access(payload, "spectral-typing search")
+        return list(payload.get("options") or [])
+
+    def search_spectrum(self, moca_specid: int) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "api/spectral-typing/search",
+            params={"specid": int(moca_specid)},
         )
         self._validate_database_access(payload, "spectral-typing search")
         return list(payload.get("options") or [])
@@ -147,7 +157,7 @@ class SpectralTypingApi:
         payload: Mapping[str, Any],
         operation: str,
     ) -> None:
-        if self.requested_dbase != DEFAULT_DBNAME.casefold():
+        if self.mock or self.requested_dbase != DEFAULT_DBNAME.casefold():
             return
         meta = payload.get("meta")
         private_db = meta.get("private_db") if isinstance(meta, Mapping) else None
@@ -233,8 +243,9 @@ class SpectralTypingApi:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Resolve moca_oid values to spectra, run the MOCAviz spectral-typing "
-            "API, and write resumable chi-squared CSV exports."
+            "Resolve moca_oid values or select explicit moca_specid values, run "
+            "the MOCAviz spectral-typing API, and write resumable chi-squared "
+            "CSV exports."
         ),
     )
     parser.add_argument(
@@ -249,6 +260,40 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Process one moca_oid directly. May be repeated.",
+    )
+    parser.add_argument(
+        "--specid",
+        "--spec-id",
+        dest="specid",
+        type=int,
+        action="append",
+        default=[],
+        metavar="MOCA_SPECID",
+        help=(
+            "Type exactly this moca_specid without selecting the object's other "
+            "spectra. May be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--specid-csv",
+        "--spec-id-csv",
+        dest="specid_csv",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "CSV, TSV, or one-value-per-line file containing explicit "
+            "moca_specid values."
+        ),
+    )
+    parser.add_argument(
+        "--specid-column",
+        "--spec-id-column",
+        dest="specid_column",
+        default="",
+        help=(
+            "Column in --specid-csv containing spectrum IDs. Auto-detects "
+            "moca_specid, specid, or spec_id by default."
+        ),
     )
     parser.add_argument(
         "--oid-column",
@@ -293,7 +338,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "How to handle multiple spectra per object: all writes one CSV per "
             "spectrum (default); composite combines them (the server normally "
-            "allows up to eight); first uses the lowest specid."
+            "allows up to eight); first uses the lowest specid. This does not "
+            "affect explicit --specid selections."
         ),
     )
     parser.add_argument("--bins", type=int, default=200, help="Bins per micron (default: 200).")
@@ -319,7 +365,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pause", type=float, default=0.25, help="Pause after each comparison request in seconds.")
     parser.add_argument("--timeout", type=float, default=600.0, help="Per-request timeout in seconds.")
     parser.add_argument("--retries", type=int, default=2, help="Retries for transient request failures.")
-    parser.add_argument("--limit", type=int, default=None, help="Process only the first N unique object IDs.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process only the first N unique object IDs and explicit spectrum IDs.",
+    )
     parser.add_argument(
         "--resume",
         action=argparse.BooleanOptionalAction,
@@ -332,8 +383,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Resolve spectra and print the planned comparisons without computing them.",
     )
     args = parser.parse_args(argv)
-    if args.input_csv is None and not args.oid:
-        parser.error("provide input_csv or at least one --oid")
+    if (
+        args.input_csv is None
+        and not args.oid
+        and not args.specid
+        and args.specid_csv is None
+    ):
+        parser.error(
+            "provide input_csv, --specid-csv, at least one --oid, "
+            "or at least one --specid"
+        )
+    if any(specid <= 0 for specid in args.specid):
+        parser.error("--specid values must be positive")
     if args.deredden and args.cloud:
         parser.error("--deredden and --cloud cannot be used together")
     if args.fit_cloud_alpha and not args.cloud:
@@ -359,8 +420,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def load_moca_oids(path: Path | None, direct_oids: Sequence[int], oid_column: str = "") -> list[int]:
-    values: list[int] = [int(value) for value in direct_oids]
+def _load_identifier_values(
+    path: Path | None,
+    direct_values: Sequence[int],
+    requested_column: str,
+    auto_columns: Sequence[str],
+    identifier_name: str,
+    parse_value: Callable[[str, int | None], int],
+) -> list[int]:
+    values: list[int] = [int(value) for value in direct_values]
     if path is not None:
         if not path.is_file():
             raise SystemExit(f"Input file not found: {path}")
@@ -375,38 +443,79 @@ def load_moca_oids(path: Path | None, direct_oids: Sequence[int], oid_column: st
             if rows:
                 header = [cell.strip() for cell in rows[0]]
                 normalized = [cell.lower() for cell in header]
-                requested = oid_column.strip().lower()
+                requested = requested_column.strip().lower()
+                has_header = False
                 if requested:
                     if requested not in normalized:
-                        raise SystemExit(f"Input file has no {oid_column!r} column.")
+                        raise SystemExit(
+                            f"Input file has no {requested_column!r} column."
+                        )
                     column_index = normalized.index(requested)
-                    data_rows = rows[1:]
-                elif "moca_oid" in normalized:
-                    column_index = normalized.index("moca_oid")
-                    data_rows = rows[1:]
-                elif "oid" in normalized:
-                    column_index = normalized.index("oid")
-                    data_rows = rows[1:]
+                    has_header = True
                 else:
-                    column_index = 0
-                    data_rows = rows
-                for line_number, row in enumerate(data_rows, start=2 if data_rows is not rows else 1):
+                    matching_columns = [
+                        column
+                        for column in auto_columns
+                        if column in normalized
+                    ]
+                    if matching_columns:
+                        column_index = normalized.index(matching_columns[0])
+                        has_header = True
+                    else:
+                        column_index = 0
+                data_rows = rows[1:] if has_header else rows
+                for line_number, row in enumerate(
+                    data_rows,
+                    start=2 if has_header else 1,
+                ):
                     if column_index >= len(row):
-                        raise SystemExit(f"Missing object ID at input line {line_number}.")
+                        raise SystemExit(
+                            f"Missing {identifier_name} at input line {line_number}."
+                        )
                     raw = row[column_index].strip()
                     if not raw or raw.startswith("#"):
                         continue
-                    values.append(parse_moca_oid(raw, line_number))
+                    values.append(parse_value(raw, line_number))
 
     unique: list[int] = []
     seen: set[int] = set()
     for value in values:
         if value <= 0:
-            raise SystemExit(f"moca_oid values must be positive: {value}")
+            raise SystemExit(f"{identifier_name} values must be positive: {value}")
         if value not in seen:
             seen.add(value)
             unique.append(value)
     return unique
+
+
+def load_moca_oids(
+    path: Path | None,
+    direct_oids: Sequence[int],
+    oid_column: str = "",
+) -> list[int]:
+    return _load_identifier_values(
+        path,
+        direct_oids,
+        oid_column,
+        ("moca_oid", "oid"),
+        "moca_oid",
+        parse_moca_oid,
+    )
+
+
+def load_moca_specids(
+    path: Path | None,
+    direct_specids: Sequence[int],
+    specid_column: str = "",
+) -> list[int]:
+    return _load_identifier_values(
+        path,
+        direct_specids,
+        specid_column,
+        ("moca_specid", "specid", "spec_id"),
+        "moca_specid",
+        parse_moca_specid,
+    )
 
 
 def parse_moca_oid(raw: str, line_number: int | None = None) -> int:
@@ -415,6 +524,23 @@ def parse_moca_oid(raw: str, line_number: int | None = None) -> int:
     if not match or int(match.group(1)) <= 0:
         location = f" at input line {line_number}" if line_number is not None else ""
         raise SystemExit(f"Invalid moca_oid{location}: {raw!r}")
+    return int(match.group(1))
+
+
+def parse_moca_specid(raw: str, line_number: int | None = None) -> int:
+    text = str(raw).strip()
+    match = re.fullmatch(
+        r"(?:(?:moca_)?spec_?id\s*[:#_(]?\s*)?([0-9]+)\)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match or int(match.group(1)) <= 0:
+        location = (
+            f" at input line {line_number}"
+            if line_number is not None
+            else ""
+        )
+        raise SystemExit(f"Invalid moca_specid{location}: {raw!r}")
     return int(match.group(1))
 
 
@@ -432,6 +558,21 @@ def comparison_tasks(moca_oid: int, options: Sequence[Mapping[str, Any]], policy
     if policy == "first":
         return [BatchTask(int(moca_oid), (specids[0],), policy)]
     return [BatchTask(int(moca_oid), tuple(specids), policy)]
+
+
+def specific_comparison_task(
+    moca_specid: int,
+    options: Sequence[Mapping[str, Any]],
+) -> BatchTask | None:
+    for option in options:
+        try:
+            option_specid = int(option.get("moca_specid"))
+            option_oid = int(option.get("moca_oid"))
+        except (TypeError, ValueError):
+            continue
+        if option_specid == int(moca_specid) and option_oid > 0:
+            return BatchTask(option_oid, (option_specid,), "specific")
+    return None
 
 
 def chi2_rows(
@@ -499,10 +640,16 @@ def best_parameters(entry: Mapping[str, Any], settings: Mapping[str, Any]) -> st
 
 def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) -> int:
     oids = load_moca_oids(args.input_csv, args.oid, args.oid_column)
+    specids = load_moca_specids(
+        args.specid_csv,
+        args.specid,
+        args.specid_column,
+    )
     if args.limit is not None:
         oids = oids[:args.limit]
-    if not oids:
-        raise SystemExit("No moca_oid values were found.")
+        specids = specids[:args.limit]
+    if not oids and not specids:
+        raise SystemExit("No moca_oid or moca_specid values were found.")
 
     password = os.environ.get("MOCAVIZ_PASSWORD", "")
     if args.user and not password and not args.no_password_prompt and not args.mock:
@@ -532,7 +679,10 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
     tasks: list[BatchTask] = []
     failures = 0
     no_spectra = 0
-    print(f"Resolving spectra for {len(oids)} object(s)...")
+    print(
+        f"Resolving spectra for {len(oids)} object(s) and "
+        f"{len(specids)} explicit spectrum ID(s)..."
+    )
     for index, oid in enumerate(oids, start=1):
         try:
             options = client.search_spectra(oid)
@@ -569,6 +719,53 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
         if index % 50 == 0 or index == len(oids):
             print(f"  resolved {index}/{len(oids)} objects")
 
+    for index, specid in enumerate(specids, start=1):
+        try:
+            options = client.search_spectrum(specid)
+            task = specific_comparison_task(specid, options)
+            if task is None:
+                no_spectra += 1
+                append_manifest(manifest_path, manifest_row(
+                    None,
+                    "specific",
+                    specids=(specid,),
+                    target_key=f"specid_{specid}",
+                    status="no_spectra",
+                    error=f"No non-ignored spectrum was found for moca_specid={specid}.",
+                ))
+            else:
+                tasks.append(task)
+        except ApiError as error:
+            failures += 1
+            append_manifest(manifest_path, manifest_row(
+                None,
+                "specific",
+                specids=(specid,),
+                target_key=f"specid_{specid}",
+                status="search_error",
+                error_code=error.error_code,
+                error=str(error),
+            ))
+            if error.error_code == "private_database_not_confirmed":
+                raise SystemExit(str(error)) from None
+        except Exception as error:
+            failures += 1
+            append_manifest(manifest_path, manifest_row(
+                None,
+                "specific",
+                specids=(specid,),
+                target_key=f"specid_{specid}",
+                status="search_error",
+                error=error.__class__.__name__ + ": " + str(error),
+            ))
+        if index % 50 == 0 or index == len(specids):
+            print(f"  resolved {index}/{len(specids)} explicit spectrum IDs")
+
+    tasks_by_key: dict[str, BatchTask] = {}
+    for task in tasks:
+        tasks_by_key[task.target_key] = task
+    tasks = list(tasks_by_key.values())
+
     pending = [task for task in tasks if task.target_key not in completed]
     skipped = len(tasks) - len(pending)
     if args.plan_only:
@@ -603,7 +800,7 @@ def run_batch(args: argparse.Namespace, api: SpectralTypingApi | None = None) ->
     combined_path, combined_count = rebuild_combined_csv(chi2_dir, output_dir / "combined_chi2.csv")
     print(
         f"Finished: {successes} new success(es), {skipped} resumed, "
-        f"{no_spectra} object(s) without spectra, {failures} error(s)."
+        f"{no_spectra} selection(s) without spectra, {failures} error(s)."
     )
     print(f"Combined {combined_count} chi-squared rows in {combined_path}")
     print(f"Manifest: {manifest_path}")
@@ -717,7 +914,7 @@ def completed_target_keys(manifest_path: Path, output_dir: Path) -> set[str]:
 
 
 def manifest_row(
-    moca_oid: int,
+    moca_oid: int | None,
     spectrum_policy: str,
     *,
     specids: Sequence[int] = (),
@@ -729,12 +926,22 @@ def manifest_row(
     error_code: str = "",
     error: str = "",
 ) -> dict[str, str]:
+    oid_text = "" if moca_oid is None else str(int(moca_oid))
+    default_target_key = (
+        f"oid_{int(moca_oid)}"
+        if moca_oid is not None
+        else (
+            f"specid_{int(specids[0])}"
+            if len(specids) == 1
+            else ""
+        )
+    )
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "moca_oid": str(int(moca_oid)),
+        "moca_oid": oid_text,
         "spectrum_policy": spectrum_policy,
         "specids": ",".join(str(specid) for specid in specids),
-        "target_key": target_key or f"oid_{int(moca_oid)}",
+        "target_key": target_key or default_target_key,
         "output_csv": output_csv,
         "status": status,
         "chi2_row_count": str(chi2_row_count),

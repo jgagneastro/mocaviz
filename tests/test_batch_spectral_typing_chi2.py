@@ -14,6 +14,7 @@ from scripts import batch_spectral_typing_chi2 as batch
 class FakeSpectralTypingApi:
     def __init__(self) -> None:
         self.search_calls: list[int] = []
+        self.specid_search_calls: list[int] = []
         self.compare_calls: list[tuple[int, ...]] = []
 
     def search_spectra(self, moca_oid: int) -> list[dict[str, int]]:
@@ -23,6 +24,12 @@ class FakeSpectralTypingApi:
                 {"moca_oid": 602, "moca_specid": 450},
                 {"moca_oid": 602, "moca_specid": 451},
             ]
+        return []
+
+    def search_spectrum(self, moca_specid: int) -> list[dict[str, int]]:
+        self.specid_search_calls.append(moca_specid)
+        if moca_specid in {450, 451}:
+            return [{"moca_oid": 602, "moca_specid": moca_specid}]
         return []
 
     def compare(self, specids, settings):
@@ -218,6 +225,28 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
                     str(raised.exception),
                 )
 
+    def test_mock_api_client_does_not_require_private_database_confirmation(self):
+        api = batch.SpectralTypingApi(
+            "https://dataviz.mocadb.ca",
+            dbase="mocadb_private_tables",
+            mock=True,
+        )
+        settings = {
+            "bins": 200,
+            "norm": batch.DEFAULT_NORM,
+            "deredden": False,
+            "cloud": False,
+            "cloud_alpha": 1.7,
+            "fit_cloud_alpha": False,
+            "standards_source": "moca",
+            "only_field": False,
+            "fix_rv": None,
+        }
+        payload = {"ok": True, "entries": [], "meta": {"private_db": False}}
+
+        with patch.object(api, "_request", return_value=payload):
+            self.assertIs(api.compare([451], settings), payload)
+
     def test_search_response_reports_effective_database_access(self):
         response = self.client.get(
             "/api/spectral-typing/search?mock=1&moca_oid=990602",
@@ -233,6 +262,27 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
             path.write_text("moca_oid\n602\noid10995\n602\n", encoding="utf-8")
             self.assertEqual(batch.load_moca_oids(path, [700], ""), [700, 602, 10995])
 
+    def test_specid_input_reader_accepts_csv_labels_and_deduplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "specids.csv"
+            path.write_text(
+                "name,spec_id\nfirst,specid451\nsecond,450\nthird,451\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                batch.load_moca_specids(path, [452, 450], ""),
+                [452, 450, 451],
+            )
+            path.write_text(
+                "name,target_spectrum\nfirst,451\nsecond,450\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                batch.load_moca_specids(path, [], "target_spectrum"),
+                [451, 450],
+            )
+
     def test_policy_selection_is_explicit_and_deterministic(self):
         options = [
             {"moca_oid": 602, "moca_specid": 451},
@@ -245,6 +295,90 @@ class BatchSpectralTypingChi2Tests(unittest.TestCase):
         self.assertEqual([task.specids for task in all_tasks], [(450,), (451,)])
         self.assertEqual(first_task[0].specids, (450,))
         self.assertEqual(composite_task[0].specids, (450, 451))
+
+    def test_specific_comparison_task_selects_only_requested_specid(self):
+        options = [
+            {"moca_oid": 602, "moca_specid": 450},
+            {"moca_oid": 602, "moca_specid": 451},
+        ]
+
+        task = batch.specific_comparison_task(451, options)
+
+        self.assertEqual(task, batch.BatchTask(602, (451,), "specific"))
+        self.assertIsNone(batch.specific_comparison_task(999, options))
+
+    def test_specid_cli_types_only_the_explicit_spectrum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "output"
+            args = batch.parse_args([
+                "--specid", "451",
+                "--spec-id", "451",
+                "--output-dir", str(output_dir),
+                "--mock",
+                "--pause", "0",
+            ])
+            api = FakeSpectralTypingApi()
+
+            self.assertEqual(batch.run_batch(args, api=api), 0)
+            self.assertEqual(api.search_calls, [])
+            self.assertEqual(api.specid_search_calls, [451])
+            self.assertEqual(api.compare_calls, [(451,)])
+
+            with (output_dir / "combined_chi2.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                combined = list(csv.DictReader(handle))
+            self.assertEqual(len(combined), 2)
+            self.assertEqual(
+                {row["comparison_specid"] for row in combined},
+                {"451"},
+            )
+            self.assertEqual(
+                {row["spectrum_policy"] for row in combined},
+                {"specific"},
+            )
+            self.assertEqual(
+                {row["requested_moca_oid"] for row in combined},
+                {"602"},
+            )
+
+    def test_specid_csv_types_each_listed_spectrum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "specids.csv"
+            output_dir = root / "output"
+            input_path.write_text(
+                "moca_specid\n451\n450\n451\n",
+                encoding="utf-8",
+            )
+            args = batch.parse_args([
+                "--specid-csv", str(input_path),
+                "--output-dir", str(output_dir),
+                "--mock",
+                "--pause", "0",
+            ])
+            api = FakeSpectralTypingApi()
+
+            self.assertEqual(batch.run_batch(args, api=api), 0)
+            self.assertEqual(api.search_calls, [])
+            self.assertEqual(api.specid_search_calls, [451, 450])
+            self.assertEqual(api.compare_calls, [(451,), (450,)])
+
+            with (output_dir / "combined_chi2.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                combined = list(csv.DictReader(handle))
+            self.assertEqual(len(combined), 4)
+            self.assertEqual(
+                {row["comparison_specid"] for row in combined},
+                {"450", "451"},
+            )
+            self.assertEqual(
+                {row["spectrum_policy"] for row in combined},
+                {"specific"},
+            )
 
     def test_batch_writes_per_spectrum_combined_manifest_and_resumes(self):
         with tempfile.TemporaryDirectory() as directory:

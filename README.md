@@ -81,6 +81,43 @@ CSV for every spectrum belonging to an object. Use `--spectrum-policy
 composite` to type all spectra from one object together, or
 `--spectrum-policy first` to explicitly select its lowest numbered
 `moca_specid`. Composite comparisons normally accept at most eight spectra.
+To type only explicitly selected spectra, bypassing the other spectra attached
+to their objects, repeat `--specid` (or `--spec-id`):
+
+```bash
+python scripts/batch_spectral_typing_chi2.py \
+  --specid 1195448 \
+  --specid 1195502 \
+  --user collaborators \
+  --dbase mocadb_private_tables \
+  --output-dir selected_spectra_chi2
+```
+
+Explicit spectrum IDs are always typed individually and are not affected by
+`--spectrum-policy`. They may be combined in one run with an input object-ID
+file or repeated `--oid` options.
+
+A spectrum-ID file can contain a `moca_specid`, `specid`, or `spec_id` column:
+
+```csv
+moca_specid
+1195448
+1195502
+```
+
+Run it with:
+
+```bash
+python scripts/batch_spectral_typing_chi2.py \
+  --specid-csv selected_specids.csv \
+  --user collaborators \
+  --dbase mocadb_private_tables \
+  --output-dir selected_spectra_chi2
+```
+
+CSV, TSV, and one-ID-per-line files are accepted. Use `--specid-column NAME`
+when the relevant column has a custom name. Values from the file and repeated
+`--specid` arguments are combined and de-duplicated.
 When `mocadb_private_tables` is requested, both search and comparison
 responses must explicitly confirm private-database access. The command stops
 without writing incomplete public-grid results if credentials were not
