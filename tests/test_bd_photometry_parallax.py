@@ -302,23 +302,21 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             1,
         )[0]
         shape_block = script.split("function highlightedPointShapes(rows)", 1)[1].split(
-            "function highlightedPointAnnotations",
-            1,
-        )[0]
-        annotation_block = script.split("function highlightedPointAnnotations(rows)", 1)[1].split(
             "function selectedMarkerRows",
             1,
         )[0]
         html = (app_module.STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("shapes: highlightedPointShapes(highlightedRows)", layout_block)
-        self.assertIn("annotations: highlightedPointAnnotations(highlightedRows)", layout_block)
         self.assertIn('xsizemode: "pixel"', shape_block)
         self.assertIn('ysizemode: "pixel"', shape_block)
         self.assertIn('layer: "above"', shape_block)
-        self.assertIn('text: "★"', annotation_block)
-        self.assertIn("captureevents: false", annotation_block)
-        self.assertIn("highlight-layer-20260729a", html)
+        self.assertIn('type: "path"', shape_block)
+        self.assertIn("path: highlightedStarPath", shape_block)
+        self.assertIn('fillcolor: "#d69e00"', shape_block)
+        self.assertIn('line: { color: "#111", width: 2.5 }', shape_block)
+        self.assertNotIn("highlightedPointAnnotations", script)
+        self.assertIn("highlight-layer-20260729b", html)
 
     def test_error_bars_follow_marker_colors_with_lower_opacity(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")

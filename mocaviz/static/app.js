@@ -50,6 +50,7 @@ const sequenceFitEvaluationStep = 0.1;
 const sequenceFitPostSmoothingFraction = 1 / 3;
 const sequenceFitRenderDelayMs = 1000;
 const errorThresholdRenderDelayMs = 500;
+const highlightedStarPath = "M0,10.5 L2.53,3.48 L9.99,3.24 L4.09,-1.33 L6.17,-8.49 L0,-4.3 L-6.17,-8.49 L-4.09,-1.33 L-9.99,3.24 L-2.53,3.48 Z";
 const yDwarfRangePaddingFraction = 0.05;
 const additionalYAxisPaddingFraction = 0.15;
 const yAxisLowerQuantile = 0.01;
@@ -3141,7 +3142,6 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     uirevision: `bd-colors-fast-${nextRangeRevision}`,
     images: sequenceFitTraces.image ? [sequenceFitTraces.image] : [],
     shapes: highlightedPointShapes(highlightedRows),
-    annotations: highlightedPointAnnotations(highlightedRows),
   };
 
   const plotCanvasKey = currentPlotCanvasKey();
@@ -3641,47 +3641,33 @@ function highlightedPointTraces(rows) {
 }
 
 function highlightedPointShapes(rows) {
-  return rows.map((row) => ({
-    type: "circle",
-    xref: "x",
-    yref: "y",
-    xanchor: plotX(row),
-    yanchor: plotY(row),
-    xsizemode: "pixel",
-    ysizemode: "pixel",
-    x0: -14,
-    x1: 14,
-    y0: -14,
-    y1: 14,
-    fillcolor: "rgba(255,255,255,0.94)",
-    line: { color: "#111", width: 1.2 },
-    layer: "above",
-  }));
-}
-
-function highlightedPointAnnotations(rows) {
   return rows.flatMap((row) => {
-    const annotation = {
-      x: plotX(row),
-      y: plotY(row),
+    const shape = {
       xref: "x",
       yref: "y",
-      showarrow: false,
-      xanchor: "center",
-      yanchor: "middle",
-      yshift: -1,
-      captureevents: false,
+      xanchor: plotX(row),
+      yanchor: plotY(row),
+      xsizemode: "pixel",
+      ysizemode: "pixel",
+      layer: "above",
     };
     return [
       {
-        ...annotation,
-        text: "★",
-        font: { family: "Arial, sans-serif", size: 27, color: "#111" },
+        ...shape,
+        type: "circle",
+        x0: -14,
+        x1: 14,
+        y0: -14,
+        y1: 14,
+        fillcolor: "rgba(255,255,255,0.94)",
+        line: { color: "#111", width: 1.2 },
       },
       {
-        ...annotation,
-        text: "★",
-        font: { family: "Arial, sans-serif", size: 21, color: "#d69e00" },
+        ...shape,
+        type: "path",
+        path: highlightedStarPath,
+        fillcolor: "#d69e00",
+        line: { color: "#111", width: 2.5 },
       },
     ];
   });
