@@ -362,7 +362,7 @@ function readInitialUrlState() {
   state.manualPhotdistChoice = params.has("photdist");
   el["include-photdist"].checked = state.manualPhotdistChoice
     ? asBool(params.get("photdist"))
-    : !hasAbsoluteMagnitudeAxis();
+    : false;
   el["include-binaries"].checked = asBool(params.get("binaries"));
   el["include-photspt"].checked = asBool(params.get("photspt"));
   el["include-risky-photspt"].checked = asBool(params.get("risky_photspt")) || asBool(params.get("include_risky_photspt"));
@@ -668,7 +668,7 @@ function usePhotometricDistancesForAxes() {
 
 function applyPhotometricDistanceDefault() {
   if (state.manualPhotdistChoice) return false;
-  const checked = !hasAbsoluteMagnitudeAxis();
+  const checked = false;
   if (el["include-photdist"].checked === checked) return false;
   el["include-photdist"].checked = checked;
   return true;

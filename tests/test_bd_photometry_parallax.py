@@ -55,8 +55,14 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn('params.delete("trigplx")', script)
         self.assertNotIn("function updatePhotdistControl", script)
         self.assertIn('state.manualPhotdistChoice = params.has("photdist")', script)
+        self.assertIn(
+            'el["include-photdist"].checked = state.manualPhotdistChoice\n'
+            '    ? asBool(params.get("photdist"))\n'
+            '    : false;',
+            script,
+        )
         self.assertIn("function applyPhotometricDistanceDefault()", script)
-        self.assertIn("const checked = !hasAbsoluteMagnitudeAxis()", script)
+        self.assertIn("const checked = false;", script)
         self.assertIn("const includePhotdist = includePhotometricDistances()", build_rows_block)
         self.assertIn("const usePhotdistForAxes = usePhotometricDistancesForAxes()", build_rows_block)
         self.assertIn(
