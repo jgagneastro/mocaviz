@@ -295,6 +295,31 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         )[0]
         self.assertIn('type: style.type || "scattergl"', error_trace_block)
 
+    def test_highlighted_points_use_above_data_overlays(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        layout_block = script.split("const layout = {", 1)[1].split(
+            "const plotCanvasKey",
+            1,
+        )[0]
+        shape_block = script.split("function highlightedPointShapes(rows)", 1)[1].split(
+            "function highlightedPointAnnotations",
+            1,
+        )[0]
+        annotation_block = script.split("function highlightedPointAnnotations(rows)", 1)[1].split(
+            "function selectedMarkerRows",
+            1,
+        )[0]
+        html = (app_module.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("shapes: highlightedPointShapes(highlightedRows)", layout_block)
+        self.assertIn("annotations: highlightedPointAnnotations(highlightedRows)", layout_block)
+        self.assertIn('xsizemode: "pixel"', shape_block)
+        self.assertIn('ysizemode: "pixel"', shape_block)
+        self.assertIn('layer: "above"', shape_block)
+        self.assertIn('text: "★"', annotation_block)
+        self.assertIn("captureevents: false", annotation_block)
+        self.assertIn("highlight-layer-20260729a", html)
+
     def test_error_bars_follow_marker_colors_with_lower_opacity(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         error_block = script.split("function errorBarTraces(rows", 1)[1].split(

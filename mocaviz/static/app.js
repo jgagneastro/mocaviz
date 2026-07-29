@@ -3140,6 +3140,8 @@ function drawPlot(rows, plottedRows = legendFilteredRows(rows), options = {}) {
     hovermode: "closest",
     uirevision: `bd-colors-fast-${nextRangeRevision}`,
     images: sequenceFitTraces.image ? [sequenceFitTraces.image] : [],
+    shapes: highlightedPointShapes(highlightedRows),
+    annotations: highlightedPointAnnotations(highlightedRows),
   };
 
   const plotCanvasKey = currentPlotCanvasKey();
@@ -3636,6 +3638,53 @@ function highlightedPointTraces(rows) {
       name: "Highlighted",
     },
   ].filter(Boolean);
+}
+
+function highlightedPointShapes(rows) {
+  return rows.map((row) => ({
+    type: "circle",
+    xref: "x",
+    yref: "y",
+    xanchor: plotX(row),
+    yanchor: plotY(row),
+    xsizemode: "pixel",
+    ysizemode: "pixel",
+    x0: -14,
+    x1: 14,
+    y0: -14,
+    y1: 14,
+    fillcolor: "rgba(255,255,255,0.94)",
+    line: { color: "#111", width: 1.2 },
+    layer: "above",
+  }));
+}
+
+function highlightedPointAnnotations(rows) {
+  return rows.flatMap((row) => {
+    const annotation = {
+      x: plotX(row),
+      y: plotY(row),
+      xref: "x",
+      yref: "y",
+      showarrow: false,
+      xanchor: "center",
+      yanchor: "middle",
+      yshift: -1,
+      captureevents: false,
+    };
+    return [
+      {
+        ...annotation,
+        text: "★",
+        font: { family: "Arial, sans-serif", size: 27, color: "#111" },
+      },
+      {
+        ...annotation,
+        text: "★",
+        font: { family: "Arial, sans-serif", size: 21, color: "#d69e00" },
+      },
+    ];
+  });
 }
 
 function selectedMarkerRows(rows = state.rows) {
