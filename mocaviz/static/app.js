@@ -49,6 +49,7 @@ const sequenceFitMaxSmoothingWidth = 8;
 const sequenceFitEvaluationStep = 0.1;
 const sequenceFitPostSmoothingFraction = 1 / 3;
 const sequenceFitRenderDelayMs = 1000;
+const errorThresholdRenderDelayMs = 500;
 const yDwarfRangePaddingFraction = 0.05;
 const additionalYAxisPaddingFraction = 0.15;
 const yAxisLowerQuantile = 0.01;
@@ -154,6 +155,7 @@ const state = {
   plotLoadReasons: new Set(),
   autoErrorDefaults: { x: false, y: false },
   manualErrorThresholds: { x: false, y: false },
+  errorThresholdRenderTimer: null,
   axisRangeRevision: 0,
   pendingInitialAxisRange: true,
   lastAppliedAxisRangeSignature: "",
@@ -443,16 +445,15 @@ function bindControls() {
   });
   for (const id of ["xerr-max", "yerr-max"]) {
     el[id].addEventListener("input", () => {
-      state.autoErrorDefaults[id[0]] = false;
-      state.manualErrorThresholds[id[0]] = true;
-      requestInitialAxisRange();
-      render();
+      markErrorThresholdAsManual(id[0]);
+      cancelScheduledErrorThresholdRender();
     });
-    el[id].addEventListener("change", () => {
-      state.autoErrorDefaults[id[0]] = false;
-      state.manualErrorThresholds[id[0]] = true;
-      requestInitialAxisRange();
-      render();
+    el[id].addEventListener("blur", () => {
+      markErrorThresholdAsManual(id[0]);
+      scheduleErrorThresholdRender();
+    });
+    el[id].addEventListener("keydown", (event) => {
+      if (event.key === "Enter") el[id].blur();
     });
   }
   for (const id of ["show-errors", "include-binaries"]) {
@@ -647,6 +648,27 @@ function bindControls() {
 
 function requestInitialAxisRange() {
   state.pendingInitialAxisRange = true;
+}
+
+function markErrorThresholdAsManual(axis) {
+  state.autoErrorDefaults[axis] = false;
+  state.manualErrorThresholds[axis] = true;
+}
+
+function cancelScheduledErrorThresholdRender() {
+  window.clearTimeout(state.errorThresholdRenderTimer);
+  state.errorThresholdRenderTimer = null;
+}
+
+function scheduleErrorThresholdRender() {
+  cancelScheduledErrorThresholdRender();
+  state.errorThresholdRenderTimer = window.setTimeout(() => {
+    state.errorThresholdRenderTimer = null;
+    const activeElement = document.activeElement;
+    if (activeElement === el["xerr-max"] || activeElement === el["yerr-max"]) return;
+    requestInitialAxisRange();
+    render();
+  }, errorThresholdRenderDelayMs);
 }
 
 function scheduleBootstrapReload(options = {}) {
@@ -3574,10 +3596,11 @@ function highlightedPointTraces(rows) {
       color: "#d69e00",
       forceVisible: true,
       thickness: 3,
+      type: "scatter",
       width: 5,
     }),
     {
-      type: "scattergl",
+      type: "scatter",
       uid: "highlighted-halo",
       mode: "markers",
       x: rows.map(plotX),
@@ -3595,7 +3618,7 @@ function highlightedPointTraces(rows) {
       showlegend: false,
     },
     {
-      type: "scattergl",
+      type: "scatter",
       uid: "highlighted-points",
       mode: "markers",
       x: rows.map(plotX),
@@ -4778,7 +4801,7 @@ function colorWithOpacity(color, opacity) {
 function errorBarTrace(rows, opacity = 0.2, uid = "error-bars", style = {}) {
   if ((!el["show-errors"].checked && !style.forceVisible) || !rows.length || !rows.some(hasFiniteError)) return null;
   return {
-    type: "scattergl",
+    type: style.type || "scattergl",
     uid,
     mode: "markers",
     x: rows.map(plotX),

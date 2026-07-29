@@ -287,6 +287,13 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         self.assertIn("forceVisible: true", trace_block)
         self.assertIn("thickness: 3", trace_block)
         self.assertIn("width: 5", trace_block)
+        self.assertEqual(trace_block.count('type: "scatter"'), 3)
+
+        error_trace_block = script.split("function errorBarTrace(rows", 1)[1].split(
+            "function hasFiniteError",
+            1,
+        )[0]
+        self.assertIn('type: style.type || "scattergl"', error_trace_block)
 
     def test_error_bars_follow_marker_colors_with_lower_opacity(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
