@@ -1063,6 +1063,20 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("formatMocaExplorerMaxObjectsInput()", script)
         self.assertIn("parseMocaExplorerMaxObjects()", script)
 
+    def test_moca_explorer_projection_axes_and_hover_include_phase_space(self):
+        script = (app_module.STATIC_DIR / "moca_explorer.js").read_text(encoding="utf-8")
+        projection = script.split("function buildMocaExplorerProjectionPlot", 1)[1].split(
+            "function buildMocaExplorer3dPlot",
+            1,
+        )[0]
+        hover = script.split("function hoverText", 1)[1].split("function axisTitle", 1)[0]
+        self.assertIn("includePhaseSpaceHover: true", projection)
+        self.assertIn("title: { text: axisTitle(xAxis), standoff: 8", projection)
+        self.assertIn("title: { text: axisTitle(yAxis), standoff: 8", projection)
+        self.assertEqual(projection.count("automargin: true"), 2)
+        self.assertIn('`XYZ (pc): X=${value("x")}, Y=${value("y")}, Z=${value("z")}`', hover)
+        self.assertIn('`UVW (km/s): U=${value("u")}, V=${value("v")}, W=${value("w")}`', hover)
+
     def test_moca_explorer_association_removal_filters_complete_payload_in_browser(self):
         script = (app_module.STATIC_DIR / "moca_explorer.js").read_text(encoding="utf-8")
         remove_handler = script.split("function renderMocaExplorerAidChips()", 1)[1].split(
@@ -1206,6 +1220,21 @@ class JsPageOptimizationTests(unittest.TestCase):
             html = response.get_data(as_text=True)
             self.assertNotIn("/js/xyz-plotly", html)
             self.assertNotIn("/js/xyz-dual-plotly", html)
+        finally:
+            response.close()
+
+    def test_home_page_advertises_moca_explorer(self):
+        response = self.client.get("/js/")
+        try:
+            html = response.get_data(as_text=True)
+            self.assertIn(
+                '<a data-js-page href="/moca-explorer">MOCA Explorer</a>',
+                html,
+            )
+            self.assertNotIn(
+                '<li hidden>\n          <a data-js-page href="/moca-explorer"',
+                html,
+            )
         finally:
             response.close()
 

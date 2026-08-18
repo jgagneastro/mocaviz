@@ -716,6 +716,7 @@ function buildMocaExplorerProjectionPlot(spec) {
       showMemberLegend: index === 0,
       showObjectLegend: index === 0,
       showSunLegend: index === 0,
+      includePhaseSpaceHover: true,
     };
     addGroupedMemberTraces(traces, mexState.members, xAxis, yAxis, "markers", assume, traceOptions);
     if (mexEl["mex-models"].checked) add2dModelTraces(traces, xAxis, yAxis, traceOptions);
@@ -751,17 +752,19 @@ function buildMocaExplorerProjectionPlot(spec) {
     const xLayoutKey = index === 0 ? "xaxis" : `xaxis${index + 1}`;
     const yLayoutKey = index === 0 ? "yaxis" : `yaxis${index + 1}`;
     layout[xLayoutKey] = {
-      title: axisTitle(xAxis),
+      title: { text: axisTitle(xAxis), standoff: 8, font: { size: 12 } },
       range: defaultRangeForAxis(xAxis),
       domain: subplotXDomain(index),
       zeroline: false,
+      automargin: true,
       anchor: index === 0 ? "y" : `y${index + 1}`,
     };
     layout[yLayoutKey] = {
-      title: axisTitle(yAxis),
+      title: { text: axisTitle(yAxis), standoff: 8, font: { size: 12 } },
       range: defaultRangeForAxis(yAxis),
       domain: subplotYDomain(index),
       zeroline: false,
+      automargin: true,
       anchor: index === 0 ? "x" : `x${index + 1}`,
     };
   });
@@ -843,7 +846,10 @@ function scatterTraceForRows(rows, name, xKey, yKey, color, mode, assume = false
     showlegend: traceOptions.showlegend,
     x: rows.map((row) => axisValue(row, xKey, assume)),
     y: rows.map((row) => axisValue(row, yKey, assume)),
-    text: rows.map((row) => hoverText(row)),
+    text: rows.map((row) => hoverText(row, {
+      includePhaseSpace: Boolean(traceOptions.includePhaseSpaceHover),
+      assume,
+    })),
     customdata: rows.map((row) => row._oid),
     hovertemplate: mexEl["mex-hover"].checked ? "%{text}<extra></extra>" : undefined,
     hoverinfo: mexEl["mex-hover"].checked ? undefined : "none",
@@ -910,7 +916,10 @@ function addHighlightedTrace(traces, xKey, yKey, traceOptions = {}) {
     showlegend: traceOptions.showObjectLegend,
     x: rows.map((row) => axisValue(row, xKey, false)),
     y: rows.map((row) => axisValue(row, yKey, false)),
-    text: rows.map((row) => hoverText(row)),
+    text: rows.map((row) => hoverText(row, {
+      includePhaseSpace: Boolean(traceOptions.includePhaseSpaceHover),
+      assume: false,
+    })),
     customdata: rows.map((row) => row._oid),
     hovertemplate: mexEl["mex-hover"].checked ? "%{text}<extra></extra>" : undefined,
     hoverinfo: mexEl["mex-hover"].checked ? undefined : "none",
@@ -1151,7 +1160,7 @@ function subplotXDomain(index) {
 }
 
 function subplotYDomain(index) {
-  return index < 2 ? [0.58, 0.95] : [0.08, 0.45];
+  return index < 2 ? [0.63, 0.95] : [0.08, 0.40];
 }
 
 function subplotTitleX(index) {
@@ -1460,7 +1469,7 @@ function colorForAssociation(aid) {
   return mexPalette[index % mexPalette.length];
 }
 
-function hoverText(row) {
+function hoverText(row, options = {}) {
   const oid = row.moca_oid ?? "";
   const parts = [
     `MOCA OID: ${oid}`,
@@ -1469,6 +1478,17 @@ function hoverText(row) {
     `SPT: ${row.spt || ""}`,
     `RUWE: ${formatCell(row.dr3_ruwe)}`,
   ];
+  if (options.includePhaseSpace) {
+    const assume = Boolean(options.assume);
+    const value = (axis) => {
+      const coordinate = axisValue(row, axis, assume);
+      return coordinate === null ? "—" : formatCell(coordinate);
+    };
+    parts.push(
+      `XYZ (pc): X=${value("x")}, Y=${value("y")}, Z=${value("z")}`,
+      `UVW (km/s): U=${value("u")}, V=${value("v")}, W=${value("w")}`,
+    );
+  }
   return parts.map(htmlEscape).join("<br>");
 }
 
