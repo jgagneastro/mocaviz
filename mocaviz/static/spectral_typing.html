@@ -123,9 +123,9 @@
             <input id="spt-norm" type="text" value="0.860-1.350, 1.445-1.800, 2.010-2.400">
           </label>
           <button id="spt-reset-norm" type="button">Reset Norm</button>
-          <label class="range-label" title="A template must cover this fraction of the comparison spectrum in log wavelength to appear in the chi-squared map.">
+          <label class="range-label" title="The mean of the template's per-window log-wavelength coverage fractions must reach this value to appear in the chi-squared map.">
             <span class="range-heading">
-              <span>Minimum log-wavelength overlap</span>
+              <span>Minimum mean log-wavelength overlap</span>
               <output id="spt-min-overlap-output" for="spt-min-overlap">80%</output>
             </span>
             <input id="spt-min-overlap" type="range" min="0" max="100" value="80" step="1">
@@ -322,6 +322,6 @@
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
-  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a-field-only-20260724a-ccm-optical-20260724a-chi2-export-20260727a-resolution-symbol-20260727a-overlap-20260728a"></script>
+  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a-field-only-20260724a-ccm-optical-20260724a-chi2-export-20260727a-resolution-symbol-20260727a-overlap-20260728a-window-mean-20260823a"></script>
 </body>
 </html>

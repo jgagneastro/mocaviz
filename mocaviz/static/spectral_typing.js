@@ -1539,7 +1539,7 @@ function renderChi2Plot(payload, selectedEntry) {
         localIndexForEntry(row),
         row.log_wavelength_overlap_percent,
       ]),
-      hovertemplate: "<b>%{text}</b><br>χ<sup>2</sup>: %{y:.2f}<br>log(λ) overlap: %{customdata[2]:.1f}%<extra></extra>",
+      hovertemplate: "<b>%{text}</b><br>χ<sup>2</sup>: %{y:.2f}<br>mean log(λ) overlap: %{customdata[2]:.1f}%<extra></extra>",
     });
   });
   if (selectedTrace) traces.push(selectedTrace);
@@ -1558,7 +1558,7 @@ function renderChi2Plot(payload, selectedEntry) {
   for (let value = xMin; value <= xMax; value += tickStep) tickvals.push(value);
   const yTickSpec = logTickSpecForRange(yRange);
   const layout = {
-    title: `Global goodness of fit for ${comparisonShortName(payload)} (≥${formatNumber(minOverlap, 0)}% log(λ) overlap)`,
+    title: `Global goodness of fit for ${comparisonShortName(payload)} (≥${formatNumber(minOverlap, 0)}% mean log(λ) overlap)`,
     paper_bgcolor: "#eeeeef",
     plot_bgcolor: "#ffffff",
     margin: { t: 44, r: 210, b: 86, l: 72 },
@@ -1600,7 +1600,7 @@ function renderChi2Plot(payload, selectedEntry) {
       y: 0.5,
       xref: "paper",
       yref: "paper",
-      text: `No templates meet the ${formatNumber(minOverlap, 0)}% minimum log-wavelength overlap`,
+      text: `No templates meet the ${formatNumber(minOverlap, 0)}% minimum mean log-wavelength overlap`,
       showarrow: false,
       font: { size: 16 },
     }],
@@ -2239,7 +2239,7 @@ function metricAnnotation(entry, payload = null) {
     : (correctionComputing ? "(computing)" : formatNumber(entry.reduced_chi2, 2));
   const lines = [`χ<sup>2</sup>: ${chi2Text}`];
   if (finiteNumber(entry.log_wavelength_overlap_percent)) {
-    lines.push(`log(λ) overlap: ${formatNumber(entry.log_wavelength_overlap_percent, 1)}%`);
+    lines.push(`mean log(λ) overlap: ${formatNumber(entry.log_wavelength_overlap_percent, 1)}%`);
   }
   if (correctionComputing) {
     lines.push("best_parameters = (computing)");

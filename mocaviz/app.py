@@ -347,7 +347,7 @@ SPT_DEFAULT_BINS_PER_MICRON = 200
 SPT_DEFAULT_MIN_LOG_WAVELENGTH_OVERLAP_PERCENT = 80.0
 SPT_LOWRES_DISPLAY_BINS_PER_MICRON = 50
 SPT_RESOLUTION_MATCH_VERSION = "resolution-match-v3"
-SPT_LOG_WAVELENGTH_OVERLAP_VERSION = "log-overlap-v1"
+SPT_LOG_WAVELENGTH_OVERLAP_VERSION = "log-overlap-v2-window-mean"
 SPT_GAUSSIAN_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 SPT_BOXCAR_EQUIVALENT_GAUSSIAN_FWHM = SPT_GAUSSIAN_FWHM / math.sqrt(12.0)
 
@@ -4088,8 +4088,7 @@ def _spt_log_wavelength_overlap_percent(
         or "wv" not in standard_df
     ):
         return 0.0
-    comparison_log_width = 0.0
-    overlap_log_width = 0.0
+    region_overlap_percentages: list[float] = []
     for region_min, region_max in norm_regions_param:
         comparison_intervals = _spt_log_wavelength_coverage_intervals(
             comparison_df.loc[
@@ -4105,16 +4104,21 @@ def _spt_log_wavelength_overlap_percent(
                 "wv",
             ]
         )
-        comparison_log_width += sum(
+        comparison_log_width = sum(
             stop - start for start, stop in comparison_intervals
         )
-        overlap_log_width += _spt_interval_overlap_length(
+        if not math.isfinite(comparison_log_width) or comparison_log_width <= 0:
+            continue
+        overlap_log_width = _spt_interval_overlap_length(
             comparison_intervals,
             standard_intervals,
         )
-    if not math.isfinite(comparison_log_width) or comparison_log_width <= 0:
+        region_overlap_percentages.append(
+            min(100.0, max(0.0, 100.0 * overlap_log_width / comparison_log_width))
+        )
+    if not region_overlap_percentages:
         return 0.0
-    percent = 100.0 * overlap_log_width / comparison_log_width
+    percent = sum(region_overlap_percentages) / len(region_overlap_percentages)
     return float(min(100.0, max(0.0, percent)))
 
 
