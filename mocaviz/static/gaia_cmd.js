@@ -424,7 +424,7 @@ function readGaiaCmdUrlState() {
   gcmdEl["gcmd-color-age"].checked = truthyParam(params.get("color_age") || params.get("color_by_age") || params.get("age"));
   gcmdEl["gcmd-raw-gaia"].checked = truthyParam(params.get("raw_gaia") || params.get("raw_photometry") || params.get("use_raw_gaia"));
   const extinctionCorrectedParam = firstPresentParam(params, ["extinction_corrected", "extcorr", "extinction_corrected_only"]);
-  gcmdEl["gcmd-extcorr-only"].checked = extinctionCorrectedParam === null ? true : !falsyParam(extinctionCorrectedParam);
+  gcmdEl["gcmd-extcorr-only"].checked = extinctionCorrectedParam === null ? false : !falsyParam(extinctionCorrectedParam);
   configureGaiaCmdExtinctionCorrectionControl();
   gcmdEl["gcmd-extcorr-vectors"].checked = truthyParam(params.get("extinction_vectors") || params.get("extcorr_vectors") || params.get("show_extinction_vectors"));
   gcmdEl["gcmd-display-errors"].checked = truthyParam(params.get("display_errors") || params.get("errors") || params.get("phot_errors") || params.get("show_errors"));
@@ -832,11 +832,11 @@ function updateGaiaCmdUrl() {
     params.delete("use_raw_gaia");
   }
   if (gcmdEl["gcmd-extcorr-only"].checked) {
-    params.delete("extinction_corrected");
+    params.set("extinction_corrected", "1");
     params.delete("extcorr");
     params.delete("extinction_corrected_only");
   } else {
-    params.set("extinction_corrected", "0");
+    params.delete("extinction_corrected");
     params.delete("extcorr");
     params.delete("extinction_corrected_only");
   }

@@ -123,7 +123,7 @@
             <span>Use raw Gaia photometry without extinction correction</span>
           </label>
           <label class="checkline">
-            <input id="gcmd-extcorr-only" type="checkbox" checked>
+            <input id="gcmd-extcorr-only" type="checkbox">
             <span>Require extinction correction</span>
           </label>
           <label class="checkline">
@@ -232,14 +232,14 @@
           <tr><td><code>asso</code>, <code>moca_aid</code></td><td>Comma-separated association IDs</td><td>Adds members of the selected associations using the chosen membership basis.</td></tr>
           <tr><td><code>oid</code>, <code>moca_oid</code></td><td>Comma-separated OIDs</td><td>Overplots highlighted MOCAdb objects.</td></tr>
           <tr><td><code>ruwe</code>, <code>ruwe_max</code></td><td>Positive number, or <code>none</code></td><td>De-emphasizes objects with Gaia RUWE above the threshold. Default is <code>1.4</code>.</td></tr>
-          <tr><td><code>gaia_quality</code></td><td><code>off</code>, <code>soft</code>, or <code>strict</code></td><td>Applies Gaia photometry-quality cuts from <code>cat_gaiadr3</code> before plotting. The default is <code>strict</code>.</td></tr>
+          <tr><td><code>gaia_quality</code></td><td><code>off</code>, <code>soft</code>, or <code>strict</code></td><td>Applies Gaia photometry-quality cuts from <code>cat_gaiadr3</code> to field and association samples before plotting. Explicitly highlighted OIDs always bypass this filter. The default is <code>strict</code>.</td></tr>
           <tr><td><code>membership_basis</code></td><td><code>banyan_sigma</code>, <code>literature_claims</code>, or <code>union</code></td><td>Chooses adopted maximum-observables BANYAN Σ rows, non-ignored <code>data_memberships</code> claims left-joined to matching BANYAN Σ probabilities, or their deduplicated union. The default is <code>banyan_sigma</code>.</td></tr>
           <tr><td><code>membership_prob_min</code>, <code>ya_prob_min</code></td><td><code>0</code>-<code>100</code></td><td>Filters association rows by their BANYAN Σ probability in the browser. At <code>0</code>, rows without a BANYAN Σ result are retained; above <code>0</code>, they are hidden with rows below the threshold. The default is <code>90</code> for BANYAN Σ and <code>0</code> for literature or union mode. BANYAN mode downloads rows at <code>p&gt;=50</code>; literature and union modes download BANYAN probabilities from <code>p&gt;=0</code>.</td></tr>
           <tr><td><code>vetted_mtid</code></td><td>Comma-separated MTIDs or <code>missing</code></td><td>Requires objects to have at least one matching <code>mechanics_memberships_vetted.moca_mtid</code>. <em>Missing</em> selects objects with no vetted membership row for that association.</td></tr>
           <tr><td><code>filter_giants</code>, <code>filter_wd</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code>; <code>filter_wd=0</code> disables white-dwarf filtering</td><td>Filters out objects where <code>test_giant()</code> or <code>test_wd()</code> is true. White-dwarf filtering is on by default.</td></tr>
           <tr><td><code>color_age</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Colors objects with BANYAN-linked association ages by age.</td></tr>
           <tr><td><code>raw_gaia</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses Gaia DR3 catalog photometry for selected associations instead of adopted MOCAdb photometry.</td></tr>
-          <tr><td><code>extinction_corrected</code></td><td><code>0</code>, <code>false</code>, or <code>no</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code> by default. A false value disables this requirement.</td></tr>
+          <tr><td><code>extinction_corrected</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Requires selected MOCAdb photometry rows to have <code>data_photometry.extinction_corrected = 1</code>. This requirement is off by default.</td></tr>
           <tr><td><code>extinction_vectors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws arrows from uncorrected photometry, <code>magnitude + extinction_a</code>, to the corrected plotted photometry when available.</td></tr>
           <tr><td><code>display_errors</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Shows available CMD error bars from photometric and distance uncertainties.</td></tr>
           <tr><td><code>binaries</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overplots known binaries with open symbols. Objects remain plotted normally either way.</td></tr>
@@ -261,6 +261,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-  <script src="static/gaia_cmd.js?v=api-routing-20260710a-gaia-quality-off-20260715a-vetted-missing-20260715a-membership-basis-20260715b-field-vetted-20260715a-selected-marker-20260715a-field-not-selectable-20260715a-selectable-click-priority-20260715a-extcorr-default-20260716a"></script>
+  <script src="static/gaia_cmd.js?v=api-routing-20260710a-gaia-quality-off-20260715a-vetted-missing-20260715a-membership-basis-20260715b-field-vetted-20260715a-selected-marker-20260715a-field-not-selectable-20260715a-selectable-click-priority-20260715a-highlight-quality-bypass-20260824a-extcorr-opt-in-20260824a"></script>
 </body>
 </html>

@@ -123,9 +123,10 @@ class JsPageOptimizationTests(unittest.TestCase):
     def test_gaia_highlights_are_loaded_separately_without_sequences(self):
         highlights = decoded_json(self.client.get(
             "/api/gaia-cmd/data?mock=1&sample_part=highlights&oid=800021"
-            "&gaia_quality=off&filter_wd=0&max_objects=80"
+            "&gaia_quality=strict&filter_wd=0&max_objects=80"
         ))
         self.assertTrue(highlights["rows"])
+        self.assertIn(800021, {row.get("moca_oid") for row in highlights["rows"]})
         self.assertTrue(all(row.get("highlighted") for row in highlights["rows"]))
         self.assertFalse(highlights["sequences"])
 
@@ -151,18 +152,45 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertGreater(len(payloads["off"]["rows"]), len(payloads["soft"]["rows"]))
         self.assertGreater(len(payloads["soft"]["rows"]), len(payloads["strict"]["rows"]))
 
-    def test_gaia_extinction_correction_is_required_by_default_and_disabled_for_raw_photometry(self):
+    def test_gaia_highlights_bypass_photometry_quality_filter(self):
+        source = Path(app_module.__file__).read_text(encoding="utf-8")
+        quality_assignments = source.split(
+            'field_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql',
+            1,
+        )[1].split("field_sql_selection =", 1)[0]
+        self.assertIn(
+            'association_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql',
+            quality_assignments,
+        )
+        self.assertIn('highlight_gaia_quality_filter = ""', quality_assignments)
+        self.assertNotIn(
+            'highlight_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql',
+            quality_assignments,
+        )
+
+    def test_gaia_extinction_correction_is_opt_in_and_disabled_for_raw_photometry(self):
         html = self.client.get("/js/gaia-cmd").get_data(as_text=True)
         script = (app_module.STATIC_DIR / "gaia_cmd.js").read_text(encoding="utf-8")
-        self.assertIn('<input id="gcmd-extcorr-only" type="checkbox" checked>', html)
+        self.assertIn('<input id="gcmd-extcorr-only" type="checkbox">', html)
         self.assertIn("<span>Require extinction correction</span>", html)
-        self.assertIn("extinctionCorrectedParam === null ? true", script)
+        self.assertIn("extinctionCorrectedParam === null ? false", script)
         self.assertIn('input.disabled = disabled;', script)
         self.assertIn('classList.toggle("is-disabled", disabled)', script)
         self.assertIn(
             '!gcmdEl["gcmd-raw-gaia"].checked && gcmdEl["gcmd-extcorr-only"].checked',
             script,
         )
+        update_url_block = script.split("function updateGaiaCmdUrl()", 1)[1].split(
+            "function clampGaiaCmdMembershipProb",
+            1,
+        )[0]
+        extcorr_url_block = update_url_block.split(
+            'if (gcmdEl["gcmd-extcorr-only"].checked)',
+            1,
+        )[1].split('if (!gcmdEl["gcmd-extcorr-vectors"].checked)', 1)[0]
+        self.assertIn('params.set("extinction_corrected", "1");', extcorr_url_block)
+        self.assertIn('params.delete("extinction_corrected");', extcorr_url_block)
+        self.assertFalse(_gaia_cmd_selection({})["extinction_corrected_only"])
         self.assertFalse(_gaia_cmd_selection({"extinction_corrected": "0"})["extinction_corrected_only"])
         self.assertTrue(_gaia_cmd_selection({"extinction_corrected": "1"})["extinction_corrected_only"])
 

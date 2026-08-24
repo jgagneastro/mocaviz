@@ -9599,7 +9599,7 @@ def _gaia_cmd_selection(args: dict[str, Any]) -> dict[str, Any]:
 def _gaia_cmd_cache_key(args: dict[str, Any], selection: dict[str, Any]) -> str:
     cfg = _db_config(args)
     return "|".join([
-        "gaia-split-samples-v5",
+        "gaia-split-samples-v6",
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
@@ -10062,7 +10062,9 @@ def _load_gaia_cmd_from_db(args: dict[str, Any]) -> dict[str, Any]:
     highlight_vetted_mtid_select = _gaia_cmd_vetted_mtid_select("g", None, vetted_schema_sql, mmv_visibility_filter)
     field_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("field", selection["gaia_quality"])
     association_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
-    highlight_gaia_quality_filter = _gaia_cmd_gaia_quality_filter_sql("g", selection["gaia_quality"])
+    # Explicitly highlighted objects must remain visible regardless of the
+    # Gaia quality mode selected for the comparison samples.
+    highlight_gaia_quality_filter = ""
     field_sql_selection = {
         **selection,
         "vetted_mtids": [],
@@ -10716,6 +10718,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
                 mock_vetted_mtids.append("HM")
         mock_is_giant = index % 29 == 0
         mock_is_wd = index % 31 == 0
+        is_explicit_highlight = moca_oid in selection["highlight_oids"]
         if selection["vetted_mtids"] and aid:
             selected_real_mtids = {
                 mtid for mtid in selection["vetted_mtids"]
@@ -10728,10 +10731,11 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             )
             if not matches_selected_mtid and not matches_missing:
                 continue
-        if selection["gaia_quality"] == "soft" and index % 13 == 0:
-            continue
-        if selection["gaia_quality"] == "strict" and (index % 13 == 0 or index % 7 == 0):
-            continue
+        if not is_explicit_highlight:
+            if selection["gaia_quality"] == "soft" and index % 13 == 0:
+                continue
+            if selection["gaia_quality"] == "strict" and (index % 13 == 0 or index % 7 == 0):
+                continue
         if selection["filter_giants"] and mock_is_giant:
             continue
         if selection["filter_wd"] and mock_is_wd:
@@ -10745,7 +10749,7 @@ def _mock_gaia_cmd_payload(args: dict[str, Any]) -> dict[str, Any]:
             "ya_prob": ya_prob,
             "has_banyan_sigma": 1 if aid and has_banyan_sigma else 0,
             "has_literature_claim": 1 if aid and included_literature_claim else 0,
-            "highlighted": 1 if moca_oid in selection["highlight_oids"] else 0,
+            "highlighted": 1 if is_explicit_highlight else 0,
             "is_binary": 1 if index % 17 == 0 else 0,
             "photometry_source": "data_photometry" if aid and not selection["raw_gaia"] else "pcat_gaiadr3_100pc_field",
             "ruwe": round(float(rng.uniform(0.75, 2.2)), 3),
