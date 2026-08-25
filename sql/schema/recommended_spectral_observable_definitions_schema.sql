@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS `moca_spectral_observable_definitions` (
   `continuum_polynomial_degree` tinyint(3) unsigned DEFAULT NULL COMMENT 'Polynomial degree for continuum fits when applicable.',
   `combination_method` varchar(40) DEFAULT NULL COMMENT 'direct, arithmetic_mean, weighted_sum, harmonic, ratio, sum, scaled, log10, copied_from, continuum_divided_by_feature, or formula.',
   `formula_expression` text DEFAULT NULL COMMENT 'Source expression for compound definitions or special calculation notes.',
+  `uncertainty_method` varchar(40) NOT NULL DEFAULT 'legacy_monte_carlo_mad' COMMENT 'legacy_monte_carlo_mad, quadrature_of_mean, mean_input_uncertainty, trapezoidal_quadrature, or none.',
   `min_spectral_resolution` float DEFAULT NULL COMMENT 'Minimum resolving power required by the definition.',
   `min_spt` float DEFAULT NULL COMMENT 'Earliest numerical spectral type where this definition is intended.',
   `max_spt` float DEFAULT NULL COMMENT 'Latest numerical spectral type where this definition is intended.',
@@ -58,6 +59,8 @@ CREATE TABLE IF NOT EXISTS `moca_spectral_observable_bands` (
   `wavelength_start` double DEFAULT NULL COMMENT 'Band lower wavelength, in angstrom.',
   `wavelength_end` double DEFAULT NULL COMMENT 'Band upper wavelength, in angstrom.',
   `band_statistic` varchar(30) DEFAULT NULL COMMENT 'Optional statistic override for this band.',
+  `lower_inclusive` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Whether wavelength_start is included in this band.',
+  `upper_inclusive` tinyint(1) NOT NULL DEFAULT 1 COMMENT 'Whether wavelength_end is included in this band.',
   `comments` text DEFAULT NULL COMMENT 'Band-specific notes.',
   `created_timestamp` timestamp NOT NULL DEFAULT current_timestamp(),
   `modified_timestamp` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
@@ -102,12 +105,15 @@ SELECT
   d.`continuum_polynomial_degree`,
   d.`combination_method`,
   d.`formula_expression`,
+  d.`uncertainty_method`,
   d.`quality_status`,
   b.`band_order`,
   b.`band_role`,
   b.`band_label`,
   b.`wavelength_start`,
   b.`wavelength_end`,
+  b.`lower_inclusive`,
+  b.`upper_inclusive`,
   COALESCE(b.`band_statistic`, d.`band_statistic`) AS `band_statistic`
 FROM `moca_spectral_observable_definitions` d
 JOIN `moca_spectral_observable_bands` b

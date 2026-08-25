@@ -7829,6 +7829,7 @@ def _spectral_index_definition_query() -> str:
             d.continuum_polynomial_degree,
             d.combination_method,
             d.formula_expression,
+            d.uncertainty_method,
             d.min_spectral_resolution,
             d.min_spt,
             d.max_spt,
@@ -7942,6 +7943,8 @@ def _load_spectral_index_definition_from_db(conn: Any, definition_uid: str) -> d
             wavelength_start,
             wavelength_end,
             band_statistic,
+            lower_inclusive,
+            upper_inclusive,
             comments
         FROM moca_spectral_observable_bands
         WHERE definition_uid = :definition_uid

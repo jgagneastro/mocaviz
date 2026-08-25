@@ -479,10 +479,18 @@ function normalizeDefinition(definition) {
     band_role: String(band.band_role || "").toLowerCase(),
     wavelength_start: Number(band.wavelength_start),
     wavelength_end: Number(band.wavelength_end),
+    lower_inclusive: booleanValue(band.lower_inclusive, false),
+    upper_inclusive: booleanValue(band.upper_inclusive, true),
   })).filter((band) => finite(band.wavelength_start) && finite(band.wavelength_end))
     .map((band) => band.wavelength_start <= band.wavelength_end
       ? band
-      : { ...band, wavelength_start: band.wavelength_end, wavelength_end: band.wavelength_start })
+      : {
+        ...band,
+        wavelength_start: band.wavelength_end,
+        wavelength_end: band.wavelength_start,
+        lower_inclusive: band.upper_inclusive,
+        upper_inclusive: band.lower_inclusive,
+      })
     .sort((a, b) => Number(a.band_order || 0) - Number(b.band_order || 0));
   return { ...definition, bands };
 }
@@ -507,13 +515,25 @@ function bandStatistic(points, band) {
   const start = Number(band.wavelength_start);
   const end = Number(band.wavelength_end);
   const center = 0.5 * (start + end);
-  const samples = points.filter((point) => point.wavelengthAngstrom >= start && point.wavelengthAngstrom <= end);
+  const samples = points.filter((point) => {
+    const lower = band.lower_inclusive
+      ? point.wavelengthAngstrom >= start
+      : point.wavelengthAngstrom > start;
+    const upper = band.upper_inclusive
+      ? point.wavelengthAngstrom <= end
+      : point.wavelengthAngstrom < end;
+    return lower && upper;
+  });
   const statistic = String(band.band_statistic || "").toLowerCase();
   let flux = null;
   if (samples.length) {
     const values = samples.map((point) => point.flux).filter(finite);
-    flux = statistic.includes("median") ? robustMedian(values) : mean(values);
-  } else {
+    if (statistic === "integral") {
+      flux = trapezoidalBandIntegral(samples);
+    } else {
+      flux = statistic.includes("median") ? robustMedian(values) : mean(values);
+    }
+  } else if (statistic !== "integral") {
     flux = interpolateFlux(points, center);
   }
   return {
@@ -533,10 +553,12 @@ function spectralIndexCalculation(points, definition, bandStats) {
   const denominator = firstRoleStat(bandStats, "denominator");
   if (numerator && denominator && finite(numerator.flux) && finite(denominator.flux) && denominator.flux !== 0) {
     const value = numerator.flux / denominator.flux;
+    const numeratorStatistic = String(numerator.band.band_statistic || "mean").toLowerCase();
+    const denominatorStatistic = String(denominator.band.band_statistic || "mean").toLowerCase();
     return calculationResult(definition, bandStats, value, null, [
       ["numerator", numerator],
       ["denominator", denominator],
-    ], "mean(numerator) / mean(denominator)");
+    ], `${numeratorStatistic}(numerator) / ${denominatorStatistic}(denominator)`);
   }
 
   const feature = firstRoleStat(bandStats, "feature");
@@ -558,6 +580,25 @@ function spectralIndexCalculation(points, definition, bandStats) {
   }
 
   return calculationResult(definition, bandStats, null, continuum, [], "not calculable");
+}
+
+function trapezoidalBandIntegral(samples) {
+  const rows = samples
+    .filter((point) => finite(point.wavelengthAngstrom) && finite(point.flux))
+    .slice()
+    .sort((left, right) => left.wavelengthAngstrom - right.wavelengthAngstrom);
+  if (rows.length < 2) return null;
+  let integral = 0;
+  let segments = 0;
+  for (let index = 1; index < rows.length; index += 1) {
+    const left = rows[index - 1];
+    const right = rows[index];
+    const width = right.wavelengthAngstrom - left.wavelengthAngstrom;
+    if (!finite(width) || width <= 0) continue;
+    integral += 0.5 * (left.flux + right.flux) * width;
+    segments += 1;
+  }
+  return segments ? integral : null;
 }
 
 function equivalentWidthCalculation(points, definition, bandStats) {
@@ -946,6 +987,8 @@ function renderCalculationTable(calculation, processed) {
     { field: "formula", value: calculation.formula || "" },
     { field: "definition UID", value: processed.definition.definition_uid || "" },
     { field: "family", value: processed.definition.calculation_family || "" },
+    { field: "definition formula", value: processed.definition.formula_expression || "" },
+    { field: "uncertainty method", value: processed.definition.uncertainty_method || "" },
     { field: "continuum method", value: processed.definition.continuum_method || "" },
     { field: "polynomial degree", value: processed.definition.continuum_polynomial_degree ?? "" },
   ];
@@ -968,13 +1011,13 @@ function renderBandTable(bands, calculation) {
       order: band.band_order,
       role: band.band_role,
       label: band.band_label || "",
-      start_um: formatNumber(Number(band.wavelength_start) * 1e-4, 7),
-      end_um: formatNumber(Number(band.wavelength_end) * 1e-4, 7),
+      interval_um: `${band.lower_inclusive ? "[" : "("}${formatNumber(Number(band.wavelength_start) * 1e-4, 7)}, ${formatNumber(Number(band.wavelength_end) * 1e-4, 7)}${band.upper_inclusive ? "]" : ")"}`,
       rows: stat ? stat.samples.length : 0,
+      method: band.band_statistic || processed.definition.band_statistic || "",
       statistic: stat && finite(stat.flux) ? formatScientific(stat.flux) : "",
     };
   });
-  sieEl["sie-band-table"].innerHTML = tableHtml(["order", "role", "label", "start_um", "end_um", "rows", "statistic"], rows);
+  sieEl["sie-band-table"].innerHTML = tableHtml(["order", "role", "label", "interval_um", "rows", "method", "statistic"], rows);
 }
 
 function renderEmptySpectralIndex(message) {
@@ -1311,6 +1354,12 @@ function parseInteger(value) {
 
 function ignoredFlag(value) {
   return String(value || "").trim() === "1" || value === true;
+}
+
+function booleanValue(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
 }
 
 function asFalse(value) {

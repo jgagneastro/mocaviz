@@ -34,6 +34,7 @@ SELECT
     `main`.`continuum_polynomial_degree` AS `continuum_polynomial_degree`,
     `main`.`combination_method` AS `combination_method`,
     `main`.`formula_expression` AS `formula_expression`,
+    `main`.`uncertainty_method` AS `uncertainty_method`,
     `main`.`min_spectral_resolution` AS `min_spectral_resolution`,
     `main`.`min_spt` AS `min_spt`,
     `main`.`max_spt` AS `max_spt`,
@@ -63,6 +64,8 @@ SELECT
     `main`.`wavelength_start` AS `wavelength_start`,
     `main`.`wavelength_end` AS `wavelength_end`,
     `main`.`band_statistic` AS `band_statistic`,
+    `main`.`lower_inclusive` AS `lower_inclusive`,
+    `main`.`upper_inclusive` AS `upper_inclusive`,
     `main`.`comments` AS `comments`,
     `main`.`created_timestamp` AS `created_timestamp`,
     `main`.`modified_timestamp` AS `modified_timestamp`
