@@ -39,6 +39,10 @@
             <span class="range-heading"><span>Symbol size</span><output for="scatter-symbol-size" data-scatter-symbol-size-output>100%</output></span>
             <input id="scatter-symbol-size" type="range" min="50" max="200" step="10" value="100" data-scatter-symbol-size>
           </label>
+          <label class="range-label" title="Running-median smoothing of valid displayed samples; ignored points remain raw and wavelength gaps stay separate.">
+            <span class="range-heading"><span>Robust smoothing</span><output id="spe-smooth-output" for="spe-smooth-pixels">Off</output></span>
+            <input id="spe-smooth-pixels" type="range" min="1" max="101" step="2" value="1">
+          </label>
           <label class="checkline">
             <input id="spe-hover" type="checkbox">
             <span>Enable hover properties</span>
@@ -196,6 +200,7 @@
           <tr><td><code>hide_ignored</code></td><td><code>0</code> shows ignored spectral rows</td><td>Hides <code>data_spectra.ignored = 1</code> rows by default.</td></tr>
           <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for bins per μm</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
           <tr><td><code>decrease_resolution</code>, <code>display_bins</code></td><td><code>1</code> plus a positive integer</td><td>Bins plotted spectra in the browser. Uses <code>display_bins=200</code> by default and averages in log space for enabled log axes.</td></tr>
+          <tr><td><code>smooth_pixels</code></td><td>Odd integer from <code>1</code> to <code>101</code></td><td>Applies a gap-aware running median to valid displayed samples. The default <code>1</code> is off; ignored points remain raw.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows the shared 0.4–50 μm L/T/Y atomic, molecular, cloud, and broad opacity regions by default.</td></tr>
           <tr><td><code>showoh</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays vacuum OH airglow lines with opacity scaled by their catalogue strength.</td></tr>
           <tr><td><code>showhydrogen</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays the vacuum Paschen and Brackett hydrogen series, including Brγ at 2.1661 μm.</td></tr>
@@ -219,6 +224,7 @@
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
   <script src="static/spectral_line_overlays.js?v=oh-pabr-20260830a"></script>
-  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a-oh-pabr-20260830a"></script>
+  <script src="static/spectral_smoothing.js?v=robust-median-20260830a"></script>
+  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a-oh-pabr-20260830a-robust-smooth-20260830a"></script>
 </body>
 </html>

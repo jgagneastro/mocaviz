@@ -10,6 +10,7 @@ const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A656
 
 const speFeatureBands = globalThis.mocaBrownDwarfSpectralFeatureBands || [];
 const speSpectralLineOverlays = globalThis.mocaSpectralLineOverlays || {};
+const speSpectralSmoothing = globalThis.mocaSpectralSmoothing || {};
 
 const speState = {
   selected: [],
@@ -64,6 +65,8 @@ function collectSpectraElements() {
     "spe-selected-list",
     "spe-load",
     "spe-clear-selected",
+    "spe-smooth-pixels",
+    "spe-smooth-output",
     "spe-hover",
     "spe-error-shade",
     "spe-snr",
@@ -126,6 +129,11 @@ function readSpectraUrlState() {
   speEl["spe-xlog"].checked = asBool(params.get("xlog"));
   speEl["spe-ylog"].checked = asBool(params.get("ylog"));
   speEl["spe-fnu"].checked = asBool(params.get("fnu_jy") || params.get("fnu"));
+  const smoothingValue = typeof speSpectralSmoothing.normalizedSmoothingWindow === "function"
+    ? speSpectralSmoothing.normalizedSmoothingWindow(params.get("smooth_pixels") || params.get("smoothing_pixels") || params.get("smooth") || 1)
+    : 1;
+  speEl["spe-smooth-pixels"].value = String(Math.min(101, smoothingValue));
+  syncSpectraSmoothingOutput();
   speEl["spe-showfeatures"].checked = params.has("showfeatures")
     ? !asFalse(params.get("showfeatures"))
     : speDefaultShowFeatures;
@@ -173,6 +181,11 @@ function bindSpectraControls() {
     updateSpectraIgnoreControls();
     updateSpectraUrl();
     speEl["spe-search"].focus();
+  });
+  speEl["spe-smooth-pixels"].addEventListener("input", () => {
+    syncSpectraSmoothingOutput();
+    renderSpectra({ preserveViewport: true, preserveYAxis: false });
+    updateSpectraUrl();
   });
   for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-showoh", "spe-showhydrogen", "spe-disable-lowres", "spe-decrease-resolution", "spe-normalize"]) {
     speEl[id].addEventListener("change", () => {
@@ -682,12 +695,16 @@ function renderSpectra(options = {}) {
   const displayBinsText = displayResolutionDecreased
     ? ` Display resolving power is decreased to ${spectraDisplayBinsPerMicron().toLocaleString()} bins/μm${speEl["spe-xlog"].checked || speEl["spe-ylog"].checked ? " with log-space averaging for log axes" : ""}.`
     : "";
+  const smoothingPixels = spectraRobustSmoothingPixels();
+  const smoothingText = smoothingPixels > 1
+    ? ` A ${smoothingPixels.toLocaleString()}-pixel running median is applied to valid displayed samples.`
+    : "";
   const fluxUnitNotice = nonCanonicalFluxUnitCount
     ? ` ${pluralize(nonCanonicalFluxUnitCount, "spectrum uses", "spectra use")} native or relative flux units; Jy conversion is disabled and unnormalized values retain the units recorded for each spectrum.`
     : "";
   speEl["spe-hint"].textContent = ((showSnr
     ? "Displayed values are flux divided by flux uncertainty per pixel."
-    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.")) + fluxUnitNotice + displayBinsText).trim();
+    : (speEl["spe-normalize"].checked ? "Displayed fluxes are normalized by the selected wavelength range." : "Displayed fluxes use the stored spectral flux calibration.")) + fluxUnitNotice + displayBinsText + smoothingText).trim();
   renderSpectraTable();
   updateSpectraIgnoreControls();
   setSpectraLoading(false);
@@ -857,7 +874,10 @@ function processSpectraPayload() {
     }).filter((row) => finite(row.lam) && finite(row.y) && (!ylog || row.y > 0));
     const regularDisplayPoints = displayPoints.filter((row) => !row.ignored);
     const ignoredDisplayPoints = hideIgnored ? [] : displayPoints.filter((row) => row.ignored);
-    const points = displayBinSpectralPoints(regularDisplayPoints);
+    const smoothedRegularPoints = typeof speSpectralSmoothing.robustMedianSmoothPoints === "function"
+      ? speSpectralSmoothing.robustMedianSmoothPoints(regularDisplayPoints, spectraRobustSmoothingPixels())
+      : regularDisplayPoints;
+    const points = displayBinSpectralPoints(smoothedRegularPoints);
     const ignoredPoints = hideIgnored ? [] : displayBinSpectralPoints(ignoredDisplayPoints);
     const storedAverageResolvingPower = finite(spectrum.meta?.average_resolving_power)
       ? Number(spectrum.meta.average_resolving_power)
@@ -1530,6 +1550,21 @@ function spectraDisplayBinsPerMicron() {
   return speDefaultDisplayBinsPerMicron;
 }
 
+function spectraRobustSmoothingPixels() {
+  const value = speEl["spe-smooth-pixels"]?.value || 1;
+  const normalized = typeof speSpectralSmoothing.normalizedSmoothingWindow === "function"
+    ? speSpectralSmoothing.normalizedSmoothingWindow(value)
+    : Math.max(1, Math.floor(Number(value) || 1));
+  return Math.min(101, normalized);
+}
+
+function syncSpectraSmoothingOutput() {
+  const output = speEl["spe-smooth-output"];
+  if (!output) return;
+  const pixels = spectraRobustSmoothingPixels();
+  output.value = pixels === 1 ? "Off" : `${pixels} px`;
+}
+
 function renderDownloadLinks() {
   const spectra = speState.payload?.spectra || [];
   if (!spectra.length) {
@@ -2013,6 +2048,11 @@ function updateSpectraUrl() {
     if (xRangeMax !== null) params.set("xmax", formatXRangeUrlNumber(xRangeMax));
   }
   setBoolParam(params, "fnu_jy", speEl["spe-fnu"].checked);
+  const smoothingPixels = spectraRobustSmoothingPixels();
+  if (smoothingPixels > 1) params.set("smooth_pixels", String(smoothingPixels));
+  else params.delete("smooth_pixels");
+  params.delete("smoothing_pixels");
+  params.delete("smooth");
   if (!speEl["spe-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
   setBoolParam(params, "showoh", speEl["spe-showoh"].checked);

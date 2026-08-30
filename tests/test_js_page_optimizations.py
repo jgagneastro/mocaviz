@@ -843,6 +843,26 @@ class JsPageOptimizationTests(unittest.TestCase):
                 self.assertIn("plotlySpectralLineShapes", source)
                 self.assertIn("plotlySpectralLineAnnotations", source)
 
+    def test_spectral_explorer_has_gap_aware_robust_smoothing_slider(self):
+        html = (app_module.STATIC_DIR / "spectra.html").read_text(encoding="utf-8")
+        source = (app_module.STATIC_DIR / "spectra.js").read_text(encoding="utf-8")
+        asset_name = "spectral_smoothing.js"
+        asset = (app_module.STATIC_DIR / asset_name).read_text(encoding="utf-8")
+        tag = html.split('id="spe-smooth-pixels"', 1)[1].split(">", 1)[0]
+
+        self.assertIn('type="range"', tag)
+        self.assertIn('min="1"', tag)
+        self.assertIn('max="101"', tag)
+        self.assertIn('step="2"', tag)
+        self.assertIn('value="1"', tag)
+        self.assertLess(html.index(asset_name), html.index("spectra.js"))
+        self.assertIn("robustMedianSmoothPoints", asset)
+        self.assertIn("contiguousGroups", asset)
+        self.assertIn('"spe-smooth-pixels"', source)
+        self.assertIn("robustMedianSmoothPoints(regularDisplayPoints", source)
+        self.assertIn('params.set("smooth_pixels"', source)
+        self.assertIn("preserveViewport: true, preserveYAxis: false", source)
+
     def test_spectral_typing_has_global_chi2_rank_navigation(self):
         html = self.client.get("/js/spectral-typing").get_data(as_text=True)
         source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")
