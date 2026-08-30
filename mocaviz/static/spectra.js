@@ -9,6 +9,7 @@ const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
 const speFeatureBands = globalThis.mocaBrownDwarfSpectralFeatureBands || [];
+const speSpectralLineOverlays = globalThis.mocaSpectralLineOverlays || {};
 
 const speState = {
   selected: [],
@@ -71,6 +72,8 @@ function collectSpectraElements() {
     "spe-ylog",
     "spe-fnu",
     "spe-showfeatures",
+    "spe-showoh",
+    "spe-showhydrogen",
     "spe-disable-lowres-wrap",
     "spe-disable-lowres",
     "spe-decrease-resolution",
@@ -126,6 +129,8 @@ function readSpectraUrlState() {
   speEl["spe-showfeatures"].checked = params.has("showfeatures")
     ? !asFalse(params.get("showfeatures"))
     : speDefaultShowFeatures;
+  speEl["spe-showoh"].checked = asBool(params.get("showoh") || params.get("oh_lines"));
+  speEl["spe-showhydrogen"].checked = asBool(params.get("showhydrogen") || params.get("hydrogen_lines"));
   speEl["spe-disable-lowres"].checked = asBool(params.get("disable_lowres"));
   speEl["spe-decrease-resolution"].checked = asBool(
     params.get("decrease_resolution") || params.get("decrease_resolving_power") || params.get("display_lowres")
@@ -169,7 +174,7 @@ function bindSpectraControls() {
     updateSpectraUrl();
     speEl["spe-search"].focus();
   });
-  for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-disable-lowres", "spe-decrease-resolution", "spe-normalize"]) {
+  for (const id of ["spe-hover", "spe-error-shade", "spe-snr", "spe-xlog", "spe-ylog", "spe-fnu", "spe-showfeatures", "spe-showoh", "spe-showhydrogen", "spe-disable-lowres", "spe-decrease-resolution", "spe-normalize"]) {
     speEl[id].addEventListener("change", () => {
       if (id === "spe-decrease-resolution") updateSpectraDisplayResolutionControls();
       renderSpectra({
@@ -1264,6 +1269,18 @@ function spectraLayout(processed, viewport = null) {
       });
     }
   }
+  if (finite(xmin) && finite(xmax)) {
+    const lineOverlayOptions = {
+      showOh: speEl["spe-showoh"].checked,
+      showHydrogen: speEl["spe-showhydrogen"].checked,
+    };
+    if (typeof speSpectralLineOverlays.plotlySpectralLineShapes === "function") {
+      shapes.push(...speSpectralLineOverlays.plotlySpectralLineShapes([xmin, xmax], lineOverlayOptions));
+    }
+    if (typeof speSpectralLineOverlays.plotlySpectralLineAnnotations === "function") {
+      annotations.push(...speSpectralLineOverlays.plotlySpectralLineAnnotations([xmin, xmax], lineOverlayOptions));
+    }
+  }
   const xaxis = {
     title: { text: "Wavelength (μm)", font: { size: 24 }, standoff: 22 },
     type: xlog ? "log" : "linear",
@@ -1998,6 +2015,10 @@ function updateSpectraUrl() {
   setBoolParam(params, "fnu_jy", speEl["spe-fnu"].checked);
   if (!speEl["spe-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
+  setBoolParam(params, "showoh", speEl["spe-showoh"].checked);
+  setBoolParam(params, "showhydrogen", speEl["spe-showhydrogen"].checked);
+  params.delete("oh_lines");
+  params.delete("hydrogen_lines");
   setBoolParam(params, "disable_lowres", speEl["spe-disable-lowres"].checked);
   setBoolParam(params, "decrease_resolution", spectraDisplayResolutionDecreased());
   params.delete("decrease_resolving_power");

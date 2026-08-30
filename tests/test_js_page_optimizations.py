@@ -816,6 +816,33 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertIn("featureShapes(xRange)", typing_source)
         self.assertIn("featureAnnotations(xRange)", typing_source)
 
+    def test_spectral_pages_share_strength_weighted_oh_and_pabr_overlays(self):
+        asset_name = "spectral_line_overlays.js"
+        asset = (app_module.STATIC_DIR / asset_name).read_text(encoding="utf-8")
+        self.assertIn("OH_LINES", asset)
+        self.assertIn("ohLineOpacity", asset)
+        self.assertIn("plotlySpectralLineShapes", asset)
+        self.assertIn("plotlySpectralLineAnnotations", asset)
+        self.assertIn("hydrogenSeries(3, 4, 30, 'Pa', 'Paschen')", asset)
+        self.assertIn("hydrogenSeries(4, 5, 30, 'Br', 'Brackett')", asset)
+        self.assertNotIn("hydrogenSeries(2, 3, 30", asset)
+
+        for html_name, script_name, prefix in (
+            ("spectra.html", "spectra.js", "spe"),
+            ("spectral_typing.html", "spectral_typing.js", "spt"),
+        ):
+            with self.subTest(html_name=html_name):
+                html = (app_module.STATIC_DIR / html_name).read_text(encoding="utf-8")
+                source = (app_module.STATIC_DIR / script_name).read_text(encoding="utf-8")
+                for suffix in ("showoh", "showhydrogen"):
+                    tag = html.split(f'id="{prefix}-{suffix}"', 1)[1].split(">", 1)[0]
+                    self.assertNotIn("checked", tag)
+                    self.assertIn(f'"{prefix}-{suffix}"', source)
+                self.assertLess(html.index(asset_name), html.index(script_name))
+                self.assertIn("mocaSpectralLineOverlays", source)
+                self.assertIn("plotlySpectralLineShapes", source)
+                self.assertIn("plotlySpectralLineAnnotations", source)
+
     def test_spectral_typing_has_global_chi2_rank_navigation(self):
         html = self.client.get("/js/spectral-typing").get_data(as_text=True)
         source = (app_module.STATIC_DIR / "spectral_typing.js").read_text(encoding="utf-8")

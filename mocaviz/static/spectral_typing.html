@@ -151,6 +151,14 @@
             <span>Show L/T/Y chemical features (0.4–50 μm)</span>
           </label>
           <label class="checkline">
+            <input id="spt-showoh" type="checkbox">
+            <span>Show OH airglow lines (strength-weighted)</span>
+          </label>
+          <label class="checkline">
+            <input id="spt-showhydrogen" type="checkbox">
+            <span>Show Paschen + Brackett H lines</span>
+          </label>
+          <label class="checkline">
             <input id="spt-disable-lowres" type="checkbox">
             <span>Deactivate low-resolution display mode</span>
           </label>
@@ -305,6 +313,16 @@
             <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
             <td>Limits MOCA UCD templates to the <code>field</code> grid, or Pickles templates to <code>V solar M/H</code>.</td>
           </tr>
+          <tr>
+            <td><code>showoh</code></td>
+            <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
+            <td>Overlays vacuum OH airglow lines with opacity scaled by their catalogue strength.</td>
+          </tr>
+          <tr>
+            <td><code>showhydrogen</code></td>
+            <td><code>1</code>, <code>true</code>, or <code>yes</code></td>
+            <td>Overlays the vacuum Paschen and Brackett hydrogen series, including Brγ at 2.1661 μm.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -322,6 +340,7 @@
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
-  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a-field-only-20260724a-ccm-optical-20260724a-chi2-export-20260727a-resolution-symbol-20260727a-overlap-20260728a-window-mean-20260823a"></script>
+  <script src="static/spectral_line_overlays.js?v=oh-pabr-20260830a"></script>
+  <script src="static/spectral_typing.js?v=api-routing-20260710a-composite-oid-20260716b-chi2-nav-20260721a-lty-features-20260721a-resolution-match-20260722a-ebv-20260723a-field-only-20260724a-ccm-optical-20260724a-chi2-export-20260727a-resolution-symbol-20260727a-overlap-20260728a-window-mean-20260823a-oh-pabr-20260830a"></script>
 </body>
 </html>

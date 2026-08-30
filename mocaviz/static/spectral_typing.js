@@ -23,6 +23,7 @@ const sptStandardPalette = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00
 const sptCompositeColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#666666"];
 
 const sptFeatureBands = globalThis.mocaBrownDwarfSpectralFeatureBands || [];
+const sptSpectralLineOverlays = globalThis.mocaSpectralLineOverlays || {};
 
 const sptState = {
   gridOptions: [],
@@ -208,6 +209,8 @@ function collectSpectralElements() {
     "spt-fixed-param",
     "spt-allred",
     "spt-showfeatures",
+    "spt-showoh",
+    "spt-showhydrogen",
     "spt-disable-lowres",
     "spt-management-tools",
     "spt-management-proposal",
@@ -266,6 +269,8 @@ function readSpectralUrlState() {
   sptEl["spt-cloud"].checked = asSpectralBool(params.get("cloud")) || asSpectralBool(params.get("cloud_correction"));
   sptEl["spt-allred"].checked = !asFalse(params.get("allred"));
   sptEl["spt-showfeatures"].checked = !asFalse(params.get("showfeatures"));
+  sptEl["spt-showoh"].checked = asSpectralBool(params.get("showoh") || params.get("oh_lines"));
+  sptEl["spt-showhydrogen"].checked = asSpectralBool(params.get("showhydrogen") || params.get("hydrogen_lines"));
   sptEl["spt-disable-lowres"].checked = asSpectralBool(params.get("disable_lowres"));
   sptEl["spt-standards-source"].value = spectralStandardsSourceUrlValue(params);
   sptEl["spt-only-field"].checked = asSpectralBool(params.get("only_field"))
@@ -350,7 +355,7 @@ function bindSpectralControls() {
   for (const id of ["spt-bins", "spt-fixed-param"]) {
     sptEl[id].addEventListener("change", () => computeSpectralComparison());
   }
-  for (const id of ["spt-allred", "spt-showfeatures", "spt-disable-lowres"]) {
+  for (const id of ["spt-allred", "spt-showfeatures", "spt-showoh", "spt-showhydrogen", "spt-disable-lowres"]) {
     sptEl[id].addEventListener("change", () => {
       updateSpectralUrl();
       renderSpectralTyping();
@@ -1452,6 +1457,16 @@ function renderSpectrumPlot(payload, entry) {
   const yVals = values.map((row) => row.spn);
   const xRange = paddedRange(xVals, 0.015, [0.85, 2.4]);
   const yRange = paddedRange(yVals, 0.05, [0, 1.5]);
+  const lineOverlayOptions = {
+    showOh: sptEl["spt-showoh"].checked,
+    showHydrogen: sptEl["spt-showhydrogen"].checked,
+  };
+  const lineOverlayShapes = typeof sptSpectralLineOverlays.plotlySpectralLineShapes === "function"
+    ? sptSpectralLineOverlays.plotlySpectralLineShapes(xRange, lineOverlayOptions)
+    : [];
+  const lineOverlayAnnotations = typeof sptSpectralLineOverlays.plotlySpectralLineAnnotations === "function"
+    ? sptSpectralLineOverlays.plotlySpectralLineAnnotations(xRange, lineOverlayOptions)
+    : [];
   const layout = {
     title,
     paper_bgcolor: "#eeeeef",
@@ -1473,9 +1488,13 @@ function renderSpectrumPlot(payload, entry) {
       zeroline: false,
     },
     legend: { orientation: "v", x: 1.02, xanchor: "left", y: 1, bgcolor: "rgba(255,255,255,0.75)" },
-    shapes: sptEl["spt-showfeatures"].checked ? featureShapes(xRange) : [],
+    shapes: [
+      ...(sptEl["spt-showfeatures"].checked ? featureShapes(xRange) : []),
+      ...lineOverlayShapes,
+    ],
     annotations: [
       ...(sptEl["spt-showfeatures"].checked ? featureAnnotations(xRange) : []),
+      ...lineOverlayAnnotations,
       metricAnnotation(entry, payload),
     ].filter(Boolean),
   };
@@ -2487,6 +2506,12 @@ function updateSpectralUrl() {
   else params.delete("allred");
   if (!sptEl["spt-showfeatures"].checked) params.set("showfeatures", "0");
   else params.delete("showfeatures");
+  if (sptEl["spt-showoh"].checked) params.set("showoh", "1");
+  else params.delete("showoh");
+  if (sptEl["spt-showhydrogen"].checked) params.set("showhydrogen", "1");
+  else params.delete("showhydrogen");
+  params.delete("oh_lines");
+  params.delete("hydrogen_lines");
   if (sptEl["spt-disable-lowres"].checked) params.set("disable_lowres", "1");
   else params.delete("disable_lowres");
   if (selectedStandardsSource() === sptStandardsSourcePickles) params.set("standards_source", sptStandardsSourcePickles);

@@ -71,6 +71,14 @@
             <input id="spe-showfeatures" type="checkbox" checked>
             <span>Show L/T/Y chemical features (0.4–50 μm)</span>
           </label>
+          <label class="checkline">
+            <input id="spe-showoh" type="checkbox">
+            <span>Show OH airglow lines (strength-weighted)</span>
+          </label>
+          <label class="checkline">
+            <input id="spe-showhydrogen" type="checkbox">
+            <span>Show Paschen + Brackett H lines</span>
+          </label>
           <label id="spe-disable-lowres-wrap" class="checkline is-disabled">
             <input id="spe-disable-lowres" type="checkbox" disabled>
             <span>Deactivate low-resolution display mode</span>
@@ -189,6 +197,8 @@
           <tr><td><code>bins</code>, <code>bins_per_micron</code></td><td><code>0</code> for raw spectra; positive integer for bins per μm</td><td>Controls server-side wavelength binning. Defaults to raw, unbinned spectra.</td></tr>
           <tr><td><code>decrease_resolution</code>, <code>display_bins</code></td><td><code>1</code> plus a positive integer</td><td>Bins plotted spectra in the browser. Uses <code>display_bins=200</code> by default and averages in log space for enabled log axes.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows the shared 0.4–50 μm L/T/Y atomic, molecular, cloud, and broad opacity regions by default.</td></tr>
+          <tr><td><code>showoh</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays vacuum OH airglow lines with opacity scaled by their catalogue strength.</td></tr>
+          <tr><td><code>showhydrogen</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays the vacuum Paschen and Brackett hydrogen series, including Brγ at 2.1661 μm.</td></tr>
           <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
@@ -208,6 +218,7 @@
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
-  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a"></script>
+  <script src="static/spectral_line_overlays.js?v=oh-pabr-20260830a"></script>
+  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a-oh-pabr-20260830a"></script>
 </body>
 </html>
