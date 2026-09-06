@@ -685,6 +685,12 @@ function renderSpectra(options = {}) {
   const renderPromise = Plotly.react(speEl["spe-plot"], traces, layout, plotConfig("mocadb_spectral_explorer"));
   restoreSpectraViewportAfterRender(renderPromise, preservedViewport, renderToken);
   bindSpectraPlotEvents();
+  window.mocaSpectralViewport.bind(speEl["spe-plot"], Plotly, {
+    rangeForValues: (values, log) => {
+      const range = numericAxisRange(values, { log, padFraction: 0.08 });
+      return range && (log ? range.map(Math.log10) : range);
+    },
+  });
   setSpectraExportDisabled(processed.every((spectrum) => !displayedSpectrumPoints(spectrum).length));
   const rowCount = processed.reduce((sum, spectrum) => sum + spectrum.rawRows.length, 0);
   const cacheText = speState.payload.cache?.hit ? " from cache" : "";
@@ -1321,6 +1327,7 @@ function spectraLayout(processed, viewport = null) {
     }
   }
   const yaxis = {
+    fixedrange: true,
     title: { text: yAxisTitle(), font: { size: 24 } },
     type: ylog ? "log" : "linear",
     showgrid: true,

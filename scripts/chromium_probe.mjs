@@ -14,6 +14,7 @@ const REPEATABLE_KEYS = new Set([
   "expect-text",
   "expect-visible",
   "expect-wheel-zoom",
+  "expect-xzoom-autoy",
   "fill",
   "screenshot-selector",
   "select",
@@ -92,6 +93,7 @@ function usage() {
     "  --expect-count 'SEL>=N'          Require selector count comparison.",
     "  --expect-plotly 'SEL::traces>=1,shapes>=0,points>=1'",
     "  --expect-wheel-zoom SEL          Check Plotly cursor-anchored wheel zoom and reset; repeatable.",
+    "  --expect-xzoom-autoy SEL         Check x-only wheel zoom and data-fitted y using a synthetic plot fixture.",
     "",
     "Examples:",
     "  node scripts/chromium_probe.mjs --url http://127.0.0.1:8074/spectral-index-explorer?mock=1 --wait-js \"document.querySelector('#sie-plot')?.data?.length > 0\" --expect-plotly '#sie-plot::traces>=1,shapes>=2' --expect-count '#sie-band-table tbody tr>=2'",
@@ -319,12 +321,37 @@ async function runAssertions(page, args) {
     assertions.plotly.push({ selector: assertion.selector, info, conditions: conditionResults, raw: assertion.raw });
   }
 
-  for (const selector of asArray(args["expect-wheel-zoom"])) {
+  const zoomChecks = [
+    ...asArray(args["expect-wheel-zoom"]).map(selector => ({ selector, autoY: false })),
+    ...asArray(args["expect-xzoom-autoy"]).map(selector => ({ selector, autoY: true })),
+  ];
+  for (const { selector, autoY } of zoomChecks) {
     const plot = page.locator(String(selector));
     await page.waitForFunction((sel) => {
       const node = document.querySelector(sel);
       return node?.data?.length && node?._fullLayout?.xaxis?.range;
     }, String(selector));
+    // Plotly's reset target is retained when react replaces data with the fixture.
+    const resetRange = await plot.evaluate(node => [...node._fullLayout.xaxis.range]);
+    if (autoY) {
+      // Both edge peaks disappear after one inward wheel step; the remaining
+      // visible flux is flat at 2. A geometric y zoom cannot pass this check.
+      await plot.evaluate(async node => {
+        await Plotly.react(node, [
+          { x: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+            y: [100, 2, 2, null, 2, 2, 2, 2, 2, 2, 100], mode: 'lines' },
+          { x: [20, 50, 80], y: [10000, 10000, 10000], visible: 'legendonly' },
+        ], {
+          ...node.layout,
+          xaxis: { ...node.layout.xaxis, type: 'linear', range: [0, 100], autorange: false },
+          yaxis: { ...node.layout.yaxis, type: 'linear', range: [0, 120], autorange: false },
+          shapes: [], annotations: [],
+        }, node._context);
+      });
+      if (!await plot.evaluate(node => node._fullLayout.yaxis.fixedrange)) {
+        failures.push(`Vertical mouse zoom must be disabled in ${selector}`);
+      }
+    }
     const drag = plot.locator(".nsewdrag").first();
     await drag.scrollIntoViewIfNeeded();
     const box = await drag.boundingBox();
@@ -342,6 +369,14 @@ async function runAssertions(page, args) {
       return Math.abs(range[1] - range[0]) < Math.abs(span) * 0.99;
     }, { sel: String(selector), span: initialSpan });
     const zoomed = await readRange();
+    let zoomedY = null;
+    if (autoY) {
+      await page.waitForFunction(sel => {
+        const range = document.querySelector(sel)._fullLayout.yaxis.range;
+        return range[0] > 1 && range[0] < 2 && range[1] > 2 && range[1] < 3;
+      }, String(selector), { timeout: 5000 });
+      zoomedY = await plot.evaluate(node => [...node._fullLayout.yaxis.range]);
+    }
     const zoomedSpan = zoomed[1] - zoomed[0];
     const anchorError = Math.abs(zoomed[0] + fraction * zoomedSpan - anchor);
     const anchored = anchorError < Math.abs(initialSpan) * 0.002;
@@ -353,6 +388,10 @@ async function runAssertions(page, args) {
       return Math.abs(range[1] - range[0]) > Math.abs(span) * 1.01;
     }, { sel: String(selector), span: zoomedSpan });
     const zoomedOut = await readRange();
+    if (autoY) {
+      await page.waitForFunction(sel => document.querySelector(sel)._fullLayout.yaxis.range[1] > 90,
+        String(selector), { timeout: 5000 });
+    }
 
     // Zoom back in so the toolbar reset must actually restore the original extent.
     await page.mouse.wheel(0, -120);
@@ -367,10 +406,10 @@ async function runAssertions(page, args) {
       const range = document.querySelector(sel).layout.xaxis.range;
       const tolerance = Math.abs(initial[1] - initial[0]) * 1e-6;
       return range.every((value, index) => Math.abs(value - initial[index]) < tolerance);
-    }, { sel: String(selector), initial: before }, { timeout: 3000 }).catch(() => {
+    }, { sel: String(selector), initial: resetRange }, { timeout: 3000 }).catch(() => {
       failures.push(`Toolbar reset did not restore the wavelength range in ${selector}`);
     });
-    assertions.wheelZoom.push({ selector, before, zoomed, zoomedOut, reset: await readRange(), anchored });
+    assertions.wheelZoom.push({ selector, autoY, before, zoomed, zoomedY, zoomedOut, reset: await readRange(), anchored });
   }
 
   return { failures, assertions };

@@ -1481,6 +1481,7 @@ function renderSpectrumPlot(payload, entry) {
       zeroline: false,
     },
     yaxis: {
+      fixedrange: true,
       title: { text: "Normalized flux (<i>F</i><sub>λ</sub>)", font: { size: 22 } },
       tickfont: { size: 16 },
       range: yRange,
@@ -1499,6 +1500,7 @@ function renderSpectrumPlot(payload, entry) {
     ].filter(Boolean),
   };
   Plotly.react(sptEl["spt-plot"], traces, layout, plotConfig(`sptype_${comparisonIdentifier(payload)}_${entry.spectral_type || "std"}`));
+  window.mocaSpectralViewport.bind(sptEl["spt-plot"], Plotly, { padFraction: 0.05 });
 }
 
 function renderChi2Plot(payload, selectedEntry) {
@@ -1593,6 +1595,7 @@ function renderChi2Plot(payload, selectedEntry) {
       zeroline: false,
     },
     yaxis: {
+      fixedrange: true,
       title: { text: "χ²", font: { size: 22 }, standoff: 8 },
       tickfont: { size: 16 },
       type: "log",
@@ -1625,6 +1628,12 @@ function renderChi2Plot(payload, selectedEntry) {
     }],
   };
   Plotly.react(sptEl["spt-chi2-plot"], traces, layout, plotConfig(`global_chi2_${comparisonIdentifier(payload)}`));
+  window.mocaSpectralViewport.bind(sptEl["spt-chi2-plot"], Plotly, {
+    yTicks: range => {
+      const ticks = logTickSpecForRange(range);
+      return { "yaxis.tickvals": ticks.tickvals, "yaxis.ticktext": ticks.ticktext };
+    },
+  });
   sptEl["spt-chi2-plot"].on("plotly_click", (event) => {
     const point = event.points?.[0];
     const custom = point?.customdata;
