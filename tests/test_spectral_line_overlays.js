@@ -42,6 +42,21 @@ test('hydrogen catalogue contains Paschen and Brackett only, including Br gamma'
   assert.equal(annotations[0].text, 'Brγ');
 });
 
+test('hydrogen line opacity follows the expected depth order within a series', () => {
+  const paAlpha = overlays.HYDROGEN_LINES.find(line => line.label === 'Paα');
+  const paBeta = overlays.HYDROGEN_LINES.find(line => line.label === 'Paβ');
+  const pa20 = overlays.HYDROGEN_LINES.find(line => line.label === 'Pa20');
+  assert.ok(overlays.hydrogenLineOpacity(paAlpha) > overlays.hydrogenLineOpacity(paBeta));
+  assert.ok(overlays.hydrogenLineOpacity(paBeta) > overlays.hydrogenLineOpacity(pa20));
+  assert.ok(overlays.hydrogenLineOpacity(paAlpha) > 0.70);
+  assert.ok(overlays.hydrogenLineOpacity(pa20) < 0.22);
+
+  const shapes = overlays.plotlySpectralLineShapes([0.82, 1.88], { showHydrogen: true });
+  const alphaShape = shapes.find(shape => Math.abs(shape.x0 - paAlpha.wavelengthMicron) < 1e-12);
+  const betaShape = shapes.find(shape => Math.abs(shape.x0 - paBeta.wavelengthMicron) < 1e-12);
+  assert.ok(rgbaOpacity(alphaShape.line.color) > rgbaOpacity(betaShape.line.color));
+});
+
 test('line overlays remain empty while both page controls are off', () => {
   assert.deepEqual(overlays.plotlySpectralLineShapes([0.4, 5], {}), []);
   assert.deepEqual(overlays.plotlySpectralLineAnnotations([0.4, 5], {}), []);

@@ -13,6 +13,7 @@ const REPEATABLE_KEYS = new Set([
   "expect-selector",
   "expect-text",
   "expect-visible",
+  "expect-wheel-zoom",
   "fill",
   "screenshot-selector",
   "select",
@@ -90,6 +91,7 @@ function usage() {
     "  --expect-text SEL=>TEXT          Require text to contain TEXT.",
     "  --expect-count 'SEL>=N'          Require selector count comparison.",
     "  --expect-plotly 'SEL::traces>=1,shapes>=0,points>=1'",
+    "  --expect-wheel-zoom SEL          Check Plotly cursor-anchored wheel zoom and reset; repeatable.",
     "",
     "Examples:",
     "  node scripts/chromium_probe.mjs --url http://127.0.0.1:8074/spectral-index-explorer?mock=1 --wait-js \"document.querySelector('#sie-plot')?.data?.length > 0\" --expect-plotly '#sie-plot::traces>=1,shapes>=2' --expect-count '#sie-band-table tbody tr>=2'",
@@ -263,6 +265,7 @@ async function runAssertions(page, args) {
     texts: [],
     visibility: [],
     plotly: [],
+    wheelZoom: [],
   };
 
   for (const selector of asArray(args["expect-selector"]).concat(asArray(args["expect-visible"]))) {
@@ -314,6 +317,60 @@ async function runAssertions(page, args) {
       return { ...condition, actual, ok };
     });
     assertions.plotly.push({ selector: assertion.selector, info, conditions: conditionResults, raw: assertion.raw });
+  }
+
+  for (const selector of asArray(args["expect-wheel-zoom"])) {
+    const plot = page.locator(String(selector));
+    await page.waitForFunction((sel) => {
+      const node = document.querySelector(sel);
+      return node?.data?.length && node?._fullLayout?.xaxis?.range;
+    }, String(selector));
+    const drag = plot.locator(".nsewdrag").first();
+    await drag.scrollIntoViewIfNeeded();
+    const box = await drag.boundingBox();
+    if (!box) throw new Error(`No Plotly drag area for ${selector}`);
+    const readRange = () => plot.evaluate((node) => [...node._fullLayout.xaxis.range]);
+    const before = await readRange();
+    const initialSpan = before[1] - before[0];
+    const fraction = 0.3;
+    const anchor = before[0] + fraction * initialSpan;
+    const position = { x: box.width * fraction, y: box.height * 0.5 };
+    await page.mouse.move(box.x + position.x, box.y + position.y);
+    await page.mouse.wheel(0, -120);
+    await page.waitForFunction(({ sel, span }) => {
+      const range = document.querySelector(sel).layout.xaxis.range;
+      return Math.abs(range[1] - range[0]) < Math.abs(span) * 0.99;
+    }, { sel: String(selector), span: initialSpan });
+    const zoomed = await readRange();
+    const zoomedSpan = zoomed[1] - zoomed[0];
+    const anchorError = Math.abs(zoomed[0] + fraction * zoomedSpan - anchor);
+    const anchored = anchorError < Math.abs(initialSpan) * 0.002;
+    if (!anchored) failures.push(`Wheel zoom did not stay at the cursor in ${selector}`);
+
+    await page.mouse.wheel(0, 120);
+    await page.waitForFunction(({ sel, span }) => {
+      const range = document.querySelector(sel).layout.xaxis.range;
+      return Math.abs(range[1] - range[0]) > Math.abs(span) * 1.01;
+    }, { sel: String(selector), span: zoomedSpan });
+    const zoomedOut = await readRange();
+
+    // Zoom back in so the toolbar reset must actually restore the original extent.
+    await page.mouse.wheel(0, -120);
+    await page.waitForFunction(({ sel, span }) => {
+      const range = document.querySelector(sel).layout.xaxis.range;
+      return Math.abs(range[1] - range[0]) < Math.abs(span) * 0.99;
+    }, { sel: String(selector), span: initialSpan });
+    // Plotly finishes each wheel gesture on a short timer before accepting clicks.
+    await page.waitForTimeout(500);
+    await plot.locator('.modebar-btn[data-attr="zoom"][data-val="reset"]').click();
+    await page.waitForFunction(({ sel, initial }) => {
+      const range = document.querySelector(sel).layout.xaxis.range;
+      const tolerance = Math.abs(initial[1] - initial[0]) * 1e-6;
+      return range.every((value, index) => Math.abs(value - initial[index]) < tolerance);
+    }, { sel: String(selector), initial: before }, { timeout: 3000 }).catch(() => {
+      failures.push(`Toolbar reset did not restore the wavelength range in ${selector}`);
+    });
+    assertions.wheelZoom.push({ selector, before, zoomed, zoomedOut, reset: await readRange(), anchored });
   }
 
   return { failures, assertions };

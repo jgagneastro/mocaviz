@@ -2432,6 +2432,7 @@ function paddedRange(values, fraction, fallback) {
 function plotConfig(filename) {
   return {
     responsive: true,
+    scrollZoom: true,
     displaylogo: false,
     toImageButtonOptions: {
       format: "png",

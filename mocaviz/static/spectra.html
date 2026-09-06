@@ -156,6 +156,7 @@
           <div class="spectra-summary">
             <div id="spe-summary">No spectra loaded</div>
             <div id="spe-hint" class="plot-hint">Select spectra to compare their wavelength coverage and flux shape.</div>
+            <div class="plot-hint">Scroll over the plot to zoom at the cursor; use Reset axes in the plot toolbar to reset.</div>
           </div>
           <div class="export-actions spectra-actions">
             <button id="spe-export-csv" type="button" disabled>Export plotted CSV</button>
@@ -203,7 +204,7 @@
           <tr><td><code>smooth_pixels</code></td><td>Odd integer from <code>1</code> to <code>101</code></td><td>Applies a gap-aware running median to valid displayed samples. The default <code>1</code> is off; ignored points remain raw.</td></tr>
           <tr><td><code>showfeatures</code></td><td><code>0</code> hides features</td><td>Shows the shared 0.4–50 μm L/T/Y atomic, molecular, cloud, and broad opacity regions by default.</td></tr>
           <tr><td><code>showoh</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays vacuum OH airglow lines with opacity scaled by their catalogue strength.</td></tr>
-          <tr><td><code>showhydrogen</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays the vacuum Paschen and Brackett hydrogen series, including Brγ at 2.1661 μm.</td></tr>
+          <tr><td><code>showhydrogen</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Overlays the vacuum Paschen and Brackett hydrogen series, including Brγ at 2.1661 μm, with stronger low-order lines drawn more opaquely.</td></tr>
           <tr><td><code>disable_lowres</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Draws low-resolution spectra as normal lines instead of open markers.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
@@ -223,8 +224,8 @@
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
   <script src="static/brown_dwarf_spectral_features.js?v=lty-0p4-50-20260721a"></script>
-  <script src="static/spectral_line_overlays.js?v=oh-pabr-20260830a"></script>
+  <script src="static/spectral_line_overlays.js?v=oh-pabr-depth-20260906a"></script>
   <script src="static/spectral_smoothing.js?v=robust-median-20260830a"></script>
-  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a-oh-pabr-20260830a-robust-smooth-20260830a"></script>
+  <script src="static/spectra.js?v=api-routing-20260710a-lty-features-20260721a-preserve-zoom-20260723c-spectral-typing-link-20260728a-oh-pabr-20260830a-robust-smooth-20260830a-scroll-zoom-20260906a"></script>
 </body>
 </html>

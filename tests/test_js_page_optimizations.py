@@ -821,6 +821,7 @@ class JsPageOptimizationTests(unittest.TestCase):
         asset = (app_module.STATIC_DIR / asset_name).read_text(encoding="utf-8")
         self.assertIn("OH_LINES", asset)
         self.assertIn("ohLineOpacity", asset)
+        self.assertIn("hydrogenLineOpacity", asset)
         self.assertIn("plotlySpectralLineShapes", asset)
         self.assertIn("plotlySpectralLineAnnotations", asset)
         self.assertIn("hydrogenSeries(3, 4, 30, 'Pa', 'Paschen')", asset)

@@ -2493,6 +2493,7 @@ function plotConfig(filename) {
   const managementMode = spectraManagementToolsVisible();
   const config = {
     responsive: true,
+    scrollZoom: true,
     displaylogo: false,
     toImageButtonOptions: {
       format: "png",

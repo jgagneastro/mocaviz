@@ -207,6 +207,13 @@
     ...hydrogenSeries(4, 5, 30, 'Br', 'Brackett'),
   ].sort((left, right) => left.wavelengthMicron - right.wavelengthMicron));
 
+  function hydrogenLineOpacity(line) {
+    const priority = Number(line?.priority);
+    if (!Number.isFinite(priority) || priority < 0) return 0.10;
+    const relativeDepth = 1 / ((priority + 1) ** 0.65);
+    return 0.10 + 0.62 * relativeDepth;
+  }
+
   function itemsInMicronRange(items, range, wavelengthKey = 'wavelengthMicron') {
     const low = Math.min(Number(range?.[0]), Number(range?.[1]));
     const high = Math.max(Number(range?.[0]), Number(range?.[1]));
@@ -253,6 +260,7 @@
     if (options.showHydrogen) {
       for (const line of itemsInMicronRange(HYDROGEN_LINES, range)) {
         const color = line.series === 'Paschen' ? '255, 166, 87' : '210, 168, 255';
+        const opacity = hydrogenLineOpacity(line);
         shapes.push({
           type: 'line',
           xref: 'x',
@@ -261,7 +269,7 @@
           x1: line.wavelengthMicron,
           y0: 0,
           y1: 1,
-          line: { color: `rgba(${color}, 0.48)`, width: line.priority < 4 ? 1.25 : 0.75 },
+          line: { color: `rgba(${color}, ${opacity.toFixed(3)})`, width: line.priority < 4 ? 1.25 : 0.75 },
           layer: 'below',
         });
       }
@@ -296,6 +304,7 @@
     OH_LINES,
     OH_MAX_RELATIVE_AMPLITUDE,
     OH_SOURCE,
+    hydrogenLineOpacity,
     hydrogenSeries,
     itemsInMicronRange,
     ohLineOpacity,
