@@ -42,7 +42,7 @@ class BdPhotometryParallaxTests(unittest.TestCase):
             self.assertIn(f'tableColumn("{column}")', table_block)
             self.assertIn(f'"{column}"', export_block)
 
-    def test_photometric_distance_option_is_the_inverse_parallax_filter(self):
+    def test_photometric_distance_option_only_controls_absolute_magnitude_distances(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
         html = self.client.get("/js/bd-colors").get_data(as_text=True)
         build_rows_block = script.split("function buildRows()", 1)[1].split(
@@ -63,16 +63,28 @@ class BdPhotometryParallaxTests(unittest.TestCase):
         )
         self.assertIn("function applyPhotometricDistanceDefault()", script)
         self.assertIn("const checked = false;", script)
-        self.assertIn("const includePhotdist = includePhotometricDistances()", build_rows_block)
         self.assertIn("const usePhotdistForAxes = usePhotometricDistancesForAxes()", build_rows_block)
         self.assertIn(
             "is_photometric_distance: usePhotdistForAxes &&",
             build_rows_block,
         )
-        self.assertIn(
-            "if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;",
+        self.assertNotIn(
+            "!Number.isFinite(numericValue(object.parallax_mas))",
             build_rows_block,
         )
+
+    def test_absolute_magnitude_falls_back_to_the_adopted_parallax(self):
+        script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        best_distance_block = script.split("function bestDistance(oid, includePhotdist)", 1)[1].split(
+            "function isBinary",
+            1,
+        )[0]
+
+        self.assertIn("distanceFromAdoptedParallax(oid)", best_distance_block)
+        self.assertIn("if (!Number.isFinite(parallaxMas) || parallaxMas <= 0) return null;", best_distance_block)
+        self.assertIn("const distancePc = 1000 / parallaxMas;", best_distance_block)
+        self.assertIn("dmod: 10 - 5 * Math.log10(parallaxMas)", best_distance_block)
+        self.assertIn("dmod_unc: fractionalError === null ? null : (5 / Math.LN10) * fractionalError", best_distance_block)
 
     def test_rich_gravity_categories_are_wired_to_js_controls_and_markers(self):
         script = (app_module.STATIC_DIR / "app.js").read_text(encoding="utf-8")

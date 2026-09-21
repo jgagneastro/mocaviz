@@ -2583,7 +2583,6 @@ function legendFilteredRows(rows) {
 function buildRows() {
   const range = parseSptRange(el["spt-range"].value);
   const highlighted = highlightedOidSet();
-  const includePhotdist = includePhotometricDistances();
   const usePhotdistForAxes = usePhotometricDistancesForAxes();
   const includeBinaries = el["include-binaries"].checked;
   const includePhotspt = el["include-photspt"].checked;
@@ -2601,7 +2600,6 @@ function buildRows() {
     const photometricSpt = Number(object.spectral_type_photometric_estimate || 0) === 1;
     if (!Number.isFinite(spt)) continue;
     if (!spherexVettingAllowsObject(oid)) continue;
-    if (!includePhotdist && !Number.isFinite(numericValue(object.parallax_mas))) continue;
     if (range && (spt < range.min || spt > range.max) && !isHighlighted) continue;
     if (!includeBinaries && binary && !isHighlighted) continue;
     if (!includePhotspt && photometricSpt && !isHighlighted) continue;
@@ -2937,8 +2935,29 @@ function italicBandAxisLabel(label) {
 
 function bestDistance(oid, includePhotdist) {
   const rows = state.maps.distanceByOid.get(Number(oid)) || [];
-  if (includePhotdist) return rows[0] || null;
-  return rows.find((row) => Number(row.photometric_estimate || 0) !== 1) || null;
+  if (includePhotdist && rows.length) return rows[0];
+  const trigonometricDistance = rows.find((row) => Number(row.photometric_estimate || 0) !== 1);
+  return trigonometricDistance || distanceFromAdoptedParallax(oid);
+}
+
+function distanceFromAdoptedParallax(oid) {
+  const object = state.maps.objectByOid.get(Number(oid));
+  const parallaxMas = numericValue(object?.parallax_mas);
+  if (!Number.isFinite(parallaxMas) || parallaxMas <= 0) return null;
+
+  const parallaxMasError = numericValue(object?.parallax_mas_error);
+  const hasParallaxError = Number.isFinite(parallaxMasError) && parallaxMasError >= 0;
+  const distancePc = 1000 / parallaxMas;
+  const fractionalError = hasParallaxError ? parallaxMasError / parallaxMas : null;
+  return {
+    moca_oid: Number(oid),
+    distance_pc: distancePc,
+    distance_pc_unc: fractionalError === null ? null : distancePc * fractionalError,
+    dmod: 10 - 5 * Math.log10(parallaxMas),
+    dmod_unc: fractionalError === null ? null : (5 / Math.LN10) * fractionalError,
+    photometric_estimate: 0,
+    distance_ref: object?.parallax_ref || "Adopted parallax",
+  };
 }
 
 function isBinary(object) {
