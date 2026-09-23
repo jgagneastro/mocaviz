@@ -18,7 +18,7 @@ const dataPointOpacity = 0.7;
 const memberPointSize = 4.4;
 const overlayPointRadius = 4.8;
 const highlightSizeScale = 0.4;
-const highlightLineWidth = 1.0;
+const highlightLineRadius = 3.2;
 const selectionColor = "#ffd21a";
 const highlightMarkerColor = "#ffea00";
 const verticalReferenceAxisScale = 0.25;
@@ -415,8 +415,16 @@ function addOverlayObjects(panel) {
   (panel.data.overlayRows || []).forEach((row) => {
     if (row.rvLine) {
       const points = row.rvLine.x.map((value, index) => new THREE.Vector3(value, row.rvLine.y[index], row.rvLine.z[index]));
-      const line = lineFromPoints(points, "#f8f8f8", highlightLineWidth);
+      const line = tubeFromPoints(points, highlightMarkerColor, highlightLineRadius, 0.98);
       line.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight-line", row };
+      line.material.depthTest = false;
+      line.renderOrder = 900;
+      const designation = row.designation || row.label || `oid${row.moca_oid}`;
+      const text = row.rvLine.rangeLabel ? `${designation} (${row.rvLine.rangeLabel})` : designation;
+      const label = highlightObjectLabel(text, line.userData.aid, highlightMarkerColor);
+      label.position.copy(points[0]).lerp(points[points.length - 1], 0.5);
+      label.center.set(0.5, 1.6);
+      line.add(label);
       panel.dataGroup.add(line);
       return;
     }

@@ -30,7 +30,7 @@ const xuvCleanPlaneColor = "#73c9ff";
 const xuvMemberPointSize = 4.4;
 const xuvOverlayPointRadius = 4.8;
 const xuvHighlightSizeScale = 0.4;
-const xuvHighlightLineWidth = 1.0;
+const xuvHighlightLineRadius = 3.2;
 const xuvDataPointOpacity = 0.7;
 const xuvSelectionColor = "#ffd21a";
 const xuvHighlightMarkerColor = "#ffea00";
@@ -844,8 +844,16 @@ function addOverlayObjects(rows, showAxes = false) {
   rows.forEach((row) => {
     if (row.rvLine) {
       const points = row.rvLine.x.map((value, index) => new THREE.Vector3(value, row.rvLine.y[index], row.rvLine.z[index]));
-      const line = lineFromPoints(points, "#f8f8f8", xuvHighlightLineWidth, 0.9);
+      // Use a tube because WebGL native lines are limited to one pixel on many GPUs.
+      const line = tubeFromPoints(points, xuvHighlightMarkerColor, xuvHighlightLineRadius, 0.98);
       line.userData = { aid: row.moca_aid || "Highlighted", kind: "highlight-line", row };
+      line.material.depthTest = false;
+      line.renderOrder = 900;
+      const designation = row.designation || row.label || `oid${row.moca_oid}`;
+      const label = highlightObjectLabel(`${designation} (${row.rvLine.rangeLabel})`, line.userData.aid, xuvHighlightMarkerColor);
+      label.position.copy(points[0]).lerp(points[points.length - 1], 0.5);
+      label.center.set(0.5, 1.6);
+      line.add(label);
       xuvState.three.dataGroup.add(line);
       return;
     }
@@ -1913,7 +1921,12 @@ function jacobiEigen3(input) {
 function rvLineForObject(row, axes) {
   if (!finite(row.ra) || !finite(row.dec) || !finite(row.pmra_masyr) || !finite(row.pmdec_masyr) || !finite(row.distance_pc)) return null;
   const uvw = equatorialUVW(Number(row.ra), Number(row.dec), Number(row.pmra_masyr), Number(row.pmdec_masyr), xuvRvRange, Number(row.distance_pc));
-  const output = { x: [], y: [], z: [] };
+  const rvMin = Math.min(...xuvRvRange);
+  const rvMax = Math.max(...xuvRvRange);
+  const rangeLabel = rvMin === -rvMax
+    ? `RV ± ${rvMax} km/s`
+    : `RV ${rvMin} to ${rvMax} km/s`;
+  const output = { x: [], y: [], z: [], rangeLabel };
   xuvRvRange.forEach((_rv, index) => {
     const point = axes.map((axis) => {
       if (axis === "u") return uvw.u[index] * xuvState.cValue;
@@ -2615,7 +2628,7 @@ async function buildFrozenStandaloneHtml(snapshot) {
     galaxyDataUrl,
   ] = await Promise.all([
     fetchFrozenAssetText("static/styles.css"),
-    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=opt-audit-20260709a"),
+    fetchFrozenAssetText("static/xyzuvw_frozen_scene.js?v=rv-highlight-20260923a"),
     fetchFrozenAssetText("static/vendor/three/three.module.min.js"),
     fetchFrozenAssetText("static/vendor/three/controls/OrbitControls.js"),
     fetchFrozenAssetText("static/vendor/three/renderers/CSS2DRenderer.js"),
