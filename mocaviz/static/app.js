@@ -272,6 +272,7 @@ function collectElements() {
     "highlight-ya-prob-output",
     "highlight-association-status",
     "highlight-oids",
+    "exclude-large-errors",
     "xerr-max",
     "yerr-max",
     "only-best-measurement",
@@ -350,6 +351,7 @@ function readInitialUrlState() {
   const yaProbMin = firstUrlParam(params, "highlight_ya_prob_min", "highlight_min_ya_prob", "highlight_membership_prob_min", "banyan_ya_prob_min", "ya_prob_min");
   if (yaProbMin !== null) el["highlight-ya-prob-min"].value = String(clamp(Number(yaProbMin), 0, 100));
   updateAssociationYaProbOutput();
+  el["exclude-large-errors"].checked = asBool(params.get("exclude_large_errors"));
   el["xerr-max"].value = params.get("xerr_max") || "";
   el["yerr-max"].value = params.get("yerr_max") || "";
   el["show-errors"].checked = asBool(params.get("errors"));
@@ -443,6 +445,10 @@ function bindControls() {
       requestInitialAxisRange();
       render();
     }
+  });
+  el["exclude-large-errors"].addEventListener("change", () => {
+    requestInitialAxisRange();
+    render();
   });
   for (const id of ["xerr-max", "yerr-max"]) {
     el[id].addEventListener("input", () => {
@@ -1003,6 +1009,8 @@ function updateUrlFromControls() {
   params.delete("color_by_gravity");
   params.delete("rich_gravity");
   params.delete("rich_gravity_categories");
+  if (el["exclude-large-errors"].checked) params.set("exclude_large_errors", "1");
+  else params.delete("exclude_large_errors");
   copyInputValueToParam(params, "xerr_max", "xerr-max");
   copyInputValueToParam(params, "yerr_max", "yerr-max");
   const query = params.toString();
@@ -2654,6 +2662,7 @@ function buildRows() {
         highlight_ya_prob: associationHighlight?.yaProb ?? null,
         noisy: isNoisy(x.error, numericValue(el["xerr-max"].value)) || isNoisy(y.error, numericValue(el["yerr-max"].value)),
       };
+      if (el["exclude-large-errors"].checked && row.noisy) continue;
       row.hover = hoverText(row);
       rows.push(row);
     }
