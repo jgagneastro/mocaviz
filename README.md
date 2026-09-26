@@ -44,6 +44,15 @@ Then open `http://127.0.0.1:8050/`. A network-free page check can use
 
 MOCAviz is tested with Python 3.11+.
 
+## SPHEREx autotype and visual quality review
+
+The /spherex-autotype and /spherex-review pages support SPIFF, SPIFFStacker and
+SUBLIMEaperture spectra directly from MOCAdb. They accept URL credentials only,
+require management credentials for database changes, and render figures in the
+browser without server file output. See [usage, security and deployment
+instructions](docs/spherex-review.md), including the proxy logging/buffering
+settings needed to retain the no-file-write contract in production.
+
 ## Batch spectral-typing chi-squared exports
 
 `scripts/batch_spectral_typing_chi2.py` processes a CSV, TSV, or

@@ -154,6 +154,7 @@ _ENCODED_RESPONSE_INFLIGHT: dict[str, Event] = {}
 def _is_cacheable_api_request() -> bool:
     return (
         request.method == "GET"
+        and request.blueprint not in {"spherex_review", "spherex_review_compat"}
         and ENCODED_RESPONSE_CACHE_SECONDS > 0
         and (request.path.startswith("/api/") or request.path.startswith("/js/api/"))
     )
@@ -182,6 +183,11 @@ def _cached_response(entry: tuple[float, int, list[tuple[str, str]], bytes]) -> 
     return response
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+
+from .spherex_review import review as spherex_review_blueprint
+
+app.register_blueprint(spherex_review_blueprint)
+app.register_blueprint(spherex_review_blueprint, url_prefix="/js", name="spherex_review_compat")
 
 
 @app.before_request

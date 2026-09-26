@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>SPHEREx autotype & quality review · MOCAdb</title>
+  <script>
+    // Capture URL credentials before loading assets, then remove them from the
+    // current history entry. They remain only in this tab's JavaScript memory.
+    (() => {
+      const query = new URLSearchParams(location.search);
+      const fragment = new URLSearchParams(location.hash.slice(1));
+      const keys = ["user", "username", "pwd", "password", "dbase", "db", "database", "host", "port"];
+      const params = new URLSearchParams(query);
+      for (const key of keys) if (fragment.has(key)) params.set(key, fragment.get(key));
+      window.__spherexURLAuth = {
+        user: params.get("user") || params.get("username") || "",
+        password: params.get("pwd") || params.get("password") || "",
+        database: params.get("dbase") || params.get("db") || params.get("database") || "",
+        host: params.get("host") || "mocadb.ca", port: params.get("port") || "3306"
+      };
+      for (const key of keys) { query.delete(key); fragment.delete(key); }
+      const search = query.toString(), hash = fragment.toString();
+      history.replaceState(null, "", location.pathname + (search ? "?" + search : "") + (hash ? "#" + hash : ""));
+    })();
+  </script>
+  <link rel="stylesheet" href="static/spherex_review.css?v=20260926a">
+  <script defer src="plotly.min.js"></script>
+  <script defer src="static/spherex_review.js?v=20260926a"></script>
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">MOCAdb / SPHEREx</span><h1>Autotype & quality review</h1></div>
+    <div class="session"><span id="access">Connecting…</span><span id="submitting" aria-live="polite">0 results currently submitting to mocadb</span></div>
+  </header>
+  <main>
+    <aside>
+      <section>
+        <h2>Review queue</h2>
+        <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
+        <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
+        <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label>Stored type ≥<input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
+        <label class="check"><input id="pending-only" type="checkbox" checked>Unclassified only</label>
+        <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types</label>
+        <button id="load">Load queue [Alt+L]</button>
+        <button id="more" disabled>Next batch [Alt+N]</button>
+        <small id="queue-info">Up to 100 objects per batch.</small>
+      </section>
+      <section>
+        <h2>Template fit</h2>
+        <div class="pair"><label>Drop worst N<input id="drop" type="number" min="0" max="100" value="5"></label><label>χ² sigma cap<input id="cap" type="number" min="0.1" max="100" value="5" step="0.1"></label></div>
+        <div class="pair"><label>Non-field odds<input id="odds" type="number" min="1" max="1000000000" value="500"></label><label>Extreme odds<input id="extreme" type="number" min="1" max="1000000000000" value="500000"></label></div>
+        <button id="refit">Refit [Alt+F]</button>
+        <p class="hint">Fits and figures stay in memory. No PNGs, sidecars, or server files are created.</p>
+      </section>
+      <section id="write-settings">
+        <h2>Database submission</h2>
+        <label class="check"><input id="write-enabled" type="checkbox" disabled>Enable submissions for this tab</label>
+        <label>New spectral-type visibility<select id="visibility"><option value="0">Private</option><option value="1">Public</option></select></label>
+        <label>Private RLS<input id="rls" value="gagne" maxlength="20"></label>
+        <label>Vetting source<input id="sources" value="mocaviz" maxlength="255"></label>
+        <label class="check"><input id="replace" type="checkbox">Allow replacing stored results</label>
+        <p class="hint">Quality decisions preserve existing autotype values and update their usable/ignored state. Rejected classes also ignore spectra in this lane. The explicit “Save type” action replaces the autotype fit.</p>
+        <button id="preview">Preview write [Alt+P]</button>
+        <button id="save-type" disabled>Save type [Alt+S]</button>
+        <button id="bad-pixels" disabled>Flag bad pixels [Alt+B]</button>
+      </section>
+    </aside>
+    <article>
+      <div id="status" role="status">Opening reviewer…</div>
+      <div id="errors" role="alert" hidden></div>
+      <div class="object-heading"><div><h2 id="object-title">Select a queue</h2><div id="object-meta"></div></div><span id="position"></span></div>
+      <div class="navigation">
+        <button id="first">First [Home]</button><button id="previous">Previous [←/↑]</button>
+        <button id="next">Next [→/↓]</button><button id="last">Last [End]</button>
+        <button id="undo" disabled>Undo [Backspace/U]</button>
+        <button id="report">MOCAdb [O]</button><button id="wiseview">WiseView [W]</button>
+        <button id="retry" disabled>Retry failed [Alt+R]</button><button id="quit">Quit [Q]</button>
+      </div>
+      <div id="plot" aria-label="Spectrum and best matching templates"></div>
+      <div class="result-strip"><strong id="best-type">No fit loaded</strong><span id="fit-detail"></span></div>
+      <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
+      <details><summary>Template ranking and stored result</summary><div class="table-wrap"><table><thead><tr><th>Type</th><th>Grid</th><th>Score</th><th>χ² (robust)</th><th>Points</th></tr></thead><tbody id="matches"></tbody></table></div><pre id="stored"></pre></details>
+      <details id="preview-panel"><summary>Write preview (no database changes)</summary><pre id="preview-output">Use “Preview write” to inspect the current best-fit upsert.</pre></details>
+      <footer>Fitting uses the desktop autotype algorithm. Figures are rendered in your browser. Credentials, queue and undo history are kept only in this tab; reopen your original URL after a refresh.</footer>
+    </article>
+  </main>
+</body>
+</html>
