@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <script src="static/spectrum_compare/access.js?v=20260926-1"></script>
+  <script>
+    window.comparisonAccess = SpectrumCompareAccess.fromURL(location.href);
+    // Remove credentials before loading additional assets or opening reports.
+    history.replaceState(null, '', window.comparisonAccess.cleanURL);
+  </script>
+  <title>MOCAdb reduction comparison</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --muted:#8b949e; --text:#e6edf3; --accent:#58a6ff; }
+    * { box-sizing:border-box; }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--text); font:14px/1.35 system-ui,-apple-system,sans-serif; overflow:hidden; }
+    body { display:grid; grid-template-rows:auto 1fr; }
+    header { display:flex; flex-wrap:wrap; gap:9px; align-items:center; padding:9px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
+    select,button,label.control { height:34px; border:1px solid var(--line); border-radius:6px; background:#21262d; color:var(--text); padding:0 10px; }
+    select { min-width:330px; }
+    #sort { min-width:205px; }
+    button { cursor:pointer; }
+    button:hover { border-color:var(--accent); }
+    button:disabled { opacity:.45; cursor:default; }
+    dialog { max-width:min(440px,90vw); color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    dialog::backdrop { background:rgba(0,0,0,.75); }
+    #access-form { display:grid; gap:12px; }
+    #access-form label { display:grid; gap:4px; }
+    #access-form input,#access-form select { min-width:0; width:100%; height:36px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:6px; }
+    #access-message { max-width:38em; color:var(--muted); }
+    label.control { display:flex; align-items:center; gap:6px; }
+    label.control.smoothing-control { padding-right:8px; }
+    #smooth-velocity { width:140px; accent-color:var(--accent); }
+    #smooth-velocity-output { min-width:80px; color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+    #smoothing-preview-label { visibility:hidden; color:#d29922; font-size:10px; font-weight:500; white-space:nowrap; }
+    label.control.overlay { border-color:#394557; background:#1b222c; }
+    .overlay-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+    #status { margin-left:auto; color:var(--muted); white-space:nowrap; }
+    main { min-height:0; display:grid; grid-template-columns:350px 1fr; }
+    aside { min-height:0; display:grid; grid-template-rows:auto auto 1fr; border-right:1px solid var(--line); background:var(--panel); }
+    #filter { margin:9px; height:34px; border:1px solid var(--line); border-radius:6px; background:#0d1117; color:var(--text); padding:0 9px; }
+    #filter-count { margin:0 12px 7px; color:var(--muted); font-size:12px; }
+    #spectra { overflow:auto; padding:0 7px 10px; }
+    .item { width:100%; text-align:left; height:auto; padding:8px; margin:2px 0; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--text); }
+    .item:hover { background:#21262d; }
+    .item.active { background:#1f354d; border-color:var(--accent); }
+    .item .sub { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
+    .badge { display:inline-block; color:#3fb950; margin-left:5px; }
+    section { min-width:0; min-height:0; display:grid; grid-template-rows:auto 1fr auto; }
+    #meta { padding:7px 12px 6px; color:var(--muted); min-height:52px; border-bottom:1px solid var(--line); overflow:hidden; }
+    #meta-primary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #meta-warnings { margin-top:2px; color:rgba(139,148,158,.72); font-size:11px; line-height:1.45; white-space:pre-line; overflow-wrap:anywhere; max-height:8.7em; overflow:auto; }
+    #meta-warnings:focus-visible { outline:1px solid var(--accent); outline-offset:1px; }
+    #meta-warnings.has-warnings { color:rgba(210,153,34,.82); }
+    #plot-wrap { min-height:0; position:relative; }
+    canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+    #cursor-readout { position:absolute; display:none; z-index:2; pointer-events:none; padding:2px 5px; border:1px solid rgba(139,148,158,.35); border-radius:4px; background:rgba(13,17,23,.82); color:rgba(230,237,243,.78); font:11px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; box-shadow:0 1px 4px rgba(0,0,0,.18); }
+    #empty,#loading { position:absolute; inset:0; place-items:center; color:var(--muted); pointer-events:none; }
+    #empty { display:grid; }
+    #loading { display:none; align-content:center; justify-content:center; gap:10px; }
+    .spinner { width:30px; height:30px; border:3px solid #30363d; border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media(prefers-reduced-motion:reduce) { .spinner { animation-duration:1.8s; } }
+    #legend { display:flex; flex-wrap:wrap; gap:10px; padding:8px 12px; border-top:1px solid var(--line); min-height:39px; }
+    #legend .legend-item { display:flex; gap:6px; align-items:center; max-width:420px; padding:6px 8px; border:1px solid transparent; border-radius:6px; cursor:pointer; user-select:none; }
+    #legend .legend-item:hover { border-color:#445365; background:#1b222c; }
+    .swatch { width:36px; height:4px; flex:0 0 36px; border-radius:2px; display:inline-block; }
+    .swatch.approximate { height:0; border-top:3px dashed currentColor; border-radius:0; background:none !important; }
+    .ignored-swatch { width:7px; height:7px; border-radius:50%; display:inline-block; background:#ff6b6b; }
+    @media(max-width:800px) { main{grid-template-columns:250px 1fr} select{min-width:220px} }
+    /* Phone browsers need document scrolling when the wrapped toolbar is tall. */
+    @media (max-width:800px), (max-width:1100px) and (max-height:600px) {
+      html { height:auto; min-height:100%; overflow:auto; }
+      body { height:auto; min-height:100vh; min-height:100svh; display:block; overflow:visible; }
+      header { gap:6px; }
+      select,#sort { min-width:0; max-width:100%; }
+      label.control { max-width:100%; }
+      label.control.smoothing-control { flex-wrap:wrap; height:auto; min-height:34px; padding:6px 10px; }
+      #smoothing-preview-label { white-space:normal; }
+      #smoothing-preview-label[aria-hidden="true"] { display:none; }
+      #status { white-space:normal; overflow-wrap:anywhere; }
+      main { grid-template-columns:220px minmax(0,1fr); align-items:start; }
+      aside { height:400px; min-height:200px; max-height:80svh; min-width:0; }
+      #filter { min-width:0; }
+      .item,#legend .legend-item { overflow-wrap:anywhere; }
+      section { grid-template-rows:auto auto auto; }
+      #meta-primary { white-space:normal; overflow-wrap:anywhere; }
+      #plot-wrap { height:360px; height:clamp(320px,65svh,600px); }
+      canvas { touch-action:pan-y pinch-zoom; }
+    }
+    @media (max-width:600px) {
+      main { grid-template-columns:minmax(0,1fr); }
+      section { grid-row:1; }
+      aside { border-right:0; border-top:1px solid var(--line); height:280px; }
+      #legend .legend-item { max-width:100%; }
+    }
+  </style>
+</head>
+<body>
+  <dialog id="access-dialog" aria-labelledby="access-title">
+    <form id="access-form" autocomplete="off">
+      <strong id="access-title">Private reduction comparison</strong>
+      <div id="access-message" role="status">Enter your collaborator credentials to load spectra.</div>
+      <label>Username<select id="access-user"><option value="collaborators">collaborators</option><option value="management">management</option></select></label>
+      <label>Password<input id="access-password" type="password" required autocomplete="off"></label>
+      <button type="submit">Open reviewer [Enter]</button>
+    </form>
+  </dialog>
+  <header>
+    <select id="package" aria-label="Spectrum package"></select>
+    <select id="sort" aria-label="Sort spectra">
+      <option value="modified-desc">Modified: newest first</option>
+      <option value="modified-asc">Modified: oldest first</option>
+      <option value="observing-night">Observing night</option>
+    </select>
+    <button id="prev" title="Previous spectrum (← or ↑)">← ↑</button>
+    <button id="next" title="Next spectrum (→ or ↓)">→ ↓</button>
+    <button id="first">First [Home]</button>
+    <button id="last">Last [End]</button>
+    <button id="open-report" title="Open MOCAdb object report (O)" disabled>Object report [O]</button>
+    <button id="wiseview" disabled>WiseView [W]</button>
+    <button id="robust">Robust y [R]</button>
+    <button id="minmax">Min/max y [M]</button>
+    <button id="reset">Reset zoom [Z]</button>
+    <button id="quit">Sign out [Q]</button>
+    <label class="control"><input id="normalize" type="checkbox" checked> Normalize</label>
+    <label class="control smoothing-control" title="Target velocity resolution in km/s; each trace stays native until the target exceeds c/R, then receives only the quadrature broadening needed to reach it">
+      <span>Velocity smooth</span>
+      <input id="smooth-velocity" type="range" min="0" max="5000" step="10" value="0" aria-label="Target smoothing resolution in km/s">
+      <output id="smooth-velocity-output" for="smooth-velocity">Off</output>
+      <span id="smoothing-preview-label" role="status" aria-live="polite" aria-hidden="true">temporary smoothing currently shown</span>
+    </label>
+    <label class="control" title="Draw valid spectral samples as points instead of connected lines"><input id="scatter-points" type="checkbox"> Scatter points</label>
+    <label class="control" title="Ignored points are excluded from normalization and y-axis scaling"><input id="show-ignored" type="checkbox" checked><span class="ignored-swatch" aria-hidden="true"></span> Show ignored</label>
+    <label class="control"><input id="only-legacy" type="checkbox"> Only legacy matches</label>
+    <label class="control overlay" title="Show flux divided by its per-pixel uncertainty on an independent right-hand axis"><input id="show-snr" type="checkbox"><span class="overlay-dot" style="background:#58a6ff" aria-hidden="true"></span> S/N per pixel</label>
+    <label class="control overlay" title="Overlay every L/T/Y feature region used by the MoCaVis Brown Dwarf Spectral Explorer"><input id="show-bd-features" type="checkbox"><span class="overlay-dot" style="background:#a371f7" aria-hidden="true"></span> Brown-dwarf features</label>
+    <label class="control overlay" title="Show strong atmospheric OH airglow lines in vacuum wavelength"><input id="show-oh-lines" type="checkbox"><span class="overlay-dot" style="background:#39c5cf" aria-hidden="true"></span> OH lines</label>
+    <label class="control overlay" title="Show the vacuum Balmer, Paschen, and Brackett hydrogen-series wavelengths"><input id="show-hydrogen" type="checkbox"><span class="overlay-dot" style="background:#ff7b72" aria-hidden="true"></span> H lines</label>
+    <label class="control overlay" title="Overlay the PySpextool R=4000 Earth-atmosphere transmission curve at reference airmass 1.2"><input id="show-transmission" type="checkbox"><span class="overlay-dot" style="background:#7ee787" aria-hidden="true"></span> Earth transmission</label>
+    <span id="status">Starting…</span>
+  </header>
+  <main>
+    <aside>
+      <input id="filter" type="search" placeholder="Filter name, specid, oid, pipeline, night, mode…">
+      <div id="filter-count" role="status" aria-live="polite">0 spectra shown</div>
+      <div id="spectra"></div>
+    </aside>
+    <section>
+      <div id="meta">
+        <div id="meta-primary">Select a spectrum.</div>
+        <div id="meta-warnings" tabindex="0" aria-label="Quality-assurance warnings and explanations">QA warnings: —</div>
+      </div>
+      <div id="plot-wrap">
+        <canvas id="plot"></canvas>
+        <div id="cursor-readout" aria-hidden="true"></div>
+        <div id="empty">No spectrum selected</div>
+        <div id="loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span id="loading-label">Loading spectrum…</span></div>
+      </div>
+      <div id="legend"></div>
+    </section>
+  </main>
+  <script src="static/spectrum_compare/brown_dwarf_spectral_features.js?v=20260721a"></script>
+  <script src="static/spectrum_compare/spectral_overlays.js?v=20260906-1"></script>
+  <script src="static/spectrum_compare/atran_reference.js?v=20260828-1"></script>
+  <script src="static/spectrum_compare/spectrum_index.js?v=20260910-qa-explanations-1"></script>
+  <script src="static/spectrum_compare/spectrum_math.js?v=20260906-main-range-1"></script>
+  <script>
+  (() => {
+  'use strict';
+  const access = window.comparisonAccess;
+  delete window.comparisonAccess;
+  const apiBase = new URL('api/spectrum-compare/', location.href);
+  const assetBase = new URL('static/spectrum_compare/', location.href);
+  const controllers = new Set();
+  let accessGeneration = 0, indexGeneration = 0;
+  const { adaptiveVelocityRange, consumeSwipeDelta, finite, formatWavelengthMicrons, median, medianSmooth, nativeVelocityResolution, steppedVelocityValue, targetVelocityWindow, visibleWavelengthRange, yRange } = SpectrumMath;
+  const { filterAndSort, isCurrentSpectrumLoad, mocadbReportUrl, navigationDelta, qaWarningText:indexQaWarningText, spectrumDrawMode, startSpectrumLoad, traceDrawOrder } = SpectrumIndex;
+  const { HYDROGEN_LINES, OH_LINES, hydrogenLineOpacity, itemsInMicronRange, ohLineOpacity, pointsInMicronRange } = SpectralOverlays;
+  const $ = id => document.getElementById(id);
+  const state = { packages:[], index:[], filtered:[], active:-1, traces:[], xFull:null, xView:null, yMode:'robust', dragging:null, loading:false, loadRequestId:0, displayMaxPoints:12000, smoothingRange:{startKms:10,maxKms:5000,stepKms:10}, smoothingSwipeRemainder:0, smoothingSwipeAt:0, smoothingRefineTimer:null, smoothingWorker:null, smoothingGeneration:0, smoothingPhase:'off' };
+  const colors = ['#58a6ff','#f0883e','#a371f7','#3fb950','#f778ba','#d29922','#79c0ff'];
+  const api = async (path,timeoutMs=90000) => {
+    if(!access.ready())throw new Error('Enter collaborator credentials to load spectra.');
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
+    controllers.add(controller);
+    try {
+      const response=await fetch(new URL(path.replace(/^\/api\//,''),apiBase),{
+        signal:controller.signal,headers:access.headers(),cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'
+      });
+      const data=await response.json();
+      if(response.status===401||response.status===403)signOut(data.error||'Credentials were rejected.');
+      if(!response.ok)throw new Error(data.error||response.statusText);
+      return data;
+    } catch(error) {
+      if(error?.name==='AbortError')throw new Error('Request timed out; tap the spectrum to retry.');
+      throw error;
+    } finally { clearTimeout(timer); controllers.delete(controller); }
+  };
+  const fmt = value => value===null||value===undefined||value===''?'—':String(value);
+  const qaWarningText = typeof indexQaWarningText==='function' ? indexQaWarningText : (warnings,emptyLabel='none') => {
+    const values=Array.isArray(warnings)?[...new Set(warnings.map(value=>String(value||'').trim()).filter(Boolean))]:[];
+    return `QA warnings: ${values.length?values.join(' · '):emptyLabel}`;
+  };
+  const traceKindLabel = kind => kind==='new'?'NEW':kind==='approximate_legacy'?'APPROXIMATE LEGACY':'legacy';
+
+  function approximateLegacyStatus(metadata){
+    const overlap=Number(metadata?.wavelength_overlap_fraction),ratio=Number(metadata?.resolving_power_ratio);
+    const details=[];
+    if(finite(overlap))details.push(`${Math.round(100*overlap)}% shorter-span overlap`);
+    if(finite(ratio)&&ratio>0)details.push(`R ratio ${ratio.toFixed(2)}`);
+    return `Approximate legacy ${fmt(metadata?.moca_specid)} · ${fmt(metadata?.approximate_match_basis)}${details.length?' · '+details.join(' · '):''}`;
+  }
+
+  function setStatus(text){ $('status').textContent=text; }
+  function showAccess(message){
+    $('access-message').textContent=message||'Enter your collaborator credentials to load spectra.';
+    if(!$('access-dialog').open)$('access-dialog').showModal();
+    $('access-password').focus();
+  }
+  function signOut(message='Signed out. Enter credentials to reopen the reviewer.'){
+    access.clear();accessGeneration++;indexGeneration++;
+    for(const controller of controllers)controller.abort();controllers.clear();
+    resetSmoothing();state.loadRequestId++;state.active=-1;state.loading=false;
+    state.packages=[];state.index=[];state.filtered=[];state.traces=[];state.xFull=null;state.xView=null;
+    $('package').replaceChildren();$('access-password').value='';
+    renderIndex();renderLegend();setMeta('Sign in to load spectra.');draw();setStatus('Signed out');showAccess(message);
+  }
+  function setMeta(primary, warnings=null, emptyLabel='—'){
+    const values=Array.isArray(warnings)?warnings:[];
+    $('meta-primary').textContent=primary;
+    $('meta-primary').title=primary;
+    const warningText=qaWarningText(values,emptyLabel);
+    $('meta-warnings').textContent=warningText;
+    $('meta-warnings').title=warningText;
+    $('meta-warnings').classList.toggle('has-warnings',values.length>0);
+  }
+  function renderIndex(){
+    const q=$('filter').value.trim().toLowerCase();
+    const requireLegacy=$('only-legacy').checked;
+    state.filtered=filterAndSort(state.index,q,requireLegacy,$('sort').value);
+    $('filter-count').textContent=`${state.filtered.length.toLocaleString()} ${state.filtered.length===1?'spectrum':'spectra'} shown`;
+    $('prev').disabled=state.filtered.length===0;
+    $('next').disabled=state.filtered.length===0;
+    $('first').disabled=$('last').disabled=state.filtered.length===0;
+    $('open-report').disabled=!mocadbReportUrl(state.index.find(row=>Number(row.moca_specid)===state.active)?.moca_oid);
+    $('wiseview').disabled=!wiseviewURL();
+    $('spectra').replaceChildren(...state.filtered.map(row => {
+      const button=document.createElement('button'); button.className='item'+(row.moca_specid===state.active?' active':'');
+      const name=document.createElement('span'); name.textContent=fmt(row.object_name); button.append(name);
+      if(Number(row.legacy_count)>0){const legacy=document.createElement('span');legacy.className='badge';legacy.textContent=`${row.legacy_count} legacy`;button.append(' ',legacy);}
+      const sub=document.createElement('span');sub.className='sub';sub.textContent=`spec ${row.moca_specid} · oid ${fmt(row.moca_oid)} · pack ${fmt(row.moca_specpackid)} · ${fmt(row.moca_instid)} · ${fmt(row.observing_night)} · ${fmt(row.instrument_mode_name)}`;button.append(sub);
+      const version=document.createElement('span');version.className='sub';version.textContent=`pipeline ${fmt(row.data_reduction_pipeline_version)} · modified ${fmt(row.modification_date)}`;button.append(version);
+      button.title=fmt(row.spectrum_name);
+      button.onclick=()=>loadSpectrum(Number(row.moca_specid)); return button;
+    }));
+  }
+
+  async function loadPackages(){
+    const generation=accessGeneration;
+    try {
+      const packages=await api('/api/packages');
+      if(generation!==accessGeneration)return;
+      state.packages=packages;
+      $('package').replaceChildren(...state.packages.map(row=>{ const o=document.createElement('option'); o.value=row.moca_specpackid; o.textContent=row.description; return o; }));
+      if(state.packages.length) await loadIndex(String(state.packages[0].moca_specpackid)); else setStatus('No managed packages found');
+    } catch(error){ setStatus(error.message); }
+  }
+
+  async function loadIndex(packageId){
+    const generation=++indexGeneration;
+    resetSmoothing();setStatus('Loading index…');setMeta('Select a spectrum.'); state.loadRequestId+=1; state.active=-1; state.loading=false; state.traces=[]; state.xFull=null; state.xView=null; renderLegend(); draw();
+    state.index=[];renderIndex();
+    try { const index=await api(`/api/spectra?package_id=${encodeURIComponent(packageId)}`); if(generation!==indexGeneration)return;state.index=index;renderIndex(); setStatus(`${state.filtered.length.toLocaleString()} of ${state.index.length.toLocaleString()} new reductions shown`); if(state.filtered.length) await loadSpectrum(Number(state.filtered[0].moca_specid)); }
+    catch(error){ if(generation===indexGeneration)setStatus(error.message); }
+  }
+
+  function revealActiveSpectrum(){
+    const list=$('spectra'),item=list.querySelector('.item.active');
+    if(!item)return;
+    const listRect=list.getBoundingClientRect(),itemRect=item.getBoundingClientRect();
+    const top=listRect.top+list.clientTop,bottom=top+list.clientHeight;
+    // Scroll only the list: scrollIntoView would also move the mobile page.
+    if(itemRect.top<top)list.scrollTop+=itemRect.top-top;
+    else if(itemRect.bottom>bottom)list.scrollTop+=Math.min(itemRect.top-top,itemRect.bottom-bottom);
+  }
+
+  async function loadSpectrum(specid){
+    resetSmoothing();const requestId=startSpectrumLoad(state,specid); renderIndex(); renderLegend(); setStatus(`Loading spectrum ${specid}…`); $('loading-label').textContent=`Loading spectrum ${specid}…`; const pending=state.index.find(row=>Number(row.moca_specid)===specid); setMeta(`${fmt(pending?.object_name)} · specid ${specid} · loading…`,null,'loading…'); draw();
+    try {
+      const payload=await api(`/api/spectrum?moca_specid=${specid}&max_points=12000`);
+      if(!isCurrentSpectrumLoad(state,requestId))return;
+      state.loading=false;
+      state.displayMaxPoints=Math.max(2,Number(payload.max_points)||12000);
+      state.traces=payload.traces.map((trace,index)=>({ ...trace, visible:true, color:colors[index%colors.length], points:trace.points.map(p=>[Number(p[0]),Number(p[1])]), smoothing_points:(trace.smoothing_points||trace.points).map(p=>[Number(p[0]),Number(p[1])]), ignored_points:(trace.ignored_points||[]).map(p=>[Number(p[0]),Number(p[1])]), snr_points:(trace.snr_points||[]).map(p=>[Number(p[0]),Number(p[1])]) }));
+      configureSmoothingVelocityRange();
+      recomputeVisibleXRange();
+      const m=payload.current; setMeta(`${fmt(m.object_name)} · specid ${m.moca_specid} · oid ${fmt(m.moca_oid)} · ${fmt(m.moca_instid)} · ${fmt(m.instrument_mode_name)} · ${fmt(m.observing_night)} · pipeline ${fmt(m.data_reduction_pipeline_version)} · modified ${fmt(m.modification_date)} · seeing ${fmt(m.seeing)} · WCS ${fmt(m.wavelength_solution_reference)}`,m.qa_warnings,'none');
+      setSmoothingPhase(smoothingTargetKms()===0?'off':'preview');renderLegend(); draw(); queueSmoothingRefinement();
+      if(payload.legacy_count){const total=Number(payload.total_legacy_count)||payload.legacy_count;setStatus(total>payload.legacy_count?`${payload.legacy_count} of ${total} mode-compatible legacy matches shown`:`${payload.legacy_count} mode-compatible legacy match${payload.legacy_count===1?'':'es'}`);}
+      else if(payload.approximate_legacy) setStatus(approximateLegacyStatus(payload.approximate_legacy));
+      else setStatus('No exact or approximate legacy match');
+      revealActiveSpectrum();
+    } catch(error){if(!isCurrentSpectrumLoad(state,requestId))return;cancelSmoothingRefinement();state.loading=false;state.traces=[];state.xFull=null;state.xView=null;renderLegend();setMeta(`Unable to load spectrum ${specid}.`,null,'unavailable');draw();setStatus(error.message);}
+  }
+
+  function renderLegend(){
+    $('legend').replaceChildren(...state.traces.map((trace,index)=>{
+      const label=document.createElement('label');label.className='legend-item'; const check=document.createElement('input'); check.type='checkbox';check.id=`legend-trace-${index}`;label.htmlFor=check.id;check.checked=trace.visible;
+      check.onchange=()=>{trace.visible=check.checked;recomputeVisibleXRange();configureSmoothingVelocityRange();handleSmoothingInput();}; const sw=document.createElement('span'); sw.className='swatch'+(trace.kind==='approximate_legacy'?' approximate':''); sw.style.background=trace.color;sw.style.color=trace.color;
+      const m=trace.metadata, ignored=Number(trace.original_ignored_points)||0, snr=Number(trace.original_snr_points)||0; label.append(check,sw,document.createTextNode(`${traceKindLabel(trace.kind)} ${m.moca_specid} · ${fmt(m.moca_instid)} · ${fmt(m.observing_night)} · pack ${fmt(m.moca_specpackid)} · ${ignored.toLocaleString()} ignored · ${snr.toLocaleString()} S/N · pipeline ${fmt(m.data_reduction_pipeline_version)} · modified ${fmt(m.modification_date)} · ${fmt(m.spectrum_name)}`));
+      label.title=trace.kind==='approximate_legacy'?`${approximateLegacyStatus(m)} · Click anywhere to show or hide`:'Click anywhere to show or hide';return label;
+    }));
+  }
+
+  function recomputeVisibleXRange(){
+    state.xFull=visibleWavelengthRange(state.traces,$('show-ignored').checked);
+    state.xView=state.xFull&&[...state.xFull];
+    hideCursorReadout();
+  }
+
+  function normalizationScale(trace){
+    const serverScale=Number(trace.normalization_scale);
+    if(finite(serverScale)&&serverScale>0)return serverScale;
+    return median(trace.points.map(p=>p[1]).filter(v=>v>0));
+  }
+
+  function configureSmoothingVelocityRange(){
+    const velocities=state.traces.filter(trace=>trace.visible).map(trace=>nativeVelocityResolution(trace.smoothing_points,trace.metadata?.median_spectral_resolving_power,trace.metadata?.pix_per_res_element));
+    state.smoothingRange=adaptiveVelocityRange(velocities);
+    const slider=$('smooth-velocity');slider.max=String(state.smoothingRange.maxKms);slider.step=String(state.smoothingRange.stepKms);slider.dataset.startKms=String(state.smoothingRange.startKms);
+    smoothingTargetKms();
+  }
+
+  function smoothingTargetKms(){
+    const slider=$('smooth-velocity'),range=state.smoothingRange;let target=Math.max(0,Number(slider.value)||0);
+    if(target>0&&target<range.startKms)target=range.startKms;
+    if(target>range.maxKms)target=range.maxKms;
+    if(Number(slider.value)!==target)slider.value=String(target);
+    slider.setAttribute('aria-valuetext',target===0?'Off':`${target.toLocaleString()} km/s`);
+    return target;
+  }
+
+  function smoothingPixelWindow(trace,points){
+    return targetVelocityWindow(points,smoothingTargetKms(),trace.metadata?.median_spectral_resolving_power,trace.metadata?.pix_per_res_element);
+  }
+
+  function setSmoothingPhase(phase){
+    state.smoothingPhase=phase;
+    const output=$('smooth-velocity-output'),label=$('smoothing-preview-label'),targetKms=smoothingTargetKms();
+    output.value=targetKms===0?'Off':`${targetKms.toLocaleString()} km/s`;
+    output.dataset.phase=targetKms===0?'off':phase;
+    const rangeText=`active ${state.smoothingRange.startKms.toLocaleString()}–${state.smoothingRange.maxKms.toLocaleString()} km/s, ${state.smoothingRange.stepKms.toLocaleString()} km/s steps`;
+    output.title=targetKms===0?`Smoothing is off; ${rangeText}`:phase==='refined'?`Native-sample velocity-targeted robust polynomial result; ${rangeText}`:phase==='refining'?`Resolution-aware median preview shown; native-sample robust fit is running; ${rangeText}`:`Fast resolution-aware running-median preview; ${rangeText}`;
+    const temporary=targetKms>0&&(phase==='preview'||phase==='refining');
+    label.style.visibility=temporary?'visible':'hidden';label.setAttribute('aria-hidden',temporary?'false':'true');
+  }
+
+  function cancelSmoothingRefinement(){
+    state.smoothingGeneration+=1;
+    if(state.smoothingRefineTimer!==null){clearTimeout(state.smoothingRefineTimer);state.smoothingRefineTimer=null;}
+    if(state.smoothingWorker){state.smoothingWorker.terminate();state.smoothingWorker=null;}
+  }
+
+  function resetSmoothing(){
+    cancelSmoothingRefinement();$('smooth-velocity').value='0';setSmoothingPhase('off');
+  }
+
+  function finishSmoothingRefinement(worker,generation,targetKms,message){
+    if(worker!==state.smoothingWorker||generation!==state.smoothingGeneration||targetKms!==smoothingTargetKms())return;
+    worker.terminate();state.smoothingWorker=null;
+    if(message.error||!Array.isArray(message.results)||message.results.length!==state.traces.length){setSmoothingPhase('preview');return;}
+    const prepared=message.results.map(result=>Array.isArray(result?.points)?result:null);
+    if(prepared.some(result=>!result)){setSmoothingPhase('preview');return;}
+    prepared.forEach((result,index)=>{state.traces[index]._refinedTargetKms=targetKms;state.traces[index]._refinedPoints=result.points;state.traces[index]._refinedNativeWindow=result.windowSize;state.traces[index]._refinedAppliedKms=result.appliedVelocityKms;});
+    setSmoothingPhase('refined');draw();
+  }
+
+  function createSmoothingWorker(){
+    const mathUrl=new URL('spectrum_math.js?v=20260906-main-range-1',assetBase).href;
+    const source=`'use strict';importScripts(${JSON.stringify(mathUrl)});self.onmessage=event=>{const requestId=Number(event.data?.requestId),targetKms=Number(event.data?.targetKms),maxPoints=Number(event.data?.maxPoints),traces=Array.isArray(event.data?.traces)?event.data.traces:[];try{const results=traces.map(trace=>SpectrumMath.smoothNativeForDisplay(trace.points,targetKms,trace.resolvingPower,trace.pixPerResolutionElement,maxPoints));self.postMessage({requestId,targetKms,results});}catch(error){self.postMessage({requestId,targetKms,error:error instanceof Error?error.message:String(error)});}};`;
+    const objectUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+    try{return new Worker(objectUrl);}finally{URL.revokeObjectURL(objectUrl);}
+  }
+
+  function startSmoothingRefinement(){
+    state.smoothingRefineTimer=null;
+    const targetKms=smoothingTargetKms();
+    if(targetKms===0||!state.traces.length||typeof Worker!=='function')return;
+    const generation=state.smoothingGeneration,worker=createSmoothingWorker();
+    state.smoothingWorker=worker;setSmoothingPhase('refining');
+    worker.onmessage=event=>finishSmoothingRefinement(worker,generation,targetKms,event.data||{});
+    worker.onerror=()=>finishSmoothingRefinement(worker,generation,targetKms,{error:'worker failure'});
+    worker.postMessage({requestId:generation,targetKms,maxPoints:state.displayMaxPoints,traces:state.traces.map(trace=>({points:trace.smoothing_points,resolvingPower:trace.metadata?.median_spectral_resolving_power,pixPerResolutionElement:trace.metadata?.pix_per_res_element}))});
+  }
+
+  function queueSmoothingRefinement(){
+    if(smoothingTargetKms()===0||!state.traces.length)return;
+    if(state.smoothingRefineTimer!==null)clearTimeout(state.smoothingRefineTimer);
+    state.smoothingRefineTimer=setTimeout(startSmoothingRefinement,180);
+  }
+
+  function handleSmoothingInput(){
+    cancelSmoothingRefinement();setSmoothingPhase(smoothingTargetKms()===0?'off':'preview');draw();queueSmoothingRefinement();
+  }
+
+  function adjustSmoothingFromSwipe(event){
+    const horizontal=Math.abs(event.deltaX)>Math.abs(event.deltaY)
+      ? event.deltaX
+      : event.shiftKey&&Math.abs(event.deltaY)>0?event.deltaY:0;
+    if(!finite(horizontal)||horizontal===0)return false;
+    const now=performance.now();
+    if(now-state.smoothingSwipeAt>180)state.smoothingSwipeRemainder=0;
+    state.smoothingSwipeAt=now;
+    const modeScale=event.deltaMode===1?16:event.deltaMode===2?Math.max(1,$('smooth-velocity').clientWidth):1;
+    const consumed=consumeSwipeDelta(state.smoothingSwipeRemainder,horizontal*modeScale);
+    state.smoothingSwipeRemainder=consumed.remainder;
+    if(!consumed.steps)return true;
+    const slider=$('smooth-velocity'),current=Number(slider.value);
+    const next=steppedVelocityValue(current,consumed.steps,state.smoothingRange);
+    if(next!==current){slider.value=String(next);slider.dispatchEvent(new Event('input',{bubbles:true}));}
+    return true;
+  }
+
+  function smoothedTracePoints(trace){
+    const targetKms=smoothingTargetKms();
+    if(targetKms===0)return trace.points;
+    if(state.smoothingPhase==='refined'&&trace._refinedTargetKms===targetKms)return trace._refinedPoints;
+    if(trace._previewTargetKms!==targetKms){trace._previewTargetKms=targetKms;trace._previewPixelWindow=smoothingPixelWindow(trace,trace.points);trace._previewPoints=medianSmooth(trace.points,trace._previewPixelWindow);}
+    return trace._previewPoints;
+  }
+
+  function transformed(trace){
+    const visible=smoothedTracePoints(trace).filter(p=>p[0]>=state.xView[0]&&p[0]<=state.xView[1]&&finite(p[1]));
+    if(!$('normalize').checked) return visible;
+    const scale=normalizationScale(trace);
+    return finite(scale)&&scale!==0?visible.map(p=>[p[0],p[1]/scale]):visible;
+  }
+
+  function transformedIgnored(trace){
+    const visible=trace.ignored_points.filter(p=>p[0]>=state.xView[0]&&p[0]<=state.xView[1]&&finite(p[1]));
+    if(!$('normalize').checked)return visible;
+    const scale=normalizationScale(trace);
+    return finite(scale)&&scale!==0?visible.map(p=>[p[0],p[1]/scale]):visible;
+  }
+
+  function visibleSnr(trace){
+    return (trace.snr_points||[]).filter(p=>p[0]>=state.xView[0]&&p[0]<=state.xView[1]&&finite(p[1]));
+  }
+
+  function drawBrownDwarfFeatures(ctx,pad,w,h,x,micronRange){
+    if(!$('show-bd-features').checked)return;
+    const bands=globalThis.mocaBrownDwarfSpectralFeatureBandsInRange?.(micronRange)||[];
+    const labels=[];
+    for(const band of bands){
+      const low=Math.max(band.range[0],micronRange[0]),high=Math.min(band.range[1],micronRange[1]);
+      if(!(high>=low))continue;
+      const left=x(low*10_000),right=x(high*10_000);
+      ctx.fillStyle=band.fill;ctx.fillRect(left,pad.t,Math.max(1,right-left),h);
+      labels.push({band,center:(left+right)/2});
+    }
+    ctx.font='10px system-ui';ctx.textBaseline='top';
+    const lastRight=[-Infinity,-Infinity,-Infinity];
+    for(const {band,center} of labels.sort((a,b)=>a.center-b.center)){
+      const tier=Math.max(0,Math.min(2,Number(band.labelTier)||0)),label=band.name;
+      const width=ctx.measureText(label).width,left=center-width/2;
+      if(left<pad.l||left<=lastRight[tier]+5||left+width>pad.l+w)continue;
+      ctx.fillStyle='rgba(230,237,243,.82)';ctx.fillText(label,left,pad.t+3+tier*12);lastRight[tier]=left+width;
+    }
+    ctx.textBaseline='alphabetic';
+  }
+
+  function drawAtmosphericTransmission(ctx,pad,w,h,x,micronRange){
+    if(!$('show-transmission').checked)return;
+    const points=pointsInMicronRange(AtranReference.points,micronRange);
+    if(points.length<2)return;
+    const bottom=pad.t+h,trackHeight=h*.20,top=bottom-trackHeight;
+    const ty=value=>bottom-Math.max(0,Math.min(1,Number(value)))*trackHeight;
+    ctx.beginPath();ctx.moveTo(x(points[0][0]*10_000),bottom);
+    for(const point of points)ctx.lineTo(x(point[0]*10_000),ty(point[1]));
+    ctx.lineTo(x(points[points.length-1][0]*10_000),bottom);ctx.closePath();
+    ctx.fillStyle='rgba(126,231,135,.10)';ctx.fill();
+    ctx.beginPath();let moved=false;
+    for(const point of points){const xx=x(point[0]*10_000),yy=ty(point[1]);if(!finite(xx)||!finite(yy))continue;if(!moved){ctx.moveTo(xx,yy);moved=true;}else ctx.lineTo(xx,yy);}
+    ctx.strokeStyle='rgba(126,231,135,.72)';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='rgba(126,231,135,.90)';ctx.font='10px system-ui';ctx.fillText('Earth Tλ (ATRAN, X=1.2)',pad.l+6,top+12);
+  }
+
+  function drawOhLines(ctx,pad,w,h,x,micronRange){
+    if(!$('show-oh-lines').checked)return;
+    const lines=itemsInMicronRange(OH_LINES,micronRange);
+    for(const line of lines){
+      const opacity=ohLineOpacity(line.relativeAmplitude),xx=x(line.wavelengthMicron*10_000);
+      ctx.strokeStyle=`rgba(57,197,207,${opacity.toFixed(3)})`;ctx.lineWidth=.85;ctx.beginPath();ctx.moveTo(xx,pad.t);ctx.lineTo(xx,pad.t+h);ctx.stroke();
+    }
+    if(lines.length){ctx.fillStyle='rgba(57,197,207,.92)';ctx.font='10px system-ui';ctx.fillText(`OH airglow · ${lines.length} lines`,pad.l+w-112,pad.t+h-7);}
+  }
+
+  function drawHydrogenLines(ctx,pad,w,h,x,micronRange){
+    if(!$('show-hydrogen').checked)return;
+    const lines=itemsInMicronRange(HYDROGEN_LINES,micronRange),lastRight={Balmer:-Infinity,Paschen:-Infinity,Brackett:-Infinity};
+    ctx.font='10px system-ui';
+    for(const line of lines){
+      const xx=x(line.wavelengthMicron*10_000),color=line.series==='Balmer'?'255,123,114':line.series==='Paschen'?'255,166,87':'210,168,255',opacity=hydrogenLineOpacity(line);
+      ctx.strokeStyle=`rgba(${color},${opacity.toFixed(3)})`;ctx.lineWidth=line.priority<4?1.25:.75;ctx.beginPath();ctx.moveTo(xx,pad.t);ctx.lineTo(xx,pad.t+h);ctx.stroke();
+      if(line.priority>6&&lines.length>18)continue;
+      const width=ctx.measureText(line.label).width,left=xx-width/2,row=line.series==='Balmer'?3:line.series==='Paschen'?4:5;
+      if(left<pad.l||left<=lastRight[line.series]+4||left+width>pad.l+w)continue;
+      ctx.fillStyle=`rgba(${color},.92)`;ctx.fillText(line.label,left,pad.t+9+row*12);lastRight[line.series]=left+width;
+    }
+  }
+
+  function draw(){
+    const canvas=$('plot'), rect=canvas.getBoundingClientRect(), dpr=window.devicePixelRatio||1; canvas.width=Math.max(1,Math.round(rect.width*dpr)); canvas.height=Math.max(1,Math.round(rect.height*dpr));
+    const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,rect.width,rect.height); $('empty').style.display=state.traces.length||state.loading?'none':'grid'; $('loading').style.display=state.loading?'grid':'none'; if(!state.traces.length||!state.xView){hideCursorReadout();return;}
+    const showSnr=$('show-snr').checked,pad={l:64,r:showSnr?72:18,t:14,b:34}, w=Math.max(1,rect.width-pad.l-pad.r), h=Math.max(1,rect.height-pad.t-pad.b);
+    const enabled=state.traces.filter(t=>t.visible), series=enabled.map(transformed), snrSeries=enabled.map(visibleSnr), yr=yRange(series,state.yMode), xr=state.xView,micronRange=[xr[0]/10_000,xr[1]/10_000];
+    const x=v=>pad.l+(v-xr[0])/(xr[1]-xr[0])*w, y=v=>pad.t+(yr[1]-v)/(yr[1]-yr[0])*h;
+    const showBackgroundGrid=!($('show-bd-features').checked||$('show-oh-lines').checked||$('show-hydrogen').checked);
+    ctx.strokeStyle='#30363d';ctx.fillStyle='#8b949e';ctx.lineWidth=1;ctx.font='11px system-ui';
+    for(let i=0;i<=5;i++){const yy=pad.t+i*h/5,val=yr[1]-i*(yr[1]-yr[0])/5;if(showBackgroundGrid){ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(pad.l+w,yy);ctx.stroke();}ctx.fillText(val.toPrecision(4),4,yy+4);}
+    for(let i=0;i<=6;i++){const xx=pad.l+i*w/6,val=xr[0]+i*(xr[1]-xr[0])/6;if(showBackgroundGrid){ctx.beginPath();ctx.moveTo(xx,pad.t);ctx.lineTo(xx,pad.t+h);ctx.stroke();}ctx.fillText(formatWavelengthMicrons(val,(xr[1]-xr[0])/6),xx-18,pad.t+h+20);}
+    ctx.save();ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
+    drawAtmosphericTransmission(ctx,pad,w,h,x,micronRange);
+    drawBrownDwarfFeatures(ctx,pad,w,h,x,micronRange);
+    drawOhLines(ctx,pad,w,h,x,micronRange);
+    drawHydrogenLines(ctx,pad,w,h,x,micronRange);
+    const drawMode=spectrumDrawMode($('scatter-points').checked),drawIndices=traceDrawOrder(enabled);
+    drawIndices.forEach(i=>{
+      const trace=enabled[i];
+      const pts=series[i];ctx.globalAlpha=trace.kind==='new'?1:trace.kind==='approximate_legacy'?0.72:0.8;
+      if(drawMode==='scatter'){
+        const size=trace.kind==='new'?2.6:2;ctx.fillStyle=trace.color;
+        for(const p of pts){const xx=x(p[0]),yy=y(p[1]);if(finite(xx)&&finite(yy))ctx.fillRect(xx-size/2,yy-size/2,size,size);}
+        return;
+      }
+      ctx.strokeStyle=trace.color;ctx.lineWidth=trace.kind==='new'?1.65:1;ctx.setLineDash(trace.kind==='approximate_legacy'?[7,4]:[]);ctx.beginPath();let moved=false,lastWavelength=null;
+      const steps=[];for(let j=1;j<pts.length;j++){const step=pts[j][0]-pts[j-1][0];if(step>0&&finite(step))steps.push(step);}const gapLimit=8*median(steps);
+      for(const p of pts){const xx=x(p[0]),yy=y(p[1]);if(!finite(xx)||!finite(yy))continue;if(!moved||lastWavelength===null||(finite(gapLimit)&&p[0]-lastWavelength>gapLimit)){ctx.moveTo(xx,yy);moved=true;}else ctx.lineTo(xx,yy);lastWavelength=p[0];}ctx.stroke();ctx.setLineDash([]);
+    });
+    if($('show-ignored').checked){
+      ctx.fillStyle='#ff6b6b';ctx.globalAlpha=.82;
+      for(const trace of enabled){for(const p of transformedIgnored(trace)){const xx=x(p[0]),yy=y(p[1]);if(finite(xx)&&finite(yy))ctx.fillRect(xx-1.25,yy-1.25,2.5,2.5);}}
+    }
+    let snrRange=null;
+    if(showSnr&&snrSeries.some(points=>points.length)){
+      snrRange=yRange(snrSeries.filter(points=>points.length),'robust');snrRange[0]=Math.min(0,snrRange[0]);
+      const sy=value=>pad.t+(snrRange[1]-value)/(snrRange[1]-snrRange[0])*h;
+      drawIndices.forEach(index=>{
+        const trace=enabled[index];
+        const points=snrSeries[index];if(!points.length)return;ctx.globalAlpha=.66;ctx.strokeStyle=trace.color;ctx.lineWidth=trace.kind==='new'?1.35:0.9;ctx.setLineDash([5,3]);ctx.beginPath();let moved=false,lastWavelength=null;
+        const steps=[];for(let j=1;j<points.length;j++){const step=points[j][0]-points[j-1][0];if(step>0&&finite(step))steps.push(step);}const gapLimit=8*median(steps);
+        for(const point of points){const xx=x(point[0]),yy=sy(point[1]);if(!finite(xx)||!finite(yy))continue;if(!moved||lastWavelength===null||(finite(gapLimit)&&point[0]-lastWavelength>gapLimit)){ctx.moveTo(xx,yy);moved=true;}else ctx.lineTo(xx,yy);lastWavelength=point[0];}ctx.stroke();ctx.setLineDash([]);
+      });
+    }
+    ctx.restore();ctx.globalAlpha=1;ctx.setLineDash([]);ctx.fillStyle='#8b949e';ctx.font='11px system-ui';ctx.fillText('Wavelength (µm)',pad.l+w/2-38,rect.height-6);
+    if(showSnr&&snrRange){
+      ctx.fillStyle='#79c0ff';ctx.strokeStyle='#394557';
+      for(let i=0;i<=4;i++){const yy=pad.t+i*h/4,value=snrRange[1]-i*(snrRange[1]-snrRange[0])/4;ctx.beginPath();ctx.moveTo(pad.l+w,yy);ctx.lineTo(pad.l+w+5,yy);ctx.stroke();ctx.fillText(value.toPrecision(3),pad.l+w+8,yy+4);}
+      ctx.save();ctx.translate(rect.width-5,pad.t+h/2+28);ctx.rotate(-Math.PI/2);ctx.fillText('S/N per pixel',0,0);ctx.restore();
+    }else if(showSnr){ctx.fillStyle='#79c0ff';ctx.fillText('No per-pixel uncertainties',pad.l+w-132,pad.t+13);}
+    canvas._transform={pad,w,h,xr:[...xr]};
+  }
+
+  function hideCursorReadout(){$('cursor-readout').style.display='none';}
+
+  function updateCursorReadout(event){
+    const transform=canvas._transform,readout=$('cursor-readout');
+    if(!state.xView||!transform){hideCursorReadout();return;}
+    const rect=canvas.getBoundingClientRect(),localX=event.clientX-rect.left,localY=event.clientY-rect.top;
+    if(localX<transform.pad.l||localX>transform.pad.l+transform.w||localY<transform.pad.t||localY>transform.pad.t+transform.h){hideCursorReadout();return;}
+    const fraction=(localX-transform.pad.l)/transform.w,wavelength=transform.xr[0]+fraction*(transform.xr[1]-transform.xr[0]);
+    readout.textContent=`λ ${formatWavelengthMicrons(wavelength,(transform.xr[1]-transform.xr[0])/100)} µm`;readout.style.display='block';
+    let left=localX+11,top=localY-readout.offsetHeight-9;
+    if(left+readout.offsetWidth>rect.width-4)left=localX-readout.offsetWidth-11;
+    left=Math.max(4,left);top=Math.max(4,Math.min(rect.height-readout.offsetHeight-4,top));
+    readout.style.left=`${left}px`;readout.style.top=`${top}px`;
+  }
+
+  function step(delta){ const visible=state.filtered; const i=visible.findIndex(r=>Number(r.moca_specid)===state.active); if(!visible.length)return; loadSpectrum(Number(visible[Math.max(0,Math.min(visible.length-1,i+delta))].moca_specid)); }
+  function openMocadbReport(){const row=state.index.find(item=>Number(item.moca_specid)===state.active),url=mocadbReportUrl(row?.moca_oid);if(!url){setStatus('The selected spectrum has no MOCAdb object OID.');return;}window.open(url,'_blank','noopener,noreferrer');}
+  function wiseviewURL(){
+    const row=state.index.find(item=>Number(item.moca_specid)===state.active);
+    if(row?.object_ra==null||row?.object_dec==null)return null;
+    const ra=Number(row.object_ra),dec=Number(row.object_dec);
+    if(!Number.isFinite(ra)||!Number.isFinite(dec))return null;
+    return `http://byw.tools/wiseview-v2#ra=${ra}&dec=${dec}&size=75&band=3&speed=500&minbright=-50&maxbright=500&window=5&diff_window=1&linear=1&color=&zoom=9&border=0&gaia=1&invert=1&maxdyr=1&scandir=0&neowise=0&diff=0&outer_epochs=1&unique_window=1&smooth_scan=0&shift=0&pmra=0&pmdec=0`;
+  }
+  $('wiseview').onclick=()=>{const url=wiseviewURL();if(url)window.open(url,'_blank','noopener,noreferrer');};
+  $('first').onclick=()=>step(-state.filtered.length);$('last').onclick=()=>step(state.filtered.length);
+  $('quit').onclick=()=>signOut();
+  $('package').onchange=()=>loadIndex($('package').value); $('sort').onchange=renderIndex; $('filter').oninput=renderIndex; $('prev').onclick=()=>step(-1); $('next').onclick=()=>step(1); $('open-report').onclick=openMocadbReport;
+  $('only-legacy').onchange=()=>{renderIndex();if(!state.filtered.some(row=>Number(row.moca_specid)===state.active)){if(state.filtered.length)loadSpectrum(Number(state.filtered[0].moca_specid));else{state.traces=[];setMeta('No spectra match the active filters.');draw();setStatus(`0 of ${state.index.length.toLocaleString()} new reductions shown`);}}else setStatus(`${state.filtered.length.toLocaleString()} of ${state.index.length.toLocaleString()} new reductions shown`);};
+  $('robust').onclick=()=>{state.yMode='robust';draw();}; $('minmax').onclick=()=>{state.yMode='minmax';draw();}; $('reset').onclick=()=>{state.xView=state.xFull&&[...state.xFull];draw();}; $('normalize').onchange=draw; $('scatter-points').onchange=draw; $('show-ignored').onchange=()=>{recomputeVisibleXRange();draw();};
+  $('smooth-velocity').oninput=handleSmoothingInput;
+  document.querySelector('.smoothing-control').addEventListener('wheel',event=>{if(adjustSmoothingFromSwipe(event))event.preventDefault();},{passive:false});
+  for(const id of ['show-snr','show-bd-features','show-oh-lines','show-hydrogen','show-transmission'])$(id).onchange=draw;
+  window.addEventListener('keydown',event=>{
+    if($('access-dialog').open||event.target.matches('input,select,textarea')||event.target.closest('#meta-warnings')||event.ctrlKey||event.metaKey||event.altKey)return;
+    const buttons={o:'open-report',w:'wiseview',r:'robust',m:'minmax',z:'reset',q:'quit',home:'first',end:'last'};
+    const button=buttons[event.key.toLowerCase()];
+    if(button){event.preventDefault();$(button).click();return;}
+    const delta=navigationDelta(event.key);if(!delta)return;event.preventDefault();step(delta);
+  });
+  const canvas=$('plot');
+  canvas.addEventListener('wheel',event=>{if(adjustSmoothingFromSwipe(event)){event.preventDefault();return;}if(!state.xView||!canvas._transform)return;event.preventDefault();const t=canvas._transform,rect=canvas.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-t.pad.l)/t.w)),span=state.xView[1]-state.xView[0],factor=event.deltaY>0?1.3:.77,center=state.xView[0]+fraction*span,newSpan=Math.min(state.xFull[1]-state.xFull[0],Math.max((state.xFull[1]-state.xFull[0])*1e-5,span*factor));let lo=center-fraction*newSpan,hi=lo+newSpan;if(lo<state.xFull[0]){hi+=state.xFull[0]-lo;lo=state.xFull[0];}if(hi>state.xFull[1]){lo-=hi-state.xFull[1];hi=state.xFull[1];}state.xView=[lo,hi];draw();updateCursorReadout(event);},{passive:false});
+  canvas.addEventListener('pointerdown',event=>{if(!state.xView)return;canvas.setPointerCapture(event.pointerId);state.dragging={x:event.clientX,range:[...state.xView]};});
+  canvas.addEventListener('pointermove',event=>{if(state.dragging&&canvas._transform){const span=state.dragging.range[1]-state.dragging.range[0],shift=-(event.clientX-state.dragging.x)/canvas._transform.w*span;let lo=state.dragging.range[0]+shift,hi=state.dragging.range[1]+shift;if(lo<state.xFull[0]){hi+=state.xFull[0]-lo;lo=state.xFull[0];}if(hi>state.xFull[1]){lo-=hi-state.xFull[1];hi=state.xFull[1];}state.xView=[lo,hi];draw();}updateCursorReadout(event);});
+  canvas.addEventListener('pointerleave',hideCursorReadout); canvas.addEventListener('pointercancel',()=>{state.dragging=null;hideCursorReadout();});
+  canvas.addEventListener('pointerup',()=>state.dragging=null); canvas.addEventListener('dblclick',()=>$('reset').click());
+  $('access-form').onsubmit=event=>{
+    event.preventDefault();access.set($('access-user').value,$('access-password').value);$('access-password').value='';
+    accessGeneration++;$('access-dialog').close();setStatus('Authenticating…');loadPackages();
+  };
+  $('access-dialog').addEventListener('cancel',event=>event.preventDefault());
+  // No saved sessions or browser back/forward-cache copy of private spectra.
+  window.addEventListener('pagehide',()=>{access.clear();for(const c of controllers)c.abort();resetSmoothing();state.index=[];state.traces=[];});
+  window.addEventListener('pageshow',event=>{if(event.persisted)signOut();});
+  setSmoothingPhase('off');new ResizeObserver(draw).observe($('plot-wrap'));renderIndex();
+  if(access.ready())loadPackages();else{setStatus('Sign in required');showAccess(access.error);}
+  })();
+  </script>
+</body>
+</html>

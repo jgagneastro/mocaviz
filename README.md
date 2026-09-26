@@ -157,6 +157,15 @@ the server has capacity. See every processing and recovery option with:
 python scripts/batch_spectral_typing_chi2.py --help
 ```
 
+## Private reduction comparison
+
+`/spectrum-compare` provides the reduction-versus-legacy reviewer without adding
+it to the public visualization menu. It requires credentials supplied by the
+user, uses read-only database transactions, and renders/smooths spectra in the
+browser without creating server-side files. See [access and deployment
+instructions](docs/spectrum-compare.md), including the recommended URL-fragment
+login and local MariaDB socket configuration for the MOCAdb server.
+
 ## Test
 
 Run the unit suite from the repository root:

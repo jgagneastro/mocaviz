@@ -195,9 +195,12 @@ async function waitForText(page, raw, timeoutMs) {
 }
 
 async function waitForJs(page, expression, timeoutMs) {
+  // Compile trusted CLI input in Node, not inside the page. In-page Function()
+  // is blocked on pages whose CSP correctly disallows unsafe-eval.
+  const predicate = new Function(`return Boolean(${String(expression)});`);
   await page.waitForFunction(
-    (expr) => Boolean(Function(`return (${expr});`)()),
-    String(expression),
+    predicate,
+    null,
     { timeout: timeoutMs },
   );
 }
