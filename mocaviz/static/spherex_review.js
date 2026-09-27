@@ -168,27 +168,9 @@
       }
       $("matches").append(tr);
     }
-    const raw = data.raw_spectrum || [];
-    const spectrum = fit?.spectrum || {wavelength_um: raw.map((r) => r.wavelength_angstrom / 1e4),
-      flux: raw.map((r) => r.flux_flambda), error: raw.map((r) => r.flux_flambda_unc),
-      flagged: raw.map((r) => Boolean(r.ignored))};
-    const goodFlux = spectrum.flux.filter((f) => Number.isFinite(f) && f > 0).sort((a, b) => a - b);
-    const norm = goodFlux[Math.floor(goodFlux.length / 2)] || 1;
-    const traces = [{x: spectrum.wavelength_um, y: spectrum.flux.map((f) => f / norm),
-      error_y: {type: "data", array: spectrum.error.map((e) => e / norm), visible: true, thickness: 1, width: 2},
-      type: "scatter", mode: "markers", name: "SPHEREx",
-      marker: {size: 5, color: spectrum.flagged.map((f) => f ? "#c15c43" : "#203f55")}}];
-    const colors = ["#008a7a", "#d18a19", "#9c67ab"];
-    for (const [i, overlay] of (fit?.overlays || []).entries()) traces.push({
-      x: overlay.wavelength_um, y: overlay.flux.map((f) => f / norm), type: "scatter", mode: "lines",
-      name: (i + 1) + ". " + overlay.label + " (" + overlay.grid + ")",
-      line: {color: colors[i], width: i ? 1.5 : 2.5}, visible: i ? "legendonly" : true});
-    Plotly.react($("plot"), traces, {
-      margin: {l: 65, r: 15, t: 18, b: 65}, font: {family: "system-ui", color: "#264151", size: 13},
-      xaxis: {title: "Wavelength (µm)", showgrid: true, gridcolor: "#e5ebef", mirror: true, linecolor: "#7a919e", linewidth: 2},
-      yaxis: {title: "Fλ / median Fλ", showgrid: true, gridcolor: "#e5ebef", mirror: true, linecolor: "#7a919e", linewidth: 2},
-      legend: {orientation: "h", y: -0.18}, paper_bgcolor: "#fff", plot_bgcolor: "#fff", uirevision: key(obj),
-    }, {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
+    const figure = SpherexReviewPlot.figure(data, key(obj), $("plot").clientWidth);
+    Plotly.react($("plot"), figure.traces, figure.layout,
+      {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
   }
   function decisionBody(item, action, classification) {
     return {lane: item.lane, moca_oid: item.object.moca_oid, moca_specid: item.object.moca_specid,

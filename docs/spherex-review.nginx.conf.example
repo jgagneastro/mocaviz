@@ -4,7 +4,7 @@
 #
 # Disable request recording at every layer (including Passenger/Gunicorn and
 # hosting-panel logs). Do not apply this file blindly to the running site.
-location ~ ^/(?:js/)?(?:spherex-(?:autotype|review)|api/spherex-review/[^/]+|static/spherex_review\.(?:html|css|js)|plotly\.min\.js)$ {
+location ~ ^/(?:js/)?(?:spherex-(?:autotype|review)|api/spherex-review/[^/]+|static/spherex_review(?:_plot)?\.(?:html|css|js)|plotly\.min\.js)$ {
     access_log off;
     error_log /dev/null crit;
     client_max_body_size 256k;

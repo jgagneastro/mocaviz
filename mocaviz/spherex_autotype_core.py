@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from scipy.interpolate import UnivariateSpline
 
 MAX_TEMPLATE_DIST_ANGSTROM = 100.0
 
@@ -594,6 +595,19 @@ DEFAULT_OPTIONS = {
 }
 
 
+def _template_plot_curve(wavelength_um, flux):
+    """The PNG's s=0 cubic template curve, returned as numbers, never an image."""
+    if len(wavelength_um) < 4:
+        return wavelength_um.tolist(), flux.tolist()
+    try:
+        spline = UnivariateSpline(wavelength_um, flux, s=0)
+        dense = np.linspace(np.min(wavelength_um), np.max(wavelength_um), 1000)
+        return dense.tolist(), spline(dense).tolist()
+    except (ValueError, TypeError):
+        # Match the desktop plot's straight-line fallback for short/duplicate grids.
+        return wavelength_um.tolist(), flux.tolist()
+
+
 def fit_spectrum(rows, template_rows, options=None):
     """Run the pipeline's two-pass fit and return only JSON-compatible data."""
     if not rows:
@@ -652,10 +666,17 @@ def fit_spectrum(rows, template_rows, options=None):
         records.append(record)
         if rank < 3:
             template = templates[int(row.moca_spherex_template_id)]
+            wavelength_um = template["wavelength_angstrom"] / 1e4
+            flux = template["flux_flambda"] * float(row.scale_s)
+            curve_w, curve_f = _template_plot_curve(wavelength_um, flux)
+            display_chi2 = next((float(row[key]) for key in (
+                "robust_reduced_chi2_10pct_cap", "reduced_chi2_10pct_cap", "reduced_chi2"
+            ) if pd.notna(row.get(key)) and np.isfinite(row[key])), None)
             overlays.append({
                 "label": record["display_type"], "grid": row.grid_type,
-                "wavelength_um": (template["wavelength_angstrom"] / 1e4).tolist(),
-                "flux": (template["flux_flambda"] * float(row.scale_s)).tolist(),
+                "display_reduced_chi2": display_chi2,
+                "wavelength_um": wavelength_um.tolist(), "flux": flux.tolist(),
+                "curve_wavelength_um": curve_w, "curve_flux": curve_f,
             })
     return {
         "best": records[0], "matches": records, "overlays": overlays,

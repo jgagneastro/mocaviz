@@ -73,6 +73,17 @@ Plots are browser Plotly traces; the Python request path does not import
 Matplotlib or create images, temporary files, JSONs, ledgers or disk caches.
 Python bytecode writing is disabled before review code can trigger lazy imports.
 
+The figure follows the desktop PNG's default square, three-row layout: best
+match at the top, repeated hollow gray measurements with uncapped error bars,
+faint orange crosses for flagged pixels, red template samples and the same
+1000-point interpolating cubic curve, pale-blue zero baselines, and red type/χ²
+labels. Template spans set the row spacing and y limits; lower-row points and
+error bars are clipped at the adjacent baseline. Flux retains the PNG's units
+(with a scientific multiplier), not median normalization. Black boxed axes,
+light grids and typography match the original. Both review pages and all three
+lanes share this renderer. Optional desktop CNN/binned overlays remain outside
+the web tool's scope.
+
 ## Database actions
 
 Submissions are off until explicitly enabled in the tab. New spectral-type
@@ -152,6 +163,7 @@ Run without production credentials:
     PYTHONDONTWRITEBYTECODE=1 python -B scripts/check_spherex_no_files.py
     PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p test_root_routing.py
     node --check mocaviz/static/spherex_review.js
+    node --test tests/spherex_review_plot.cjs
 
 With a local mocaviz server:
 

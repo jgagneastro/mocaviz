@@ -45,6 +45,15 @@ async function pending(n) {
 try {
   await page.goto(origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables");
   await title("1001");
+  await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
+  const plotStyle = await page.evaluate(() => {
+    const plot = document.querySelector("#plot");
+    return {curves: plot.data.filter((t) => t.meta?.role === "template-curve").length,
+      hidden: plot.data.some((t) => t.visible === "legendonly"), baselines: plot.layout.shapes.length,
+      boxed: plot.layout.xaxis.showline && plot.layout.yaxis.mirror,
+      square: Math.abs(plot.clientWidth - plot.clientHeight) <= 1};
+  });
+  assert.deepEqual(plotStyle, {curves: 3, hidden: false, baselines: 3, boxed: true, square: true});
   assert(!page.url().includes("pwd="));
   assert(!page.url().includes("management"));
   assert(await page.locator("#write-enabled").isEnabled());

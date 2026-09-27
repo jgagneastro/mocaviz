@@ -168,7 +168,7 @@ class ReviewTests(unittest.TestCase):
             connect.assert_not_called()
 
     def test_runtime_assets_only_read_files(self):
-        for path in ("/plotly.min.js", "/static/spherex_review.js", "/static/spherex_review.css"):
+        for path in ("/plotly.min.js", "/static/spherex_review.js", "/static/spherex_review_plot.js", "/static/spherex_review.css"):
             with self.client.get(path) as response:
                 self.assertEqual(response.status_code, 200)
                 self.assertGreater(len(response.data), 100)
@@ -363,6 +363,19 @@ class TransactionTests(unittest.TestCase):
 
 
 class FitTests(unittest.TestCase):
+    def test_template_curves_match_png_cubic_interpolation(self):
+        from scipy.interpolate import UnivariateSpline
+        item = make_item()
+        for overlay, match in zip(item["fit"]["overlays"], item["fit"]["matches"]):
+            self.assertEqual(len(overlay["curve_wavelength_um"]), 1000)
+            expected = UnivariateSpline(overlay["wavelength_um"], overlay["flux"], s=0)
+            np.testing.assert_allclose(overlay["curve_flux"], expected(overlay["curve_wavelength_um"]), atol=0)
+            self.assertEqual(overlay["display_reduced_chi2"], match["robust_reduced_chi2_10pct_cap"])
+
+    def test_short_template_curve_keeps_desktop_line_fallback(self):
+        w, f = np.array([1., 2., 3.]), np.array([3., 2., 1.])
+        self.assertEqual(core._template_plot_curve(w, f), (w.tolist(), f.tolist()))
+
     def test_empty_spectrum_gives_a_reviewable_warning(self):
         with self.assertRaisesRegex(ValueError, "No spectral data"):
             core.fit_spectrum([], [])
