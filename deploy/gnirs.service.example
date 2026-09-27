@@ -1,0 +1,30 @@
+[Unit]
+Description=Private MOCAviz GNIRS planner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mocaviz
+Group=mocaviz
+WorkingDirectory=/srv/mocaviz
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MOCAVIZ_GNIRS_CACHE_FILE=/var/lib/mocaviz/gnirs.sqlite
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStartPre=/srv/mocaviz/.venv/bin/python -B scripts/serve_gnirs_planner.py --check
+ExecStart=/srv/mocaviz/.venv/bin/python -B -m gunicorn --config deploy/gnirs.gunicorn.py gnirs_wsgi:application
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+UMask=0077
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/mocaviz/gnirs.sqlite /dev/shm
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

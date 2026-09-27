@@ -145,6 +145,26 @@ assets; other MOCAviz pages can retain the existing Passenger deployment.
 gunicorn --config deploy/gnirs.gunicorn.py gnirs_wsgi:application
 ```
 
+For a persistent Linux service, adapt `deploy/gnirs.service.example` to the
+installed repository, virtual environment and existing service user. The unit
+checks the shared cache before starting, restarts on failure, disables stdout
+and stderr logs, and makes the filesystem read-only except for the single cache
+file and RAM-backed Gunicorn worker heartbeats. Install it as
+`/etc/systemd/system/mocaviz-gnirs.service`, then run:
+
+```sh
+systemd-analyze verify /etc/systemd/system/mocaviz-gnirs.service
+systemctl daemon-reload
+systemctl enable --now mocaviz-gnirs.service
+```
+
+Verify the loopback backend before adding the Nginx location. On a Passenger
+site, explicitly set `passenger_enabled off` **inside that planner location**.
+An updated Git deployment does not by itself set environment variables or
+install the private cache. Existing Passenger workers can also retain older
+Python code after the source files change. The dedicated GNIRS service owns
+its cache setting independently of the other MOCAviz pages.
+
 This Linux profile uses a loopback upstream, no access/error-log files, bounded
 request bodies, no proxy caching/spooling, and shared-memory worker heartbeats.
 The isolated entry points Astropy at the shipped read-only configuration
