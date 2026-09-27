@@ -23,13 +23,16 @@ The fragment (#) form is preferred: the browser never sends the fragment to the
 web server. Query-string credentials necessarily reach the initial web request
 and may be recorded by an upstream proxy unless its logging is disabled.
 
-On opening the page, credentials move into tab memory and are removed from the
-current browser-history URL before assets load. API requests carry them in
+The supplied URL is kept unchanged on load, including credentials in either
+the query string or fragment, so refreshing can reuse them. Credentials are
+also read into tab memory. API requests carry them in
 X-MOCA-User, X-MOCA-Password and X-MOCA-Database headers over HTTPS. No cookies,
 localStorage, sessionStorage, environment fallback, saved config, database
 connection pool, application session, or credential cache is used by these
-tools. Refreshing requires reopening the original credential-bearing URL.
-Credentials are cleared when using Quit.
+tools. Unlike those storage mechanisms, the URL remains visible and may be
+saved in browser history or bookmarks; do not share credential-bearing links.
+Quit clears the in-memory credentials and review data, but leaves the supplied
+URL intact. Refreshing starts a new review session with submissions disabled.
 
 Only mocadb.ca:3306 and mocadb_private_tables are accepted. Collaborators can
 read spectra and calculate fits. The API authenticates the supplied account
@@ -173,6 +176,6 @@ With a local mocaviz server:
     node tests/spherex_review_browser.mjs http://127.0.0.1:8050
 
 The browser regression test intercepts every API call and uses only synthetic
-reads or simulated writes. It checks credential scrubbing, absence of browser
-storage, immediate transitions, pending counts, numpad decisions, failure
+reads or simulated writes. It checks query/fragment URL retention and reload,
+absence of cookies and Web Storage, immediate transitions, pending counts, numpad decisions, failure
 recovery, retry, undo, object links and quitting with queued requests.

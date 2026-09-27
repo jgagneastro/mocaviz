@@ -264,7 +264,7 @@
     $("matches").replaceChildren(); $("stored").textContent = ""; $("preview-output").textContent = "";
     $("object-title").textContent = "Review session closed"; $("object-meta").textContent = "";
     $("position").textContent = ""; $("best-type").textContent = ""; $("fit-detail").textContent = "";
-    error(""); status("Credentials and review data cleared from this tab. You can close the window.");
+    error(""); status("Review data and in-memory credentials cleared. Credentials remain in the address bar; close the tab to hide them.");
     document.querySelectorAll("button,input,select,textarea").forEach((el) => el.disabled = true);
     $("submitting").textContent = "Session closed";
   }

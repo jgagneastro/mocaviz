@@ -43,7 +43,23 @@ async function pending(n) {
   await page.waitForFunction((count) => document.querySelector("#submitting").textContent.startsWith(count + " "), n);
 }
 try {
-  await page.goto(origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables");
+  // Retain every supplied parameter verbatim, including aliases and encoded values.
+  // Fragment values still override matching query keys, without rewriting either.
+  for (const suffix of [
+    "/spherex-review?username=management&password=%74est-placeholder&db=mocadb_private_tables&host=mocadb.ca&port=3306&lane=spiff&extra=keep%20me",
+    "/js/spherex-autotype?lane=sublimeaperture#username=management&password=test-placeholder&database=mocadb_private_tables&host=mocadb.ca&port=3306&extra=keep",
+    "/spherex-autotype?user=ignored&pwd=wrong&dbase=mocadb#user=management&pwd=test-placeholder&dbase=mocadb_private_tables",
+  ]) {
+    const suppliedURL = origin + suffix;
+    await page.goto(suppliedURL); await title("1001");
+    assert.equal(page.url(), suppliedURL);
+    await page.reload(); await title("1001");
+    assert.equal(page.url(), suppliedURL);
+    assert(await page.locator("#write-enabled").isEnabled());
+    assert(!await page.locator("#write-enabled").isChecked());
+  }
+  const reviewURL = origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables";
+  await page.goto(reviewURL);
   await title("1001");
   await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
   const plotStyle = await page.evaluate(() => {
@@ -54,8 +70,7 @@ try {
       square: Math.abs(plot.clientWidth - plot.clientHeight) <= 1};
   });
   assert.deepEqual(plotStyle, {curves: 3, hidden: false, baselines: 3, boxed: true, square: true});
-  assert(!page.url().includes("pwd="));
-  assert(!page.url().includes("management"));
+  assert.equal(page.url(), reviewURL);
   assert(await page.locator("#write-enabled").isEnabled());
   await page.locator("#write-enabled").check();
   await page.locator("#object-title").click();
@@ -88,6 +103,8 @@ try {
   assert.equal((await page.context().cookies()).length, 0);
   assert(apiRequests.every((r) => !r.url.includes("pwd") && !r.url.includes("test-placeholder")));
   assert(apiRequests.every((r) => r.headers["x-moca-password"] === "test-placeholder"));
+  assert(apiRequests.every((r) => r.headers["x-moca-user"] === "management" &&
+    r.headers["x-moca-database"] === "mocadb_private_tables" && !r.headers.referer));
   // Two pending decisions and explicit quit confirmation.
   submitMode = "hold";
   await page.keyboard.press("1"); await title("1003");
@@ -96,8 +113,10 @@ try {
   await page.waitForFunction(() => document.querySelector("#submitting").textContent === "Session closed");
   assert(dialogs.some((text) => text.includes("discard 2 pending")));
   assert.equal(await page.locator("#classifications button:enabled").count(), 0);
+  assert.equal(page.url(), reviewURL);
+  assert((await page.locator("#status").textContent()).includes("Credentials remain in the address bar"));
   assert.deepEqual(errors, []);
-  console.log("Passed: URL scrubbing, credential transport, immediate advance, queue count, numpad, failure recovery, retry, undo, object links and quit.");
+  console.log("Passed: query/fragment URL retention, reload, credential transport, immediate advance, queue count, numpad, failure recovery, retry, undo, object links and quit.");
 } finally {
   // Prefetches may still be resolving when Quit aborts browser requests.
   await page.unrouteAll({behavior: "ignoreErrors"});

@@ -6,8 +6,8 @@
   <meta name="referrer" content="no-referrer">
   <title>SPHEREx autotype & quality review · MOCAdb</title>
   <script>
-    // Capture URL credentials before loading assets, then remove them from the
-    // current history entry. They remain only in this tab's JavaScript memory.
+    // Read credentials into tab memory without changing the supplied URL, so
+    // reloading retains access. API requests use headers, not credential URLs.
     (() => {
       const query = new URLSearchParams(location.search);
       const fragment = new URLSearchParams(location.hash.slice(1));
@@ -20,15 +20,12 @@
         database: params.get("dbase") || params.get("db") || params.get("database") || "",
         host: params.get("host") || "mocadb.ca", port: params.get("port") || "3306"
       };
-      for (const key of keys) { query.delete(key); fragment.delete(key); }
-      const search = query.toString(), hash = fragment.toString();
-      history.replaceState(null, "", location.pathname + (search ? "?" + search : "") + (hash ? "#" + hash : ""));
     })();
   </script>
   <link rel="stylesheet" href="static/spherex_review.css?v=20260927-png1">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20260927-png2"></script>
-  <script defer src="static/spherex_review.js?v=20260927-png1"></script>
+  <script defer src="static/spherex_review.js?v=20260927-url1"></script>
 </head>
 <body>
   <header>
@@ -84,7 +81,7 @@
       <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
       <details><summary>Template ranking and stored result</summary><div class="table-wrap"><table><thead><tr><th>Type</th><th>Grid</th><th>Score</th><th>χ² (robust)</th><th>Points</th></tr></thead><tbody id="matches"></tbody></table></div><pre id="stored"></pre></details>
       <details id="preview-panel"><summary>Write preview (no database changes)</summary><pre id="preview-output">Use “Preview write” to inspect the current best-fit upsert.</pre></details>
-      <footer>Fitting uses the desktop autotype algorithm. Figures are rendered in your browser. Credentials, queue and undo history are kept only in this tab; reopen your original URL after a refresh.</footer>
+      <footer>Fitting uses the desktop autotype algorithm. Figures are rendered in your browser. Credentials remain in the supplied URL; do not share it. Queue and undo history stay in this tab and reset on refresh.</footer>
     </article>
   </main>
 </body>
