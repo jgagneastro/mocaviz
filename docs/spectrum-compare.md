@@ -38,13 +38,31 @@ Use HTTPS in production. Do not configure the front proxy to log authorization
 headers. The repository contains no collaborator or management password for
 this feature; tests use synthetic/generated strings only.
 
-## Deploy on the MOCAdb host
+## Database connection and deployment
 
 The feature is registered by `mocaviz/app.py`; no second service, local reduction
 checkout, mounted archive or additional dependency is required. Start Passenger/
-WSGI using the project's existing `app:application` entry point, with Python 3.11+.
+WSGI using the project's existing `app:application` entry point and environment.
 
-On the machine that runs MariaDB, configure its existing Unix socket, for example:
+By default, local development and deployment both connect directly to
+`mocadb.ca:3306` through PyMySQL, using the same TLS options as the existing
+MoCaViz private pages: `ssl={"verify_mode": False, "check_hostname": False}`.
+Traffic is encrypted, but the self-signed server certificate and hostname are
+not verified. This compatibility policy does not protect against server
+impersonation. No SSH tunnel or socket setting is required. Credentials still
+come only from the current request, and each connection is read-only and closed
+after use; no credential-bearing connection pool is retained.
+
+For local testing, start MoCaViz in its usual Python environment:
+
+```bash
+python -B app.py
+```
+
+If a previous workaround set `MOCAVIZ_COMPARE_UNIX_SOCKET`, unset it (and remove
+it from your local `.env`, if present) to restore the default direct connection.
+
+Optionally, on the machine that runs MariaDB, configure its existing Unix socket:
 
 ```text
 MOCAVIZ_COMPARE_UNIX_SOCKET=/run/mysqld/mysqld.sock
@@ -57,12 +75,7 @@ not a network connection; the supplied collaborator credentials must still pass
 MariaDB authentication and `CURRENT_USER()` verification. No database credential
 belongs in deployment configuration. Requests cannot override the socket.
 
-If the socket option is absent, connections go to `mocadb.ca:3306` with required
-TLS certificate and hostname verification. The certificate presented there on
-2026-09-26 was self-signed with CN `MariaDB Server`, so it does **not** pass ordinary
-verified TCP TLS. Use the local socket for the intended same-host deployment, or
-install a trusted, hostname-valid DB certificate before using TCP. There is no
-insecure TLS fallback. This change does not modify MariaDB or the live deployment.
+This change does not modify MariaDB or the live deployment.
 
 ## No runtime files
 

@@ -13,7 +13,6 @@ import math
 import os
 import re
 import statistics
-import ssl
 import sys
 from contextlib import contextmanager
 from decimal import Decimal
@@ -55,9 +54,10 @@ def credentials() -> dict[str, str]:
 
 @contextmanager
 def authenticated_reader(auth: dict[str, str]):
-    # On the MOCAdb host, an explicitly configured Unix socket avoids sending
-    # credentials over the network at all. It is deployment configuration,
-    # never a request parameter. TCP always requires verified TLS.
+    # Match the existing MoCaViz private pages: encrypted TCP to MOCAdb,
+    # accepting its self-signed certificate without hostname verification.
+    # An optional server-configured Unix socket remains available for local IPC.
+    # Neither transport nor credentials can fall back to request-selected hosts.
     socket_path = os.environ.get("MOCAVIZ_COMPARE_UNIX_SOCKET", "")
     if socket_path and not Path(socket_path).is_absolute():
         raise RuntimeError("The configured database socket must be an absolute path")
@@ -66,7 +66,7 @@ def authenticated_reader(auth: dict[str, str]):
         user=auth["user"], password=auth["password"],
         charset="utf8mb4", cursorclass=DictCursor, autocommit=False,
         unix_socket=socket_path or None,
-        ssl=None if socket_path else ssl.create_default_context(),
+        ssl=None if socket_path else {"verify_mode": False, "check_hostname": False},
         connect_timeout=15, read_timeout=75, write_timeout=15,
     )
     try:

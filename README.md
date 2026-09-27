@@ -164,7 +164,7 @@ it to the public visualization menu. It requires credentials supplied by the
 user, uses read-only database transactions, and renders/smooths spectra in the
 browser without creating server-side files. See [access and deployment
 instructions](docs/spectrum-compare.md), including the recommended URL-fragment
-login and local MariaDB socket configuration for the MOCAdb server.
+login, direct MOCAdb connection, and optional local MariaDB socket configuration.
 
 ## Test
 

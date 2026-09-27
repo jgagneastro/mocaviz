@@ -141,8 +141,11 @@ class ComparisonAccessTests(unittest.TestCase):
                     self.assertTrue(connection.closed and connection.rolled_back)
                     options = connect.call_args.kwargs
                     self.assertEqual(options["password"], self.password)
-                    self.assertEqual(options["ssl"].verify_mode, ssl.CERT_REQUIRED)
-                    self.assertTrue(options["ssl"].check_hostname)
+                    self.assertEqual(options["host"], "mocadb.ca")
+                    self.assertEqual(options["port"], 3306)
+                    self.assertEqual(options["database"], compare.PRIVATE_DB)
+                    self.assertIsNone(options["unix_socket"])
+                    self.assertEqual(options["ssl"], {"verify_mode": False, "check_hostname": False})
                     self.assertFalse(options["autocommit"])
                     self.assertEqual(connection.cur.calls[0][0], "SET TRANSACTION READ ONLY")
                     self.assertEqual(connection.cur.calls[1][0], "START TRANSACTION READ ONLY")
@@ -152,6 +155,24 @@ class ComparisonAccessTests(unittest.TestCase):
                     self.assertNotIn("X-MOCA-Response-Cache", response.headers)
         self.assertEqual(before, dict(_ENCODED_RESPONSE_CACHE))
         self.assertFalse(_ENCODED_RESPONSE_INFLIGHT)
+
+    def test_direct_tcp_uses_existing_mocaviz_tls_policy_without_saved_credentials(self):
+        with patch.dict(os.environ, {
+            "MOCA_HOST": "unused.invalid", "MOCA_PORT": "1",
+            "MOCA_USERNAME": "public", "MOCA_PASSWORD": "unused",
+            "MOCA_DBNAME": "mocadb",
+        }), patch.object(compare.pymysql, "connect", return_value=FakeConnection()) as connect:
+            response = self.client.get("/api/spectrum-compare/packages", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        options = connect.call_args.kwargs
+        self.assertEqual(options["host"], "mocadb.ca")
+        self.assertEqual(options["user"], self.headers["X-MOCA-User"])
+        self.assertEqual(options["password"], self.password)
+        # Inspect the real driver's context without making a network connection.
+        driver = compare.pymysql.Connection(defer_connect=True, **options)
+        self.assertTrue(driver.ssl)
+        self.assertEqual(driver.ctx.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(driver.ctx.check_hostname)
 
     def test_wrong_database_account_and_driver_errors_are_safe(self):
         connection = FakeConnection("public")
