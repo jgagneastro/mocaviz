@@ -22,7 +22,7 @@ from decimal import Decimal
 sys.dont_write_bytecode = True
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Tuple
 
 import pymysql
 from pymysql.cursors import DictCursor
@@ -169,10 +169,11 @@ MAX_LEGACY_OVERLAYS = 3
 GZIP_MIN_BYTES = 1_024
 MAX_NORMALIZATION_WINDOWS = 256
 NORMALIZATION_SAMPLES_PER_WINDOW = 2
-QualitySamples = tuple[
-    list[tuple[float, float]],
-    list[tuple[float, float]],
-    list[tuple[float, float]],
+# Type aliases are evaluated even with postponed annotations (Python 3.8).
+QualitySamples = Tuple[
+    List[Tuple[float, float]],
+    List[Tuple[float, float]],
+    List[Tuple[float, float]],
 ]
 
 
@@ -897,11 +898,13 @@ def shared_normalization_details(
             reference_scale = float(statistics.median(reference_levels))
             scales = [reference_scale]
             for levels in window_levels[1:]:
+                if len(levels) != len(reference_levels):
+                    raise ValueError("Normalization windows have mismatched lengths.")
                 relative_scale = float(
                     statistics.median(
                         level / reference
                         for level, reference in zip(
-                            levels, reference_levels, strict=True
+                            levels, reference_levels
                         )
                     )
                 )
@@ -1023,9 +1026,11 @@ def spectrum_payload(
     normalization_scales, normalization_details = reference_normalization_details(
         [valid for _, _, valid, _, _ in raw_traces]
     )
+    if not (len(raw_traces) == len(normalization_scales) == len(normalization_details)):
+        raise ValueError("Traces and normalization results have mismatched lengths.")
     traces = []
     for (kind, metadata, valid, ignored, snr), normalization_scale, normalization in zip(
-        raw_traces, normalization_scales, normalization_details, strict=True
+        raw_traces, normalization_scales, normalization_details
     ):
         traces.append(
             {
