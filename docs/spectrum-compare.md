@@ -24,15 +24,20 @@ recorded by web-server access logs**; use the fragment or form to avoid this.
 Aliases `username`, `password`, `db`, and `database` are accepted by the page.
 Conflicting values are rejected. Custom database hosts/ports are not accepted.
 
-The page immediately removes credentials from the visible URL/history entry,
-keeps them only in its JavaScript closure, and sends them in `X-MOCA-*` headers
-on same-origin API requests. API query strings never carry credentials and are
+The page preserves supplied credentials and other parameters in the visible URL
+on load and refresh, so the same link can be reloaded or bookmarked. This also
+means credentials remain in browser history/bookmarks; protect those links.
+The page reads them into its JavaScript closure and sends them in `X-MOCA-*`
+headers on same-origin API requests. API query strings never carry credentials and are
 rejected if they do. Responses use `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer`. No cookies, local/session storage, browser
 database, server session, saved credentials, environment credential fallbacks,
 connection pools or cross-request response caches are used by this feature.
-Sign out (`Q`) clears the data and credentials and cancels pending work. Reloading
-requires credentials again. An invalid password never falls back to public data.
+Explicit Sign out (`Q`) clears the data and credentials, removes credential
+parameters from the URL, and cancels pending work. An authentication error keeps
+the URL intact so it can be corrected. Reloading a credential-bearing URL signs
+in again; credentials entered only in the form must be re-entered after reload.
+An invalid password never falls back to public data.
 
 Use HTTPS in production. Do not configure the front proxy to log authorization
 headers. The repository contains no collaborator or management password for

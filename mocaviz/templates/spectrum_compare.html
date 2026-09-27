@@ -8,8 +8,8 @@
   <script src="static/spectrum_compare/access.js?v=20260926-1"></script>
   <script>
     window.comparisonAccess = SpectrumCompareAccess.fromURL(location.href);
-    // Remove credentials before loading additional assets or opening reports.
-    history.replaceState(null, '', window.comparisonAccess.cleanURL);
+    // Keep supplied URL credentials for reloads/bookmarks. Explicit sign-out
+    // removes them; no-referrer prevents forwarding them to linked reports.
   </script>
   <title>MOCAdb reduction comparison</title>
   <style>
@@ -220,8 +220,9 @@
     if(!$('access-dialog').open)$('access-dialog').showModal();
     $('access-password').focus();
   }
-  function signOut(message='Signed out. Enter credentials to reopen the reviewer.'){
+  function signOut(message='Signed out. Enter credentials to reopen the reviewer.',clearURL=false){
     access.clear();accessGeneration++;indexGeneration++;
+    if(clearURL)history.replaceState(null,'',access.cleanURL);
     for(const controller of controllers)controller.abort();controllers.clear();
     resetSmoothing();state.loadRequestId++;state.active=-1;state.loading=false;
     state.packages=[];state.index=[];state.filtered=[];state.traces=[];state.xFull=null;state.xView=null;
@@ -590,7 +591,7 @@
   }
   $('wiseview').onclick=()=>{const url=wiseviewURL();if(url)window.open(url,'_blank','noopener,noreferrer');};
   $('first').onclick=()=>step(-state.filtered.length);$('last').onclick=()=>step(state.filtered.length);
-  $('quit').onclick=()=>signOut();
+  $('quit').onclick=()=>signOut(undefined,true);
   $('package').onchange=()=>loadIndex($('package').value); $('sort').onchange=renderIndex; $('filter').oninput=renderIndex; $('prev').onclick=()=>step(-1); $('next').onclick=()=>step(1); $('open-report').onclick=openMocadbReport;
   $('only-legacy').onchange=()=>{renderIndex();if(!state.filtered.some(row=>Number(row.moca_specid)===state.active)){if(state.filtered.length)loadSpectrum(Number(state.filtered[0].moca_specid));else{state.traces=[];setMeta('No spectra match the active filters.');draw();setStatus(`0 of ${state.index.length.toLocaleString()} new reductions shown`);}}else setStatus(`${state.filtered.length.toLocaleString()} of ${state.index.length.toLocaleString()} new reductions shown`);};
   $('robust').onclick=()=>{state.yMode='robust';draw();}; $('minmax').onclick=()=>{state.yMode='minmax';draw();}; $('reset').onclick=()=>{state.xView=state.xFull&&[...state.xFull];draw();}; $('normalize').onchange=draw; $('scatter-points').onchange=draw; $('show-ignored').onchange=()=>{recomputeVisibleXRange();draw();};
