@@ -109,24 +109,17 @@
     if (power) annotations.push({xref: "paper", yref: "paper", x: 0, y: 1, yshift: 3,
       xanchor: "left", yanchor: "bottom", showarrow: false, font: {size: pt(10, 10), color: "black"},
       text: "1e" + String(power).replace("-", "−")});
-    const object = data.object || {};
-    const laneNames = {spiff: "SPIFF", spiffstacker: "SPIFFStacker", sublimeaperture: "SUBLIMEaperture"};
     const compact = width < 520;
-    const title = "SPHEREx Autotype:" + (compact ? "<br>" : " ") + "Comparison Spectrum vs Templates";
-    const subtitle = [object.designation || "unknown", "moca_oid=" + object.moca_oid,
-      "moca_specid=" + object.moca_specid, laneNames[data.lane] || data.lane].filter(Boolean)
-      .map(escapeText).join(compact ? "<br>" : " | ");
     const axis = {showgrid: true, gridcolor: "rgba(176,176,176,0.2)", gridwidth: 1,
       showline: true, mirror: true, linecolor: "black", linewidth: pt(1.5, 1.2),
       ticks: "outside", tickcolor: "black", ticklen: pt(3.5, 3), tickwidth: 1,
       tickfont: {size: pt(13, 10)}, zeroline: false, automargin: true};
     return {traces, layout: {
       margin: {l: compact ? 62 : Math.max(66, width * 0.083), r: 16,
-        t: compact ? 130 : Math.max(52, width * 0.058), b: Math.max(56, width * 0.072)},
+        t: 26, b: Math.max(56, width * 0.072)},
       font: {family: '"DejaVu Sans", Arial, sans-serif', color: "black", size: 13},
-      title: {text: title + "<br>" + subtitle,
-        x: 0.5, xanchor: "center", y: compact ? 0.955 : 0.97, yanchor: "top",
-        font: {size: compact ? 11 : pt(12, 11)}},
+      // Object identity and tool title already appear in the review UI.
+      title: {text: ""},
       xaxis: {...axis, title: {text: "Wavelength (µm)", font: {size: pt(15, 12)}, standoff: pt(4, 4)},
         range: [xBounds[0] - xPad, xBounds[1] + xPad]},
       yaxis: {...axis, title: {text: "Relative Spectral Flux Density + offset (F<sub>λ</sub>)",

@@ -83,6 +83,8 @@ error bars are clipped at the adjacent baseline. Flux retains the PNG's units
 light grids and typography match the original. Both review pages and all three
 lanes share this renderer. Optional desktop CNN/binned overlays remain outside
 the web tool's scope.
+The tool title and object details stay in the surrounding UI, not repeated
+inside the plot; the top margin only reserves room for the flux multiplier.
 
 ## Database actions
 

@@ -67,15 +67,17 @@ test("no-fit and empty spectra stay reviewable with finite axes", () => {
   }
 });
 
-test("labels escape data HTML and render narrow layouts without a long title line", () => {
+test("labels escape data HTML without repeating UI headings inside the plot", () => {
   const data = fixture();
   data.object.designation = "<img src=x>";
   data.fit.overlays[0].label = "<b>Injected</b>";
-  const plot = figure(data, "42", 380);
-  assert(plot.layout.title.text.includes("&lt;img src=x&gt;"));
-  assert(plot.layout.title.text.includes("Autotype:<br>"));
-  assert(plot.layout.annotations[0].text.includes("&lt;b&gt;Injected&lt;/b&gt;"));
-  assert.equal(plot.layout.uirevision, "42");
+  for (const width of [380, 1000]) {
+    const plot = figure(data, "42", width);
+    assert.equal(plot.layout.title.text, "");
+    assert.equal(plot.layout.margin.t, 26);
+    assert(plot.layout.annotations[0].text.includes("&lt;b&gt;Injected&lt;/b&gt;"));
+    assert.equal(plot.layout.uirevision, "42");
+  }
 });
 
 test("figure construction never mutates a prefetched fit", () => {
