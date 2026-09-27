@@ -32,6 +32,29 @@ Responses have `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
 Regeneration keeps its submitted credentials in memory only for that operation;
 errors are sanitized. The application does not save credentials to server files.
 
+## Local preview
+
+Start from the mocaviz repository using the existing shared deployment cache:
+
+```sh
+python -B scripts/serve_gnirs_planner.py --cache-file /private/path/gnirs.sqlite
+```
+
+Then open `http://localhost:8796/js/gnirs-planner` and supply credentials in the
+page or URL. This launcher checks the cache, catalog and RV/SXD timing grids
+**before** opening the port. It disables request logging and binds only to
+loopback. `--check` validates configuration without starting a server or writing
+files. You can also supply the path through `MOCAVIZ_GNIRS_CACHE_FILE`.
+Keep this command running while using the local preview.
+
+If the page says the cache is not configured, the serving process has no
+`MOCAVIZ_GNIRS_CACHE_FILE`. **Regenerate catalog cannot choose a server path or
+recreate the offline timing-calibration bundle.** Point the process at the
+existing initialized cache and restart it; no regeneration is needed for this
+configuration error. For a fresh deployment, first import the seed below.
+Regeneration stays disabled until the cache loads; **Reload cache** retries
+after configuration is repaired. Repeated users share the same file.
+
 ## Exactly one shared persistent data file
 
 Set **one path for all workers and users**:

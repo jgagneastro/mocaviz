@@ -29,7 +29,7 @@ const axisModes=()=>({xlog:$('xlog').checked,ylog:!spectralYAxis()&&$('ylog').ch
 function defaultView(){const {xlog,ylog}=axisModes();return {xmin:xlog?Math.log10(DEFAULT_LIMITS.xmin):DEFAULT_LIMITS.xmin,xmax:xlog?Math.log10(DEFAULT_LIMITS.xmax):DEFAULT_LIMITS.xmax,ymin:spectralYAxis()?-DEFAULT_SPT_LIMITS.ymax:ylog?Math.log10(DEFAULT_LIMITS.ymin):DEFAULT_LIMITS.ymin,ymax:spectralYAxis()?-(isSxd()?4.5:DEFAULT_SPT_LIMITS.ymin):ylog?Math.log10(isSxd()?3200:DEFAULT_LIMITS.ymax):(isSxd()?3200:DEFAULT_LIMITS.ymax)};}
 const plotStyles=getComputedStyle(document.documentElement),OBS_COLORS=[0,1,2,3].map(n=>plotStyles.getPropertyValue(`--obs-${n}`).trim()||'#8b949e');
 const observationCount=r=>['pm','plx','rv'].filter(k=>(r.observables||'').split('+').includes(k)).length;
-const state={data:null,rows:[],active:null,screen:[],view:defaultView(),timings:new Map(),timingKey:null,windows:new Map()};
+const state={data:null,cacheReady:false,rows:[],active:null,screen:[],view:defaultView(),timings:new Map(),timingKey:null,windows:new Map()};
 const youngPoints=()=>state.data?.spectral_type_axis?.points||[];
 const approxTeff=n=>L.youngTeffForSpt(youngPoints(),n),approxSpt=t=>L.youngSptForTeff(youngPoints(),t);
 function fitCurrent(){const {xlog,ylog}=axisModes();return L.fitView(state.rows,xlog,ylog,yField(),spectralYAxis())||defaultView();}
@@ -256,7 +256,30 @@ async function exportCsv(){
     a.href=url;a.download=`gnirs_${currentMode}_2027A_selection.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }catch(e){$('notice').textContent='Export failed: '+e.message;}
 }
-async function load(first=false){try{const response=await GNIRSAccess.fetch('/api/meta');if(!response.ok)throw Error((await response.json()).error||`HTTP ${response.status}`);const data=await response.json();const old=first?null:filters();state.data=data;state.windows.clear();state.timings.clear();state.timingKey=null;configureMode();if(first)resetValues();choices('aids',data.associations,old?.aids);choices('observables',data.observables,old?.observables);state.fitOnLoad=first;const collectedAt=new Date(data.manifest.collected_at).toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',timeZoneName:'short'});$('cache-status').textContent=`${data.catalog_count.toLocaleString()} cached OIDs · MOCAdb ${collectedAt}${data.catalog_complete?'':' · cache build in progress'} · RV grid ${new Date(data.grid.created_at).toLocaleString()} · SXD grid ${data.sxd_grid?new Date(data.sxd_grid.created_at).toLocaleString():'not published'}`;renderMethods();await update();}catch(e){$('notice').textContent='Could not load GNIRS cache: '+e.message;$('notice').className='warning';}}
+async function load(first=false){
+  first=first||!state.data;
+  clearTimeout(rebuildTimer);
+  state.cacheReady=false;
+  $('regenerate').disabled=true;
+  try{
+    const response=await GNIRSAccess.fetch('/api/meta');
+    if(!response.ok)throw Error((await response.json()).error||`HTTP ${response.status}`);
+    const data=await response.json(),old=first?null:filters();
+    state.data=data;state.windows.clear();state.timings.clear();state.timingKey=null;
+    configureMode();if(first)resetValues();
+    choices('aids',data.associations,old?.aids);choices('observables',data.observables,old?.observables);
+    state.fitOnLoad=first;
+    const collectedAt=new Date(data.manifest.collected_at).toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',timeZoneName:'short'});
+    $('cache-status').textContent=`${data.catalog_count.toLocaleString()} cached OIDs · MOCAdb ${collectedAt}${data.catalog_complete?'':' · cache build in progress'} · RV grid ${new Date(data.grid.created_at).toLocaleString()} · SXD grid ${data.sxd_grid?new Date(data.sxd_grid.created_at).toLocaleString():'not published'}`;
+    renderMethods();await update();
+    state.cacheReady=true;
+    await pollRebuild();
+  }catch(e){
+    state.cacheReady=false;$('regenerate').disabled=true;
+    $('notice').textContent='Could not load GNIRS cache: '+e.message;$('notice').className='warning';
+    $('rebuild-status').textContent='Regeneration is unavailable until the shared cache loads. After the server configuration is fixed, use Reload cache.';
+  }
+}
 let rebuildTimer=null,rebuildAwaiting=false;
 let itcTimer=null,itcAwaiting=false;
 async function pollItc(){
@@ -277,8 +300,10 @@ async function refreshSxd(){
 }
 async function pollRebuild(){
   clearTimeout(rebuildTimer);
+  if(!state.cacheReady)return;
   try{
-    const response=await GNIRSAccess.fetch('/api/regenerate');if(!response.ok)throw Error(`HTTP ${response.status}`);
+    const response=await GNIRSAccess.fetch('/api/regenerate');if(!response.ok)throw Error((await response.json()).error||`HTTP ${response.status}`);
+    if(!state.cacheReady)return;
     const status=await response.json(),active=['queued','starting','collecting','building','publishing'].includes(status.phase);
     $('regenerate').disabled=active;
     $('rebuild-status').textContent=status.phase==='idle'?'':active?`Regenerating: ${status.message}. Current catalog remains available.`:status.phase==='complete'?`Last full regeneration ${new Date(status.updated_at*1000).toLocaleDateString()}: ${status.message.replace(/^Updated catalog: /,'')}`:status.message;
@@ -286,20 +311,21 @@ async function pollRebuild(){
     if(active)rebuildTimer=setTimeout(pollRebuild,3000);
     else if(status.phase==='complete'&&rebuildAwaiting){rebuildAwaiting=false;await load();}
     else if(status.phase==='error'||status.phase==='interrupted')rebuildAwaiting=false;
-  }catch(e){$('rebuild-status').textContent='Could not check cache regeneration: '+e.message;$('regenerate').disabled=false;rebuildTimer=setTimeout(pollRebuild,10000);}
+  }catch(e){$('rebuild-status').textContent='Could not check cache regeneration: '+e.message;$('regenerate').disabled=true;if(state.cacheReady)rebuildTimer=setTimeout(pollRebuild,10000);}
 }
 async function regenerateCache(){
+  if(!state.cacheReady)return;
   $('regenerate').disabled=true;$('rebuild-status').textContent='Starting cache regeneration…';
   try{
     const response=await GNIRSAccess.fetch('/api/regenerate',{method:'POST'});
     const status=await response.json();if(!response.ok)throw Error(status.error||`HTTP ${response.status}`);
     rebuildAwaiting=true;await pollRebuild();
-  }catch(e){$('regenerate').disabled=false;$('rebuild-status').textContent='Could not start cache regeneration: '+e.message;}
+  }catch(e){$('regenerate').disabled=!state.cacheReady;$('rebuild-status').textContent='Could not start cache regeneration: '+e.message;}
 }
 function setup(){createControls();configureMode();$('observing-mode').onchange=switchMode;$('reload').onclick=()=>load();$('regenerate').onclick=regenerateCache;$('export').onclick=exportCsv;$('methods').onclick=()=>$('methods-dialog').showModal();$('close-methods').onclick=()=>$('methods-dialog').close();$('search').oninput=()=>renderList(true);$('list-sort').onchange=()=>renderList(true);$('list-prev').onclick=()=>{state.offset=Math.max(0,(state.offset||0)-100);renderList();};$('list-next').onclick=()=>{state.offset=(state.offset||0)+100;renderList();};$('previous-target').onclick=()=>navigateTarget(-1);$('next-target').onclick=()=>navigateTarget(1);$('reset-filters').onclick=()=>{resetValues();for(const input of document.querySelectorAll('#aids input'))input.checked=aidDefault(input.value);for(const input of document.querySelectorAll('#observables input'))input.checked=observableDefault(input.value);update();};for(const which of ['all','none'])$('aids-'+which).onclick=()=>{for(const input of $('aids').querySelectorAll('input'))input.checked=which==='all';update();};$('fit').onclick=()=>{state.view=fitCurrent();draw();};$('reset-view').onclick=()=>{state.view=defaultView();draw();};for(const id of ['tracks','jitter'])$(id).onchange=draw;for(const id of ['xlog','ylog','y-axis'])$(id).onchange=()=>{state.view=fitCurrent();$('ylog').disabled=spectralYAxis();draw();};
   $('gnirs-only').onchange=()=>renderList(true);
   document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)||$('methods-dialog').open||document.activeElement===$('inspector-resizer'))return;if(e.key.toLowerCase()==='o'&&state.active){e.preventDefault();$('report').click();}else if(['ArrowUp','ArrowLeft'].includes(e.key)){e.preventDefault();navigateTarget(-1);}else if(['ArrowDown','ArrowRight'].includes(e.key)){e.preventDefault();navigateTarget(1);}});
   const inspector=$('inspector'),handle=$('inspector-resizer');let drag=null;function resize(height){const max=inspector.getBoundingClientRect().height+document.querySelector('.plot-area').getBoundingClientRect().height-140;inspector.style.height=Math.max(130,Math.min(max,height))+'px';}handle.onpointerdown=e=>{drag={y:e.clientY,h:inspector.getBoundingClientRect().height};handle.setPointerCapture(e.pointerId);};handle.onpointermove=e=>{if(drag)resize(drag.h+drag.y-e.clientY);};handle.onpointerup=()=>drag=null;handle.onpointercancel=()=>drag=null;handle.ondblclick=()=>inspector.style.removeProperty('height');handle.onkeydown=e=>{if(['ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();resize(inspector.getBoundingClientRect().height+(e.key==='ArrowUp'?20:-20));}};
-  $('refresh-sxd').onclick=refreshSxd;load(true);pollRebuild();pollItc();
+  $('refresh-sxd').onclick=refreshSxd;load(true);pollItc();
 }
 document.addEventListener('DOMContentLoaded',setup);

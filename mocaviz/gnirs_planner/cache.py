@@ -25,7 +25,7 @@ class CacheUnavailable(Exception):
 def cache_path():
     raw = os.environ.get("MOCAVIZ_GNIRS_CACHE_FILE", "").strip()
     if not raw:
-        raise CacheUnavailable("The shared GNIRS cache has not been configured by the server administrator.")
+        raise CacheUnavailable("The server has no shared cache location configured (MOCAVIZ_GNIRS_CACHE_FILE). Regenerate catalog needs that location and the initial timing-calibration bundle; it cannot configure the server.")
     path = Path(raw).expanduser().absolute()
     # The cache contains private rows. Never make it a Flask static asset.
     static = Path(__file__).resolve().parents[1] / "static"
@@ -41,7 +41,7 @@ def cache_path():
 @contextmanager
 def reader(path):
     if not path.is_file():
-        raise CacheUnavailable("The shared GNIRS cache needs its initial deployment import.")
+        raise CacheUnavailable("The shared GNIRS cache needs its initial deployment import, including the RV/SXD timing grids. Regenerate catalog refreshes an initialized cache.")
     conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA temp_store=MEMORY")
@@ -149,7 +149,7 @@ def metadata(path):
     with reader(path) as db:
         result = get(db, "catalog")
     if not result or result.get("cache_format") != FORMAT_VERSION:
-        raise CacheUnavailable("The shared GNIRS cache needs its initial deployment import.")
+        raise CacheUnavailable("The shared GNIRS cache needs its initial deployment import, including the RV/SXD timing grids. Regenerate catalog refreshes an initialized cache.")
     return result
 
 
@@ -174,3 +174,18 @@ def status(path):
 def progress(path, phase, message, lease=None, **extra):
     with writer(path, lease=lease) as db:
         put(db, "rebuild", {"phase": phase, "message": message, "updated_at": time.time(), **extra})
+
+
+def validate_ready(path):
+    """Check startup prerequisites read-only, without scanning the full catalog."""
+    try:
+        meta = metadata(path)
+        if not all((meta.get(key) or {}).get("rows") for key in ("grid", "sxd_grid")) or not meta.get("semester"):
+            raise CacheUnavailable("The shared cache is missing its timing-calibration bundle. Import the initial deployment cache before starting the planner.")
+        with reader(path) as db:
+            db.execute("SELECT oid, payload, visibility FROM targets LIMIT 0")
+            if not get(db, "revision"):
+                raise CacheUnavailable("The shared cache has no published catalog. Import the initial deployment cache before starting the planner.")
+    except sqlite3.DatabaseError:
+        raise CacheUnavailable("The shared cache is not a readable initialized GNIRS database. Check the configured file or re-import the deployment cache.") from None
+    return meta

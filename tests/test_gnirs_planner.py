@@ -5,6 +5,7 @@ Run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p test_gnir
 """
 from contextlib import contextmanager
 import hashlib
+import io
 import gzip
 import json
 import multiprocessing
@@ -227,6 +228,37 @@ class PlannerTests(unittest.TestCase):
             lease = thread.call_args.kwargs['args'][2]
         self.assertEqual(cache.status(self.path)['phase'], 'queued')
         cache.release_rebuild(lease)
+
+    def test_startup_validation_and_regeneration_without_configuration(self):
+        from scripts.serve_gnirs_planner import main
+        before = self.path.read_bytes()
+        with patch.dict(os.environ, {'MOCAVIZ_GNIRS_CACHE_FILE':''}), patch('werkzeug.serving.run_simple') as serve:
+            for operation, body in (('meta', {}), ('regenerate', {'action':'start'})):
+                response = self.post(operation, body)
+                self.assertEqual(response.status_code, 503)
+                self.assertIn('MOCAVIZ_GNIRS_CACHE_FILE', response.get_json()['error'])
+                self.assertIn('timing-calibration bundle', response.get_json()['error'])
+            with patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                main([])
+            self.assertEqual(stopped.exception.code, 2)
+            serve.assert_not_called()
+            with patch('sys.stdout', new=io.StringIO()):
+                self.assertEqual(main(['--cache-file', str(self.path), '--check']), 0)
+            serve.assert_not_called()
+            missing = self.path.with_name('missing.sqlite')
+            with patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
+                main(['--cache-file', str(missing), '--check'])
+            self.assertFalse(missing.exists())
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ['shared.sqlite'])
+
+    def test_startup_requires_imported_timing_grids(self):
+        with cache.writer(self.path) as db:
+            meta = cache.get(db, 'catalog')
+            meta.pop('grid')
+            cache.put(db, 'catalog', meta)
+        with self.assertRaisesRegex(cache.CacheUnavailable, 'timing-calibration bundle'):
+            cache.validate_ready(self.path)
 
     def test_bounded_selection_memory(self):
         for snr in range(30, 42):
