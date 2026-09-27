@@ -1,0 +1,58 @@
+{
+  "semester": "2027A",
+  "first_evening": "2027-02-01",
+  "last_evening": "2027-07-31",
+  "deadline_toronto": "2026-10-01T19:00:00-04:00",
+  "committee": "CanTAC",
+  "site": {
+    "latitude_deg": 19.8238,
+    "longitude_deg": -155.4691,
+    "height_m": 4213
+  },
+  "sun_altitude_max_deg": -18,
+  "horizon_deg": 20,
+  "step_minutes": 5,
+  "unavailable_evenings": [
+    [
+      "2027-04-12",
+      "2027-04-29"
+    ]
+  ],
+  "shutdown_status": "Provisional; includes April 29 conservatively while back-to-sky checks begin",
+  "ra_accessible_hours": [
+    4,
+    1
+  ],
+  "ra_unrestricted_hours": [
+    6,
+    23
+  ],
+  "dec_accessible_degrees": [
+    -37,
+    90
+  ],
+  "dec_unrestricted_degrees": [
+    -30,
+    73
+  ],
+  "verified_on": "2026-09-23",
+  "sources": [
+    {
+      "title": "NRC Canadian 2027A call",
+      "url": "https://www.nrc.canada.ca/en/research-development/products-services/technical-advisory-services/gemini-canadian-specific-information-phase-i"
+    },
+    {
+      "title": "Korean Gemini Office 2027A call: target table, GNIRS availability and shutdown",
+      "url": "https://kgmt.kasi.re.kr/kgmtscience/content/call-proposals-gemini-2027a"
+    },
+    {
+      "title": "Subaru Gemini exchange: 2027A instrument availability and shutdown",
+      "url": "https://www.naoj.hawaii.edu/Proposals/Subaru_Gemini.html"
+    },
+    {
+      "title": "Central Gemini 2027A call (returned HTTP 403 at verification)",
+      "url": "https://www.gemini.edu/observing/phase-i-proposing-time/standard-semester-program/2027a-call-proposals"
+    }
+  ],
+  "availability_note": "GNIRS is offered in all operational modes. This tool models natural-seeing short-blue 111 l/mm non-XD only. The detailed non-LGS target table permits restricted RA 04\u201306h and 23\u201301h; NRC's broad summary starts at 06h. Actual dark-time windows are computed independently."
+}

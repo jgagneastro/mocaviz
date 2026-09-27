@@ -8,6 +8,10 @@ without maintaining a second implementation.
 from __future__ import annotations
 
 import os
+import sys
+
+# Request-time imports must not create bytecode files on the web server.
+sys.dont_write_bytecode = True
 
 from dotenv import load_dotenv
 from werkzeug.middleware.dispatcher import DispatcherMiddleware

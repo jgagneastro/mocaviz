@@ -154,6 +154,7 @@ _ENCODED_RESPONSE_INFLIGHT: dict[str, Event] = {}
 def _is_cacheable_api_request() -> bool:
     return (
         request.method == "GET"
+        and request.blueprint not in {"gnirs_planner", "gnirs_planner_compat"}
         and request.blueprint not in {"spectrum_compare", "spectrum_compare_compat"}
         and request.blueprint not in {"spherex_review", "spherex_review_compat"}
         and ENCODED_RESPONSE_CACHE_SECONDS > 0
@@ -184,6 +185,11 @@ def _cached_response(entry: tuple[float, int, list[tuple[str, str]], bytes]) -> 
     return response
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+
+from .gnirs_planner import planner as gnirs_planner_blueprint
+
+app.register_blueprint(gnirs_planner_blueprint)
+app.register_blueprint(gnirs_planner_blueprint, url_prefix="/js", name="gnirs_planner_compat")
 
 from .spectrum_compare import review as spectrum_compare_blueprint
 

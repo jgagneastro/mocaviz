@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><title>GNIRS target selection · 2027A</title><link rel="stylesheet" href="__ASSET_BASE__/style.css"><link rel="stylesheet" href="__ASSET_BASE__/gnirs.css"></head>
+<body>
+<header><div class="brand"><span class="eyebrow">CLOUDY WORLDS ATLAS · CanTAC 2027A</span><h1>GNIRS target selection</h1></div>
+<div class="metric"><strong id="count">— / —</strong><span>selected targets</span></div>
+<div class="metric"><strong id="science">— h</strong><span>science integration</span></div>
+<div class="metric"><strong id="program">— h</strong><span>program incl. overheads</span></div>
+<div class="metric"><strong id="telescope">— h</strong><span>+ provisional calibrations</span></div>
+<div class="header-actions"><button id="reload">↻ Reload cache</button><button id="regenerate">Regenerate catalog</button><button id="export">Export selection</button><button id="methods">Methods</button></div></header>
+<section class="observing-mode-bar"><label for="observing-mode">Observing mode <select id="observing-mode"><option value="rv">High-resolution RV</option><option value="sxd">SXD · broad spectroscopy · R ≈ 1100</option></select></label><span id="mode-summary"></span><button id="refresh-sxd" class="small" hidden>Refresh SXD timing cache</button><span id="itc-status" class="tiny" role="status"></span></section>
+<section id="proposal-size" class="proposal-size" data-tier="none" aria-live="polite" aria-label="CanTAC GNIRS proposal planning scale; waiting for selection">
+  <div class="proposal-size-heading"><span class="eyebrow">CanTAC GNIRS proposal scale · planning guide</span><strong id="proposal-tier">Waiting for selection</strong><span id="proposal-hours" class="subtle"></span></div>
+  <div class="tier-scale" aria-hidden="true"><span data-tier="snapshot">Snapshot <b>&lt;5 h</b></span><span data-tier="focused">Focused <b>5–10 h</b></span><span data-tier="broad">Broad <b>10–20 h</b></span><span data-tier="large">Large <b>20–40 h</b></span><span data-tier="very-large">Very large <b>40+ h</b></span></div>
+  <p id="proposal-size-note">Illustrative bands based on published Gemini North allocations. Program time includes target overheads; PIT adds baseline calibrations.</p>
+</section>
+<div id="notice" role="status">Loading the GNIRS catalog…</div>
+<main>
+<aside class="left"><div class="pane-heading"><h2>Targets</h2><span id="rvcount" class="pill">—</span></div>
+<p class="subtle inset">Semester: 1 February–31 July 2027<br>CanTAC deadline: 1 October 2026, 19:00 Toronto</p>
+<input id="search" type="search" placeholder="Search designation or any OID…" aria-label="Search targets; OID search includes excluded targets">
+<label class="line inset">Sort <select id="list-sort"><option value="time">Shortest program time</option><option value="ra">Right ascension</option><option value="spt">Spectral type</option><option value="age">Association age</option></select></label>
+<label class="line inset gnirs-list-toggle"><input id="gnirs-only" type="checkbox"> Show selected targets with GNIRS data only</label>
+<div id="rv-summary" class="subtle inset"></div><div class="line inset"><button id="list-prev" class="small">‹</button><span id="list-page" class="tiny"></span><button id="list-next" class="small">›</button></div><div id="rvlist" class="scroll-list"></div>
+<div class="left-footer"><span class="subtle">To include all GNIRS-covered targets that pass the other cuts, uncheck both coverage exclusions under Kinematics, crowding &amp; coverage. A numeric OID searches the entire loaded catalog and shows every failed filter.</span></div></aside>
+<section class="center">
+<div class="plot-toolbar"><label><input id="tracks" type="checkbox" checked> Diamondback tracks</label><label><input id="jitter" type="checkbox" checked> Jitter</label><label><input id="xlog" type="checkbox" checked> Log age</label><label>Y axis <select id="y-axis"><option value="spt">Spectral type</option><option value="teff">Teff</option></select></label><label id="ylog-label"><input id="ylog" type="checkbox"> Log Teff</label><button id="fit">Fit targets</button><button id="reset-view">Reset view</button></div>
+<div class="plot-area"><canvas id="plot" tabindex="0" aria-label="Selected targets versus association age"></canvas><div id="tooltip" hidden></div><div id="plot-empty" hidden>No selected targets have an age and a value for this axis.</div></div>
+<div class="legend"><span class="legend-key"><span class="shape-symbol star"></span> Low gravity</span><span class="legend-key"><span class="shape-symbol diamond"></span> Hyades</span><span class="legend-key"><span class="obs-swatch obs-1"></span> pm</span><span class="legend-key"><span class="obs-swatch obs-2"></span> pm + plx / rv</span><span class="legend-key"><span class="obs-swatch obs-3"></span> pm + plx + rv</span><span id="unplotted"></span></div>
+<div id="inspector-resizer" class="inspector-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize target inspector" tabindex="0"></div>
+<section id="inspector"><div class="inspector-title"><div class="target-heading"><span class="eyebrow">TARGET INSPECTOR</span><h2 id="target-name">Select a target</h2><div class="target-time"><span>Estimated total telescope time</span><strong id="target-telescope-time">—</strong><small>includes provisional calibrations</small></div></div><div class="inspector-actions"><span id="target-position" class="subtle"></span><button id="previous-target">↑ Previous</button><button id="next-target">Next ↓</button><a id="report" class="report-button" target="_blank" rel="noopener noreferrer">Object report [O]</a></div></div><div id="details" class="detail-grid"><p class="subtle">Click the plot or target list. Arrow keys step through the selection; drag the divider to resize these details.</p></div></section>
+</section>
+<aside class="filters"><div class="pane-heading"><h2>Selection & observing</h2><button id="reset-filters" class="small">Reset</button></div><form id="filter-form" class="filter-scroll"><div id="control-groups"></div><div class="filter"><div class="line"><h3>Associations</h3><span><button type="button" id="aids-all" class="text-button">All</button><button type="button" id="aids-none" class="text-button">None</button></span></div><div id="aids" class="choice-list"></div></div><div class="filter"><h3>Available observables</h3><div id="observables" class="choice-list compact"></div></div></form><div class="filter-footer"><div id="cache-status"></div><div id="rebuild-status" role="status"></div></div></aside>
+</main>
+<dialog id="methods-dialog"><div class="line"><h2>GNIRS planning methods</h2><button id="close-methods">Close</button></div><div id="methods-body"></div></dialog>
+<script src="__ASSET_BASE__/access.js"></script><script src="__ASSET_BASE__/sxd-logic.js"></script><script src="__ASSET_BASE__/logic.js"></script><script src="__ASSET_BASE__/plot-logic.js"></script><script src="__ASSET_BASE__/app.js"></script><script src="__ASSET_BASE__/plot.js"></script>
+</body></html>
