@@ -22,13 +22,15 @@ Every page/API request opens a new MOCAdb connection using only that request's
 credentials and checks `CURRENT_USER()`. Public, missing, invalid or conflicting
 credentials are rejected, including against a warm cache. The planner never
 uses the main application's public account, credential environment variables,
-`.env`, auth files, saved database engines, cookies or browser storage.
+`.env`, auth files, saved database engines, cookies, localStorage or sessionStorage.
 
-After a successful load the browser removes credentials from the address bar
-and holds them in page memory, using request headers for subsequent POST APIs.
+The browser preserves all supplied URL parameters, including the username and
+password, on load and when switching observing modes. Reloading reuses the
+credentials in the URL. Subsequent POST APIs use credentials held in page memory
+as request headers.
 Responses have `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
-Closing/reloading the page requires credentials again. Regeneration keeps its
-submitted credentials in memory only for that operation; errors are sanitized.
+Regeneration keeps its submitted credentials in memory only for that operation;
+errors are sanitized. The application does not save credentials to server files.
 
 ## Exactly one shared persistent data file
 
@@ -106,8 +108,8 @@ replacing an existing seed; do not replace it underneath a running rebuild.
 ## Web-server configuration is part of the no-file guarantee
 
 Application code cannot suppress an upstream server's access logs or response
-spooling. URL credentials reach the initial HTTP request before JavaScript can
-remove them. The hosting configuration must disable credential-bearing request
+spooling. URL credentials accompany page loads and remain in the address bar.
+The hosting configuration must disable credential-bearing request
 logging/tracing and request/response disk buffering for these routes.
 
 The supplied strict deployment option keeps the planner in this repository,
@@ -156,7 +158,7 @@ cache, both modes and all read/export APIs, cross-worker selection recovery,
 rollback across DROP/RENAME, concurrent refresh requests, cross-process leases,
 stale-worker fencing and the absence of sidecar files. The no-file audit rejects
 filesystem mutation attempts during browsing and export, including writable
-SQLite connections. Chromium checks verify both modes, URL cleanup, plot and
+SQLite connections. Chromium checks verify both modes, plot and
 target-report rendering with the original styling. No live database password is
 needed for these tests; live server authentication and full online regeneration
 still require a deployment smoke test with credentials entered by the user.

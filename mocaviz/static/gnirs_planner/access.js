@@ -1,5 +1,6 @@
 'use strict';
-// URL credentials are held only in this closure for the lifetime of the page.
+// Preserve the supplied URL, including credentials, across loads and reloads.
+// API credentials are read into this closure for the lifetime of the page.
 // No cookies, localStorage, sessionStorage, logs or credential-bearing exports.
 const GNIRSAccess=(()=>{
   const url=new URL(location.href),params=url.searchParams;
@@ -9,8 +10,6 @@ const GNIRSAccess=(()=>{
     'X-MOCA-Password':one(['pwd','password']),
     'X-MOCA-Database':one(['dbase','db','database'],'mocadb_private_tables'),
     'Content-Type':'application/json'};
-  for(const key of ['user','username','pwd','password','dbase','db','database','host','port'])params.delete(key);
-  history.replaceState(null,'',url.pathname+url.search+url.hash);
   const prefix=location.pathname.replace(/\/gnirs-planner\/?$/,'');
   const selections=new Map();
   async function api(path,options={}){
