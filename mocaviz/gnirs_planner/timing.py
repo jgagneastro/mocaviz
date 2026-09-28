@@ -53,24 +53,48 @@ def setup(r,f,model):
     row=min(choices,key=lambda p:(abs(p['sptn']-r['sptn']),p['sptn'])) if choices else None
     return band,airmass,row
 
+# Recommended read modes from Gemini GNIRS components. Short-frame S/N uses
+# a rigorous upper bound on the existing 60-s curve: scaling all variance by
+# max(1, (RN/7)^2 * 60/frame) bounds the changed read term at every pixel.
+SHORT_FRAMES=[(.2,'VERY_BRIGHT',155,.7),(.5,'VERY_BRIGHT',155,.7),
+              (1,'BRIGHT',30,.7),(2,'BRIGHT',30,.7),(5,'BRIGHT',30,.7),
+              (10,'BRIGHT',30,.7),(20,'FAINT',10,11.14),(40,'FAINT',10,11.14)]
+
+def detector_rate(mag,row):
+    if not row or mag is None:return None
+    values=[row.get(k) for k in ('peak_source_rate','peak_sky_rate','peak_reference_magnitude','peak_limit_electrons')]
+    if any(v is None or not math.isfinite(v) for v in values):return None
+    star,sky,reference,limit=values
+    if star<0 or sky<0 or limit<=0 or limit>50000:return None
+    exponent=-.4*(mag-reference)
+    if abs(exponent)>100:return None
+    return star*10**exponent+sky
+
 def exposure_plan(mag,f,row):
-    if mag is None or row is None:return None
-    plans=[]
-    for c in row['curves']:
-        if 8<=mag<=24:
-            index=min(63,int((mag-8)*4));weight=(mag-8)*4-index
-            logs=c['log_times']
-            raw=math.exp(min(logs[index]+math.log(10)*.8*.25*weight,
-                logs[index+1]-math.log(10)*.4*.25*(1-weight)))
-        else:raw=interpolate(mag,c['points'])
-        seconds=raw*(f['snr']/50)**2*f['margin']
+    rate=detector_rate(mag,row)
+    if rate is None:return None
+    options=[{**c,'read_mode':'VERY_FAINT','overhead':34.3,'noise_bound':1.} for c in row['curves']]
+    base=next((c for c in row['curves'] if c['frame_seconds']==60),None)
+    if base:
+        options += [{**base,'frame_seconds':frame,'read_mode':mode,'overhead':read+8.56+3.5,
+                     'noise_bound':max(1.,(rn/7)**2*60/frame)} for frame,mode,rn,read in SHORT_FRAMES]
+    plans=[];minimum=f.get('minScienceMinutes',20)*60
+    for c in options:
+        frame=c['frame_seconds'];peak=rate*frame
+        if peak>row['peak_limit_electrons']:continue
+        raw=interpolate(mag,c['points'])
+        required=raw*(f['snr']/50)**2*f['margin']*c['noise_bound']
+        seconds=max(required,minimum)
         if not math.isfinite(seconds) or seconds>1e9:continue
-        frame=c['frame_seconds'];n=max(4,4*math.ceil(seconds/(4*frame)))
-        science=n*frame
-        plans.append((science+n*34.3,n,frame,science))
+        n=max(4,4*math.ceil(seconds/(4*frame)));science=n*frame
+        info=dict(read_mode=c['read_mode'],frame_overhead_seconds=c['overhead'],
+                  peak_pixel_upper_bound=peak,peak_limit_electrons=row['peak_limit_electrons'],
+                  minimum_science_seconds=minimum,minimum_applied=minimum>required,
+                  short_frame_snr_bound=c['noise_bound']>1)
+        plans.append((science+n*c['overhead'],n,frame,science,info))
     if not plans:return None
-    _,n,frame,science=min(plans)
-    return n,frame,science
+    _,n,frame,science,info=min(plans,key=lambda p:p[:4])
+    return n,frame,science,info
 
 def band3_science_seconds(r,f,model):
     if model.get('_sxd'):return sxd_timing.estimate(r,f,model)['science']
@@ -105,11 +129,13 @@ def estimate(r,f,model):
     if mag is None or row is None:t['reason']='No usable '+phot_band.upper()+' photometry / RV ITC grid';return t
     if not row['curves']:t['reason']='Requested S/N coverage is unsupported by the cached detector pixels';return t
     plan=exposure_plan(mag,f,row)
-    if plan is None:t['reason']='Exposure exceeds supported planning range';return t
-    n,frame,science=plan;cycles=n//4
-    t.update(science=science,frames=n,frame_seconds=frame,brightReadmodeReview=mag<11)
+    if plan is None:
+        t['reason']='No detector-count calibration; regenerate the offline ITC grid' if detector_rate(mag,row) is None else 'No safe exposure within the supported read modes / planning range'
+        return t
+    n,frame,science,info=plan;cycles=n//4
+    t.update(science=science,frames=n,frame_seconds=frame,**info)
     window=r['win15'] if airmass==1.5 else r['win2'];capacity=min(f['maxVisit'],window)*3600
-    cycle_seconds=4*(frame+34.3)
+    cycle_seconds=4*(frame+info['frame_overhead_seconds'])
     per_visit=min(cycles,max(0,math.floor((capacity-900)/cycle_seconds)))
     def duration(c):return 900+c*cycle_seconds+math.floor(c*4*frame/2700)*360
     while per_visit>0 and duration(per_visit)>capacity+1e-6:per_visit-=1

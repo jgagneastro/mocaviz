@@ -49,6 +49,7 @@
   "maxScience": 2,
   "excludeFastBand3": false,
   "margin": 1,
+  "minScienceMinutes": 20,
   "calibrationMinutes": 20,
   "maxVisit": 2,
   "bestAirmassEnabled": true,

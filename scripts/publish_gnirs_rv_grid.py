@@ -30,6 +30,9 @@ def validate(grid):
         seen.add(key)
         if row['center_um']!={'j':1.3,'h':1.65,'k':2.3}[row['band']]:raise ValueError('Wrong band center')
         if row['photometry_band']!=('j' if row['band']=='h' else row['band']):raise ValueError('Wrong normalization band')
+        for k in ('peak_source_rate','peak_sky_rate','peak_reference_magnitude','peak_limit_electrons'):
+            if k not in row or not math.isfinite(row[k]):raise ValueError('Missing or invalid detector calibration')
+        if row['peak_source_rate']<0 or row['peak_sky_rate']<0 or row['peak_reference_magnitude']!=16 or row['peak_limit_electrons']!=50000:raise ValueError('Unsupported detector limits')
         decoded=row_curves(grid,row)
         if [c['frame_seconds'] for c in decoded]!=[60,120,180,240,300]:raise ValueError('Missing frame curves')
         for c in decoded:

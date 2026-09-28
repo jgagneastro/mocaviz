@@ -21,7 +21,7 @@ def synthetic_grid():
                         row=dict(mode=mode,band=band,photometry_band='j' if band=='h' else band,
                             spt='L5' if sptn==15 else 'T5',sptn=sptn,teff=1600 if sptn==15 else 1000,
                             airmass=x,slit=slit,center_um=center,resolving_power=12000*.15/slit,
-                            wavelength_range_um=[center-.025,center+.025],seeing_fwhm=.7,slit_seeing_ratio=slit/.7)
+                            wavelength_range_um=[center-.025,center+.025],peak_source_rate=.01,peak_sky_rate=.01,peak_reference_magnitude=16.,peak_limit_electrons=50000,seeing_fwhm=.7,slit_seeing_ratio=slit/.7)
                         factor={'j':1.,'h':2.,'k':3.}[band]*.15/slit*(1 if mode=='b12' else 1.5)
                         row['curves']=[dict(frame_seconds=frame,log_seconds={str(f):[math.log(1200*factor*f/.75*10**(.6*(m-16))) for m in np.arange(8,24.01,.25)] for f in (.25,.5,.75,.9,.95)}) for frame in (60,120,180,240,300)]
                         rows.append(row)

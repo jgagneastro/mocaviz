@@ -20,16 +20,16 @@
     const q=10**(-.4*(mag-16)),criterion=`${f.snrUnit}:${f.coverageFraction}`;
     const plans=row.curves.map(c=>{
       const frame=c.frame_seconds,peak=(row.peak_source_rate*q+row.peak_sky_rate)*frame;
-      if(peak>50000)return null;
+      if(!Number.isFinite(peak)||peak<0||peak>50000)return null;
       const p=c.criteria[criterion],i=Math.min(63,Math.floor((mag-8)*4)),weight=(mag-8)*4-i;
       const seconds=Math.exp(Math.log(p[i][1])+weight*(Math.log(p[i+1][1])-Math.log(p[i][1])))*(f.snr/30)**2*f.margin;
       if(!Number.isFinite(seconds)||seconds>1e9)return null;
-      const n=Math.max(4,4*Math.ceil(seconds/(4*frame))),science=n*frame,overhead=c.read_seconds+8.56+7/2;
+      const n=Math.max(4,4*Math.ceil(Math.max(seconds,(f.minScienceMinutes??20)*60)/(4*frame))),science=n*frame,overhead=c.read_seconds+8.56+7/2;
       return {c,frame,peak,n,science,overhead,cost:science+n*overhead};
     }).filter(Boolean).sort((a,b)=>a.cost-b.cost||a.n-b.n||a.frame-b.frame);
     if(!plans.length)return {...t,reason:'No unsaturated frame / supported integration in SXD grid'};
     const {c,frame,peak,n,science,overhead}=plans[0],cycles=n/4,cycleSeconds=4*(frame+overhead);
-    Object.assign(t,{science,frames:n,frame_seconds:frame,read_mode:c.read_mode,peak_pixel_upper_bound:peak,acquisition_seconds:900,frame_overhead_seconds:overhead});
+    Object.assign(t,{science,frames:n,frame_seconds:frame,read_mode:c.read_mode,peak_pixel_upper_bound:peak,peak_limit_electrons:50000,minimum_science_seconds:(f.minScienceMinutes??20)*60,acquisition_seconds:900,frame_overhead_seconds:overhead});
     const duration=count=>900+count*cycleSeconds+Math.max(0,Math.ceil(count*4*frame/2700)-1)*360;
     const win=r.visibility?.windows?.[String(x)],window=win?.max_hours||0,capacity=Math.min(f.maxVisit,window)*3600,allowance=f.calibrationMinutes*60;
     let perVisit=Math.min(cycles,Math.floor(7200/(4*frame)),Math.max(0,Math.floor((capacity-900-allowance)/cycleSeconds)));

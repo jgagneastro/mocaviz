@@ -25,11 +25,11 @@ def exposure_plan(mag,f,row):
     for c in row['curves']:
         frame=c['frame_seconds']
         peak=(row['peak_source_rate']*q+row['peak_sky_rate'])*frame
-        if peak>50000:continue
+        if not math.isfinite(peak) or peak<0 or peak>50000:continue
         logs=c['logs'][criterion];index=min(63,int((mag-8)*4));weight=(mag-8)*4-index
         seconds=math.exp(logs[index]+weight*(logs[index+1]-logs[index]))*(f['snr']/30)**2*f['margin']
         if not math.isfinite(seconds) or seconds>1e9:continue
-        n=max(4,4*math.ceil(seconds/(4*frame)))
+        n=max(4,4*math.ceil(max(seconds,f.get('minScienceMinutes',20)*60)/(4*frame)))
         science=n*frame;frame_overhead=c['read_seconds']+8.56+7/2
         plans.append((science+n*frame_overhead,n,frame,science,c,peak))
     return min(plans,key=lambda p:p[:4]) if plans else None
@@ -69,7 +69,7 @@ def estimate(r,f,model):
     per_visit=min(cycles,7200//(4*frame),max(0,math.floor((capacity-900-allowance)/cycle_seconds)))
     while per_visit>0 and duration(per_visit)+allowance>capacity+1e-6:per_visit-=1
     t.update(science=science,frames=n,frame_seconds=frame,read_mode=c['read_mode'],
-             peak_pixel_upper_bound=peak,acquisition_seconds=900,frame_overhead_seconds=frame_overhead)
+             peak_pixel_upper_bound=peak,peak_limit_electrons=50000,minimum_science_seconds=f.get('minScienceMinutes',20)*60,acquisition_seconds=900,frame_overhead_seconds=frame_overhead)
     if not per_visit:
         t['reason']='No full ABBA + acquisition + calibration allowance fits the night window';return t
     full,remainder=divmod(cycles,int(per_visit));visits=full+bool(remainder)

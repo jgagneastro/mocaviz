@@ -35,7 +35,7 @@ def seed(path):
                     row = dict(mode=mode, band=band, spt=spt, sptn=n, teff=1500,
                                airmass=airmass, slit=.15 if mode=='b12' else .30, center_um=2.3,
                                resolving_power=12500, wavelength_range_um=[2.268, 2.332],
-                               seeing_fwhm=.4, slit_seeing_ratio=.375)
+                               seeing_fwhm=.4, slit_seeing_ratio=.375,peak_source_rate=.01,peak_sky_rate=.01,peak_reference_magnitude=16.,peak_limit_electrons=50000)
                     grid_rows.append({**row, 'curves': [dict(frame_seconds=60, points=points)]})
                     grid_rows.append({**row, 'camera':'short', 'grating':111, 'slit':.3,
                                       'pixel_scale':.15, 'spectral_slit_pixels':2,
@@ -135,7 +135,8 @@ class PlannerTests(unittest.TestCase):
     def test_all_interactions_read_only_and_cross_worker(self):
         before = self.path.read_bytes()
         for mode in ('rv','sxd'):
-            filters = {'observingMode':mode}
+            # Exercise API access independently of the science-time cutoff.
+            filters = {'observingMode':mode, 'timeEnabled':False}
             response = self.post('selection', {'filters':filters})
             self.assertEqual(response.status_code, 200, response.get_json())
             selection = response.get_json()

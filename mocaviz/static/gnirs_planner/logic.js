@@ -21,7 +21,7 @@
     rejectDuplicates:true,ignoreMultiples:false,excludeSubdwarfs:true,requireLowg:false,
     conditionalLowg:true,lowgSpt:19,lowgAge:200,hostMin:0,
     quality:'all',manualTypesOnly:false,excludeArchive:true,archiveResolution:2700,excludePlanned:true,
-    mode:'b12',snr:50,airmass:'auto',timeEnabled:true,maxScience:2,excludeFastBand3:false,margin:1,
+    mode:'b12',snr:50,airmass:'auto',timeEnabled:true,maxScience:2,excludeFastBand3:false,margin:1,minScienceMinutes:20,
     calibrationMinutes:20,maxVisit:2,bestAirmassEnabled:true,bestAirmass:1.6,
     requireVisitFit:true,minWindow:1,restrictDec:true,restrictRa:true,excludeRestrictedAccess:true,
     includeOids:[],bypassNoMeasuredRvOids:[11199,11063,369949,7210],excludeOids:[],aids:null,observables:null});
@@ -82,17 +82,29 @@
       reason:null,fit:false,photometry:phot||null,airmass:f.airmass};
     if(!finite(mag)||!row)return {...base,reason:'No usable '+photBand.toUpperCase()+' photometry / RV ITC grid'};
     if(!row.curves.length)return {...base,reason:'Requested S/N coverage is unsupported by the cached detector pixels'};
-    const plans=row.curves.map(c=>{
-      const seconds=interpolateTime(mag,c.points)*(f.snr/50)**2*f.margin,frame=c.frame_seconds;
+    const safety=[row.peak_source_rate,row.peak_sky_rate,row.peak_reference_magnitude,row.peak_limit_electrons];
+    if(safety.some(v=>!finite(v))||safety[0]<0||safety[1]<0||safety[3]<=0||safety[3]>50000||Math.abs(-.4*(mag-safety[2]))>100)
+      return {...base,reason:'No detector-count calibration; regenerate the offline ITC grid'};
+    const rate=safety[0]*10**(-.4*(mag-safety[2]))+safety[1],minimum=(f.minScienceMinutes??20)*60;
+    const options=row.curves.map(c=>({...c,read_mode:'VERY_FAINT',overhead:34.3,noise_bound:1}));
+    const reference=row.curves.find(c=>c.frame_seconds===60);
+    if(reference)for(const [frame,mode,rn,read] of [[.2,'VERY_BRIGHT',155,.7],[.5,'VERY_BRIGHT',155,.7],[1,'BRIGHT',30,.7],[2,'BRIGHT',30,.7],[5,'BRIGHT',30,.7],[10,'BRIGHT',30,.7],[20,'FAINT',10,11.14],[40,'FAINT',10,11.14]])
+      options.push({...reference,frame_seconds:frame,read_mode:mode,overhead:read+8.56+3.5,noise_bound:Math.max(1,(rn/7)**2*60/frame)});
+    const plans=options.map(c=>{
+      const frame=c.frame_seconds,peak=rate*frame;
+      if(peak>row.peak_limit_electrons)return null;
+      const required=interpolateTime(mag,c.points)*(f.snr/50)**2*f.margin*c.noise_bound,seconds=Math.max(required,minimum);
       if(!Number.isFinite(seconds)||seconds>1e9)return null;
       const n=Math.max(4,4*Math.ceil(seconds/(4*frame))),science=n*frame;
-      return {n,frame,science,cost:science+n*34.3};
+      return {n,frame,science,required,c,peak,cost:science+n*c.overhead};
     }).filter(Boolean).sort((a,b)=>a.cost-b.cost||a.n-b.n||a.frame-b.frame);
-    if(!plans.length)return {...base,reason:'Exposure exceeds supported planning range'};
-    const {n,frame,science}=plans[0],cycles=n/4;
+    if(!plans.length)return {...base,reason:'No safe exposure within the supported read modes / planning range'};
+    const {n,frame,science,required,c,peak}=plans[0],cycles=n/4;
+    Object.assign(base,{read_mode:c.read_mode,frame_overhead_seconds:c.overhead,peak_pixel_upper_bound:peak,
+      peak_limit_electrons:row.peak_limit_electrons,minimum_science_seconds:minimum,minimum_applied:minimum>required,short_frame_snr_bound:c.noise_bound>1});
     const v=r.visibility,win=v?.windows?.[String(f.airmass)],window=win?.max_hours||0;
     const capacity=Math.min(f.maxVisit,window)*3600;
-    const cycleSeconds=4*(frame+34.3);
+    const cycleSeconds=4*(frame+c.overhead);
     let cyclesPerVisit=Math.min(cycles,Math.max(0,Math.floor((capacity-900)/cycleSeconds)));
     const visitSeconds=c=>900+c*cycleSeconds+Math.floor(c*4*frame/2700)*360;
     while(cyclesPerVisit>0&&visitSeconds(cyclesPerVisit)>capacity+1e-6)cyclesPerVisit--;
@@ -104,8 +116,7 @@
     const fit=eligible>=full&&shorter>=visits;
     return {...base,science,program,telescope:program+visits*f.calibrationMinutes*60,visits,
       frames:n,frame_seconds:frame,longest_visit:longest,window,eligible_nights:eligible,fit,
-      reason:fit?null:'Too few sampled nights fit all planned visits',
-      brightReadmodeReview:finite(mag)&&mag<11};
+      reason:fit?null:'Too few sampled nights fit all planned visits'};
   }
   function filterFailures(r,f,t,ignoreAid=false){
     const failures=[],oid=Number(r.moca_oid);

@@ -326,3 +326,42 @@ python -B scripts/publish_gnirs_rv_grid.py --cache /path/to/shared.sqlite \
 Deploy the decoder code before importing the compact table and restart existing
 Python workers when installing it. The publication uses the same existing cache
 file and its lease; it creates no disk-side journals or alternate catalog files.
+
+
+## Minimum integration and detector limits (2026-09-28)
+
+`minScienceMinutes` defaults to 20 for both GNIRS modes; 0 disables it.
+The minimum applies to each target's total on-source science time, before
+acquisition/calibration/read/nod overheads. The larger of the minimum and the
+S/N requirement is rounded up to complete ABBA cycles. The same rule is used
+in Band 3 comparisons, selection cutoffs, reports, and exports.
+
+Each RV frame must remain at or below a conservative 50,000 electron
+source-plus-background pixel estimate, below Gemini's published shallow-well
+nonlinearity threshold (5,000 ADU × 13.5 electrons/ADU). The offline
+`scripts/build_gnirs_peak_limits.py` augments the existing camera grid with two
+count rates per row; publish its output with `scripts/publish_gnirs_rv_grid.py`.
+An old grid without these fields cannot produce a safe RV plan. This is an
+administrator/offline ITC update, separate from regenerating the catalog.
+
+The count bound uses the brightest unsmoothed public template/flat-continuum
+ratio across the detector, divides out Gaussian slit and spatial-pixel losses,
+and takes independent maxima across the sampled weather/airmass conditions.
+This deliberately allows for seeing/transparency better than the timing bin.
+It is an upper estimate within the template/ITC model, not a guarantee about
+unmodeled sources, variable sky, or actual detector behavior. Verify counts
+and apply the appropriate detector corrections during observing/reduction.
+
+Existing 60–300 s Very Faint curves remain unchanged. Shorter candidate frames
+are 0.2/0.5 s (Very Bright), 1/2/5/10 s (Bright), and 20/40 s (Faint), all above
+Gemini's hardware minima. Their S/N duration is conservatively bounded from
+the 60 s curve by multiplying *all* noise terms by
+`max(1, (read_noise/7)^2 * 60/frame_seconds)`. This safely bounds the changed
+read term without storing more spectra or timing grids; the short-frame flag
+is shown in the report. Read/write/nod costs follow the selected mode.
+If even the shortest supported exposure fails, timing is unavailable.
+SXD retains its independently calibrated read modes and 50,000 electron cap.
+
+Public references: [GNIRS detector/read modes](https://www.gemini.edu/instrumentation/gnirs/components),
+[ITC output conventions](https://www.gemini.edu/observing/resources/itc/itc-help).
+No new server-side cache files or runtime ITC requests are introduced.

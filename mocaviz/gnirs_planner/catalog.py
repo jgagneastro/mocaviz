@@ -41,6 +41,7 @@ def normalized_filters(incoming):
     if f['rvSlit']!='auto':
         f['rvSlit']=str(float(f['rvSlit']))
         if float(f['rvSlit']) not in [.1,.15,.2,.3,.45,.675,1.]:raise ValueError('Unsupported RV slit')
+    if not 0<=f['minScienceMinutes']<=1440:raise ValueError('Minimum science integration must be between 0 and 1440 minutes')
     if f['calibrationMinutes']<0 or f['maxScience']<=0 or f['minWindow']<0:raise ValueError('Invalid duration')
     if str(f['airmass']) not in ['auto','1.5','2','2.0']:raise ValueError('Unsupported ITC airmass')
     if not 0<f['snr']<=1000 or not 0<f['margin']<=100 or not .25<=f['maxVisit']<=24:raise ValueError('Invalid time-model values')
