@@ -145,7 +145,7 @@ def html_page(name):
 def export_csv(catalog, job):
     out = io.StringIO()
     writer = csv.writer(out)
-    columns = ["moca_oid", "designation", "spectral_type", "association", "individual_probability_percent", "summed_young_probability_percent", "age_myr", "distance_pc", "measured_rv", "rv_kms", "rv_unc_kms", "rv_provenance", "science_h", "program_h", "telescope_h", "visits", "best_airmass", "best_utc", "observing_mode", "condition_scenario", "slit_arcsec", "grating_lmm", "snr_goal", "snr_unit", "coverage_fraction", "timing_interval_um", "photometry_band", "magnitude", "template", "frames", "frame_seconds", "read_mode", "calibration_minutes_per_visit", "grid_version"]
+    columns = ["moca_oid", "designation", "spectral_type", "association", "individual_probability_percent", "summed_young_probability_percent", "age_myr", "distance_pc", "measured_rv", "rv_kms", "rv_unc_kms", "rv_provenance", "science_h", "program_h", "telescope_h", "visits", "best_airmass", "best_utc", "observing_mode", "condition_scenario", "slit_arcsec", "grating_lmm", "snr_goal", "snr_unit", "coverage_fraction", "timing_interval_um", "observing_band", "photometry_band", "magnitude", "template", "frames", "frame_seconds", "read_mode", "calibration_minutes_per_visit", "grid_version"]
     writer.writerow(columns)
     with cache.reader(catalog.db_path) as db:
         for s in job["stats"]:
@@ -153,7 +153,7 @@ def export_csv(catalog, job):
             rv = row["rv"] or {}
             v, t, f = row["visibility"], row["_timing"], job["filters"]
             values = [row["moca_oid"], row["designation"], row["spt"], row["moca_aid"], row["individual_prob"], row["summed_young_prob"], row["age_myr"], row["distance_pc"], row["has_rv"], rv.get("radial_velocity_kms"), rv.get("radial_velocity_kms_unc"), ";".join(filter(None, rv.get("references", []))), *[float(s[k]) / 3600 if math.isfinite(s[k]) else "" for k in ("science", "program", "telescope")], int(s["visits"]), v["best_airmass"], v["best_utc"]]
-            values += [f["observingMode"], f["mode"], t["slit"], 32 if f["observingMode"] == "sxd" else 111, f["snr"], f["snrUnit"], f["coverageFraction"], json.dumps(t.get("timing_interval_um", t["wavelength_range_um"])), t["band"], t["mag"], t["template_spt"], t.get("frames"), t.get("frame_seconds"), t.get("read_mode", "VERY_FAINT"), f["calibrationMinutes"], catalog.meta["sxd_grid" if f["observingMode"] == "sxd" else "grid"]["version"]]
+            values += [f["observingMode"], f["mode"], t["slit"], 32 if f["observingMode"] == "sxd" else 111, f["snr"], f["snrUnit"], f["coverageFraction"], json.dumps(t.get("timing_interval_um", t["wavelength_range_um"])), "jhk" if f["observingMode"] == "sxd" else t["band"], t.get("photometry_band", t["band"]), t["mag"], t["template_spt"], t.get("frames"), t.get("frame_seconds"), t.get("read_mode", "VERY_FAINT"), f["calibrationMinutes"], catalog.meta["sxd_grid" if f["observingMode"] == "sxd" else "grid"]["version"]]
             writer.writerow(["'" + value if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value for value in values])
     return Response(out.getvalue(), content_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=gnirs_selection.csv"})
 
@@ -199,7 +199,12 @@ def api(operation):
             return jsonify(phase="idle", message="Timing grids are included in the shared deployment cache.")
         catalog = get_catalog(path)
         if operation in {"meta", "data"}:
-            return jsonify(catalog.meta)
+            # Timing stays on the server: do not download multi-configuration curves
+            # into every browser or build per-user response files.
+            browser_meta={**catalog.meta}
+            for name in ('grid','sxd_grid'):
+                if browser_meta.get(name):browser_meta[name]={**{k:v for k,v in browser_meta[name].items() if k not in ('rows','models')},'rows':[]}
+            return jsonify(browser_meta)
         if operation == "windows":
             row = catalog.target(int(body["oid"]))
             return jsonify(target_windows(row, catalog.meta["semester"]) if row else {})

@@ -221,3 +221,58 @@ SQLite connections. Chromium checks verify both modes, plot and
 target-report rendering with the original styling. No live database password is
 needed for these tests; live server authentication and full online regeneration
 still require a deployment smoke test with credentials entered by the user.
+
+
+## RV band, slit and S/N coverage (2026-09-28)
+
+The high-resolution RV mode supports J at 1.30 µm, H at 1.65 µm and K at
+2.30 µm with the long-blue camera and 111 l/mm grating. Automatic wavelength
+selection remains K for types earlier than T3 and J for T3 onward. Slits are
+0.10, 0.15, 0.20, 0.30, 0.45, 0.675 and 1.0 arcsec; automatic means 0.15 arcsec
+in Band 1/2 and 0.30 arcsec in Band 3. An explicit override stays fixed when
+weather changes. SXD settings and timing intervals are unchanged.
+
+RV S/N is always per detector pixel. Coverage choices are 25%, 50%, 75%, 90%
+and 95%, default 75%. Required time is the order statistic at
+`ceil(fraction * number_of_recorded_pixels) - 1`. Pixels may be disjoint;
+invalid pixels remain in the denominator with infinite required time. Unsupported
+coverage returns an explicit unavailable result rather than substituting 75%.
+Between cached magnitudes the tighter of the two endpoint source/sky scaling
+bounds is used, avoiding underestimation when the pixel defining a coverage
+quantile changes. Bright/faint extrapolations remain flagged.
+The Band 3 exclusion always compares the 0.30 arcsec slit, with the same chosen
+wavelength setting, S/N, coverage, airmass and multiplier.
+
+J/K estimates use the corresponding catalog photometry. The current catalog has
+no H photometry: H estimates use measured J and the selected Sonora template's
+spectral shape/color. This is stated beside the controls, in the target report,
+and in the methods. CSV exports distinguish observing band from photometry band.
+Unusual colors, gravity or cloud properties can bias the inferred H flux.
+
+### Compact calibration publication
+
+The server stores only timing curves, not atmosphere spectra. The offline
+builder reuses the existing public, resampled Sonora input SEDs in RAM, uploads
+only the normalization interval and selected wavelength region, and saves
+one compressed set of detector noise coefficients per configuration locally.
+Do not convolve inputs to GNIRS resolution before submitting them: the ITC
+performs instrumental broadening. Do not copy native model grids onto the server.
+
+Build on the development machine (paths are explicit CLI arguments):
+
+```sh
+python -B scripts/build_gnirs_rv_grid.py --source /path/to/rv_itc_20260924 --j-filter /path/to/2mass_J.xml --output /outside/repo/rv_jhk --workers 6
+python -B scripts/publish_gnirs_rv_grid.py --cache /path/to/shared.sqlite --grid /outside/repo/rv_jhk/grid.json --check
+python -B scripts/publish_gnirs_rv_grid.py --cache /path/to/shared.sqlite --grid /outside/repo/rv_jhk/grid.json
+```
+
+The publisher validates the full 1,512-configuration matrix before acquiring the
+existing cache lease. It replaces only timing metadata and the catalog revision
+in the same SQLite file, using an in-memory journal. Plain or gzipped JSON can
+be piped on stdin, avoiding an upload file on the server. It does not regenerate
+targets or copy the multi-gigabyte catalog. Run as the service account. All web
+workers notice the new revision; restart workers when Python source changes.
+
+Metadata responses omit RV/SXD curve data (empty row lists support older tabs). Timing and the fixed-slit Band 3
+comparison are returned with each target, so increasing the number of cached
+configurations does not increase the initial browser download proportionally.

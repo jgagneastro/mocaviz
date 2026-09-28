@@ -33,7 +33,7 @@ def seed(path):
             for band, spt, n in [('k', 'L5', 15), ('j', 'T5', 25)]:
                 for airmass in (1.5, 2):
                     row = dict(mode=mode, band=band, spt=spt, sptn=n, teff=1500,
-                               airmass=airmass, slit=.15, center_um=2.3,
+                               airmass=airmass, slit=.15 if mode=='b12' else .30, center_um=2.3,
                                resolving_power=12500, wavelength_range_um=[2.268, 2.332],
                                seeing_fwhm=.4, slit_seeing_ratio=.375)
                     grid_rows.append({**row, 'curves': [dict(frame_seconds=60, points=points)]})
@@ -271,7 +271,11 @@ class PlannerTests(unittest.TestCase):
         response = self.post('meta', headers={**self.headers, 'Accept-Encoding':'gzip'})
         self.assertEqual(response.headers['Content-Encoding'], 'gzip')
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
-        self.assertEqual(json.loads(gzip.decompress(response.data))['catalog_count'], 2)
+        meta=json.loads(gzip.decompress(response.data))
+        self.assertEqual(meta['catalog_count'], 2)
+        self.assertEqual(meta['grid']['rows'],[])
+        self.assertNotIn('models',meta['grid'])
+        self.assertEqual(meta['sxd_grid']['rows'],[])
         self.assertEqual(before, self.path.read_bytes())
 
 

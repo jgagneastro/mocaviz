@@ -12,7 +12,7 @@ from .visibility import unpack
 from .cache import reader as connect
 ROOT=Path(__file__).resolve().parent
 DEFAULTS=json.loads((ROOT/'defaults.json').read_text())
-DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science')
+DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto',rvSlit='auto')
 SXD_DEFAULTS={**DEFAULTS,**json.loads((ROOT/'sxd_defaults.json').read_text())}
 DEFAULT_AID_EXCLUSIONS=('CRIUS','OCSN','HSC','CWNU','HURE')
 STAT=np.dtype([('oid','i8'),('science','f8'),('program','f8'),('telescope','f8'),('visits','i4'),('ra','f8'),('sptn','f8'),('age','f8'),('teff','f8'),('gnirs_data','?')])
@@ -30,9 +30,13 @@ def normalized_filters(incoming):
         if f[k] is not None:f[k]=sorted(set(map(str,f[k])))
     if f['mode']=='b3wide':f['mode']='b3high'
     if f['mode'] not in ['b12','b3high','b3cloud']:raise ValueError('Unknown mode')
-    if f['snrUnit'] not in ['pixel','resolution'] or f['coverageFraction'] not in [.5,.75,.9]:raise ValueError('Unsupported S/N criterion')
+    if f['snrUnit'] not in ['pixel','resolution'] or f['coverageFraction'] not in ([.5,.75,.9] if f['observingMode']=='sxd' else [.25,.5,.75,.9,.95]):raise ValueError('Unsupported S/N criterion')
     if f['timeMetric'] not in ['science','program','telescope']:raise ValueError('Unknown time cutoff')
-    if f['observingMode']=='rv':f.update(snrUnit='pixel',coverageFraction=.75,timeMetric='science')
+    if f['observingMode']=='rv':f.update(snrUnit='pixel',timeMetric='science')
+    if f['rvBand'] not in ['auto','j','h','k']:raise ValueError('Unknown RV wavelength band')
+    if f['rvSlit']!='auto':
+        f['rvSlit']=str(float(f['rvSlit']))
+        if float(f['rvSlit']) not in [.1,.15,.2,.3,.45,.675,1.]:raise ValueError('Unsupported RV slit')
     if f['calibrationMinutes']<0 or f['maxScience']<=0 or f['minWindow']<0:raise ValueError('Invalid duration')
     if str(f['airmass']) not in ['auto','1.5','2','2.0']:raise ValueError('Unsupported ITC airmass')
     if not 0<f['snr']<=1000 or not 0<f['margin']<=100 or not .25<=f['maxVisit']<=24:raise ValueError('Invalid time-model values')
@@ -125,8 +129,8 @@ class Catalog:
 
     def select(self,key,job):
         start=time.monotonic();f=job['filters'];grid=self.meta['sxd_grid'] if f['observingMode']=='sxd' else self.meta['grid']
-        model=curves(grid,f['mode'])
-        band3_model=curves(grid,'b3high') if f['excludeFastBand3'] else None
+        model=curves(grid,f['mode'],f['rvSlit'],f['coverageFraction'])
+        band3_model=curves(grid,'b3high',.30,f['coverageFraction']) if f['observingMode']=='rv' else None
         where,params=selection_sql(f);forced=set(f['includeOids']);standards=set(f['bypassNoMeasuredRvOids']);aids=set(f['aids']) if f['aids'] is not None else None
         counts=Counter();stats=[];totals={'science':0.,'program':0.,'telescope':0.,'visits':0,'unknown':0,'measured_rv':0,'gnirs_data':0,'planned':0,'unplotted_age':0,'unplotted_teff':0}
         try:
@@ -140,7 +144,7 @@ class Catalog:
                         metric=f['timeMetric']
                         if f['timeEnabled'] and (t[metric] is None or t[metric]>=f['maxScience']*3600):continue
                         if f['requireVisitFit'] and not t['fit']:continue
-                        if band3_model is not None:
+                        if f['excludeFastBand3'] and band3_model is not None:
                             band3_science=band3_science_seconds(r,f,band3_model)
                             if band3_science is not None and band3_science<f['maxScience']*3600:continue
                     counts[r['aid']]+=1
@@ -159,7 +163,7 @@ class Catalog:
             plot=self.plot_rows(plot_ids)
             result={'count':len(array),'total_count':self.meta['catalog_count'],'totals':totals,'association_counts':dict(counts),
                 'plot':plot,'plot_sampled':len(array)>12000,'elapsed_seconds':round(time.monotonic()-start,3)}
-            job.update(status='complete',result=result,stats=array,age_order=order,orders={},model=model)
+            job.update(status='complete',result=result,stats=array,age_order=order,orders={},model=model,band3_model=band3_model)
         except Exception:job.update(status='error',error='The cached selection could not be calculated.')
 
     def plot_rows(self,ids):
@@ -180,7 +184,9 @@ class Catalog:
         if r is None:return None
         row=unpack(r['payload']);row['visibility']=unpack(r['visibility']);row['_detail']=True
         if job:
-            row['_timing']=estimate(r,job['filters'],job['model']);row['_timing']['photometry']=row['photometry'].get(row['_timing']['band'])
+            t=estimate(r,job['filters'],job['model']);row['_timing']=t
+            t['photometry']=row['photometry'].get(t.get('photometry_band',t['band']))
+            if job.get('band3_model') is not None:t['band3Science']=band3_science_seconds(r,job['filters'],job['band3_model'])
         return row
 
     def listed(self,job,query,sort,offset,gnirs_only=False,limit=100):

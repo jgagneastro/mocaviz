@@ -4,14 +4,14 @@
   const SXD=typeof module!=='undefined'?require('./sxd-logic.js'):root.GNIRSSXD;
   const finite=v=>v!==null&&v!==undefined&&Number.isFinite(Number(v));
   const MODES=Object.freeze({
-    b12:{label:'Band 1/2 · 0.15″ · IQ70 / CC50 / WV50',slit:.15},
-    b3high:{label:'Band 3 · 0.30″ · IQ85 / CC70 / WVAny',slit:.30},
-    b3cloud:{label:'Band 3 · 0.30″ · IQ85 / CC80 / WVAny',slit:.30}
+    b12:{label:'Band 1/2 · IQ70 / CC50 / WV50',slit:.15},
+    b3high:{label:'Band 3 · IQ85 / CC70 / WVAny',slit:.30},
+    b3cloud:{label:'Band 3 · IQ85 / CC80 / WVAny',slit:.30}
   });
   const DEFAULT_AID_EXCLUSIONS=['CRIUS','OCSN','HSC','CWNU','HURE'];
   const defaultAidSelected=value=>!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
   const defaultObservableSelected=value=>value!=='pm';
-  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
+  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'auto',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
     membershipEnabled:true,probKind:'summed',prob:85,realAssociation:true,uncontaminated:true,
     uvwEnabled:true,uvw:6,uvwLooseEnabled:true,uvwLoose:4.2,
     ageEnabled:false,ageMin:0,ageMax:300,unknownAge:'include',
@@ -28,10 +28,17 @@
   const parseOidList=v=>[...new Set(String(v??'').split(/[\s,;]+/).filter(x=>/^\d+$/.test(x)).map(Number))];
   const aid=r=>r.moca_aid||'FIELD / unknown';
   const sptLabel=n=>{if(!finite(n))return 'unknown';const c=['M','L','T','Y'];return (c[Math.floor(n/10)]||'?')+Number((n%10).toFixed(1));};
-  function curve(grid,mode,band,airmass,sptn){
+  function curve(grid,mode,band,airmass,sptn,slit='auto',coverage=.75){
     mode=mode==='b3wide'?'b3high':mode;
-    const choices=grid.rows.filter(r=>r.mode===mode&&r.band===band&&r.airmass===airmass);
-    return choices.sort((a,b)=>Math.abs(a.sptn-sptn)-Math.abs(b.sptn-sptn)||a.sptn-b.sptn)[0]||null;
+    const width=slit==='auto'?MODES[mode].slit:Number(slit);
+    const choices=grid.rows.filter(r=>r.mode===mode&&r.band===band&&r.airmass===airmass&&Math.abs(r.slit-width)<1e-6);
+    const row=choices.sort((a,b)=>Math.abs(a.sptn-sptn)-Math.abs(b.sptn-sptn)||a.sptn-b.sptn)[0];
+    if(!row)return null;
+    return {...row,curves:row.curves.flatMap(c=>{
+      if(!c.log_seconds)return coverage===.75?[c]:[];
+      const logs=c.log_seconds[String(coverage)];
+      return logs?.length&&logs.every(v=>v!==null)?[{...c,points:logs.map((v,i)=>[(grid.magnitude_start??8)+i*(grid.magnitude_step??.25),Math.exp(v)])}]:[];
+    })};
   }
   function interpolateTime(mag,points){
     if(!finite(mag)||points.length<2)return null;
@@ -40,7 +47,7 @@
     if(mag>last[0])return last[1]*10**(.8*(mag-last[0]));
     for(let i=1;i<points.length;i++)if(mag<=points[i][0]){
       const [x,y]=points[i-1],[x2,y2]=points[i];
-      return Math.exp(Math.log(y)+(mag-x)/(x2-x)*Math.log(y2/y));
+      return Math.min(y*10**(.8*(mag-x)),y2*10**(-.4*(x2-mag)));
     }
     return last[1];
   }
@@ -48,17 +55,19 @@
     if(f.observingMode==='sxd')return SXD.timing(r,f,grid);
     if(f.airmass==='auto')f={...f,airmass:(r.visibility?.windows?.['1.5']?.max_hours||0)>=Math.max(f.minWindow,.5)?1.5:2};
     else f={...f,airmass:Number(f.airmass)};
-    const band=r.sptn<23?'k':'j',phot=r.photometry?.[band],mag=phot?.magnitude;
-    const row=curve(grid,f.mode,band,f.airmass,r.sptn),points=row?.curves[0].points||[];
-    const base={science:null,program:null,telescope:null,visits:null,band,mag:mag??null,
+    const band=f.rvBand&&f.rvBand!=='auto'?f.rvBand:(r.sptn<23?'k':'j');
+    const row=curve(grid,f.mode,band,f.airmass,r.sptn,f.rvSlit??'auto',f.coverageFraction??.75),points=row?.curves[0]?.points||[];
+    const photBand=row?.photometry_band||(band==='h'?'j':band),phot=r.photometry?.[photBand],mag=phot?.magnitude;
+    const base={science:null,program:null,telescope:null,visits:null,band,mag:mag??null,photometry_band:photBand,model_color_normalization:photBand!==band,
       slit:row?.slit??null,center_um:row?.center_um??null,resolving_power:row?.resolving_power??null,
       wavelength_range_um:row?.wavelength_range_um??null,template_spt:row?.spt??null,
-      template_teff:row?.teff??null,template_approximate:!!row&&r.sptn!==row.sptn,
+      template_teff:row?.teff??null,template_family:row?(row.sptn<=22?'diamondback':'elf-owl'):null,template_approximate:!!row&&r.sptn!==row.sptn,
       template_outside_grid:!!row&&(r.sptn<10||r.sptn>30),
-      seeing_fwhm:row?.seeing_fwhm??null,slit_seeing_ratio:row?.slit_seeing_ratio??null,coverage_fraction:.75,
+      seeing_fwhm:row?.seeing_fwhm??null,slit_seeing_ratio:row?.slit_seeing_ratio??null,coverage_fraction:f.coverageFraction??.75,
       extrapolated:finite(mag)&&points.length>0&&(mag<points[0][0]||mag>points.at(-1)[0]),
       reason:null,fit:false,photometry:phot||null,airmass:f.airmass};
-    if(!finite(mag)||!row)return {...base,reason:'No usable '+band.toUpperCase()+' photometry / RV ITC grid'};
+    if(!finite(mag)||!row)return {...base,reason:'No usable '+photBand.toUpperCase()+' photometry / RV ITC grid'};
+    if(!row.curves.length)return {...base,reason:'Requested S/N coverage is unsupported by the cached detector pixels'};
     const plans=row.curves.map(c=>{
       const seconds=interpolateTime(mag,c.points)*(f.snr/50)**2*f.margin,frame=c.frame_seconds;
       if(!Number.isFinite(seconds)||seconds>1e9)return null;
