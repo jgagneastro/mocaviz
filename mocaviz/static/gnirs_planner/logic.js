@@ -24,7 +24,7 @@
     mode:'b12',snr:50,airmass:'auto',timeEnabled:true,maxScience:2,excludeFastBand3:false,margin:1,minScienceMinutes:20,
     calibrationMinutes:20,maxVisit:2,bestAirmassEnabled:true,bestAirmass:1.6,
     requireVisitFit:true,minWindow:1,restrictDec:true,restrictRa:true,excludeRestrictedAccess:true,
-    includeOids:[],bypassNoMeasuredRvOids:[11199,11063,369949,7210],excludeOids:[],aids:null,observables:null});
+    includeOids:[],bypassNoMeasuredRvOids:[11199,11063,369949,7210,371766],excludeOids:[],aids:null,observables:null});
   const parseOidList=v=>[...new Set(String(v??'').split(/[\s,;]+/).filter(x=>/^\d+$/.test(x)).map(Number))];
   const aid=r=>r.moca_aid||'FIELD / unknown';
   const sptLabel=n=>{if(!finite(n))return 'unknown';const c=['M','L','T','Y'];return (c[Math.floor(n/10)]||'?')+Number((n%10).toFixed(1));};

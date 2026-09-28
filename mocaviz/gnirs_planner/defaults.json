@@ -60,7 +60,7 @@
   "restrictRa": true,
   "excludeRestrictedAccess": true,
   "includeOids": [],
-  "bypassNoMeasuredRvOids": [11199, 11063, 369949, 7210],
+  "bypassNoMeasuredRvOids": [11199, 11063, 369949, 7210, 371766],
   "excludeOids": [],
   "aids": null,
   "observables": null
