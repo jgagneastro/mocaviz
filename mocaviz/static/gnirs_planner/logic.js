@@ -9,7 +9,7 @@
     b3cloud:{label:'Band 3 · IQ85 / CC80 / WVAny',slit:.30}
   });
   const DEFAULT_AID_EXCLUSIONS=['CRIUS','OCSN','HSC','CWNU','HURE'];
-  const defaultAidSelected=value=>!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
+  const defaultAidSelected=value=>!['COH23','CUMA','CVUL'].includes(value)&&!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
   const defaultObservableSelected=value=>value!=='pm';
   const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto_h_l8',rvSlit:'0.3',rvCamera:'short',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
     membershipEnabled:true,probKind:'summed',prob:85,realAssociation:true,uncontaminated:true,

@@ -15,6 +15,7 @@ DEFAULTS=json.loads((ROOT/'defaults.json').read_text())
 DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto_h_l8',rvSlit='0.3',rvCamera='short',rvGrating='111')
 SXD_DEFAULTS={**DEFAULTS,**json.loads((ROOT/'sxd_defaults.json').read_text())}
 DEFAULT_AID_EXCLUSIONS=('CRIUS','OCSN','HSC','CWNU','HURE')
+DEFAULT_AID_EXACT_EXCLUSIONS=('COH23','CUMA','CVUL')
 STAT=np.dtype([('oid','i8'),('science','f8'),('program','f8'),('telescope','f8'),('visits','i4'),('ra','f8'),('sptn','f8'),('age','f8'),('teff','f8'),('gnirs_data','?')])
 def normalized_filters(incoming):
     if incoming.get('observingMode','rv') not in ['rv','sxd']:raise ValueError('Unknown observing mode')
@@ -114,7 +115,7 @@ class Catalog:
     def start(self,raw):
         f=normalized_filters(raw)
         if f['aids'] is None:
-            f['aids']=[aid for aid in self.meta['associations'] if f['observingMode']=='sxd' or not aid.startswith(DEFAULT_AID_EXCLUSIONS)]
+            f['aids']=[aid for aid in self.meta['associations'] if f['observingMode']=='sxd' or (aid not in DEFAULT_AID_EXACT_EXCLUSIONS and not aid.startswith(DEFAULT_AID_EXCLUSIONS))]
         if f['observables'] is None:
             f['observables']=[obs for obs in self.meta['observables'] if f['observingMode']=='sxd' or obs!='pm']
         if f['observingMode']=='sxd' and self.meta.get('sxd_grid') is None:
