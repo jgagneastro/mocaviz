@@ -11,7 +11,7 @@
   const DEFAULT_AID_EXCLUSIONS=['CRIUS','OCSN','HSC','CWNU','HURE'];
   const defaultAidSelected=value=>!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
   const defaultObservableSelected=value=>value!=='pm';
-  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'auto',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
+  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'auto',rvCamera:'long',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
     membershipEnabled:true,probKind:'summed',prob:85,realAssociation:true,uncontaminated:true,
     uvwEnabled:true,uvw:6,uvwLooseEnabled:true,uvwLoose:4.2,
     ageEnabled:false,ageMin:0,ageMax:300,unknownAge:'include',
@@ -28,13 +28,24 @@
   const parseOidList=v=>[...new Set(String(v??'').split(/[\s,;]+/).filter(x=>/^\d+$/.test(x)).map(Number))];
   const aid=r=>r.moca_aid||'FIELD / unknown';
   const sptLabel=n=>{if(!finite(n))return 'unknown';const c=['M','L','T','Y'];return (c[Math.floor(n/10)]||'?')+Number((n%10).toFixed(1));};
-  function curve(grid,mode,band,airmass,sptn,slit='auto',coverage=.75){
+  function rowCurves(grid,row,coverage){
+    if(!row.timing_log_i32)return row.curves;
+    if(grid.timing_encoding!=='base64-i32-le-ceil')throw Error('Unsupported timing encoding');
+    const binary=typeof Buffer!=='undefined'?Buffer.from(row.timing_log_i32,'base64'):Uint8Array.from(atob(row.timing_log_i32),c=>c.charCodeAt(0));
+    const data=new DataView(binary.buffer,binary.byteOffset,binary.byteLength),n=grid.magnitude_count,fi=grid.coverage_fractions.indexOf(coverage);
+    if(fi<0||data.byteLength!==4*grid.frames.length*grid.coverage_fractions.length*n)throw Error('Incomplete packed timing row');
+    return grid.frames.map((frame,j)=>({frame_seconds:frame,log_seconds:{[String(coverage)]:Array.from({length:n},(_,i)=>{
+      const value=data.getInt32(4*((j*grid.coverage_fractions.length+fi)*n+i),true);
+      return value===grid.timing_null?null:value/grid.timing_log_scale;
+    })}}));
+  }
+  function curve(grid,mode,band,airmass,sptn,slit='auto',coverage=.75,camera='long',grating=111){
     mode=mode==='b3wide'?'b3high':mode;
     const width=slit==='auto'?MODES[mode].slit:Number(slit);
-    const choices=grid.rows.filter(r=>r.mode===mode&&r.band===band&&r.airmass===airmass&&Math.abs(r.slit-width)<1e-6);
+    const choices=grid.rows.filter(r=>r.mode===mode&&r.band===band&&r.airmass===airmass&&Math.abs(r.slit-width)<1e-6&&(r.camera||'long')===camera&&(r.grating??111)===Number(grating));
     const row=choices.sort((a,b)=>Math.abs(a.sptn-sptn)-Math.abs(b.sptn-sptn)||a.sptn-b.sptn)[0];
     if(!row)return null;
-    return {...row,curves:row.curves.flatMap(c=>{
+    return {...row,curves:rowCurves(grid,row,coverage).flatMap(c=>{
       if(!c.log_seconds)return coverage===.75?[c]:[];
       const logs=c.log_seconds[String(coverage)];
       return logs?.length&&logs.every(v=>v!==null)?[{...c,points:logs.map((v,i)=>[(grid.magnitude_start??8)+i*(grid.magnitude_step??.25),Math.exp(v)])}]:[];
@@ -56,10 +67,12 @@
     if(f.airmass==='auto')f={...f,airmass:(r.visibility?.windows?.['1.5']?.max_hours||0)>=Math.max(f.minWindow,.5)?1.5:2};
     else f={...f,airmass:Number(f.airmass)};
     const band=f.rvBand&&f.rvBand!=='auto'?f.rvBand:(r.sptn<23?'k':'j');
-    const row=curve(grid,f.mode,band,f.airmass,r.sptn,f.rvSlit??'auto',f.coverageFraction??.75),points=row?.curves[0]?.points||[];
+    const row=curve(grid,f.mode,band,f.airmass,r.sptn,f.rvSlit??'auto',f.coverageFraction??.75,f.rvCamera??'long',f.rvGrating??111),points=row?.curves[0]?.points||[];
     const photBand=row?.photometry_band||(band==='h'?'j':band),phot=r.photometry?.[photBand],mag=phot?.magnitude;
     const base={science:null,program:null,telescope:null,visits:null,band,mag:mag??null,photometry_band:photBand,model_color_normalization:photBand!==band,
       slit:row?.slit??null,center_um:row?.center_um??null,resolving_power:row?.resolving_power??null,
+      camera:row?.camera??f.rvCamera??'long',grating:row?.grating??Number(f.rvGrating??111),pixel_scale:row?.pixel_scale??.05,
+      spectral_slit_pixels:row?.spectral_slit_pixels??(row?row.slit/.05:null),
       wavelength_range_um:row?.wavelength_range_um??null,template_spt:row?.spt??null,
       template_teff:row?.teff??null,template_family:row?(row.sptn<=22?'diamondback':'elf-owl'):null,template_approximate:!!row&&r.sptn!==row.sptn,
       template_outside_grid:!!row&&(r.sptn<10||r.sptn>30),

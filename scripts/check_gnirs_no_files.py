@@ -44,6 +44,34 @@ try:
     case.test_all_interactions_read_only_and_cross_worker()
     case.test_access_requires_explicit_verified_credentials_even_when_warm()
     case.test_grid_transport_compressed_without_persistent_response_cache()
+    active = False
+    # Seed compact synthetic camera/grating rows outside the mutation guard;
+    # exercise their API selection and export inside it.
+    import csv, io
+    import mocaviz.gnirs_planner as planner
+    from mocaviz.gnirs_planner import cache
+    from test_gnirs_camera_settings import CameraSettingsTests
+    CameraSettingsTests.setUpClass()
+    with cache.writer(case.path) as db:
+        meta=cache.get(db,'catalog')
+        meta['grid']={**CameraSettingsTests.grid,'version':'compact-camera-test'}
+        cache.put(db,'catalog',meta)
+    planner._catalog=None
+    active=True
+    selections=set()
+    for camera,grating in [('long',10),('long',32),('long',111),('short',32),('short',111)]:
+        filters={'rvCamera':camera,'rvGrating':str(grating)}
+        response=case.post('selection',{'filters':filters})
+        case.assertEqual(response.status_code,200,response.get_json())
+        selection=response.get_json();selections.add(selection['id'])
+        body={'id':selection['id'],'filters':filters,'oid':1}
+        target=case.post('target',body).get_json()['_timing']
+        case.assertEqual((target['camera'],target['grating']),(camera,grating))
+        response=case.post('export',body);case.assertEqual(response.status_code,200)
+        rows=list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
+        case.assertTrue(rows)
+        case.assertTrue(all(r['camera']==camera and int(r['grating_lmm'])==grating for r in rows))
+    case.assertEqual(len(selections),5)
 finally:
     active = False
     case.doCleanups()

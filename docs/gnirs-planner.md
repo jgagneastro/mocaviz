@@ -226,7 +226,7 @@ still require a deployment smoke test with credentials entered by the user.
 ## RV band, slit and S/N coverage (2026-09-28)
 
 The high-resolution RV mode supports J at 1.30 µm, H at 1.65 µm and K at
-2.30 µm with the long-blue camera and 111 l/mm grating. Automatic wavelength
+2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults remain long blue and 111 l/mm. Automatic wavelength
 selection remains K for types earlier than T3 and J for T3 onward. Slits are
 0.10, 0.15, 0.20, 0.30, 0.45, 0.675 and 1.0 arcsec; automatic means 0.15 arcsec
 in Band 1/2 and 0.30 arcsec in Band 3. An explicit override stays fixed when
@@ -241,7 +241,7 @@ Between cached magnitudes the tighter of the two endpoint source/sky scaling
 bounds is used, avoiding underestimation when the pixel defining a coverage
 quantile changes. Bright/faint extrapolations remain flagged.
 The Band 3 exclusion always compares the 0.30 arcsec slit, with the same chosen
-wavelength setting, S/N, coverage, airmass and multiplier.
+camera, grating, wavelength setting, S/N, coverage, airmass and multiplier.
 
 J/K estimates use the corresponding catalog photometry. The current catalog has
 no H photometry: H estimates use measured J and the selected Sonora template's
@@ -276,3 +276,48 @@ workers notice the new revision; restart workers when Python source changes.
 Metadata responses omit RV/SXD curve data (empty row lists support older tabs). Timing and the fixed-slit Band 3
 comparison are returned with each target, so increasing the number of cached
 configurations does not increase the initial browser download proportionally.
+
+
+## RV camera and grating controls (2026-09-28)
+
+Camera/grating controls apply to RV longslit mode only. Gemini ITC supports 10 l/mm with long blue only; short blue offers 32 and 111 l/mm. Selecting short blue while 10 l/mm is active changes the grating to 111 with an explanatory message. SXD keeps its fixed
+short-blue/32 l/mm/0.45 arcsec prescription. Camera and grating are dimensions
+of every selection cache key and timing lookup, including the fixed 0.30 arcsec
+Band 3 exclusion. Missing combinations fail explicitly. The target inspector and
+CSV include camera, grating, spatial pixel scale and nominal slit-limited R.
+The inspector flags slits projecting to fewer than two detector pixels: optical
+broadening and pixel response determine their actual resolution/RV performance.
+
+The offline camera builder covers 7,560 rows (five supported camera/grating combinations,
+three bands, three weather setups, seven slits, two airmasses, twelve templates).
+It calibrates source, sky and read noise using generic public flat-photon Gemini
+ITC requests, then projects the existing compact Sonora SEDs through atmospheric
+transmission and the nominal instrumental profile in memory. Original direct-ITC
+long-blue/111 curves can be retained with `--existing-grid`. Independent direct
+Sonora uploads should be used to check the approximation for each new mode.
+
+Timing logarithms are stored as compact little-endian int32 arrays in base64,
+rounded upward to 1e-5 in natural log time. Only the requested setup/coverage is
+decoded. The server receives this timing table in the existing SQLite cache;
+no spectra or per-user products are added. The initial browser metadata still
+omits all timing rows. At low dispersion, part of the detector can fall outside
+the blocking filter: an unattainable coverage fraction is reported as unsupported.
+
+Build and publish on the development machine:
+
+```sh
+python -B scripts/build_gnirs_camera_grid.py \
+  --source /path/to/rv_itc_20260924 --j-filter /path/to/2mass_J.xml \
+  --atmosphere50 /path/to/mktrans_zm_16_15.dat \
+  --atmosphere-any /path/to/mktrans_zm_50_15.dat \
+  --existing-grid /path/to/previous-grid.json.gz \
+  --output /outside/repo/camera-grid --workers 4
+python -B scripts/publish_gnirs_rv_grid.py --cache /path/to/shared.sqlite \
+  --grid /outside/repo/camera-grid/grid.json.gz --check
+python -B scripts/publish_gnirs_rv_grid.py --cache /path/to/shared.sqlite \
+  --grid /outside/repo/camera-grid/grid.json.gz
+```
+
+Deploy the decoder code before importing the compact table and restart existing
+Python workers when installing it. The publication uses the same existing cache
+file and its lease; it creates no disk-side journals or alternate catalog files.

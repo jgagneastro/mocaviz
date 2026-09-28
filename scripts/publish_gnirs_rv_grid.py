@@ -15,20 +15,24 @@ sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import gnirs_wsgi  # Reuse the existing read-only astronomy configuration.
 from mocaviz.gnirs_planner import cache
+from mocaviz.gnirs_planner.rv_grid import row_curves
 
 def validate(grid):
     fractions=[.25,.5,.75,.9,.95];slits=[.1,.15,.2,.3,.45,.675,1.]
     types=[10,12,14,16,18,20,22,23,24,26,28,30]
-    expected={(m,b,s,x,n) for m in ('b12','b3high','b3cloud') for b in ('j','h','k') for s in slits for x in (1.5,2.) for n in types}
+    cameras=grid.get('cameras',['long']);gratings=grid.get('gratings',[111])
+    if set(cameras) not in ({'long'},{'long','short'}) or set(gratings) not in ({111},{10,32,111}):raise ValueError('Unexpected camera/grating matrix')
+    expected={(cam,g,m,b,s,x,n) for cam in cameras for g in gratings if not (cam=='short' and g==10) for m in ('b12','b3high','b3cloud') for b in ('j','h','k') for s in slits for x in (1.5,2.) for n in types}
     seen=set()
     for row in grid['rows']:
-        key=(row['mode'],row['band'],row['slit'],row['airmass'],row['sptn'])
+        key=(row.get('camera','long'),row.get('grating',111),row['mode'],row['band'],row['slit'],row['airmass'],row['sptn'])
         if key in seen:raise ValueError('Duplicate setup')
         seen.add(key)
         if row['center_um']!={'j':1.3,'h':1.65,'k':2.3}[row['band']]:raise ValueError('Wrong band center')
         if row['photometry_band']!=('j' if row['band']=='h' else row['band']):raise ValueError('Wrong normalization band')
-        if [c['frame_seconds'] for c in row['curves']]!=[60,120,180,240,300]:raise ValueError('Missing frame curves')
-        for c in row['curves']:
+        decoded=row_curves(grid,row)
+        if [c['frame_seconds'] for c in decoded]!=[60,120,180,240,300]:raise ValueError('Missing frame curves')
+        for c in decoded:
             prior=None
             for f in fractions:
                 values=c['log_seconds'][str(f)]

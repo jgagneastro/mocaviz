@@ -12,7 +12,7 @@ from .visibility import unpack
 from .cache import reader as connect
 ROOT=Path(__file__).resolve().parent
 DEFAULTS=json.loads((ROOT/'defaults.json').read_text())
-DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto',rvSlit='auto')
+DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto',rvSlit='auto',rvCamera='long',rvGrating='111')
 SXD_DEFAULTS={**DEFAULTS,**json.loads((ROOT/'sxd_defaults.json').read_text())}
 DEFAULT_AID_EXCLUSIONS=('CRIUS','OCSN','HSC','CWNU','HURE')
 STAT=np.dtype([('oid','i8'),('science','f8'),('program','f8'),('telescope','f8'),('visits','i4'),('ra','f8'),('sptn','f8'),('age','f8'),('teff','f8'),('gnirs_data','?')])
@@ -34,6 +34,10 @@ def normalized_filters(incoming):
     if f['timeMetric'] not in ['science','program','telescope']:raise ValueError('Unknown time cutoff')
     if f['observingMode']=='rv':f.update(snrUnit='pixel',timeMetric='science')
     if f['rvBand'] not in ['auto','j','h','k']:raise ValueError('Unknown RV wavelength band')
+    if f['rvCamera'] not in ['long','short']:raise ValueError('Unsupported RV camera')
+    f['rvGrating']=str(f['rvGrating'])
+    if f['rvGrating'] not in ['10','32','111']:raise ValueError('Unsupported RV grating')
+    if f['observingMode']=='rv' and f['rvCamera']=='short' and f['rvGrating']=='10':raise ValueError('The 10 l/mm grating requires the long camera')
     if f['rvSlit']!='auto':
         f['rvSlit']=str(float(f['rvSlit']))
         if float(f['rvSlit']) not in [.1,.15,.2,.3,.45,.675,1.]:raise ValueError('Unsupported RV slit')
@@ -99,7 +103,7 @@ class Catalog:
         self.meta=meta
         self.meta['semester']['availability_note']=self.meta['semester']['availability_note'].replace(
             'This tool models natural-seeing short-blue 111 l/mm non-XD only.',
-            'The planner includes natural-seeing long-blue 111 l/mm RV spectroscopy and short-blue 32 l/mm SXD spectroscopy.')
+            'The planner includes natural-seeing longslit spectroscopy with selectable blue camera and grating, plus short-blue 32 l/mm SXD spectroscopy.')
         self.meta['defaults']=DEFAULTS
         self.meta['mode_defaults']={'rv':DEFAULTS,'sxd':SXD_DEFAULTS}
         self.jobs=OrderedDict()
@@ -129,8 +133,8 @@ class Catalog:
 
     def select(self,key,job):
         start=time.monotonic();f=job['filters'];grid=self.meta['sxd_grid'] if f['observingMode']=='sxd' else self.meta['grid']
-        model=curves(grid,f['mode'],f['rvSlit'],f['coverageFraction'])
-        band3_model=curves(grid,'b3high',.30,f['coverageFraction']) if f['observingMode']=='rv' else None
+        model=curves(grid,f['mode'],f['rvSlit'],f['coverageFraction'],f['rvCamera'],f['rvGrating'])
+        band3_model=curves(grid,'b3high',.30,f['coverageFraction'],f['rvCamera'],f['rvGrating']) if f['observingMode']=='rv' else None
         where,params=selection_sql(f);forced=set(f['includeOids']);standards=set(f['bypassNoMeasuredRvOids']);aids=set(f['aids']) if f['aids'] is not None else None
         counts=Counter();stats=[];totals={'science':0.,'program':0.,'telescope':0.,'visits':0,'unknown':0,'measured_rv':0,'gnirs_data':0,'planned':0,'unplotted_age':0,'unplotted_teff':0}
         try:

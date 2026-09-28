@@ -3,18 +3,20 @@ from bisect import bisect_right
 import math
 import zlib
 from . import sxd_timing
+from .rv_grid import row_curves
 
 MODES={'b12':.15,'b3high':.30,'b3cloud':.30}
 
-def curves(grid,mode,slit='auto',coverage=.75):
+def curves(grid,mode,slit='auto',coverage=.75,camera='long',grating=111):
     if grid.get('cross_dispersed'):return sxd_timing.curves(grid,mode)
     mode='b3high' if mode=='b3wide' else mode
     width=MODES[mode] if slit=='auto' else float(slit)
     result={}
     for original in grid['rows']:
-        if original['mode']!=mode or abs(original['slit']-width)>1e-6:continue
+        if (original['mode']!=mode or abs(original['slit']-width)>1e-6
+                or original.get('camera','long')!=camera or original.get('grating',111)!=int(grating)):continue
         frames=[]
-        for c in original['curves']:
+        for c in row_curves(grid,original,coverage):
             if 'log_seconds' in c:
                 logs=c['log_seconds'].get(str(float(coverage)))
                 if not logs or any(x is None for x in logs):continue
@@ -26,7 +28,7 @@ def curves(grid,mode,slit='auto',coverage=.75):
             frames.append({**c,'points':points,'log_times':logs})
         row={**original,'curves':frames}
         result.setdefault((row['band'],row['airmass']),[]).append(row)
-    if not result:raise ValueError('No cached RV exposure grid for this slit and weather setup')
+    if not result:raise ValueError('No cached RV exposure grid for this camera, grating, slit and weather setup')
     return result
 
 def interpolate(mag,points):
@@ -83,6 +85,10 @@ def estimate(r,f,model):
     points=row['curves'][0]['points'] if row and row['curves'] else []
     t=dict(science=None,program=None,telescope=None,visits=None,band=band,mag=mag,photometry_band=phot_band,
         model_color_normalization=phot_band!=band,
+        camera=row.get('camera','long') if row else f.get('rvCamera','long'),
+        grating=row.get('grating',111) if row else int(f.get('rvGrating',111)),
+        pixel_scale=row.get('pixel_scale',.05) if row else None,
+        spectral_slit_pixels=row.get('spectral_slit_pixels',row['slit']/.05) if row else None,
         slit=row['slit'] if row else None,
         center_um=row['center_um'] if row else None,
         resolving_power=row['resolving_power'] if row else None,

@@ -51,9 +51,12 @@ function createControls(){
   section('GNIRS setup & time',
     select('mode','Configuration and conditions',Object.entries(G.MODES).map(([k,v])=>[k,v.label]),true)+
     '<p id="setup-description" class="tiny"></p>'+
+    select('rvCamera','RV camera',[['long','Long blue · 0.05″/pixel'],['short','Short blue · 0.15″/pixel']],true)+
+    select('rvGrating','RV grating',[['111','111 l/mm'],['32','32 l/mm'],['10','10 l/mm · long blue only']],true)+
+    '<p id="rv-camera-note" class="tiny" role="status"></p>'+
     select('rvBand','RV wavelength setting',[['auto','Automatic: K for L0–T2; J for T3+'],['j','J band · 1.30 µm'],['h','H band · 1.65 µm'],['k','K band · 2.30 µm']],true)+
     select('rvSlit','RV slit width',[['auto','Automatic: 0.15″ Band 1/2; 0.30″ Band 3'],...['0.1','0.15','0.2','0.3','0.45','0.675','1'].map(v=>[v,`${v}″`])],true)+
-    '<p id="rv-coverage-description" class="tiny">S/N is per detector pixel. Qualifying pixels may be disjoint; all recorded pixels count toward the required fraction. H timing uses J photometry and the Sonora model color.</p>'+
+    '<p id="rv-coverage-description" class="tiny">S/N is per detector pixel. Some low-dispersion settings extend beyond the blocking filter and cannot meet the higher coverage fractions. Qualifying pixels may be disjoint; all recorded pixels count toward the required fraction. H timing uses J photometry and the Sonora model color.</p>'+
     number('snr','S/N threshold',5,300,5)+select('snrUnit','S/N units',[['resolution','Per resolution element (3 pixels)'],['pixel','Per detector pixel']])+
     select('coverageFraction','Pixels meeting S/N',[['0.25','At least 25%'],['0.5','At least 50%'],['0.75','At least 75%'],['0.9','At least 90%'],['0.95','At least 95%']])+
     select('airmass','ITC / window airmass',[['auto','Auto: 1.5, else 2.0'],['1.5','1.5'],['2','2.0']])+
@@ -100,13 +103,36 @@ function configureMode(){
   const prior=$('mode').value;$('mode').innerHTML=Object.entries(modeInfo()).map(([k,v])=>`<option value="${k}">${esc(v.label)}</option>`).join('');$('mode').value=prior||'b12';
   $('snrUnit').disabled=!isSxd();$('snrUnit').closest('label').hidden=!isSxd();
   $('timeMetric').disabled=!isSxd();
-  for(const id of ['rvBand','rvSlit'])$(id).closest('label').hidden=isSxd();
+  for(const id of ['rvCamera','rvGrating','rvBand','rvSlit'])$(id).closest('label').hidden=isSxd();
   $('rv-coverage-description').hidden=isSxd();
+  $('rv-camera-note').hidden=isSxd();
   $('coverageFraction').innerHTML=(isSxd()?[.5,.75,.9]:[.25,.5,.75,.9,.95]).map(f=>`<option value="${f}">At least ${Math.round(f*100)}%</option>`).join('');
   for(const id of ['excludeFastBand3','referenceBypass'])$(id).closest('label').hidden=isSxd();
   $('band3-description').hidden=isSxd();
-  $('setup-description').textContent=isSxd()?'32 l/mm · short-blue 0.15″/pixel · SXD 0.45″ × 7″ slit · 1.65 µm setting · 0.85–2.5 µm simultaneously. R ≈1070 in J, ≈1130 in H/K. Timing uses only J 1.20–1.30 µm; the S/N goal is not guaranteed over all orders. Natural seeing, SBAny. Queue band and weather are separate planning choices.':'Long-blue / 111 l/mm, longslit, natural seeing, SBAny. L0–T2: K 2.30 µm (~2.268–2.332). T3+: J 1.30 µm (~1.281–1.319). Defaults: 0.15″ Band 1/2; 0.30″ Band 3. Override the wavelength setting or slit below; check slit/FWHM against your 0.40 goal.';
-  $('mode-summary').textContent=isSxd()?'M5+ candidates · photometric + spectroscopic · independent selection and SXD timing':'L0+ RV science and standards · existing high-resolution setup';
+  updateSetupDescription();
+}
+function updateSetupDescription(){
+  if(isSxd()){
+    $('setup-description').textContent='32 l/mm · short-blue 0.15″/pixel · SXD 0.45″ × 7″ slit · 1.65 µm setting · 0.85–2.5 µm simultaneously. R ≈1070 in J, ≈1130 in H/K. Timing uses only J 1.20–1.30 µm; the S/N goal is not guaranteed over all orders. Natural seeing, SBAny. Queue band and weather are separate planning choices.';
+    $('mode-summary').textContent='M5+ candidates · photometric + spectroscopic · independent selection and SXD timing';
+  }else{
+    const available=state.data?.grid?.camera_gratings||(state.data?{long:[111],short:[]}:null);
+    if(available){
+      for(const option of $('rvCamera').options)option.disabled=!available[option.value]?.length;
+      if(!available[$('rvCamera').value]?.length)$('rvCamera').value='long';
+    }
+    const short=$('rvCamera').value==='short',ten=$('rvGrating').querySelector('option[value="10"]');
+    ten.disabled=short;
+    const switched=short&&$('rvGrating').value==='10';if(switched)$('rvGrating').value='111';
+    if(available){
+      for(const option of $('rvGrating').options)option.disabled=!available[$('rvCamera').value]?.includes(Number(option.value));
+      if($('rvGrating').selectedOptions[0]?.disabled)$('rvGrating').value='111';
+    }
+    $('rv-camera-note').textContent=switched?'10 l/mm requires long blue; switched to 111 l/mm.':short?'Short blue supports 32 and 111 l/mm. Narrow slits may be undersampled.':'10, 32 and 111 l/mm are available with long blue.';
+    const camera=$('rvCamera').value==='short'?'Short blue':'Long blue',grating=$('rvGrating').value||'111';
+    $('setup-description').textContent=`${camera} / ${grating} l/mm · longslit · natural seeing · SBAny. Camera and grating change the detector coverage, nominal resolution and exposure time. Automatic band: K 2.30 µm for L0–T2; J 1.30 µm for T3+. Automatic slit: 0.15″ Band 1/2; 0.30″ Band 3. Check slit/FWHM against your 0.40 goal.`;
+    $('mode-summary').textContent=`L0+ RV science and standards · ${camera} · ${grating} l/mm`;
+  }
 }
 async function switchMode(){
   if(!state.data)return;modeFilters[currentMode]=filters();currentMode=$('observing-mode').value;
@@ -118,6 +144,7 @@ async function switchMode(){
 }
 let selectionRevision=0,listRevision=0,activeRevision=0;
 async function update(){
+  updateSetupDescription();
   if(!state.data)return;const revision=++selectionRevision,f=filters();
   $('spt-range').textContent=`${spt(f.sptMin)} – ${spt(f.sptMax)} · temperature cut ${f.teffEnabled?'on':'off'}`;
   $('ylog').disabled=spectralYAxis();$('ylog-label').classList.toggle('subtle',spectralYAxis());
@@ -211,7 +238,8 @@ function renderInspector(){
     detail('RV reference suitability',`${esc(r.rv_reference_audit||'Not in the prior reference audit')} · check binarity, epoch scatter and flags`,true)+
     detail('Individual RV provenance',rvTable(r.rv_measurements),true)+
     (r.host_rv_measurements.length?detail('Host-derived RV context',rvTable(r.host_rv_measurements),true):'')+
-    detail('GNIRS configuration',`${esc(modeInfo()[f.mode].label)}<br>${isSxd()?'Short-blue · 32 l/mm · SXD · 7″ slit length':'Long-blue · 111 l/mm · longslit'} · setting ${fmt(t.center_um,2)} µm · ${t.wavelength_range_um?.map(x=>fmt(x,4)).join('–')||'unknown'} µm<br>slit ${t.slit}″ · nominal R ≈ ${fmt(t.resolving_power,0)} · airmass ${fmt(t.airmass,1)} · ${snrDescription(f)}`,true)+
+    detail('GNIRS configuration',`${esc(modeInfo()[f.mode].label)}<br>${isSxd()?'Short-blue · 32 l/mm · SXD · 7″ slit length':`${t.camera==='short'?'Short-blue':'Long-blue'} · ${esc(t.grating)} l/mm · longslit`} · setting ${fmt(t.center_um,2)} µm · ${t.wavelength_range_um?.map(x=>fmt(x,4)).join('–')||'unknown'} µm<br>slit ${t.slit}″ · nominal R ≈ ${fmt(t.resolving_power,0)} · airmass ${fmt(t.airmass,1)} · ${snrDescription(f)}`,true)+
+    (isSxd()?'':detail('Detector sampling',`${fmt(t.pixel_scale,2)}″/pixel · slit projects to ${fmt(t.spectral_slit_pixels,2)} pixels${t.spectral_slit_pixels<2?' · undersampled slit: effective resolving power and RV accuracy depend on the optical profile and pixel response; nominal R is not a measured resolution':''}`,true))+
     detail('Seeing and slit',`ITC FWHM ${fmt(t.seeing_fwhm,2)}″ · slit/FWHM ${fmt(t.slit_seeing_ratio,2)}${isSxd()?' · nominal resolution assumes slit-filling illumination; use average parallactic angle':' · upper-limit goal 0.40; check actual acquisition seeing'}`,true)+
     detail('Atmosphere template',`${esc(t.template_spt)} · ${fmt(t.template_teff,0)} K · ${isSxd()?(t.template_family==='library'?'Gemini T2800K late-M proxy':t.template_family==='diamondback'?'Sonora Diamondback, fsed=2, log g=4':'Sonora Elf Owl, log g=4, local release unverified'):(t.template_family==='diamondback'?'Sonora Diamondback, fsed=2, log g=5':'Sonora Elf Owl, log g=5, local release unverified')} · solar metallicity${t.template_approximate?' · nearest spectral-type template':''}`,true)+
     detail('Adopted time-model photometry',`${(t.photometry_band||t.band).toUpperCase()} ${fmt(t.mag)} ± ${fmt(t.photometry?.magnitude_unc,3)} · ${esc(t.photometry?.moca_psid)} · ${esc(t.photometry?.moca_pid)}${t.photometry?.component_override?' · resolved-companion override':''}${t.model_color_normalization?' · H-band flux inferred from J and the selected Sonora template color':''}${isSxd()&&t.photometry&&!/(2mass|tmass)/i.test(t.photometry.moca_psid||'')?' · non-2MASS J: system conversion is approximate':''}`,true)+
@@ -234,7 +262,7 @@ function renderMethods(){const d=state.data;if(isSxd())return renderSxdMethods(d
   <h3>Parent catalog and adopted data</h3><p>${esc(d.manifest.parent_scope)}. ${d.catalog_count.toLocaleString()} unique active OIDs, read from MOCAdb on ${esc(d.manifest.collected_at)}. The GNIRS parent is independent of the JWST proposal selection. The loaded parent scope is explicit: excluded rows can be found with numeric OID search. Unknown-age targets stay in the list and totals but cannot be plotted on an age axis.</p>
   <p>SpT and flags come from adopted, non-ignored spectral types. Teff uses adopted data_teff with public-adopted fallback, then the young SpT–Teff sequence. Association ages match the current private, maximum-observables BANYAN association and adopted model. Ages remain conditional on membership; no generic field age is assigned. Individual detail probabilities are stored as fractions and multiplied by 100; the summed young probability is already in percent. Regular and loose UVW are separate; for a photometric distance the loose value uses the smaller separation after omitting parallax when available.</p>
   <h3>Measured radial velocities</h3><p>${esc(d.rv_definition)} The displayed adopted estimate is the private combined RV when supported by direct measurements without host propagation. Otherwise the inspector labels its individual fallback. All individual measurement provenance and flags remain available. Old small error bars do not establish stability through 2027. Manual RV-standard OIDs bypass the “No measured RV” status and membership selection, including BANYAN probability and UVW limits. Spectral, quality, access, timing and other cuts still apply.</p>
-  <h3>GNIRS RV exposure prescription — 2026-09-24</h3><p>Gemini legacy ITC wavelength-resolved calculations with uploaded public Sonora spectra. Long-blue camera (0.05″/pixel), 111 l/mm grating, longslit without cross dispersion, natural seeing, Very Faint read mode, optimal extraction, ABBA. L0–T2 use K centered at 2.30 µm (~2.268–2.332); T3 and later use J centered at 1.30 µm (~1.281–1.319). The default is Band 1/2 with a 0.15″ slit; Band 3 uses 0.30″. The operational goal is slit/FWHM ≤0.4; the displayed ratio uses the ITC condition-bin FWHM, and actual acquisition seeing must be checked.</p>
+  <h3>GNIRS RV exposure prescription — 2026-09-28</h3><p>Gemini legacy ITC wavelength-resolved calculations with public Sonora spectra. Select long blue (0.05″/pixel) or short blue (0.15″/pixel), and 10, 32 or 111 l/mm, in longslit mode without cross dispersion. Natural seeing, Very Faint read mode, optimal extraction, ABBA. Defaults remain long blue and 111 l/mm. The target inspector and CSV report the selected camera, grating, detector coverage and nominal slit-limited resolution. Narrow slits with the short camera can be undersampled; nominal resolving power is not a measurement of the actual instrumental profile. Automatic band selection uses K centered at 2.30 µm for L0–T2, and J centered at 1.30 µm for T3 and later. J, H (1.65 µm) and K can also be selected explicitly; wavelength coverage depends on the camera and grating. The default is Band 1/2 with a 0.15″ slit; Band 3 uses 0.30″. The operational goal is slit/FWHM ≤0.4; the displayed ratio uses the ITC condition-bin FWHM, and actual acquisition seeing must be checked.</p>
   <p>The S/N threshold (default 50 per detector pixel) must be reached in at least the selected fraction (25%, 50%, 75%, 90% or 95%; default 75%) of all detector pixels across the full recorded wavelength interval, including molecular absorption, telluric absorption and sky-line noise. Qualifying pixels may be disjoint; there is no contiguous-interval requirement. Failed pixels remain in the denominator. It is not a continuum-point or median-S/N criterion. Each curve uses the nearest spectral-type template: Diamondback through T2 (fsed=2), Elf Owl from T3, solar metallicity and log g=5. Local Elf Owl release provenance is unverified and is not claimed to be v2. Types later than Y0 use the Y0 template and are flagged. This is a planning model, not an RV-accuracy guarantee.</p>
   <p>Templates are normalized using synthetic 2MASS J or Ks photometry. Explicit J, H (1.65 µm), and K settings and seven slit widths are selectable for RV mode. H uses measured J normalization and the template J–H color because the current catalog cache contains only J/K photometry; unusual colors can bias this estimate. Separate calculations cover each band, slit, condition set and airmass. Two brightnesses and two frame durations determine source, sky and read-noise terms per pixel. Cached magnitude curves solve the selected qualifying-pixel fraction for 60/120/180/240/300 s frames; the planner chooses the least science-plus-read/nod overhead cost after rounding to complete ABBA sequences. S/N² and the exposure multiplier apply at fixed frame length. Magnitude interpolation uses a conservative source/sky scaling bound between cached points, with flagged extrapolation outside 8–24 mag. Bright targets still need saturation/read-mode review. Model mismatch, unusual colors, gravity and K/Ks differences remain uncertainties. All interactive timing uses compact curves in the shared cache. No atmosphere spectra are deployed or downloaded to the browser; instrumental convolution is performed once by the ITC during offline calibration. Each API request verifies your credentials with MOCAdb; catalog queries run only during regeneration. No ITC requests run on this server.</p>
   <h3>Time accounting and visits</h3><p>Complete ABBA cycles using 60, 120, 180, 240 or 300 s frames. Per frame: 34.3 s read/write/nod allowance. Per visit: 15 min acquisition, plus 6 min recentering per 45 min science. Each visit contains whole ABBA cycles and must fit the actual continuous window and selected maximum block. Program totals include these overheads. Telescope totals add the adjustable provisional calibration allowance (default 20 min/visit); this is not an official PIT charge. PIT automatically adds baseline calibrations: enter program time and do not add this provisional allowance twice. Only displayed selected targets contribute; there are no hidden standards.</p>
