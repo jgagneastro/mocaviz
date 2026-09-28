@@ -12,7 +12,7 @@ from .visibility import unpack
 from .cache import reader as connect
 ROOT=Path(__file__).resolve().parent
 DEFAULTS=json.loads((ROOT/'defaults.json').read_text())
-DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto',rvSlit='auto',rvCamera='long',rvGrating='111')
+DEFAULTS.update(observingMode='rv',snrUnit='pixel',coverageFraction=.75,timeMetric='science',rvBand='auto',rvSlit='0.3',rvCamera='short',rvGrating='111')
 SXD_DEFAULTS={**DEFAULTS,**json.loads((ROOT/'sxd_defaults.json').read_text())}
 DEFAULT_AID_EXCLUSIONS=('CRIUS','OCSN','HSC','CWNU','HURE')
 STAT=np.dtype([('oid','i8'),('science','f8'),('program','f8'),('telescope','f8'),('visits','i4'),('ra','f8'),('sptn','f8'),('age','f8'),('teff','f8'),('gnirs_data','?')])

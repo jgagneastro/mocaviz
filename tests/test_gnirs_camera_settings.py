@@ -32,7 +32,11 @@ class CameraSettingsTests(unittest.TestCase):
 
     def test_default_validation_and_missing_setup(self):
         f=catalog.normalized_filters({})
-        self.assertEqual((f['rvCamera'],f['rvGrating']),('long','111'))
+        self.assertEqual((f['rvCamera'],f['rvGrating'],f['rvSlit']),('short','111','0.3'))
+        for mode in ['b12','b3high','b3cloud']:
+            defaults=catalog.normalized_filters({'mode':mode})
+            model=timing.curves(self.grid,mode,defaults['rvSlit'],defaults['coverageFraction'],defaults['rvCamera'],defaults['rvGrating'])
+            self.assertEqual({(r['camera'],r['grating'],r['slit']) for rows in model.values() for r in rows},{('short',111,.3)})
         for bad in [{'rvCamera':'red'},{'rvGrating':'111 or 32'},{'rvGrating':64},{'rvCamera':'short','rvGrating':'10'}]:
             with self.assertRaises(ValueError):catalog.normalized_filters(bad)
         # A missing camera must not silently use a long-camera calibration.

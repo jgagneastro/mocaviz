@@ -38,7 +38,7 @@ class RVSettingsTests(unittest.TestCase):
 
     def test_defaults_and_validation(self):
         f=catalog.normalized_filters({})
-        self.assertEqual((f['rvBand'],f['rvSlit'],f['coverageFraction']),('auto','auto',.75))
+        self.assertEqual((f['rvBand'],f['rvSlit'],f['coverageFraction']),('auto','0.3',.75))
         for fraction in (.25,.5,.75,.9,.95):
             f=catalog.normalized_filters({'coverageFraction':fraction,'snrUnit':'resolution'})
             self.assertEqual(f['coverageFraction'],fraction);self.assertEqual(f['snrUnit'],'pixel')
@@ -48,7 +48,7 @@ class RVSettingsTests(unittest.TestCase):
 
     def test_explicit_settings_defaults_and_fixed_band3_slit(self):
         for mode,width in [('b12',.15),('b3high',.3),('b3cloud',.3)]:
-            f=catalog.normalized_filters({'mode':mode})
+            f=catalog.normalized_filters({'mode':mode,'rvCamera':'long','rvSlit':'auto'})
             for n,band in [(15,'k'),(25,'j')]:
                 t=timing.estimate(self.target(n),f,timing.curves(self.grid,mode))
                 self.assertEqual((t['band'],t['slit']),(band,width))
@@ -93,7 +93,7 @@ class RVSettingsTests(unittest.TestCase):
     def test_python_js_agree_across_bands_slits_and_coverage(self):
         cases=[];hist={'windows':{k:{'max_hours':10,'duration_counts':[[120,100]]} for k in ('1.5','2')}}
         for band,slit,frac,n in [('auto','auto',.75,15),('auto','auto',.75,25),('j',.1,.25,15),('h',.675,.95,25),('k',1.,.5,25),('h',.2,.9,15)]:
-            f=catalog.normalized_filters({'rvBand':band,'rvSlit':slit,'coverageFraction':frac})
+            f=catalog.normalized_filters({'rvCamera':'long','rvBand':band,'rvSlit':slit,'coverageFraction':frac})
             r=self.target(n);expected=timing.estimate(r,f,timing.curves(self.grid,'b12',f['rvSlit'],frac))
             browser=dict(sptn=n,photometry={b:{'magnitude':r[b]} for b in ('j','k')},visibility=hist)
             cases.append(dict(filters=f,target=browser,expected=expected))

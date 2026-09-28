@@ -11,7 +11,7 @@
   const DEFAULT_AID_EXCLUSIONS=['CRIUS','OCSN','HSC','CWNU','HURE'];
   const defaultAidSelected=value=>!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
   const defaultObservableSelected=value=>value!=='pm';
-  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'auto',rvCamera:'long',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
+  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'0.3',rvCamera:'short',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
     membershipEnabled:true,probKind:'summed',prob:85,realAssociation:true,uncontaminated:true,
     uvwEnabled:true,uvw:6,uvwLooseEnabled:true,uvwLoose:4.2,
     ageEnabled:false,ageMin:0,ageMax:300,unknownAge:'include',

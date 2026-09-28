@@ -226,7 +226,7 @@ still require a deployment smoke test with credentials entered by the user.
 ## RV band, slit and S/N coverage (2026-09-28)
 
 The high-resolution RV mode supports J at 1.30 µm, H at 1.65 µm and K at
-2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults remain long blue and 111 l/mm. Automatic wavelength
+2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults are short blue, 111 l/mm and a fixed 0.30″ slit in all weather bands. Automatic wavelength
 selection remains K for types earlier than T3 and J for T3 onward. Slits are
 0.10, 0.15, 0.20, 0.30, 0.45, 0.675 and 1.0 arcsec; automatic means 0.15 arcsec
 in Band 1/2 and 0.30 arcsec in Band 3. An explicit override stays fixed when

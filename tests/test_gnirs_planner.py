@@ -37,6 +37,9 @@ def seed(path):
                                resolving_power=12500, wavelength_range_um=[2.268, 2.332],
                                seeing_fwhm=.4, slit_seeing_ratio=.375)
                     grid_rows.append({**row, 'curves': [dict(frame_seconds=60, points=points)]})
+                    grid_rows.append({**row, 'camera':'short', 'grating':111, 'slit':.3,
+                                      'pixel_scale':.15, 'spectral_slit_pixels':2,
+                                      'curves':[dict(frame_seconds=60, points=points)]})
                     sxd_rows.append({**row, 'family': 'synthetic test', 'peak_source_rate': .01,
                                      'peak_sky_rate': .01, 'curves': [dict(frame_seconds=60,
                                       read_seconds=22.3, read_mode='VERY_FAINT',
