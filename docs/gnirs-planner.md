@@ -226,10 +226,10 @@ still require a deployment smoke test with credentials entered by the user.
 ## RV band, slit and S/N coverage (2026-09-28)
 
 The high-resolution RV mode supports J at 1.30 µm, H at 1.65 µm and K at
-2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults are short blue, 111 l/mm and a fixed 0.30″ slit in all weather bands. Automatic wavelength
-selection remains K for types earlier than T3 (including T2.5) and J for T3 onward.
+2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults are short blue, 111 l/mm and a fixed 0.30″ slit in all weather bands. The optional `auto` wavelength
+selection uses K for types earlier than T3 (including T2.5) and J for T3 onward.
 The additional `auto_h` choice uses the same K branch and H at 1.65 µm for T3 onward.
-The `auto_h_l8` choice uses K through L7.0 (numeric type ≤17) and H for every
+The default `auto_h_l8` choice uses K through L7.0 (numeric type ≤17) and H for every
 type later than L7.0, including fractional types such as L7.1 and L7.5.
 All choices resolve the band using the adopted numeric spectral type before
 selecting the nearest template; the Band 3 comparison follows the same choice. Slits are
@@ -365,3 +365,14 @@ SXD retains its independently calibrated read modes and 50,000 electron cap.
 Public references: [GNIRS detector/read modes](https://www.gemini.edu/instrumentation/gnirs/components),
 [ITC output conventions](https://www.gemini.edu/observing/resources/itc/itc-help).
 No new server-side cache files or runtime ITC requests are introduced.
+
+
+### Current RV defaults (2026-09-28)
+
+The default wavelength rule is **K for L0–L7; H for L8+** (`auto_h_l8`):
+K at 2.30 µm through numeric type 17 (L7.0), H at 1.65 µm for every later
+type, including L7.1 and L7.5. The default S/N goal is **30 per detector pixel**
+over at least 75% of recorded pixels; the science-time cutoff is **4 hours per
+target**. The minimum remains 20 minutes. The cached S/N=50 reference curves
+remain valid and are scaled by the requested S/N squared. SXD uses its separate
+defaults. The RV standards list includes OIDs 11199, 11063, 369949, 7210, 371766.

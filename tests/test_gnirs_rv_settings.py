@@ -38,7 +38,7 @@ class RVSettingsTests(unittest.TestCase):
 
     def test_defaults_and_validation(self):
         f=catalog.normalized_filters({})
-        self.assertEqual((f['rvBand'],f['rvSlit'],f['coverageFraction']),('auto','0.3',.75))
+        self.assertEqual((f['rvBand'],f['rvSlit'],f['coverageFraction']),('auto_h_l8','0.3',.75))
         for fraction in (.25,.5,.75,.9,.95):
             f=catalog.normalized_filters({'coverageFraction':fraction,'snrUnit':'resolution'})
             self.assertEqual(f['coverageFraction'],fraction);self.assertEqual(f['snrUnit'],'pixel')
@@ -49,7 +49,7 @@ class RVSettingsTests(unittest.TestCase):
     def test_explicit_settings_defaults_and_fixed_band3_slit(self):
         for mode,width in [('b12',.15),('b3high',.3),('b3cloud',.3)]:
             f=catalog.normalized_filters({'mode':mode,'rvCamera':'long','rvSlit':'auto'})
-            for n,band in [(15,'k'),(25,'j')]:
+            for n,band in [(15,'k'),(25,'h')]:
                 t=timing.estimate(self.target(n),f,timing.curves(self.grid,mode))
                 self.assertEqual((t['band'],t['slit']),(band,width))
         f=catalog.normalized_filters({'rvBand':'h','rvSlit':.675,'coverageFraction':.95})

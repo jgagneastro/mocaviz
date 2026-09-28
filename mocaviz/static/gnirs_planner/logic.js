@@ -11,7 +11,7 @@
   const DEFAULT_AID_EXCLUSIONS=['CRIUS','OCSN','HSC','CWNU','HURE'];
   const defaultAidSelected=value=>!DEFAULT_AID_EXCLUSIONS.some(prefix=>value.startsWith(prefix));
   const defaultObservableSelected=value=>value!=='pm';
-  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto',rvSlit:'0.3',rvCamera:'short',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
+  const DEFAULTS=Object.freeze({observingMode:'rv',snrUnit:'pixel',coverageFraction:.75,timeMetric:'science',rvBand:'auto_h_l8',rvSlit:'0.3',rvCamera:'short',rvGrating:'111',rvMode:'none',referenceBypass:true,rvMaxErrorEnabled:false,rvMaxError:3,
     membershipEnabled:true,probKind:'summed',prob:85,realAssociation:true,uncontaminated:true,
     uvwEnabled:true,uvw:6,uvwLooseEnabled:true,uvwLoose:4.2,
     ageEnabled:false,ageMin:0,ageMax:300,unknownAge:'include',
@@ -21,7 +21,7 @@
     rejectDuplicates:true,ignoreMultiples:false,excludeSubdwarfs:true,requireLowg:false,
     conditionalLowg:true,lowgSpt:19,lowgAge:200,hostMin:0,
     quality:'all',manualTypesOnly:false,excludeArchive:true,archiveResolution:2700,excludePlanned:true,
-    mode:'b12',snr:50,airmass:'auto',timeEnabled:true,maxScience:2,excludeFastBand3:false,margin:1,minScienceMinutes:20,
+    mode:'b12',snr:30,airmass:'auto',timeEnabled:true,maxScience:4,excludeFastBand3:false,margin:1,minScienceMinutes:20,
     calibrationMinutes:20,maxVisit:2,bestAirmassEnabled:true,bestAirmass:1.6,
     requireVisitFit:true,minWindow:1,restrictDec:true,restrictRa:true,excludeRestrictedAccess:true,
     includeOids:[],bypassNoMeasuredRvOids:[11199,11063,369949,7210,371766],excludeOids:[],aids:null,observables:null});

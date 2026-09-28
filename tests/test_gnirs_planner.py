@@ -44,6 +44,8 @@ def seed(path):
                                      'peak_sky_rate': .01, 'curves': [dict(frame_seconds=60,
                                       read_seconds=22.3, read_mode='VERY_FAINT',
                                       criteria={f'{unit}:{fraction}': points for unit in ('pixel','resolution') for fraction in ('0.5','0.75','0.9')})]})
+        grid_rows.extend({**r, 'band':'h', 'photometry_band':'j', 'center_um':1.65,
+                          'wavelength_range_um':[1.60,1.70]} for r in list(grid_rows) if r['band']=='j')
         config = json.loads(Path(visibility.__file__).with_name('semester.json').read_text())
         config['last_evening'] = '2027-02-02'
         meta = dict(grid={'rows': grid_rows, 'version': 'synthetic-test', 'created_at': '2026-09-26'},
