@@ -372,7 +372,7 @@ No new server-side cache files or runtime ITC requests are introduced.
 The default wavelength rule is **K for L0–L7; H for L8+** (`auto_h_l8`):
 K at 2.30 µm through numeric type 17 (L7.0), H at 1.65 µm for every later
 type, including L7.1 and L7.5. The default S/N goal is **30 per detector pixel**
-over at least 75% of recorded pixels; the science-time cutoff is **4 hours per
+over at least 75% of recorded pixels; the science-time cutoff is **3 hours per
 target**. The minimum remains 20 minutes. The cached S/N=50 reference curves
 remain valid and are scaled by the requested S/N squared. SXD uses its separate
 defaults. The RV standards list includes OIDs 11199, 11063, 369949, 7210, 371766.

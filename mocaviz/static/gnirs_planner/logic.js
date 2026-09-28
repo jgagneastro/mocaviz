@@ -21,7 +21,7 @@
     rejectDuplicates:true,ignoreMultiples:false,excludeSubdwarfs:true,requireLowg:false,
     conditionalLowg:true,lowgSpt:19,lowgAge:200,hostMin:0,
     quality:'all',manualTypesOnly:false,excludeArchive:true,archiveResolution:2700,excludePlanned:true,
-    mode:'b12',snr:30,airmass:'auto',timeEnabled:true,maxScience:4,excludeFastBand3:false,margin:1,minScienceMinutes:20,
+    mode:'b12',snr:30,airmass:'auto',timeEnabled:true,maxScience:3,excludeFastBand3:false,margin:1,minScienceMinutes:20,
     calibrationMinutes:20,maxVisit:2,bestAirmassEnabled:true,bestAirmass:1.6,
     requireVisitFit:true,minWindow:1,restrictDec:true,restrictRa:true,excludeRestrictedAccess:true,
     includeOids:[],bypassNoMeasuredRvOids:[11199,11063,369949,7210,371766],excludeOids:[],aids:null,observables:null});

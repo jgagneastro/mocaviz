@@ -46,7 +46,7 @@
   "snr": 30,
   "airmass": "auto",
   "timeEnabled": true,
-  "maxScience": 4,
+  "maxScience": 3,
   "excludeFastBand3": false,
   "margin": 1,
   "minScienceMinutes": 20,
