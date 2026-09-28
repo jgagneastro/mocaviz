@@ -61,7 +61,7 @@
   "excludeRestrictedAccess": true,
   "includeOids": [],
   "bypassNoMeasuredRvOids": [11199, 11063, 369949, 7210, 371766],
-  "excludeOids": [],
+  "excludeOids": [368979],
   "aids": null,
   "observables": null
 }
