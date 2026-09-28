@@ -46,7 +46,8 @@ def interpolate(mag,points):
 
 def setup(r,f,model):
     band=f.get('rvBand','auto')
-    if band in ('auto','auto_h'):band='k' if r['sptn']<23 else ('h' if band=='auto_h' else 'j')
+    if band=='auto_h_l8':band='k' if r['sptn']<=17 else 'h'
+    elif band in ('auto','auto_h'):band='k' if r['sptn']<23 else ('h' if band=='auto_h' else 'j')
     airmass=(1.5 if (r['win15'] or 0)>=max(f['minWindow'],.5) else 2) if f['airmass']=='auto' else float(f['airmass'])
     choices=model.get((band,airmass),[])
     row=min(choices,key=lambda p:(abs(p['sptn']-r['sptn']),p['sptn'])) if choices else None

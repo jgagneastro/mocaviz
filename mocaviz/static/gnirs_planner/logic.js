@@ -67,7 +67,7 @@
     if(f.airmass==='auto')f={...f,airmass:(r.visibility?.windows?.['1.5']?.max_hours||0)>=Math.max(f.minWindow,.5)?1.5:2};
     else f={...f,airmass:Number(f.airmass)};
     const setting=f.rvBand||'auto';
-    const band=['auto','auto_h'].includes(setting)?(r.sptn<23?'k':setting==='auto_h'?'h':'j'):setting;
+    const band=setting==='auto_h_l8'?(r.sptn<=17?'k':'h'):['auto','auto_h'].includes(setting)?(r.sptn<23?'k':setting==='auto_h'?'h':'j'):setting;
     const row=curve(grid,f.mode,band,f.airmass,r.sptn,f.rvSlit??'auto',f.coverageFraction??.75,f.rvCamera??'long',f.rvGrating??111),points=row?.curves[0]?.points||[];
     const photBand=row?.photometry_band||(band==='h'?'j':band),phot=r.photometry?.[photBand],mag=phot?.magnitude;
     const base={science:null,program:null,telescope:null,visits:null,band,mag:mag??null,photometry_band:photBand,model_color_normalization:photBand!==band,
