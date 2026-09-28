@@ -106,7 +106,7 @@ async function switchMode(){
   if(!state.data)return;modeFilters[currentMode]=filters();currentMode=$('observing-mode').value;
   const next=modeFilters[currentMode]||state.data.mode_defaults[currentMode];configureMode();resetValues(next);
   choices('aids',state.data.associations,next.aids);choices('observables',state.data.observables,next.observables);
-  state.fitOnLoad=true;state.timings.clear();state.active=null;$('target-name').textContent='Select a target';$('target-telescope-time').textContent='—';$('details').replaceChildren();
+  state.timings.clear();state.active=null;$('target-name').textContent='Select a target';$('target-telescope-time').textContent='—';$('details').replaceChildren();
   const url=new URL(location.href);url.searchParams.set('mode',currentMode);history.replaceState(null,'',url);
   renderMethods();await update();
 }
@@ -140,7 +140,8 @@ async function update(){
         $('rv-summary').textContent=`${total.measured_rv.toLocaleString()} measured RV · ${total.gnirs_data.toLocaleString()} with GNIRS data · ${total.planned.toLocaleString()} planned reductions`;
         await renderList();
         if(state.active)await activate({moca_oid:state.active.moca_oid},false);
-        if(state.fitOnLoad){state.view=fitCurrent();state.fitOnLoad=false;}
+        if(revision!==selectionRevision)return;
+        state.view=fitCurrent();
         draw();break;
       }
       $('notice').textContent=`Updating selection… ${result.scanned?result.scanned.toLocaleString()+' candidates evaluated':'checking cached results'}`;
@@ -268,7 +269,6 @@ async function load(first=false){
     state.data=data;state.windows.clear();state.timings.clear();state.timingKey=null;
     configureMode();if(first)resetValues();
     choices('aids',data.associations,old?.aids);choices('observables',data.observables,old?.observables);
-    state.fitOnLoad=first;
     const collectedAt=new Date(data.manifest.collected_at).toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',timeZoneName:'short'});
     $('cache-status').textContent=`${data.catalog_count.toLocaleString()} cached OIDs · MOCAdb ${collectedAt}${data.catalog_complete?'':' · cache build in progress'} · RV grid ${new Date(data.grid.created_at).toLocaleString()} · SXD grid ${data.sxd_grid?new Date(data.sxd_grid.created_at).toLocaleString():'not published'}`;
     renderMethods();await update();
