@@ -227,7 +227,10 @@ still require a deployment smoke test with credentials entered by the user.
 
 The high-resolution RV mode supports J at 1.30 µm, H at 1.65 µm and K at
 2.30 µm with selectable long-blue or short-blue camera and 10, 32 or 111 l/mm grating. Defaults are short blue, 111 l/mm and a fixed 0.30″ slit in all weather bands. Automatic wavelength
-selection remains K for types earlier than T3 and J for T3 onward. Slits are
+selection remains K for types earlier than T3 (including T2.5) and J for T3 onward.
+The additional `auto_h` choice uses the same K branch and H at 1.65 µm for T3 onward.
+Both choices resolve the band using the adopted numeric spectral type before
+selecting the nearest template; the Band 3 comparison follows the same choice. Slits are
 0.10, 0.15, 0.20, 0.30, 0.45, 0.675 and 1.0 arcsec; automatic means 0.15 arcsec
 in Band 1/2 and 0.30 arcsec in Band 3. An explicit override stays fixed when
 weather changes. SXD settings and timing intervals are unchanged.

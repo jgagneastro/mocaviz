@@ -92,9 +92,15 @@ class RVSettingsTests(unittest.TestCase):
 
     def test_python_js_agree_across_bands_slits_and_coverage(self):
         cases=[];hist={'windows':{k:{'max_hours':10,'duration_counts':[[120,100]]} for k in ('1.5','2')}}
-        for band,slit,frac,n in [('auto','auto',.75,15),('auto','auto',.75,25),('j',.1,.25,15),('h',.675,.95,25),('k',1.,.5,25),('h',.2,.9,15)]:
+        for band,slit,frac,n in [('auto','auto',.75,15),('auto','auto',.75,25),('auto','0.3',.75,22.5),('auto','0.3',.75,23),('auto_h','0.3',.75,22),('auto_h','0.3',.75,22.5),('auto_h','0.3',.75,23),('auto_h','0.3',.75,25),('j',.1,.25,15),('h',.675,.95,25),('k',1.,.5,25),('h',.2,.9,15)]:
             f=catalog.normalized_filters({'rvCamera':'long','rvBand':band,'rvSlit':slit,'coverageFraction':frac})
             r=self.target(n);expected=timing.estimate(r,f,timing.curves(self.grid,'b12',f['rvSlit'],frac))
+            if band in ('auto','auto_h'):
+                resolved='k' if n<23 else ('h' if band=='auto_h' else 'j')
+                self.assertEqual(expected['band'],resolved)
+                explicit={**f,'rvBand':resolved}
+                direct=timing.estimate(r,explicit,timing.curves(self.grid,'b12',f['rvSlit'],frac))
+                self.assertEqual(expected,direct)
             browser=dict(sptn=n,photometry={b:{'magnitude':r[b]} for b in ('j','k')},visibility=hist)
             cases.append(dict(filters=f,target=browser,expected=expected))
         logic=Path(__file__).resolve().parents[1]/'mocaviz/static/gnirs_planner/logic.js'

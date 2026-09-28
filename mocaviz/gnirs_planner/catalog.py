@@ -33,7 +33,7 @@ def normalized_filters(incoming):
     if f['snrUnit'] not in ['pixel','resolution'] or f['coverageFraction'] not in ([.5,.75,.9] if f['observingMode']=='sxd' else [.25,.5,.75,.9,.95]):raise ValueError('Unsupported S/N criterion')
     if f['timeMetric'] not in ['science','program','telescope']:raise ValueError('Unknown time cutoff')
     if f['observingMode']=='rv':f.update(snrUnit='pixel',timeMetric='science')
-    if f['rvBand'] not in ['auto','j','h','k']:raise ValueError('Unknown RV wavelength band')
+    if f['rvBand'] not in ['auto','auto_h','j','h','k']:raise ValueError('Unknown RV wavelength band')
     if f['rvCamera'] not in ['long','short']:raise ValueError('Unsupported RV camera')
     f['rvGrating']=str(f['rvGrating'])
     if f['rvGrating'] not in ['10','32','111']:raise ValueError('Unsupported RV grating')
