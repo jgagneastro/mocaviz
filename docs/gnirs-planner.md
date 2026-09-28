@@ -55,6 +55,22 @@ configuration error. For a fresh deployment, first import the seed below.
 Regeneration stays disabled until the cache loads; **Reload cache** retries
 after configuration is repaired. Repeated users share the same file.
 
+### Existing local MOCAviz on port 8061
+
+The compatibility launcher `python -B bd_colors_fast/app.py` also serves
+`http://localhost:8061/js/gnirs-planner`. Put only the shared cache location in
+the repository's ignored `.env` file, then restart that local server:
+
+```dotenv
+MOCAVIZ_GNIRS_CACHE_FILE=/private/path/gnirs.sqlite
+```
+
+An explicitly exported environment value takes precedence over `.env`. Both
+8061 and the isolated 8796 preview can use the same file; neither creates a copy.
+The compatibility launcher suppresses GNIRS request logging and disables
+bytecode writes. Collaborator credentials are still supplied through the URL,
+never `.env`. This local setup is independent of the live site's systemd service.
+
 ## Exactly one shared persistent data file
 
 Set **one path for all workers and users**:

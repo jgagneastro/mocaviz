@@ -12,8 +12,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+from werkzeug.serving import WSGIRequestHandler
 
+
+sys.dont_write_bytecode = True
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+# Match the production entry point: local configuration contains paths, while
+# private GNIRS authentication still comes only from each browser request.
+load_dotenv(REPOSITORY_ROOT / ".env", override=False)
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
@@ -30,6 +37,18 @@ def __getattr__(name: str) -> Any:
     return getattr(_production, name)
 
 
+class PrivatePlannerRequestHandler(WSGIRequestHandler):
+    """Keep credential-bearing GNIRS URLs out of the local access log."""
+
+    def log(self, *args: Any, **kwargs: Any) -> None:
+        path = getattr(self, "path", "").split("?", 1)[0]
+        if path.startswith("/js/"):
+            path = path[3:]
+        if path.rstrip("/") == "/gnirs-planner" or path.startswith(("/api/gnirs/", "/static/gnirs_planner/")):
+            return
+        super().log(*args, **kwargs)
+
+
 if __name__ == "__main__":
     port = int(
         os.environ.get(
@@ -37,4 +56,5 @@ if __name__ == "__main__":
             os.environ.get("MOCAVIZ_PORT", "8061"),
         )
     )
-    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False)
+    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False,
+            request_handler=PrivatePlannerRequestHandler)
