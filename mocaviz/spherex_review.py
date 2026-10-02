@@ -247,15 +247,32 @@ def snapshot(cur, lane, oid, *, lock=False):
     return clean({"vet": vet, "spt": spt, "spectra": spectra})
 
 
-def dataset(cur, lane, oid, specid):
-    meta = rows(cur, """
-        SELECT s.moca_specid, s.moca_oid, s.ignored, s.median_snr_per_pix,
+def spectrum_metadata(cur, specid, oid=None, lane=None):
+    conditions, params = ["s.moca_specid=%s", "mo.ignored=0"], [specid]
+    if oid is not None:
+        conditions.append("s.moca_oid=%s")
+        params.append(oid)
+    if lane is not None:
+        conditions.append("s.moca_specpackid=%s")
+        params.append(lane["pack"])
+    meta = rows(cur, f"""
+        SELECT s.moca_specid, s.moca_oid, s.moca_specpackid, s.ignored, s.median_snr_per_pix,
                mo.designation, mo.ra, mo.\x60dec\x60
         FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-        WHERE s.moca_specid=%s AND s.moca_oid=%s AND s.moca_specpackid=%s AND mo.ignored=0
-    """, (specid, oid, lane["pack"]))
+        WHERE {' AND '.join(conditions)}
+    """, tuple(params))
     if not meta:
-        raise ReviewError("This spectrum no longer exists in the selected lane. Reload the queue.", 404)
+        raise ReviewError("Spectrum not found for an active object" +
+                          (" in the selected lane." if lane else ". Check the spectrum ID."), 404)
+    return meta[0]
+
+
+def spectrum_lane(meta):
+    return next((key for key, lane in LANES.items() if lane["pack"] == meta["moca_specpackid"]), None)
+
+
+def dataset(cur, lane, oid, specid):
+    meta = spectrum_metadata(cur, specid, oid, lane)
     spectrum = rows(cur, """
         SELECT id AS data_spectra_id, wavelength_angstrom, flux_flambda, flux_flambda_unc, ignored
         FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom, id LIMIT 10001
@@ -272,15 +289,16 @@ def dataset(cur, lane, oid, specid):
     """)
     if len(spectrum) > 10000 or len(templates) > 200000:
         raise ReviewError("The spectrum/template grid exceeds this interactive tool's size limit.")
-    return meta[0], spectrum, templates
+    return meta, spectrum, templates
 
 
 def analyze(cur, body):
-    key, lane = lane_for(body)
-    oid = integer(body.get("moca_oid"), "moca_oid")
+    _, lane = lane_for(body) if body.get("lane") is not None else (None, None)
+    oid = integer(body["moca_oid"], "moca_oid") if body.get("moca_oid") is not None else None
     specid = integer(body.get("moca_specid"), "moca_specid")
     meta, spectrum, templates = dataset(cur, lane, oid, specid)
-    state = snapshot(cur, lane, oid)
+    key = spectrum_lane(meta)
+    state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
     options = fit_options(body)
     fit, warning = None, None
     try:
@@ -288,13 +306,18 @@ def analyze(cur, body):
     except ValueError as exc:
         warning = str(exc)
     return clean({
-        "lane": key, "object": meta, "state": state, "revision": fingerprint(state),
+        "lane": key, "read_only": key is None, "object": meta, "state": state, "revision": fingerprint(state),
         "data_revision": fingerprint([spectrum, templates]), "fit": fit,
         "raw_spectrum": spectrum, "warning": warning,
     })
 
 
 def queue(cur, body):
+    if body.get("moca_specid") not in (None, ""):
+        meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"))
+        key = spectrum_lane(meta)
+        return {"items": [meta], "lane": key, "read_only": key is None,
+                "has_more": False, "next_after": None}
     _, lane = lane_for(body)
     limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
     after = integer(body.get("after", 0), "Queue cursor", 0)
@@ -364,12 +387,14 @@ def make_spt(item, lane, ignored, public, rls):
 
 def prepare(cur, body, auth):
     item = analyze(cur, body)
+    if item["read_only"]:
+        raise ReviewError("This spectrum is outside the supported review packages. Viewing and fitting are read-only.", 403)
     if item["revision"] != body.get("revision") or item["data_revision"] != body.get("data_revision"):
         raise ReviewError("The spectrum or classification changed. Reload it before submitting.", 409)
     action = body.get("action")
     if action not in {"classify", "upsert_spt", "bad_pixels"}:
         raise ReviewError("Unknown review action.")
-    key, lane = lane_for(body)
+    key, lane = item["lane"], LANES[item["lane"]]
     public, rls = visibility(body)
     classification = body.get("classification")
     if action == "classify" and classification not in dict(CLASSIFICATIONS):
@@ -543,7 +568,8 @@ def undo(conn, cur, auth, body):
 
 def demo_item(body):
     oid = integer(body.get("moca_oid", 1001), "moca_oid")
-    lane, _ = lane_for(body)
+    lane, config = lane_for(body) if body.get("lane", "spiffstacker") is not None else (None, None)
+    specid = integer(body.get("moca_specid", oid + 10000), "moca_specid")
     wavelengths = np.linspace(8000, 50000, 90)
     flux = 1e-17 * (1.3 + np.sin(wavelengths / 3500) * 0.3)
     spectrum = [
@@ -558,7 +584,8 @@ def demo_item(body):
         for t in range(3) for w, f in zip(wavelengths, flux)
     ]
     return clean({
-        "lane": lane, "object": {"moca_oid": oid, "moca_specid": oid + 10000,
+        "lane": lane, "read_only": lane is None, "object": {"moca_oid": oid, "moca_specid": specid,
+            "moca_specpackid": config["pack"] if config else None,
             "designation": f"Demonstration {oid}", "ra": 93.4382457, "dec": -64.9139227,
             "median_snr_per_pix": 12.5, "ignored": 0},
         "state": {"vet": [], "spt": [], "spectra": []}, "revision": "demo", "data_revision": "demo",
@@ -605,7 +632,12 @@ def api(operation):
             if operation == "context":
                 result = {"role": "demo", "can_write": False, "lanes": LANES, "classifications": CLASSIFICATIONS}
             elif operation == "queue":
-                result = {"items": [{"moca_oid": n, "moca_specid": n + 10000, "designation": f"Demonstration {n}"} for n in range(1001, 1007)], "has_more": False, "next_after": None}
+                if body.get("moca_specid") not in (None, ""):
+                    specid = integer(body["moca_specid"], "moca_specid")
+                    result = {"items": [{"moca_oid": 1001, "moca_specid": specid, "designation": "Demonstration 1001"}],
+                              "lane": None, "read_only": True, "has_more": False, "next_after": None}
+                else:
+                    result = {"items": [{"moca_oid": n, "moca_specid": n + 10000, "designation": f"Demonstration {n}"} for n in range(1001, 1007)], "has_more": False, "next_after": None}
             else:
                 result = demo_item(body)
         else:

@@ -43,6 +43,24 @@ authorization boundary. No management/collaborator password is shipped in code.
 A synthetic, fully offline demo is available at /spherex-review?mock=1.
 Demo requests can never write, even if management credentials are also supplied.
 
+### Open one spectrum
+
+Supply `specid=2860761` (or `moca_specid=2860761`) in the page query string,
+or enter it in **Spectrum ID or URL** and press Enter / **Load [Alt+L]**.
+A pasted spectral-typing URL is also accepted: only its spectrum ID is used,
+never its credentials. When embedding a full URL as the `specid` query value,
+percent-encode it with `URLSearchParams`; a plain numeric ID is simpler.
+
+The exact spectrum takes precedence over the reduction lane, object IDs,
+pending-only and other queue filters, including for older or ignored spectra.
+Its object must still be active. Clear the spectrum field to resume queue loading.
+SPIFF, SPIFFStacker and SUBLIMEaperture spectra automatically select their lane
+and retain the usual management review workflow. Spectra in other packages (or
+with no package) display the spectrum and template matches in **read-only** mode.
+Refitting remains available, but classification, write previews, saving spectral
+types and flagging pixels are disabled. The server rejects write previews for
+these spectra and continues to verify package membership on submission and undo.
+
 ## Workflows and data
 
 | Lane | Reduced spectrum pack | Vetting table | Autotype calculation method |

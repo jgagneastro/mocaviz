@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20260927-png1">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20260927-png2"></script>
-  <script defer src="static/spherex_review.js?v=20260927-url1"></script>
+  <script defer src="static/spherex_review.js?v=20261002-specid1"></script>
 </head>
 <body>
   <header>
@@ -36,12 +36,14 @@
     <aside>
       <section>
         <h2>Review queue</h2>
+        <label>Spectrum ID or URL<input id="specid" placeholder="2860761 or a spectral-typing URL" autocomplete="off"></label>
+        <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
         <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
         <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label>Stored type ≥<input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
         <label class="check"><input id="pending-only" type="checkbox" checked>Unclassified only</label>
         <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types</label>
-        <button id="load">Load queue [Alt+L]</button>
+        <button id="load">Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
         <small id="queue-info">Up to 100 objects per batch.</small>
       </section>

@@ -194,6 +194,111 @@ def make_item(lane="spiffstacker"):
     return item
 
 
+class DirectSpectrumTests(unittest.TestCase):
+    def setUp(self):
+        self.item = make_item()
+        self.meta = {**self.item["object"], "moca_specid": 2860761, "moca_specpackid": 99}
+        self.templates = [
+            {"moca_spherex_template_id": 1, "spectral_type": "L3", "spectral_type_number": 13,
+             "grid_type": "field", "wavelength_angstrom": row["wavelength_angstrom"],
+             "flux_flambda": row["flux_flambda"]}
+            for row in self.item["raw_spectrum"]
+        ]
+
+    def cursor(self, meta=None):
+        cur = MagicMock()
+        cur.fetchall.side_effect = [[meta or self.meta], self.item["raw_spectrum"], self.templates]
+        return cur
+
+    def test_exact_specid_bypasses_queue_filters_and_detects_all_packages(self):
+        for pack, lane in [(99, None), (None, None), *[(v["pack"], k) for k, v in review.LANES.items()]]:
+            cur = MagicMock()
+            cur.fetchall.return_value = [{**self.meta, "moca_specpackid": pack, "ignored": 1}]
+            result = review.queue(cur, {"moca_specid": "2860761", "lane": "spiffstacker",
+                                       "moca_oids": [999], "min_snr": 999, "pending_only": True})
+            self.assertEqual(result["lane"], lane)
+            self.assertEqual(result["read_only"], lane is None)
+            self.assertEqual(result["items"][0]["moca_specid"], 2860761)
+            self.assertFalse(result["has_more"])
+            self.assertIsNone(result["next_after"])
+            cur.execute.assert_called_once()
+            sql, params = cur.execute.call_args.args
+            self.assertEqual(params, (2860761,))
+            self.assertIn("mo.ignored=0", sql)
+            self.assertNotIn("s.ignored=0", sql)
+            self.assertNotIn("pcat_", sql)
+
+    def test_invalid_and_missing_specid_fail_without_falling_back_to_queue(self):
+        cur = MagicMock()
+        for specid in ("1 OR 1=1", -1, 0, True, "https://example.org/?specid=3"):
+            with self.assertRaises(review.ReviewError):
+                review.queue(cur, {"moca_specid": specid})
+        cur.execute.assert_not_called()
+        cur.fetchall.return_value = []
+        with self.assertRaises(review.ReviewError) as caught:
+            review.queue(cur, {"moca_specid": 2860761})
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_external_spectrum_fits_without_lane_vetting_queries(self):
+        with patch.object(review, "snapshot") as snapshot:
+            result = review.analyze(self.cursor(), {"moca_specid": 2860761})
+        snapshot.assert_not_called()
+        self.assertIsNone(result["lane"])
+        self.assertTrue(result["read_only"])
+        self.assertEqual(result["object"], self.meta)
+        self.assertEqual(result["fit"]["best"]["spectral_type"], "L3")
+        self.assertEqual(result["raw_spectrum"], self.item["raw_spectrum"])
+
+    def test_supported_specid_resolves_object_and_retains_review_workflow(self):
+        for key, lane in review.LANES.items():
+            with patch.object(review, "snapshot", return_value=self.item["state"]) as snapshot:
+                result = review.analyze(self.cursor({**self.meta, "moca_specpackid": lane["pack"]}),
+                                        {"moca_specid": 2860761})
+            snapshot.assert_called_once()
+            self.assertEqual(snapshot.call_args.args[1:], (lane, self.meta["moca_oid"]))
+            self.assertEqual(result["lane"], key)
+            self.assertFalse(result["read_only"])
+
+    def test_management_api_reads_external_spectrum_but_cannot_prepare_any_write(self):
+        for operation, action, expected in [("analyze", None, 200),
+                                            *[("preview", a, 403) for a in ("classify", "upsert_spt", "bad_pixels")]]:
+            conn, cur = MagicMock(), self.cursor()
+            @contextmanager
+            def connection(auth):
+                yield conn, cur
+            with patch.object(review, "connection", connection), patch.object(review, "seal") as seal:
+                response = app.test_client().post("/api/spherex-review/" + operation, headers=HEADERS,
+                    json={"moca_specid": 2860761, "lane": None, "action": action,
+                          "read_only": False, "is_public": 0, "rls": "gagne", "classification": "good"})
+            self.assertEqual(response.status_code, expected, response.json)
+            if operation == "analyze":
+                self.assertTrue(response.json["read_only"])
+                self.assertIsNotNone(response.json["fit"])
+            else:
+                self.assertIn("read-only", response.json["error"])
+            self.assertTrue(all(c.args[0].lstrip().startswith("SELECT") for c in cur.execute.call_args_list))
+            seal.assert_not_called()
+            conn.commit.assert_not_called()
+
+    def test_claiming_supported_lane_cannot_bypass_spectrum_package_check(self):
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        with self.assertRaises(review.ReviewError) as caught:
+            review.prepare(cur, {"moca_specid": 2860761, "moca_oid": 1001, "lane": "spiff"}, AUTH)
+        self.assertEqual(caught.exception.status, 404)
+        sql, params = cur.execute.call_args.args
+        self.assertIn("s.moca_specpackid=%s", sql)
+        self.assertEqual(params, (2860761, 1001, 55))
+
+    def test_demo_exact_specid_is_preserved_and_read_only(self):
+        client = app.test_client()
+        queued = client.post("/api/spherex-review/queue", json={"mock": True, "moca_specid": 2860761}).json
+        result = client.post("/api/spherex-review/analyze",
+                             json={"mock": True, "lane": queued["lane"], **queued["items"][0]}).json
+        self.assertEqual(result["object"]["moca_specid"], 2860761)
+        self.assertTrue(result["read_only"])
+
+
 class TransactionTests(unittest.TestCase):
     def setUp(self):
         # Lock SQL is verified separately; transaction tests focus on mutations.

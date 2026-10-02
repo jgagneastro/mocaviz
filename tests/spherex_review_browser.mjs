@@ -13,7 +13,7 @@ page.on("dialog", async (dialog) => { dialogs.push(dialog.message()); await dial
 await page.route("**/api/spherex-review/*", async (route) => {
   const request = route.request(), op = new URL(request.url()).pathname.split("/").at(-1);
   const body = request.postDataJSON();
-  apiRequests.push({url: request.url(), headers: request.headers()});
+  apiRequests.push({url: request.url(), headers: request.headers(), op, body});
   const fulfill = (payload, status = 200) => route.fulfill({
     status, contentType: "application/json", body: JSON.stringify({ok: status === 200, ...payload}),
   });
@@ -21,6 +21,11 @@ await page.route("**/api/spherex-review/*", async (route) => {
     const response = await route.fetch({postData: JSON.stringify({mock: true})});
     return fulfill({...await response.json(), role: "management", can_write: true});
   }
+  if (op === "queue" && [11002, 11003].includes(body.moca_specid))
+    return fulfill({items: [{moca_oid: 1001, moca_specid: body.moca_specid, designation: "Demonstration 1001"}],
+      lane: "spiff", read_only: false, has_more: false, next_after: null});
+  if (op === "queue" && body.moca_specid === 999999)
+    return fulfill({error: "Spectrum not found for an active object. Check the spectrum ID."}, 404);
   if (op === "queue" || op === "analyze")
     return route.fulfill({response: await route.fetch({postData: JSON.stringify({...body, mock: true})})});
   if (op === "preview") return fulfill({receipt: "test-plan", row_counts: {vetting: 1}, plan: {operations: []}});
@@ -59,6 +64,54 @@ try {
     assert(!await page.locator("#write-enabled").isChecked());
   }
   const reviewURL = origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables";
+  const pastedURL = "https://dataviz.mocadb.ca/js/spectral-typing?specid=2860761&user=collaborators&pwd=ignored-nested-password";
+  for (const suffix of ["&specid=2860761", "&moca_specid=2860761",
+    "&specid=" + encodeURIComponent(pastedURL), "&specid=" + pastedURL]) {
+    await page.goto(reviewURL + suffix); await title("1001");
+    await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
+    assert((await page.locator("#object-meta").textContent()).includes("spectrum=2860761"));
+    assert((await page.locator("#write-hint").textContent()).includes("Read-only spectrum"));
+    for (const selector of ["#write-enabled", "#preview", "#save-type", "#bad-pixels"])
+      assert(await page.locator(selector).isDisabled(), selector);
+    assert.equal(await page.locator("#classifications button:enabled").count(), 0);
+    assert(await page.locator("#refit").isEnabled());
+    const writesBefore = apiRequests.filter((r) => ["preview", "submit", "undo"].includes(r.op)).length;
+    await page.locator("#object-title").click();
+    for (const key of ["1", "Numpad2", "Alt+p", "Alt+s", "Alt+b"]) await page.keyboard.press(key);
+    await page.locator("#refit").click(); await title("1001");
+    assert.equal(apiRequests.filter((r) => ["preview", "submit", "undo"].includes(r.op)).length, writesBefore);
+    assert.equal(apiRequests.filter((r) => r.op === "analyze").at(-1).body.moca_specid, 2860761);
+    await page.reload(); await title("1001");
+    assert((await page.locator("#object-meta").textContent()).includes("spectrum=2860761"));
+  }
+  // Exact ID wins over queue filters; supported packages select their own lane.
+  await page.locator("#oids").fill("invalid queue IDs are ignored for exact spectra");
+  await page.locator("#snr").fill("9999");
+  for (const specid of [11002, 11003]) {
+    await page.locator("#specid").fill(String(specid)); await page.locator("#specid").press("Enter");
+    await page.waitForFunction((id) => document.querySelector("#object-meta").textContent.includes("spectrum=" + id) &&
+      !document.querySelector("#refit").disabled, specid);
+    assert.equal(await page.locator("#lane").inputValue(), "spiff");
+    assert(await page.locator("#write-enabled").isEnabled());
+    assert(await page.locator("#preview").isEnabled());
+  }
+  await page.locator("#write-enabled").check();
+  await page.locator("#specid").fill(pastedURL); await page.locator("#load").click(); await title("1001");
+  assert(await page.locator("#write-enabled").isDisabled());
+  assert(!await page.locator("#write-enabled").isChecked());
+  // Invalid/missing IDs never silently fall back to the ordinary review queue.
+  const requestsBefore = apiRequests.length;
+  await page.locator("#specid").fill("not-a-spectrum"); await page.locator("#load").click();
+  assert((await page.locator("#errors").textContent()).includes("positive integer spectrum ID"));
+  assert.equal(apiRequests.length, requestsBefore);
+  await page.locator("#specid").fill("999999"); await page.locator("#load").click();
+  await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("Spectrum not found"));
+  assert(await page.locator("#report").isDisabled());
+  assert(await page.locator("#preview").isDisabled());
+  await page.locator("#specid").fill(""); await page.locator("#oids").fill(""); await page.locator("#snr").fill("");
+  await page.locator("#load").click(); await title("1001");
+  assert(await page.locator("#write-enabled").isEnabled());
+  assert(!await page.locator("#write-enabled").isChecked());
   await page.goto(reviewURL);
   await title("1001");
   await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
@@ -116,7 +169,7 @@ try {
   assert.equal(page.url(), reviewURL);
   assert((await page.locator("#status").textContent()).includes("Credentials remain in the address bar"));
   assert.deepEqual(errors, []);
-  console.log("Passed: query/fragment URL retention, reload, credential transport, immediate advance, queue count, numpad, failure recovery, retry, undo, object links and quit.");
+  console.log("Passed: exact spectrum IDs and pasted URLs, package detection, read-only controls/shortcuts, refit, invalid/missing IDs, queue restoration, URL retention, credential transport, immediate advance, numpad, failure recovery, retry, undo, object links and quit.");
 } finally {
   // Prefetches may still be resolving when Quit aborts browser requests.
   await page.unrouteAll({behavior: "ignoreErrors"});

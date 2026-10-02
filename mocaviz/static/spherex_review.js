@@ -9,35 +9,41 @@
   const cache = new Map(), controllers = new Set(), jobs = [], history = [], hidden = new Set();
   let items = [], index = -1, current = null, context = null, generation = 0;
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
-  let draining = false, closed = false, busyUndo = false, lastClass = "good";
+  let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
 
   function status(text) { $("status").textContent = text; }
   function error(text) { $("errors").hidden = !text; $("errors").textContent = text || ""; }
-  function key(item, lane = queueLane) { return lane + ":" + item.moca_oid; }
+  function key(item, lane = queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
   function options() {
     return {drop_worst_n: Number($("drop").value), chi2_sigma_cap: Number($("cap").value),
       nonfield_odds_k: Number($("odds").value), nonfield_extreme_odds_k: Number($("extreme").value)};
   }
   function writable() { return Boolean(context?.can_write && $("write-enabled").checked && !closed && !busyUndo); }
+  function canReview() { return Boolean(current && !current.read_only); }
   function updateControls() {
     const pending = pendingCount();
     $("submitting").textContent = pending + " results currently submitting to mocadb";
-    $("load").disabled = closed || busyUndo || pending > 0;
-    $("lane").disabled = closed || busyUndo || pending > 0;
-    $("more").disabled = closed || busyUndo || pending > 0 || !hasMore;
-    $("write-enabled").disabled = !context?.can_write || closed;
-    $("preview").disabled = !context?.can_write || !current || closed;
-    $("save-type").disabled = !writable() || !current?.fit;
-    $("bad-pixels").disabled = !writable() || !current?.fit?.bad_pixel_ids?.length;
-    $("undo").disabled = !history.length || busyUndo || closed;
+    $("load").disabled = closed || busyUndo || loading || pending > 0;
+    $("lane").disabled = closed || busyUndo || loading || pending > 0;
+    $("specid").disabled = closed || busyUndo || loading || pending > 0;
+    $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
+    if (current?.read_only) $("write-enabled").checked = false;
+    $("write-enabled").disabled = !context?.can_write || current?.read_only || closed;
+    $("preview").disabled = !context?.can_write || !canReview() || closed;
+    $("save-type").disabled = !writable() || !canReview() || !current?.fit;
+    $("bad-pixels").disabled = !writable() || !canReview() || !current?.fit?.bad_pixel_ids?.length;
+    $("undo").disabled = !history.length || busyUndo || loading || closed;
+    $("refit").disabled = !current || loading || closed;
+    for (const name of ["first", "previous", "next", "last"]) $(name).disabled = loading || closed;
     $("retry").disabled = !writable() || !jobs.some((j) => j.state === "failed");
     $("report").disabled = !current || closed;
     $("wiseview").disabled = !current || !Number.isFinite(current.object.ra) || !Number.isFinite(current.object.dec) || closed;
     document.querySelectorAll("#classifications button").forEach((b) => {
-      b.disabled = !writable() || !current || hidden.has(key(current.object));
+      b.disabled = !writable() || !canReview() || hidden.has(key(current.object));
     });
     $("write-hint").textContent = demo ? "Demonstration only — database writes are disabled." :
+      current?.read_only ? "Read-only spectrum: outside SPIFF, SPIFFStacker and SUBLIMEaperture. Template fitting is available; database writes are disabled." :
       writable() ? "Choose a quality label to submit and advance immediately. Undo restores the last decision." :
       context?.can_write ? "Enable submissions to classify. Preview is available without enabling writes." :
       "Read-only access. Management URL credentials are required to submit.";
@@ -74,25 +80,52 @@
       throw new Error("Enter at most 500 positive integer object IDs.");
     return [...new Set(values)];
   }
+  function spectrumId(value) {
+    let text = value.trim();
+    // Only extract the ID. Never navigate to a pasted URL or reuse its credentials.
+    for (let depth = 0; depth < 3; depth++) {
+      if (/^[0-9]+$/.test(text) && Number.isSafeInteger(Number(text)) && Number(text) > 0)
+        return Number(text);
+      try {
+        const url = new URL(text);
+        if (!["http:", "https:"].includes(url.protocol)) break;
+        text = (url.searchParams.get("specid") || url.searchParams.get("moca_specid") || "").trim();
+      } catch { break; }
+    }
+    throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
+  }
   async function loadQueue(more = false) {
-    if (pendingCount()) return;
+    if (pendingCount() || loading || closed || busyUndo) return;
     error("");
     try {
       if (!more) {
+        const specid = $("specid").value.trim();
+        const request = specid ? {moca_specid: spectrumId(specid)} :
+          {lane: $("lane").value, moca_oids: ids(), pending_only: $("pending-only").checked,
+            min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
+            no_known: $("no-known").checked, limit: 100};
         queueLane = $("lane").value;
-        queueRequest = {lane: queueLane, moca_oids: ids(), pending_only: $("pending-only").checked,
-          min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
-          no_known: $("no-known").checked, limit: 100};
+        queueRequest = request;
         hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
+        hasMore = false; nextAfter = null;
+        $("preview-output").textContent = ""; $("preview-panel").open = false;
+        await show(0);
       }
-      status("Loading spectra from MOCAdb…"); $("load").disabled = true;
+      loading = true; updateControls(); status("Loading spectra from MOCAdb…");
       const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
+      if (closed) return;
+      if (Object.hasOwn(data, "lane")) {
+        queueLane = data.lane;
+        if (queueLane) $("lane").value = queueLane;
+      }
       const start = items.length;
       items.push(...data.items); hasMore = data.has_more; nextAfter = data.next_after;
-      $("queue-info").textContent = items.length + " objects loaded" + (hasMore ? " · more available" : " · end of queue");
+      $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
+        (data.read_only ? " · read only" : " · " + queueLane) :
+        items.length + " objects loaded" + (hasMore ? " · more available" : " · end of queue");
       await show(start < items.length ? start : Math.max(0, items.length - 1));
-    } catch (e) { error(e.message); status("Queue could not be loaded."); }
-    finally { updateControls(); }
+    } catch (e) { if (!closed) { error(e.message); status("Spectra could not be loaded."); } }
+    finally { loading = false; if (!closed) updateControls(); }
   }
   function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
   function analysis(item, lane = queueLane, fitOptions = options(), refresh = false) {
@@ -154,7 +187,8 @@
   function render(data) {
     const obj = data.object, fit = data.fit;
     $("object-title").textContent = obj.designation || "Object " + obj.moca_oid;
-    $("object-meta").textContent = queueLane + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
+    const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
+    $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
     $("best-type").textContent = fit ? fit.best.display_type : "No valid fit";
     $("fit-detail").textContent = fit ? fit.best.grid_type + " · score " + fit.best.selection_score.toFixed(2) +
@@ -179,7 +213,7 @@
       sources: $("sources").value, allow_replace: $("replace").checked};
   }
   async function preview(action = "upsert_spt") {
-    if (!current || !context?.can_write) return;
+    if (!canReview() || !context?.can_write) return;
     try {
       const result = await api("preview", decisionBody(current, action, lastClass));
       $("preview-output").textContent = JSON.stringify({row_counts: result.row_counts,
@@ -188,7 +222,7 @@
     } catch (e) { error(e.message); }
   }
   function enqueue(action, classification = null) {
-    if (!writable() || !current || hidden.has(key(current.object))) return;
+    if (!writable() || !canReview() || hidden.has(key(current.object))) return;
     if (classification) lastClass = classification;
     const job = {body: decisionBody(current, action, classification), item: {...current.object},
       lane: current.lane, state: "queued", undoReceipt: null};
@@ -281,6 +315,9 @@
     window.open("http://byw.tools/wiseview-v2#" + p, "_blank", "noopener,noreferrer");
   }
   $("load").onclick = () => loadQueue(); $("more").onclick = () => loadQueue(true);
+  $("specid").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
+  });
   $("refit").onclick = () => { cache.clear(); show(index, true); };
   for (const name of ["first", "previous", "next", "last"]) $(name).onclick = () => navigate(name);
   $("undo").onclick = undoLast; $("report").onclick = openReport; $("wiseview").onclick = openWiseView;
@@ -314,6 +351,7 @@
     if (params.has("lane")) $("lane").value = params.get("lane");
     if (!$("lane").value) $("lane").value = "spiffstacker";
     if (params.has("moca_oid")) $("oids").value = params.get("moca_oid");
+    $("specid").value = params.get("specid") || params.get("moca_specid") || "";
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
     if (location.pathname.endsWith("spherex-autotype")) $("pending-only").checked = false;
