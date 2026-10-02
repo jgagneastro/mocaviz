@@ -46,7 +46,7 @@ Demo requests can never write, even if management credentials are also supplied.
 ### Open one spectrum
 
 Supply `specid=2860761` (or `moca_specid=2860761`) in the page query string,
-or enter it in **Spectrum ID or URL** and press Enter / **Load [Alt+L]**.
+or enter it in **Spectrum ID** and press Enter / **Load [Alt+L]**.
 A pasted spectral-typing URL is also accepted: only its spectrum ID is used,
 never its credentials. When embedding a full URL as the `specid` query value,
 percent-encode it with `URLSearchParams`; a plain numeric ID is simpler.
@@ -163,6 +163,15 @@ Install the normal mocaviz dependencies and deploy the existing WSGI application
 No pipeline dependency or writable output directory is needed. Set
 PYTHONDONTWRITEBYTECODE=1 at process startup as well. Run production without Flask
 debugging or a request/response recorder.
+
+Restart the application's Passenger/Gunicorn workers after deploying Python
+changes. Updated static assets can otherwise be served alongside old API code.
+The browser checks the returned spectrum ID and review metadata, and refuses to
+display a mismatched or outdated response instead of falling back to the queue.
+As a credential-free deployment check, POST
+`{"mock": true, "moca_specid": 2860761}` to `/js/api/spherex-review/queue`:
+the response must contain exactly one item with that spectrum ID, `lane: null`
+and `read_only: true`, rather than the six-item demo queue.
 
 The application performs no request-time filesystem writes. Web-server,
 Passenger/Gunicorn, reverse-proxy, monitoring and operating-system logging are

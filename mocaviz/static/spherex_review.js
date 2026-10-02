@@ -108,12 +108,19 @@
         queueRequest = request;
         hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
+        $("queue-info").textContent = "";
         $("preview-output").textContent = ""; $("preview-panel").open = false;
         await show(0);
       }
       loading = true; updateControls(); status("Loading spectra from MOCAdb…");
       const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
       if (closed) return;
+      if (queueRequest.moca_specid && (data.items?.length !== 1 ||
+          Number(data.items[0].moca_specid) !== queueRequest.moca_specid ||
+          !Object.hasOwn(data, "lane") || typeof data.read_only !== "boolean")) {
+        throw new Error("The server did not return spectrum " + queueRequest.moca_specid +
+          ". The review service may need to be restarted after deployment. No spectrum was loaded.");
+      }
       if (Object.hasOwn(data, "lane")) {
         queueLane = data.lane;
         if (queueLane) $("lane").value = queueLane;
@@ -132,7 +139,15 @@
     const k = key(item, lane) + ":" + JSON.stringify(fitOptions);
     if (refresh) cache.delete(k);
     if (!cache.has(k)) {
-      const promise = api("analyze", {...item, lane, options: fitOptions});
+      const promise = api("analyze", {...item, lane, options: fitOptions}).then((data) => {
+        if (Number(data.object?.moca_specid) !== Number(item.moca_specid) ||
+            Number(data.object?.moca_oid) !== Number(item.moca_oid) ||
+            typeof data.read_only !== "boolean") {
+          throw new Error("The server returned a different spectrum or an outdated response. " +
+            "The review service may need to be restarted after deployment. No fit was loaded.");
+        }
+        return data;
+      });
       cache.set(k, promise); promise.catch(() => cache.delete(k));
       while (cache.size > 6) cache.delete(cache.keys().next().value);
     }
@@ -173,6 +188,10 @@
         await show(index + 1);
         return;
       }
+      Plotly.purge($("plot"));
+      $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
+      $("matches").replaceChildren(); $("stored").textContent = "";
+      $("object-meta").textContent = "Spectrum " + item.moca_specid + " could not be loaded.";
       status("This spectrum could not be loaded; use Next to continue."); error(e.message); updateControls();
     }
   }

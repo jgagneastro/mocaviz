@@ -7,7 +7,7 @@ const origin = process.argv[2] || "http://127.0.0.1:8079";
 const browser = await chromium.launch({headless: true});
 const page = await browser.newPage();
 const dialogs = [], apiRequests = [], errors = [];
-let submitMode = "success", submissions = 0, undos = 0;
+let submitMode = "success", submissions = 0, undos = 0, staleMode = null;
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("dialog", async (dialog) => { dialogs.push(dialog.message()); await dialog.accept(); });
 await page.route("**/api/spherex-review/*", async (route) => {
@@ -20,6 +20,18 @@ await page.route("**/api/spherex-review/*", async (route) => {
   if (op === "context") {
     const response = await route.fetch({postData: JSON.stringify({mock: true})});
     return fulfill({...await response.json(), role: "management", can_write: true});
+  }
+  if (op === "queue" && staleMode === "queue")
+    return route.fulfill({response: await route.fetch({postData: JSON.stringify({mock: true})})});
+  if (op === "queue" && staleMode === "queue-metadata")
+    return fulfill({items: [{moca_oid: 1001, moca_specid: body.moca_specid}], has_more: false, next_after: null});
+  if (op === "analyze" && staleMode) {
+    const response = await route.fetch({postData: JSON.stringify({...body, mock: true})});
+    const payload = await response.json();
+    if (staleMode === "analyze-specid") payload.object.moca_specid++;
+    if (staleMode === "analyze-oid") payload.object.moca_oid++;
+    if (staleMode === "analyze-metadata") delete payload.read_only;
+    return fulfill(payload);
   }
   if (op === "queue" && [11002, 11003].includes(body.moca_specid))
     return fulfill({items: [{moca_oid: 1001, moca_specid: body.moca_specid, designation: "Demonstration 1001"}],
@@ -64,6 +76,20 @@ try {
     assert(!await page.locator("#write-enabled").isChecked());
   }
   const reviewURL = origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables";
+  // New static assets with old Python workers must never show an unrelated spectrum.
+  for (const mode of ["queue", "queue-metadata", "analyze-specid", "analyze-oid", "analyze-metadata"]) {
+    staleMode = mode;
+    const before = apiRequests.length;
+    await page.goto(reviewURL + "&specid=2860761");
+    await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted after deployment"));
+    assert.equal(await page.locator("#specid").evaluate((el) => el.closest("label").textContent), "Spectrum ID");
+    assert(await page.locator("#report").isDisabled());
+    assert(await page.locator("#preview").isDisabled());
+    assert.equal(await page.locator("#classifications button:enabled").count(), 0);
+    assert.equal(await page.locator("#plot").evaluate((el) => el.data?.length || 0), 0);
+    if (mode.startsWith("queue")) assert(!apiRequests.slice(before).some((r) => r.op === "analyze"));
+  }
+  staleMode = null;
   const pastedURL = "https://dataviz.mocadb.ca/js/spectral-typing?specid=2860761&user=collaborators&pwd=ignored-nested-password";
   for (const suffix of ["&specid=2860761", "&moca_specid=2860761",
     "&specid=" + encodeURIComponent(pastedURL), "&specid=" + pastedURL]) {
@@ -99,6 +125,12 @@ try {
   await page.locator("#specid").fill(pastedURL); await page.locator("#load").click(); await title("1001");
   assert(await page.locator("#write-enabled").isDisabled());
   assert(!await page.locator("#write-enabled").isChecked());
+  staleMode = "analyze-specid";
+  await page.locator("#refit").click();
+  await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted after deployment"));
+  assert.equal(await page.locator("#plot").evaluate((el) => el.data?.length || 0), 0);
+  assert.equal(await page.locator("#best-type").textContent(), "No fit loaded");
+  staleMode = null;
   // Invalid/missing IDs never silently fall back to the ordinary review queue.
   const requestsBefore = apiRequests.length;
   await page.locator("#specid").fill("not-a-spectrum"); await page.locator("#load").click();
@@ -169,7 +201,7 @@ try {
   assert.equal(page.url(), reviewURL);
   assert((await page.locator("#status").textContent()).includes("Credentials remain in the address bar"));
   assert.deepEqual(errors, []);
-  console.log("Passed: exact spectrum IDs and pasted URLs, package detection, read-only controls/shortcuts, refit, invalid/missing IDs, queue restoration, URL retention, credential transport, immediate advance, numpad, failure recovery, retry, undo, object links and quit.");
+  console.log("Passed: stale-worker and spectrum-identity guards, exact spectrum IDs and pasted URLs, package detection, read-only controls/shortcuts, refit, invalid/missing IDs, queue restoration, URL retention, credential transport, immediate advance, numpad, failure recovery, retry, undo, object links and quit.");
 } finally {
   // Prefetches may still be resolving when Quit aborts browser requests.
   await page.unrouteAll({behavior: "ignoreErrors"});
