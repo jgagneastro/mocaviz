@@ -8,6 +8,15 @@ authenticate as `collaborators` or `management` against `mocadb_private_tables`.
 Both accounts have **read-only behavior in this tool**. There are no database-write
 routes or production mock mode.
 
+The dataset menu and All Cameras include managed packages 106, 107, 108, 109,
+113, 114, and 118–129. Packages 118–129 are NIRES, Keck NIRSPEC, SOAR OSIRIS,
+Blanco ARCoIRIS, TripleSpec at SOAR/Palomar/APO, Gemini North NIRI,
+VLT CRIRES/CRIRES+, VLT ISAAC, Keck MOSFIRE, and JWST NIRSpec, respectively.
+Canonical instrument/site IDs in the dropdown distinguish similarly named
+cameras. Registered empty packages remain selectable with zero spectra;
+registration is not a claim of validated production reductions. All managed
+packages are excluded from both exact and approximate legacy candidates.
+
 ## Credentials
 
 Open the page and enter the username and password in its form, or provide them

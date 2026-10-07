@@ -188,6 +188,22 @@ class ComparisonAccessTests(unittest.TestCase):
             self.assertEqual(response.status_code, expected)
             self.assertNotIn(self.password, response.text + output.getvalue())
 
+    def test_new_packages_require_private_auth_and_allow_empty_indexes(self):
+        for package in range(118, 130):
+            for prefix in ("", "/js"):
+                path = prefix + "/api/spectrum-compare/spectra?package_id=" + str(package)
+                with patch.object(compare.pymysql, "connect") as connect:
+                    for headers in ({}, {**self.headers, "X-MOCA-User": "public"}):
+                        self.assertEqual(self.client.get(path, headers=headers).status_code, 403)
+                    connect.assert_not_called()
+                connection = FakeConnection()
+                with patch.object(compare.pymysql, "connect", return_value=connection), patch.object(compare, "spectrum_index", return_value=[]) as index:
+                    response = self.client.get(path, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), [])
+                index.assert_called_once_with(package)
+                self.assertTrue(connection.closed and connection.rolled_back)
+
     def test_request_errors_rollback_and_do_not_leak_tracebacks(self):
         connection = FakeConnection()
         with patch.object(compare.pymysql, "connect", return_value=connection), patch.object(compare, "package_rows", side_effect=RuntimeError(self.password)):

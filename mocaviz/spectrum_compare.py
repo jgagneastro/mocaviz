@@ -160,7 +160,10 @@ def api(operation):
 # PLP 3.2 products in package 110 and ESO-downloaded X-shooter 1D products in
 # package 115 are intentionally absent so they remain eligible as legacy
 # comparators for managed packages 113 and 114, respectively.
-MANAGED_PACKAGES = (106, 107, 108, 109, 113, 114)
+MANAGED_PACKAGES = (
+    106, 107, 108, 109, 113, 114,
+    118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129,
+)
 IGRINS_ARCHIVE_LEGACY_PACKAGE = 110
 ESO_ARCHIVE_LEGACY_PACKAGE = 115
 EXCLUDED_LEGACY_PACKAGES = MANAGED_PACKAGES
@@ -298,6 +301,9 @@ def package_rows() -> list[dict[str, Any]]:
     )
     for row in rows:
         instrument = row.get("instrument_name") or row.get("moca_instid") or "unknown"
+        instrument_id = row.get("moca_instid")
+        if instrument_id and instrument_id != instrument:
+            instrument = f"{instrument} ({instrument_id})"
         row["description"] = (
             f"{instrument} — package {row['moca_specpackid']} — "
             f"{int(row['active_spectra'] or 0):,} spectra"
