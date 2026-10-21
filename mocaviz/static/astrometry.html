@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-astrometry-ignored-20261021a">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-astrometry-management-20261021b">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a-astrometry-auth-20261021a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -94,6 +94,10 @@
             <span>Only use recalibrated astrometry when possible</span>
           </label>
           <label class="checkline">
+            <input id="atm-ignore-duplicates" type="checkbox" checked>
+            <span>Auto-detect and ignore duplicated measurements</span>
+          </label>
+          <label class="checkline">
             <input id="atm-revert-raw" type="checkbox">
             <span>Use raw, non-recalibrated astrometry</span>
           </label>
@@ -118,7 +122,7 @@
             <button id="atm-reset-manual-rejections" type="button" disabled>Reset manual rejections</button>
           </div>
           <div id="atm-manual-rejection-note" class="plot-hint">0 manually rejected points; no selected points</div>
-          <div class="plot-hint">× marks ignored MOCAdb measurements (ignored=1). They are excluded from fits, binning, reference adjustment, and automatic axis ranges. Zoom or pan to inspect ignored points outside the initial view.</div>
+          <div class="plot-hint">× marks ignored MOCAdb measurements (ignored=1), excluded from fits, binning, reference adjustment, and automatic axis ranges. Auto-detected duplicate copies are hidden from plots, the table, and exports; one copy is retained. Database flags are unchanged.</div>
           <div class="button-grid astrometry-fit-actions">
             <button id="atm-fit-pm" type="button" disabled>Fit proper motion</button>
             <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
@@ -209,6 +213,13 @@
             <button id="atm-table-export-csv" type="button" disabled title="Export selected rows, or all filtered measurements when no points are selected">Export table as CSV</button>
           </div>
           <div id="atm-table" class="table-scroll"></div>
+          <div id="atm-ignore-tools" class="astrometry-ignore-tools" hidden>
+            <label for="atm-ignore-comments">Append comments (optional)</label>
+            <textarea id="atm-ignore-comments" rows="2" maxlength="4096" placeholder="Text to append to each selected entry's existing comments"></textarea>
+            <button id="atm-ignore-selected" type="button" disabled>Mark currently selected entries as ignored=1 in MOCAdb</button>
+            <div id="atm-ignore-selection-note" class="plot-hint">Select measurements in either plot.</div>
+            <div id="atm-ignore-status" class="cache-status" role="status"></div>
+          </div>
         </div>
       </section>
     </main>
@@ -240,6 +251,7 @@
           <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
           <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses a Gaussian moving-source likelihood plus a Student-t measurement-failure component, and activates a distinct stationary-source component only when supported by multiple separated measurements.</td></tr>
           <tr><td><code>fit_error_floor</code></td><td><code>0</code> disables it</td><td>Fits an extra RA/Decl. astrometric error floor by default.</td></tr>
+          <tr><td><code>ignore_duplicates</code></td><td><code>0</code> disables it</td><td>By default, keeps one copy of measurements with exactly matching offsets, epochs, and uncertainties. Repeated copies are omitted from plots, the table, and exports.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
         </tbody>
       </table>
@@ -255,6 +267,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-ignored-20261021b"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b"></script>
 </body>
 </html>

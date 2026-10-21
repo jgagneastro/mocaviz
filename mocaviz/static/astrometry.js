@@ -35,6 +35,7 @@ const atmState = {
   fitResult: null,
   fitBusy: false,
   pushBusy: false,
+  ignoreBusy: false,
   fitCapabilities: null,
   authContext: null,
   lastPrepared: null,
@@ -93,6 +94,7 @@ function collectAstrometryElements() {
     "atm-display-reference",
     "atm-adjust-reference",
     "atm-only-recalibrated",
+    "atm-ignore-duplicates",
     "atm-revert-raw",
     "atm-fit-method",
     "atm-fit-outlier-mixture",
@@ -123,6 +125,11 @@ function collectAstrometryElements() {
     "atm-summary",
     "atm-export-csv",
     "atm-table-export-csv",
+    "atm-ignore-tools",
+    "atm-ignore-comments",
+    "atm-ignore-selected",
+    "atm-ignore-selection-note",
+    "atm-ignore-status",
     "atm-export-tsv",
     "atm-export-fits",
     "atm-export-votable",
@@ -153,6 +160,7 @@ function readAstrometryUrlState() {
   atmEl["atm-display-reference"].checked = !asFalse(params.get("display_reference"));
   atmEl["atm-adjust-reference"].checked = !asFalse(params.get("adjust_ref"));
   atmEl["atm-only-recalibrated"].checked = !asFalse(params.get("only_recalibrated"));
+  atmEl["atm-ignore-duplicates"].checked = !asFalse(params.get("ignore_duplicates"));
   atmEl["atm-revert-raw"].checked = asBool(params.get("revert_raw"));
   if (atmEl["atm-fit-method"]) {
     const method = String(params.get("fit_method") || params.get("fitter") || "scipy").toLowerCase();
@@ -243,8 +251,9 @@ function bindAstrometryControls() {
       updateAstrometryUrl();
     });
   }
-  for (const id of ["atm-adjust-reference", "atm-only-recalibrated", "atm-revert-raw"]) {
+  for (const id of ["atm-adjust-reference", "atm-only-recalibrated", "atm-revert-raw", "atm-ignore-duplicates"]) {
     atmEl[id].addEventListener("change", () => {
+      if (id === "atm-ignore-duplicates") atmState.selectedIds.clear();
       clearAstrometryFit({ render: false });
       renderAstrometry();
       updateAstrometryUrl();
@@ -295,6 +304,7 @@ function bindAstrometryControls() {
   if (atmEl["atm-push-apply"]) atmEl["atm-push-apply"].addEventListener("click", () => runAstrometryPush(false));
   atmEl["atm-export-csv"].addEventListener("click", () => exportAstrometry("csv"));
   atmEl["atm-table-export-csv"].addEventListener("click", () => exportAstrometry("csv"));
+  atmEl["atm-ignore-selected"].addEventListener("click", runAstrometryIgnoreSelected);
   atmEl["atm-export-tsv"].addEventListener("click", () => exportAstrometry("tsv"));
   atmEl["atm-export-fits"].addEventListener("click", () => exportAstrometry("fits"));
   atmEl["atm-export-votable"].addEventListener("click", () => exportAstrometry("votable"));
@@ -365,8 +375,12 @@ function astrometryManagementAllowed() {
 }
 
 function updateAstrometryManagementVisibility() {
-  if (!atmEl["atm-management-tools"]) return;
   const visible = astrometryManagementAllowed();
+  if (atmEl["atm-ignore-tools"]) {
+    atmEl["atm-ignore-tools"].hidden = !visible;
+    updateAstrometryIgnoreControls();
+  }
+  if (!atmEl["atm-management-tools"]) return;
   atmEl["atm-management-tools"].hidden = !visible;
   if (visible) {
     syncAstrometryPushDefaults();
@@ -444,9 +458,10 @@ function astrometryPushUnavailableReason() {
 }
 
 function updateAstrometryPushControls() {
+  updateAstrometryIgnoreControls();
   if (!atmEl["atm-management-tools"] || atmEl["atm-management-tools"].hidden) return;
   const fit = atmState.fitResult;
-  const busy = Boolean(atmState.pushBusy || atmState.fitBusy);
+  const busy = Boolean(atmState.pushBusy || atmState.fitBusy || atmState.ignoreBusy);
   const hasFit = Boolean(fit);
   const isPlxFit = fit?.mode === "pm_plx";
   for (const id of ["atm-push-coordinate", "atm-push-pm"]) {
@@ -467,6 +482,7 @@ function updateAstrometryPushControls() {
 }
 
 function updateManualAstrometryRejectionControls() {
+  updateAstrometryIgnoreControls();
   const busy = Boolean(atmState.fitBusy);
   const selectedCount = manualAstrometryRejectableSelectionCount();
   const manualCount = manualAstrometryRejectedVisibleCount();
@@ -491,13 +507,13 @@ function manualAstrometryRejectableSelectionCount() {
   const selected = new Set([...atmState.selectedIds].map(String));
   return atmState.processedRows.filter((row) => {
     const id = astrometryRowIdKey(row);
-    return selected.has(id) && !isIgnoredAstrometryRow(row) && !atmState.manualRejectedIds.has(id);
+    return selected.has(id) && !isExcludedAstrometryRow(row) && !atmState.manualRejectedIds.has(id);
   }).length;
 }
 
 function manualAstrometryRejectedVisibleCount() {
   if (!atmState.manualRejectedIds.size || !atmState.processedRows.length) return 0;
-  return atmState.processedRows.filter((row) => isManuallyRejectedAstrometryRow(row)).length;
+  return atmState.processedRows.filter((row) => !asBool(row.auto_duplicate) && isManuallyRejectedAstrometryRow(row)).length;
 }
 
 function pruneManualAstrometryRejections() {
@@ -512,7 +528,7 @@ function addSelectedAstrometryFitRejections() {
   let added = 0;
   atmState.processedRows.forEach((row) => {
     const id = astrometryRowIdKey(row);
-    if (!selected.has(id) || isIgnoredAstrometryRow(row) || atmState.manualRejectedIds.has(id)) return;
+    if (!selected.has(id) || isExcludedAstrometryRow(row) || atmState.manualRejectedIds.has(id)) return;
     atmState.manualRejectedIds.add(id);
     added += 1;
   });
@@ -549,6 +565,48 @@ function isIgnoredAstrometryRow(row) {
   return asBool(row?.ignored);
 }
 
+function isExcludedAstrometryRow(row) {
+  return isIgnoredAstrometryRow(row) || asBool(row?.auto_duplicate);
+}
+
+function markDuplicatedAstrometryRows(rows, useRaw) {
+  rows.forEach((row) => {
+    row.auto_duplicate = 0;
+    row.duplicate_of_id = null;
+  });
+  if (atmEl["atm-ignore-duplicates"]?.checked === false) return rows;
+  const fitEligible = (row) => Number(row.single_epoch) === 1
+    && Number(row.pm_corrected) === 0 && Number(row.plx_corrected) === 0
+    && String(row.point_of_view || "").trim().toLowerCase() === "earth";
+  // Prefer a usable copy, then the lowest ID, independent of input ordering.
+  const candidates = [...rows]
+    .sort((a, b) => Number(isIgnoredAstrometryRow(a)) - Number(isIgnoredAstrometryRow(b))
+      || Number(isManuallyRejectedAstrometryRow(a)) - Number(isManuallyRejectedAstrometryRow(b))
+      || Number(fitEligible(b)) - Number(fitEligible(a))
+      || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  const seen = new Map();
+  candidates.forEach((row) => {
+    const inputRa = useRaw && row.raw_ra != null ? row.raw_ra : row.ra;
+    const inputDec = useRaw && row.raw_dec != null ? row.raw_dec : row.dec;
+    if (inputRa == null || inputDec == null || inputRa === "" || inputDec === "") return;
+    const pos = astrometryPosition(row, useRaw);
+    const values = [pos.ra, pos.dec, row.measurement_epoch_yr, row.ra_unc_mas,
+      row.dec_unc_mas, row.measurement_epoch_yr_unc ?? 0];
+    if (values.some((value) => value == null || value === "" || !Number.isFinite(Number(value)))) return;
+    // A shared reference maps equal positions to equal offsets. Use full
+    // precision positions before reference adjustment, never rounded display
+    // offsets or yearly phase, so duplicates cannot shift that reference.
+    const key = JSON.stringify(values.map(Number));
+    if (seen.has(key)) {
+      row.auto_duplicate = 1;
+      row.duplicate_of_id = seen.get(key);
+    } else {
+      seen.set(key, row.id);
+    }
+  });
+  return rows;
+}
+
 function astrometryFitRejectedIdSet() {
   const fit = atmState.fitResult;
   const ids = new Set();
@@ -569,7 +627,7 @@ function isFitRejectedAstrometryRow(row) {
 function astrometryAcceptedRows(rows) {
   const fitRejectedIds = astrometryFitRejectedIdSet();
   return (rows || []).filter((row) => (
-    !isIgnoredAstrometryRow(row)
+    !isExcludedAstrometryRow(row)
     && !isManuallyRejectedAstrometryRow(row)
     && !fitRejectedIds.has(astrometryRowIdKey(row))
   ));
@@ -682,7 +740,7 @@ async function loadAstrometryObject() {
   const objectPath = atmEl["atm-display-merged"].checked
     ? `api/astrometry/object/${atmState.selectedOid}?display_merged=1`
     : `api/astrometry/object/${atmState.selectedOid}`;
-  const payload = await fetchAstrometryJson(objectPath);
+  const payload = await fetchAstrometryJson(objectPath, { cache: "no-store" });
   setAstrometryLoading(false);
   if (!payload.ok) {
     atmState.payload = null;
@@ -892,9 +950,9 @@ function prepareAstrometryRows() {
     ? baseRows.filter((row) => selectedCalibrationMethods.has(astrometryCalibrationMethodKey(row)))
     : [];
   const missionRows = calibrationRows.filter((row) => atmState.selectedMissions.has(String(row.mission || "No mission")));
-  const rows = missionRows.filter((row) => finite(row.measurement_epoch_yr));
-  const referenceRows = rows.filter((row) => !isIgnoredAstrometryRow(row));
   const useRaw = atmEl["atm-revert-raw"].checked;
+  const rows = markDuplicatedAstrometryRows(missionRows.filter((row) => finite(row.measurement_epoch_yr)), useRaw);
+  const referenceRows = rows.filter((row) => !isExcludedAstrometryRow(row));
   const reference = normalizedReference(payload.reference, referenceRows, useRaw);
   const pm = payload.pm || {};
   const plx = payload.parallax || {};
@@ -1117,7 +1175,7 @@ function astrometryPosition(row, useRaw) {
 }
 
 function normalizedReference(reference, rows, useRaw) {
-  if (isIgnoredAstrometryRow(reference)) reference = null;
+  if (isIgnoredAstrometryRow(reference) || reference?.fallback) reference = null;
   let ra = finite(useRaw ? reference?.raw_ra : reference?.ra) ? Number(useRaw ? reference.raw_ra : reference.ra) : NaN;
   let dec = finite(useRaw ? reference?.raw_dec : reference?.dec) ? Number(useRaw ? reference.raw_dec : reference.dec) : NaN;
   let epoch = finite(reference?.measurement_epoch_yr) ? Number(reference.measurement_epoch_yr) : NaN;
@@ -1418,10 +1476,10 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
         : `${assumedParallaxCurve.label}<br>phase %{x:.3f}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`,
     });
   }
-  const missionStyles = astrometryMissionStyles(prepared.rows);
+  const missionStyles = astrometryMissionStyles(prepared.rows.filter((row) => !asBool(row.auto_duplicate)));
   const missions = [...missionStyles.keys()];
   missions.forEach((mission) => {
-    const rows = prepared.rows.filter((row) => !isIgnoredAstrometryRow(row) && String(row.mission || "No mission") === mission);
+    const rows = prepared.rows.filter((row) => !isExcludedAstrometryRow(row) && String(row.mission || "No mission") === mission);
     if (!rows.length) return;
     const markerStyle = astrometryMarkerStyle(mission, missionStyles);
     traces.push({
@@ -1450,7 +1508,7 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
       hovertemplate: "%{text}<extra></extra>",
     });
   });
-  const ignoredRows = prepared.rows.filter(isIgnoredAstrometryRow);
+  const ignoredRows = prepared.rows.filter((row) => isIgnoredAstrometryRow(row) && !asBool(row.auto_duplicate));
   if (ignoredRows.length) {
     traces.push({
       x: ignoredRows.map((row) => row.plot_x),
@@ -1738,7 +1796,7 @@ function buildAstrometryFitRequest(mode, prepared) {
     && Number(row.pm_corrected) === 0
     && Number(row.plx_corrected) === 0
     && String(row.point_of_view || "").trim().toLowerCase() === "earth"
-    && !isIgnoredAstrometryRow(row)
+    && !isExcludedAstrometryRow(row)
     && !isManuallyRejectedAstrometryRow(row)
   )).map((row) => ({
     id: row.id,
@@ -1943,7 +2001,7 @@ function astrometryFittedReferenceMarker(prepared) {
 
 function setAstrometryFitDisabled(disabled) {
   const rowCount = manualAstrometryFitRows(atmState.processedRows).length;
-  const busy = Boolean(atmState.fitBusy);
+  const busy = Boolean(atmState.fitBusy || atmState.ignoreBusy);
   if (atmEl["atm-fit-pm"]) atmEl["atm-fit-pm"].disabled = busy || Boolean(disabled) || rowCount < 2;
   if (atmEl["atm-fit-plx"]) atmEl["atm-fit-plx"].disabled = busy || Boolean(disabled) || rowCount < 3;
   if (atmEl["atm-clear-fit"]) atmEl["atm-clear-fit"].disabled = busy || !atmState.fitResult;
@@ -1951,7 +2009,7 @@ function setAstrometryFitDisabled(disabled) {
 }
 
 function manualAstrometryFitRows(rows) {
-  return (rows || []).filter((row) => !isIgnoredAstrometryRow(row) && !isManuallyRejectedAstrometryRow(row));
+  return (rows || []).filter((row) => !isExcludedAstrometryRow(row) && !isManuallyRejectedAstrometryRow(row));
 }
 
 function updateAstrometryFitSummary(message = "") {
@@ -1984,7 +2042,7 @@ function astrometryFitMissionCounts(prepared) {
       !finite(row.plot_epoch_abs)
       || !finite(row.base_rel_ra)
       || !finite(row.base_rel_dec)
-      || isIgnoredAstrometryRow(row)
+      || isExcludedAstrometryRow(row)
       || isManuallyRejectedAstrometryRow(row)
     ) {
       return;
@@ -2059,6 +2117,89 @@ async function runAstrometryPush(dryRun) {
   } finally {
     atmState.pushBusy = false;
     updateAstrometryPushControls();
+  }
+}
+
+function astrometrySelectedIgnoreRows() {
+  const selected = new Set([...atmState.selectedIds].map(String));
+  return atmState.processedRows.filter((row) => selected.has(String(row.id)) && !asBool(row.auto_duplicate));
+}
+
+function updateAstrometryIgnoreControls() {
+  const button = atmEl["atm-ignore-selected"];
+  if (!button) return;
+  const count = astrometrySelectedIgnoreRows().length;
+  const busy = Boolean(atmState.ignoreBusy || atmState.pushBusy || atmState.fitBusy);
+  button.disabled = !astrometryManagementAllowed() || busy || count === 0;
+  if (atmEl["atm-ignore-comments"]) atmEl["atm-ignore-comments"].disabled = busy;
+  if (atmEl["atm-ignore-selection-note"]) {
+    atmEl["atm-ignore-selection-note"].textContent = count
+      ? `${count} selected ${count === 1 ? "entry" : "entries"}. You will review the target and IDs before applying.`
+      : "Select measurements in either plot.";
+  }
+}
+
+function setAstrometryIgnoreStatus(message, error = false) {
+  if (!atmEl["atm-ignore-status"]) return;
+  atmEl["atm-ignore-status"].textContent = message;
+  atmEl["atm-ignore-status"].classList.toggle("error", error);
+}
+
+async function runAstrometryIgnoreSelected() {
+  if (!astrometryManagementAllowed() || atmState.ignoreBusy || atmState.fitBusy || atmState.pushBusy) return;
+  const selected = astrometrySelectedIgnoreRows();
+  if (!selected.length) return;
+  const body = {
+    moca_oid: normalizedMocaOid(atmState.payload?.target?.moca_oid || atmState.selectedOid),
+    selectedIds: selected.map((row) => String(row.id)).sort(),
+    appendComments: String(atmEl["atm-ignore-comments"]?.value || "").trim(),
+    dryRun: true,
+  };
+  atmState.ignoreBusy = true;
+  updateAstrometryIgnoreControls();
+  updateAstrometryPushControls();
+  setAstrometryFitDisabled(!atmState.processedRows.length);
+  setAstrometryIgnoreStatus("Reviewing the selected MOCAdb entries...");
+  try {
+    const preview = await postAstrometryJson("api/astrometry/measurements/ignore", body);
+    if (!preview?.ok) throw new Error(preview?.error || "Could not preview the selected entries.");
+    if (!preview.wouldUpdateCount) {
+      setAstrometryIgnoreStatus("All selected entries are already ignored; no changes are needed.");
+      return;
+    }
+    const currentIds = astrometrySelectedIgnoreRows().map((row) => String(row.id)).sort();
+    if (String(atmState.selectedOid) !== body.moca_oid || JSON.stringify(currentIds) !== JSON.stringify(body.selectedIds)) {
+      throw new Error("The selection or target changed during preview. Review it and try again.");
+    }
+    const idsText = preview.selectedIds.slice(0, 20).join(", ") + (preview.selectedIds.length > 20 ? ", …" : "");
+    const commentsText = body.appendComments ? `\n\nAppend to existing comments:\n${body.appendComments}` : "";
+    if (!window.confirm(`Mark ${preview.selectedCount} selected entries as ignored=1 in MOCAdb for oid${body.moca_oid}?\nIDs: ${idsText}\n${preview.alreadyIgnoredCount} already ignored.${commentsText}`)) {
+      setAstrometryIgnoreStatus("Cancelled; no database changes were made.");
+      return;
+    }
+    setAstrometryIgnoreStatus("Applying the reviewed changes...");
+    const result = await postAstrometryJson("api/astrometry/measurements/ignore", {
+      ...body, dryRun: false, expectedRevision: preview.revision,
+    });
+    if (!result?.ok) throw new Error(result?.error || "The update was not applied.");
+    const success = `Updated ${result.updatedCount} entries in MOCAdb; ${result.newlyIgnoredCount} newly marked ignored=1.`;
+    atmState.selectedIds.clear();
+    body.selectedIds.forEach((id) => atmState.manualRejectedIds.delete(id));
+    clearAstrometryFit({ render: false });
+    if (atmEl["atm-ignore-comments"]) atmEl["atm-ignore-comments"].value = "";
+    setAstrometryIgnoreStatus(success);
+    try {
+      await loadAstrometryObject();
+    } catch (error) {
+      setAstrometryIgnoreStatus(`${success} Refresh the explorer to reload the measurements.`, true);
+    }
+  } catch (error) {
+    setAstrometryIgnoreStatus(error.message || String(error), true);
+  } finally {
+    atmState.ignoreBusy = false;
+    updateAstrometryIgnoreControls();
+    updateAstrometryPushControls();
+    setAstrometryFitDisabled(!atmState.processedRows.length);
   }
 }
 
@@ -2138,7 +2279,7 @@ function astrometryFitOutlierRows(prepared, component = null) {
   const ids = astrometryFitRejectedIdSet();
   if (!ids.size) return [];
   return prepared.rows.filter((row) => (
-    !isIgnoredAstrometryRow(row)
+    !isExcludedAstrometryRow(row)
     && ids.has(astrometryRowIdKey(row))
     && (!component || astrometryFitOutlierComponent(row.id) === component)
   ));
@@ -2146,7 +2287,7 @@ function astrometryFitOutlierRows(prepared, component = null) {
 
 function astrometryManualRejectedRows(prepared) {
   if (!atmState.manualRejectedIds.size) return [];
-  return prepared.rows.filter((row) => !isIgnoredAstrometryRow(row) && isManuallyRejectedAstrometryRow(row));
+  return prepared.rows.filter((row) => !isExcludedAstrometryRow(row) && isManuallyRejectedAstrometryRow(row));
 }
 
 function astrometryFitResponsibility(rowId) {
@@ -2559,12 +2700,13 @@ function astrometryFitDiagnosticsLines(fit) {
 
 function renderAstrometrySummary(prepared) {
   const target = atmState.payload.target || {};
-  const rows = prepared.rows;
+  const rows = prepared.rows.filter((row) => !asBool(row.auto_duplicate));
   const missionCount = new Set(rows.map((row) => row.mission)).size;
   const calibrationAcceptedCount = prepared.calibration?.selected?.length || 0;
   const calibrationTotalCount = prepared.calibration?.options?.length || 0;
   const manualRejectedCount = astrometryManualRejectedRows(prepared).length;
   const ignoredCount = rows.filter(isIgnoredAstrometryRow).length;
+  const duplicateCount = prepared.rows.filter((row) => asBool(row.auto_duplicate)).length;
   const recalcNote = prepared.usedFallbackRecalibration ? " Recalibrated-only filter had no rows, so all rows are shown." : "";
   const fit = atmState.fitResult;
   const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
@@ -2629,6 +2771,7 @@ function renderAstrometrySummary(prepared) {
       <span>oid${escapeHtml(target.moca_oid)}</span>
       <span>${rows.length} measurements</span>
       ${ignoredCount ? `<span>${ignoredCount} ignored in MOCAdb (×); excluded from fits, binning and automatic ranges</span>` : ""}
+      ${duplicateCount ? `<span>${duplicateCount} exact duplicate copies skipped</span>` : ""}
       <span>${missionCount} missions</span>
       ${calibrationTotalCount ? `<span>${calibrationAcceptedCount}/${calibrationTotalCount} calibration methods accepted</span>` : ""}
       ${manualRejectedCount ? `<span>${manualRejectedCount} manually rejected from fit</span>` : ""}
@@ -2640,11 +2783,12 @@ function renderAstrometrySummary(prepared) {
 }
 
 function renderAstrometryTable() {
+  const visibleRows = atmState.processedRows.filter((row) => !asBool(row.auto_duplicate));
   const selected = atmState.selectedIds.size
-    ? atmState.processedRows.filter((row) => atmState.selectedIds.has(row.id))
-    : atmState.processedRows;
+    ? visibleRows.filter((row) => atmState.selectedIds.has(row.id))
+    : visibleRows;
   const rows = selected.slice(0, 350);
-  const missionStyles = astrometryMissionStyles(atmState.processedRows);
+  const missionStyles = astrometryMissionStyles(visibleRows);
   atmEl["atm-table-title"].textContent = atmState.selectedIds.size ? "Selected measurements" : "Measurements";
   atmEl["atm-table-subtitle"].textContent = `${selected.length} row${selected.length === 1 ? "" : "s"}${selected.length > rows.length ? `, showing first ${rows.length}` : ""}`;
   if (!rows.length) {
@@ -2673,10 +2817,10 @@ function renderAstrometryTable() {
       </thead>
       <tbody>
         ${rows.map((row) => `
-          <tr class="${isIgnoredAstrometryRow(row) ? "astrometry-ignored-row" : ""}">
+          <tr class="${isExcludedAstrometryRow(row) ? "astrometry-ignored-row" : ""}">
             <td class="astrometry-symbol-cell">${astrometrySymbolMarkup(row, missionStyles)}</td>
             <td>${escapeHtml(row.id)}</td>
-            <td title="${isIgnoredAstrometryRow(row) ? "Excluded from fits, binning, reference adjustment and automatic ranges" : "Active in MOCAdb"}">${isIgnoredAstrometryRow(row) ? "Ignored (ignored=1)" : "Active"}</td>
+            <td title="${isExcludedAstrometryRow(row) ? "Excluded from fits, binning, reference adjustment and automatic ranges" : "Active in MOCAdb"}">${astrometryRowStatus(row)}</td>
             <td>${escapeHtml(row.mission_name || "—")}</td>
             <td>${escapeHtml(row.data_release || "—")}</td>
             <td>${escapeHtml(row.moca_psid ?? "—")}</td>
@@ -2760,10 +2904,15 @@ function formatPaddedSeconds(value, precision) {
   return text.padStart(precision > 0 ? 3 + precision : 2, "0");
 }
 
+function astrometryRowStatus(row) {
+  if (isIgnoredAstrometryRow(row)) return "Ignored (ignored=1)";
+  return "Active";
+}
+
 function hoverText(row) {
   return [
     `<b>ID:</b> ${escapeHtml(row.id)}`,
-    `<b>Status:</b> ${isIgnoredAstrometryRow(row) ? "Ignored in MOCAdb (ignored=1); excluded from fits, binning and automatic ranges" : "Active (ignored=0)"}`,
+    `<b>Status:</b> ${astrometryRowStatus(row)}${isExcludedAstrometryRow(row) ? "; excluded from fits, binning and automatic ranges" : " (ignored=0)"}`,
     `<b>Mission:</b> ${escapeHtml(row.mission || "N/A")}`,
     `<b>Mission name:</b> ${escapeHtml(row.mission_name || "N/A")}`,
     `<b>Data release:</b> ${escapeHtml(row.data_release || "N/A")}`,
@@ -2842,9 +2991,10 @@ const astrometryExportColumns = ["id", "ignored", "mission", "mission_name", "da
 const astrometryNumericExportColumns = new Set(["id", "ignored", "airmass", "measurement_epoch_yr", "rel_ra", "rel_dec", "ra_unc_mas", "dec_unc_mas", "plot_ra", "plot_dec", "moca_pid"]);
 
 function exportAstrometry(format) {
+  const visibleRows = atmState.processedRows.filter((row) => !asBool(row.auto_duplicate));
   const rows = atmState.selectedIds.size
-    ? atmState.processedRows.filter((row) => atmState.selectedIds.has(row.id))
-    : atmState.processedRows;
+    ? visibleRows.filter((row) => atmState.selectedIds.has(row.id))
+    : visibleRows;
   if (!rows.length) return;
   MocaExport.saveTable(format, {
     rows,
@@ -2981,6 +3131,8 @@ function updateAstrometryUrl() {
   else params.delete("adjust_ref");
   if (!atmEl["atm-only-recalibrated"].checked) params.set("only_recalibrated", "0");
   else params.delete("only_recalibrated");
+  if (!atmEl["atm-ignore-duplicates"].checked) params.set("ignore_duplicates", "0");
+  else params.delete("ignore_duplicates");
   const nextUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, "", nextUrl);
 }

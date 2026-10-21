@@ -1056,6 +1056,26 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.astrometry-ignore-tools:not([hidden]) {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.astrometry-ignore-tools textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.astrometry-ignore-tools button {
+  justify-self: start;
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+}
+
 .selection-table {
   overflow: auto;
   padding: 10px 12px;
@@ -1750,7 +1770,7 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 }
 
 .astrometry-visual-area {
-  grid-template-rows: minmax(430px, 46vh) minmax(430px, 46vh) auto minmax(180px, 24vh);
+  grid-template-rows: minmax(430px, 46vh) minmax(430px, 46vh) auto auto;
   row-gap: 8px;
   overflow: auto;
 }
@@ -1985,7 +2005,7 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
 }
 
 .astrometry-table-area {
-  min-height: 180px;
+  grid-template-rows: auto minmax(220px, 28vh) auto;
 }
 
 .astrometry-url-help {
@@ -5020,7 +5040,7 @@ body.is-management #spe-plot .modebar {
   }
 
   .astrometry-visual-area {
-    grid-template-rows: 360px 360px auto 220px;
+    grid-template-rows: 360px 360px auto auto;
   }
 
   .astrometry-toolbar {

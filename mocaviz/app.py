@@ -23357,6 +23357,115 @@ def _push_astrometry_fit_to_mocadb(args: dict[str, Any], body: Mapping[str, Any]
     }
 
 
+def _ignore_selected_astrometry_measurements(args: dict[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
+    allowed, reason = _astrometry_management_allowed(args)
+    if not allowed or _as_bool(args.get("mock")):
+        raise PermissionError(reason or "Mock astrometry cannot be written to MOCAdb.")
+    if not isinstance(body, Mapping):
+        raise ValueError("A JSON object is required.")
+
+    def positive_id(value: Any) -> int:
+        if isinstance(value, bool) or not re.fullmatch(r"[1-9][0-9]{0,19}", str(value)):
+            raise ValueError("Target and measurement IDs must be positive integers.")
+        result = int(value)
+        if result > 18446744073709551615:
+            raise ValueError("An ID exceeds the supported database range.")
+        return result
+
+    oid = positive_id(body.get("moca_oid"))
+    raw_ids = body.get("selectedIds")
+    if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 20000:
+        raise ValueError("Select between 1 and 20000 measurements.")
+    ids = sorted({positive_id(value) for value in raw_ids})
+    append_comments = body.get("appendComments", "")
+    if not isinstance(append_comments, str) or len(append_comments) > 4096:
+        raise ValueError("Appended comments must be text of at most 4096 characters.")
+    append_comments = append_comments.strip()
+    dry_run = not _as_false(body.get("dryRun", True))
+    engine = _engine(_connection_string(args))
+    with engine.begin() as conn:
+        if not _db_table_exists(conn, "moca_changelog"):
+            raise RuntimeError("The MOCAdb changelog is required before applying this action.")
+        rows = _records(_read_sql_expanding(conn, """
+            SELECT id, moca_oid, ignored, comments, modified_timestamp,
+                mission_name, data_release, measurement_epoch_yr, is_public, rls
+            FROM data_equatorial_coordinates
+            WHERE id IN :ids AND moca_oid = :oid
+            ORDER BY id
+        """ + ("" if dry_run else " FOR UPDATE"), "ids", ids, {"oid": oid}))
+        if {int(row["id"]) for row in rows} != set(ids):
+            raise ValueError("Some selected entries are missing or do not belong to the current target. Reload and select again.")
+        snapshot = [{key: row.get(key) for key in ("id", "ignored", "comments", "modified_timestamp")} for row in rows]
+        revision = hashlib.sha256(json.dumps([oid, ids, append_comments, snapshot],
+                                            sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        if not dry_run and body.get("expectedRevision") != revision:
+            raise ValueError("The selected entries or appended comments changed since the preview. Review the selection again.")
+        changes = []
+        for row in rows:
+            existing = row.get("comments")
+            updated_comments = existing
+            if append_comments:
+                old = str(existing or "")
+                updated_comments = old + ("\n" if old and not old.endswith("\n") else "") + append_comments
+                if len(updated_comments.encode("utf-8")) > 65535:
+                    raise ValueError(f"Appended comments exceed the comments field capacity for entry {row['id']}.")
+            if not _as_bool(row.get("ignored")) or updated_comments != existing:
+                changes.append({**row, "updated_comments": updated_comments})
+        changelog_ids = []
+        if not dry_run:
+            for row in changes:
+                assignments = "ignored = 1" + (", comments = :comments" if append_comments else "")
+                result = conn.execute(text(f"""
+                    UPDATE data_equatorial_coordinates SET {assignments}
+                    WHERE id = :id AND moca_oid = :oid
+                """), {"id": int(row["id"]), "oid": oid, "comments": row["updated_comments"]})
+                if result.rowcount != 1:
+                    raise RuntimeError("A selected entry could not be updated; the transaction was rolled back.")
+            if changes:
+                verified = _records(_read_sql_expanding(conn, """
+                    SELECT id, ignored, comments FROM data_equatorial_coordinates
+                    WHERE id IN :ids AND moca_oid = :oid ORDER BY id
+                """, "ids", ids, {"oid": oid}))
+                expected_comments = {int(row["id"]): row["updated_comments"] for row in changes}
+                if ({int(row["id"]) for row in verified} != set(ids)
+                    or any(not _as_bool(row.get("ignored"))
+                           or (int(row["id"]) in expected_comments
+                               and row.get("comments") != expected_comments[int(row["id"])])
+                           for row in verified)):
+                    raise RuntimeError("The updated entries could not be verified; the transaction was rolled back.")
+            # Preserve each source row's visibility in the corresponding audit record.
+            groups: dict[tuple[int, str], list[int]] = {}
+            for row in changes:
+                groups.setdefault((int(row["is_public"]), str(row["rls"])), []).append(int(row["id"]))
+            for (is_public, rls), group_ids in groups.items():
+                for start in range(0, len(group_ids), 100):
+                    batch = group_ids[start:start + 100]
+                    description = f"mocaviz/app.py astrometric explorer: set ignored=1 for moca_oid={oid}; ids={batch}."
+                    if append_comments:
+                        description += f" Appended comments: {append_comments}"
+                    changelog_ids.append(_astrometry_insert_row(conn, "moca_changelog", {
+                        "user": _db_config(args)["username"], "modified_tables": "data_equatorial_coordinates",
+                        "nrows_modified": len(batch), "user_description": description,
+                        "is_public": is_public, "rls": rls,
+                    }))
+    if not dry_run and changes:
+        _ASTROMETRY_OBJECT_CACHE.clear()
+    return {
+        "dryRun": dry_run, "moca_oid": oid, "selectedIds": ids,
+        "selectedCount": len(rows), "wouldUpdateCount": len(changes),
+        "updatedCount": 0 if dry_run else len(changes),
+        "newlyIgnoredCount": sum(not _as_bool(row.get("ignored")) for row in rows),
+        "alreadyIgnoredCount": sum(_as_bool(row.get("ignored")) for row in rows),
+        "appendComments": append_comments, "revision": revision,
+        "examples": [{"id": row["id"], "mission_name": row.get("mission_name"),
+                      "data_release": row.get("data_release"), "epoch": row.get("measurement_epoch_yr"),
+                      "ignored_before": row.get("ignored"), "ignored_after": 1,
+                      "comments_before": row.get("comments"), "comments_after": row["updated_comments"]}
+                     for row in changes[:3]],
+        "changelogIds": changelog_ids,
+    }
+
+
 def _format_astrometry_reference(row: dict[str, Any] | None, prefix: str) -> str:
     if not row:
         return f"No adopted {prefix}"
@@ -36406,6 +36515,20 @@ def astrometry_fit_push():
             "error": f"{type(exc).__name__}: {exc}",
             "insertedCount": 0,
         }), 500
+
+
+@app.post("/api/astrometry/measurements/ignore")
+def astrometry_ignore_selected_measurements():
+    args = dict(request.args)
+    try:
+        payload = _ignore_selected_astrometry_measurements(args, request.get_json(silent=True) or {})
+        return _jsonify_clean({"ok": True, "source": "MOCAdb", **payload})
+    except PermissionError as exc:
+        return jsonify({"ok": False, "error": str(exc), "updatedCount": 0}), 403
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "updatedCount": 0}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "The database update failed and was rolled back.", "updatedCount": 0}), 500
 
 
 @app.post("/api/astrometry/cache/clear")

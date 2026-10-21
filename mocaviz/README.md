@@ -124,6 +124,21 @@ http://127.0.0.1:8050/rvbam-explorer?mock=1
   The measurement table and exports include mission name, data release,
   `moca_psid`, airmass, and the ignored flag. **Export table as CSV** exports the
   selected measurements, or all filtered measurements when nothing is selected.
+- **Auto-detect and ignore duplicated measurements** is enabled by default.
+  It retains one usable copy when both offsets, absolute epoch, R.A./Decl.
+  uncertainties, and epoch uncertainty match exactly, without rounding.
+  Duplicate copies are hidden from plots, the measurement table, and exports,
+  and excluded from fits, binning, reference adjustment, and automatic ranges. Detection
+  follows the selected raw/recalibrated coordinates and current filters;
+  turning it off restores the copies. Database `ignored` flags are unchanged. Use
+  `ignore_duplicates=0` in a URL to disable detection across reloads.
+- Management users can select measurements in either plot and use **Mark
+  currently selected entries as ignored=1 in MOCAdb** below the table. The
+  optional **Append comments** field preserves existing text. A read-only
+  preview validates the target and selected IDs before confirmation; a changed
+  selection or database revision requires a new review. Updates and changelog
+  records commit together, preserve source visibility/RLS, and are read back
+  before commit. The explorer then reloads the measurements and clears stale fits.
 - The spectral explorer loads selected spectra through compact JSON
   endpoints; the browser handles normalization, flux-unit conversion,
   low-resolution display styling, chemical feature overlays, selections,
