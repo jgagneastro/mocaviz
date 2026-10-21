@@ -557,6 +557,38 @@ function astrometryRowIdKey(rowOrId) {
   return String(rowOrId);
 }
 
+function astrometryObserverState(row) {
+  if (String(row.point_of_view || "").trim().toLowerCase() !== "jwst") return null;
+  let state = row.observer;
+  if (!state) {
+    try { state = (typeof row.comments === "string" ? JSON.parse(row.comments) : row.comments)?.observer; }
+    catch (_) { return null; }
+  }
+  if (!state || state.body !== "jwst" || state.origin !== "ssb" || state.frame !== "icrf") return null;
+  const p = state.position_au, v = state.velocity_au_per_day;
+  if (![p, v].every(a => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite))) return null;
+  if (!(Math.hypot(...p) > 0.5 && Math.hypot(...p) < 2 && Math.hypot(...v) > 0.001 && Math.hypot(...v) < 0.06)) return null;
+  const epoch = Number(row.plot_epoch_abs ?? row.measurement_epoch_yr);
+  if (!Number.isFinite(epoch) || !Number.isFinite(state.epoch_mjd_utc) || Math.abs(51544.5 + (epoch - 2000) * 365.25 - state.epoch_mjd_utc) * 86400 > 0.1) return null;
+  return state;
+}
+
+function astrometryObserverEligible(row) {
+  const pov = String(row.point_of_view || "").trim().toLowerCase();
+  return pov === "earth" || (pov === "jwst" && Boolean(astrometryObserverState(row)));
+}
+
+function rowParallaxMotion(ra, dec, epoch, row) {
+  const pov = String(row.point_of_view || "").trim().toLowerCase();
+  if (pov === "earth") return parallaxMotion(ra, dec, epoch);
+  const state = astrometryObserverState(row);
+  if (!state) return {ra: NaN, dec: NaN};
+  const [x, y, z] = state.position_au;
+  const a = rad(ra), d = rad(dec);
+  return {ra: x * Math.sin(a) - y * Math.cos(a),
+    dec: x * Math.cos(a) * Math.sin(d) + y * Math.sin(a) * Math.sin(d) - z * Math.cos(d)};
+}
+
 function isManuallyRejectedAstrometryRow(row) {
   return atmState.manualRejectedIds.has(astrometryRowIdKey(row));
 }
@@ -577,7 +609,7 @@ function markDuplicatedAstrometryRows(rows, useRaw) {
   if (atmEl["atm-ignore-duplicates"]?.checked === false) return rows;
   const fitEligible = (row) => Number(row.single_epoch) === 1
     && Number(row.pm_corrected) === 0 && Number(row.plx_corrected) === 0
-    && String(row.point_of_view || "").trim().toLowerCase() === "earth";
+    && astrometryObserverEligible(row);
   // Prefer a usable copy, then the lowest ID, independent of input ordering.
   const candidates = [...rows]
     .sort((a, b) => Number(isIgnoredAstrometryRow(a)) - Number(isIgnoredAstrometryRow(b))
@@ -997,7 +1029,8 @@ function prepareAstrometryRows() {
         if (!finite(pos.ra) || !finite(pos.dec) || !finite(epoch)) return;
         const cosDec = Math.cos(rad(pos.dec));
         if (!finite(cosDec) || Math.abs(cosDec) < 1e-9) return;
-        const pf = finite(meanRa) && finite(meanDec) ? parallaxMotion(meanRa, meanDec, epoch) : { ra: 0, dec: 0 };
+        const pf = finite(meanRa) && finite(meanDec) ? rowParallaxMotion(meanRa, meanDec, epoch, row) : { ra: 0, dec: 0 };
+        if (!finite(pf.ra) || !finite(pf.dec)) return;
         let raObserved = pos.ra * cosDec * 3600 * 1000;
         let decObserved = pos.dec * 3600 * 1000;
         raObserved -= pmra * (epoch - targetEpoch);
@@ -1021,7 +1054,7 @@ function prepareAstrometryRows() {
     const ra = pos.ra;
     const dec = pos.dec;
     const epoch = Number(row.measurement_epoch_yr);
-    const pf = parallaxMotion(refRa, refDec, epoch);
+    const pf = rowParallaxMotion(refRa, refDec, epoch, row);
     const baseRelRa = (ra - refRa) * Math.cos(rad(refDec)) * 3600 * 1000;
     const baseRelDec = (dec - refDec) * 3600 * 1000;
     let relRa = baseRelRa;
@@ -1795,7 +1828,7 @@ function buildAstrometryFitRequest(mode, prepared) {
     && Number(row.single_epoch) === 1
     && Number(row.pm_corrected) === 0
     && Number(row.plx_corrected) === 0
-    && String(row.point_of_view || "").trim().toLowerCase() === "earth"
+    && astrometryObserverEligible(row)
     && !isExcludedAstrometryRow(row)
     && !isManuallyRejectedAstrometryRow(row)
   )).map((row) => ({
@@ -1814,6 +1847,8 @@ function buildAstrometryFitRequest(mode, prepared) {
     pm_corrected: row.pm_corrected,
     plx_corrected: row.plx_corrected,
     point_of_view: row.point_of_view,
+    observer: astrometryObserverState(row),
+    independent_group: row.independent_group,
     mission_name: row.mission_name,
     data_release: row.data_release,
     ignored: row.ignored ?? 0,
@@ -1878,7 +1913,7 @@ function computeAstrometryFit(mode, prepared) {
   rows.forEach((row) => {
     const epoch = Number(row.plot_epoch_abs);
     const dt = epoch - t0;
-    const pf = parallaxMotion(prepared.reference.ra, prepared.reference.dec, epoch);
+    const pf = rowParallaxMotion(prepared.reference.ra, prepared.reference.dec, epoch, row);
     let raValue = Number(row.base_rel_ra);
     let decValue = Number(row.base_rel_dec);
     if (!isParallaxFit && fixedPlx) {
@@ -2009,7 +2044,7 @@ function setAstrometryFitDisabled(disabled) {
 }
 
 function manualAstrometryFitRows(rows) {
-  return (rows || []).filter((row) => !isExcludedAstrometryRow(row) && !isManuallyRejectedAstrometryRow(row));
+  return (rows || []).filter((row) => astrometryObserverEligible(row) && !isExcludedAstrometryRow(row) && !isManuallyRejectedAstrometryRow(row));
 }
 
 function updateAstrometryFitSummary(message = "") {

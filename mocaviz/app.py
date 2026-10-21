@@ -20790,6 +20790,7 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
     sig_dec: list[float] = []
     epoch_uncertainties: list[float] = []
     independent_groups: list[str] = []
+    observer_rows: list[Mapping[str, Any]] = []
 
     for index, raw_row in enumerate(rows_in):
         if not isinstance(raw_row, Mapping):
@@ -20801,7 +20802,7 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
             _safe_float(raw_row.get("single_epoch")) == 1.0
             and _safe_float(raw_row.get("pm_corrected")) == 0.0
             and _safe_float(raw_row.get("plx_corrected")) == 0.0
-            and point_of_view == "earth"
+            and point_of_view in {"earth", "jwst"}
         ):
             continue
         epoch = _astrometry_first_float(raw_row, "plot_epoch_abs", "measurement_epoch_yr", "epoch")
@@ -20819,6 +20820,7 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
             continue
         e_ra = max(float(e_ra if e_ra is not None else 1.0), 1e-3)
         e_dec = max(float(e_dec if e_dec is not None else 1.0), 1e-3)
+        observer_rows.append(raw_row)
         ids.append(str(raw_row.get("id") if raw_row.get("id") is not None else index))
         missions.append(str(raw_row.get("mission") or "No mission"))
         epochs.append(float(epoch))
@@ -20910,6 +20912,13 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
     )
     dpra_dt = (pra_plus - pra_minus) / (2.0 * derivative_step_yr)
     dpdec_dt = (pdec_plus - pdec_minus) / (2.0 * derivative_step_yr)
+
+    from .astrometry_observers import apply_observers
+
+    pra, pdec, dpra_dt, dpdec_dt = apply_observers(
+        [row for row, keep in zip(observer_rows, valid) if keep],
+        ref_ra, ref_dec, pra, pdec, dpra_dt, dpdec_dt,
+    )
 
     min_rows = 3 if fit_parallax else 2
     if unique_groups.size < min_rows:
@@ -23702,7 +23711,9 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
             LIMIT 20000
         """.format(single_epoch_filter=single_epoch_filter), {"oid": oid})
 
-    rows = _records(rows_df)
+    from .astrometry_observers import attach_observers
+
+    rows = attach_observers(_records(rows_df))
     reference = reference_rows[0] if reference_rows else None
     if reference is None and rows:
         finite_rows = [
