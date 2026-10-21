@@ -312,7 +312,7 @@ async function initializeAstrometryFitContext() {
     }
   }
   try {
-    const payload = await fetchAstrometryJson("api/astrometry/fit/capabilities");
+    const payload = await fetchAstrometryJson("api/astrometry/fit/capabilities", { cache: "no-store" });
     if (payload?.ok) {
       atmState.fitCapabilities = payload;
       atmState.authContext = payload.auth || atmState.authContext;
@@ -332,8 +332,11 @@ function updateAstrometryFitControlState() {
   const ultraOption = select.querySelector('option[value="ultranest"]');
   if (ultraOption) {
     const enabled = ultranest.enabled !== false && ultranest.available !== false;
+    const unavailableReason = ultranest.available === false
+      ? "not installed"
+      : ultranest.requires_management ? "management required" : "unavailable";
     ultraOption.disabled = !enabled;
-    ultraOption.textContent = enabled ? "UltraNest" : "UltraNest (unavailable)";
+    ultraOption.textContent = enabled ? "UltraNest" : `UltraNest (${unavailableReason})`;
     ultraOption.title = ultranest.message || "";
     if (select.value === "ultranest" && !enabled) select.value = "scipy";
   }
@@ -341,9 +344,9 @@ function updateAstrometryFitControlState() {
   if (atmEl["atm-fit-outlier-mixture"]) atmEl["atm-fit-outlier-mixture"].disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-error-floor"]) atmEl["atm-fit-error-floor"].disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-method-note"]) {
-    const note = select.value === "ultranest"
-      ? ultranest.message || "UltraNest fits run on the server and can be slow."
-      : "";
+    const note = ultraOption?.disabled
+      ? ultranest.message || "UltraNest is not available."
+      : select.value === "ultranest" ? "UltraNest fits run on the server and can be slow." : "";
     atmEl["atm-fit-method-note"].textContent = note;
   }
   updateManualAstrometryRejectionControls();
@@ -2947,10 +2950,10 @@ function apiParams() {
   return params;
 }
 
-async function fetchAstrometryJson(path) {
+async function fetchAstrometryJson(path, options) {
   const params = apiParams();
   const separator = path.includes("?") ? "&" : "?";
-  return fetchJsonUrl(atmAppUrl(`${path}${params.toString() ? `${separator}${params.toString()}` : ""}`));
+  return fetchJsonUrl(atmAppUrl(`${path}${params.toString() ? `${separator}${params.toString()}` : ""}`), options);
 }
 
 async function postAstrometryJson(path, body) {
@@ -2964,8 +2967,8 @@ async function postAstrometryJson(path, body) {
   return response.json();
 }
 
-async function fetchJsonUrl(url) {
-  const response = await fetch(url);
+async function fetchJsonUrl(url, options) {
+  const response = await fetch(url, options);
   return response.json();
 }
 
