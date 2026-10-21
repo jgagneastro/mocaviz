@@ -122,6 +122,7 @@ function collectAstrometryElements() {
     "atm-dec-plot",
     "atm-summary",
     "atm-export-csv",
+    "atm-table-export-csv",
     "atm-export-tsv",
     "atm-export-fits",
     "atm-export-votable",
@@ -293,6 +294,7 @@ function bindAstrometryControls() {
   if (atmEl["atm-push-preview"]) atmEl["atm-push-preview"].addEventListener("click", () => runAstrometryPush(true));
   if (atmEl["atm-push-apply"]) atmEl["atm-push-apply"].addEventListener("click", () => runAstrometryPush(false));
   atmEl["atm-export-csv"].addEventListener("click", () => exportAstrometry("csv"));
+  atmEl["atm-table-export-csv"].addEventListener("click", () => exportAstrometry("csv"));
   atmEl["atm-export-tsv"].addEventListener("click", () => exportAstrometry("tsv"));
   atmEl["atm-export-fits"].addEventListener("click", () => exportAstrometry("fits"));
   atmEl["atm-export-votable"].addEventListener("click", () => exportAstrometry("votable"));
@@ -489,7 +491,7 @@ function manualAstrometryRejectableSelectionCount() {
   const selected = new Set([...atmState.selectedIds].map(String));
   return atmState.processedRows.filter((row) => {
     const id = astrometryRowIdKey(row);
-    return selected.has(id) && !atmState.manualRejectedIds.has(id);
+    return selected.has(id) && !isIgnoredAstrometryRow(row) && !atmState.manualRejectedIds.has(id);
   }).length;
 }
 
@@ -510,7 +512,7 @@ function addSelectedAstrometryFitRejections() {
   let added = 0;
   atmState.processedRows.forEach((row) => {
     const id = astrometryRowIdKey(row);
-    if (!selected.has(id) || atmState.manualRejectedIds.has(id)) return;
+    if (!selected.has(id) || isIgnoredAstrometryRow(row) || atmState.manualRejectedIds.has(id)) return;
     atmState.manualRejectedIds.add(id);
     added += 1;
   });
@@ -543,6 +545,10 @@ function isManuallyRejectedAstrometryRow(row) {
   return atmState.manualRejectedIds.has(astrometryRowIdKey(row));
 }
 
+function isIgnoredAstrometryRow(row) {
+  return asBool(row?.ignored);
+}
+
 function astrometryFitRejectedIdSet() {
   const fit = atmState.fitResult;
   const ids = new Set();
@@ -563,7 +569,8 @@ function isFitRejectedAstrometryRow(row) {
 function astrometryAcceptedRows(rows) {
   const fitRejectedIds = astrometryFitRejectedIdSet();
   return (rows || []).filter((row) => (
-    !isManuallyRejectedAstrometryRow(row)
+    !isIgnoredAstrometryRow(row)
+    && !isManuallyRejectedAstrometryRow(row)
     && !fitRejectedIds.has(astrometryRowIdKey(row))
   ));
 }
@@ -885,8 +892,9 @@ function prepareAstrometryRows() {
     : [];
   const missionRows = calibrationRows.filter((row) => atmState.selectedMissions.has(String(row.mission || "No mission")));
   const rows = missionRows.filter((row) => finite(row.measurement_epoch_yr));
+  const referenceRows = rows.filter((row) => !isIgnoredAstrometryRow(row));
   const useRaw = atmEl["atm-revert-raw"].checked;
-  const reference = normalizedReference(payload.reference, rows, useRaw);
+  const reference = normalizedReference(payload.reference, referenceRows, useRaw);
   const pm = payload.pm || {};
   const plx = payload.parallax || {};
   const hasPmra = finite(pm.pmra_masyr);
@@ -915,16 +923,16 @@ function prepareAstrometryRows() {
   let refRa = reference.ra;
   let refDec = reference.dec;
   let refEpoch = reference.epoch;
-  if (atmEl["atm-adjust-reference"].checked && rows.length) {
-    const epochs = rows.map((row) => Number(row.measurement_epoch_yr)).filter(finite);
+  if (atmEl["atm-adjust-reference"].checked && referenceRows.length) {
+    const epochs = referenceRows.map((row) => Number(row.measurement_epoch_yr)).filter(finite);
     const targetEpoch = mean(epochs);
     if (finite(targetEpoch)) {
-      const finitePositions = rows.map((row) => astrometryPosition(row, useRaw)).filter((pos) => finite(pos.ra) && finite(pos.dec));
+      const finitePositions = referenceRows.map((row) => astrometryPosition(row, useRaw)).filter((pos) => finite(pos.ra) && finite(pos.dec));
       const meanRa = mean(finitePositions.map((pos) => pos.ra));
       const meanDec = mean(finitePositions.map((pos) => pos.dec));
       const raCandidates = [];
       const decCandidates = [];
-      rows.forEach((row) => {
+      referenceRows.forEach((row) => {
         const pos = astrometryPosition(row, useRaw);
         const epoch = Number(row.measurement_epoch_yr);
         if (!finite(pos.ra) || !finite(pos.dec) || !finite(epoch)) return;
@@ -990,13 +998,13 @@ function prepareAstrometryRows() {
     plxValue: subtractPlxValue,
   });
   const xValues = [
-    ...processed.map((row) => row.plot_x),
+    ...astrometryAcceptedRows(processed).map((row) => row.plot_x),
     ...(displayReference && referenceAstrometry ? [referenceAstrometry.plot_x] : []),
   ].filter(finite);
-  const xRange = paddedRange(xValues, atmEl["atm-phase-yearly"].checked ? [0, 1] : null);
+  const xRange = paddedRange(xValues, atmEl["atm-phase-yearly"].checked ? [0, 1] : null) || [1999, 2001];
   const model = buildAstrometryModel({
     xRange,
-    rows: processed,
+    rows: astrometryAcceptedRows(processed),
     refRa,
     refDec,
     refEpoch,
@@ -1069,7 +1077,7 @@ function prepareAstrometryRows() {
 }
 
 function adoptedReferenceAstrometry(reference, { useRaw, refRa, refDec, refEpoch, pmra, pmdec, plxValue }) {
-  if (!reference || reference.fallback) return null;
+  if (!reference || reference.fallback || isIgnoredAstrometryRow(reference)) return null;
   if (reference.adopt_as_reference !== undefined && Number(reference.adopt_as_reference) !== 1) return null;
   const pos = astrometryPosition(reference, useRaw);
   const ra = pos.ra;
@@ -1108,6 +1116,7 @@ function astrometryPosition(row, useRaw) {
 }
 
 function normalizedReference(reference, rows, useRaw) {
+  if (isIgnoredAstrometryRow(reference)) reference = null;
   let ra = finite(useRaw ? reference?.raw_ra : reference?.ra) ? Number(useRaw ? reference.raw_ra : reference.ra) : NaN;
   let dec = finite(useRaw ? reference?.raw_dec : reference?.dec) ? Number(useRaw ? reference.raw_dec : reference.dec) : NaN;
   let epoch = finite(reference?.measurement_epoch_yr) ? Number(reference.measurement_epoch_yr) : NaN;
@@ -1125,7 +1134,8 @@ function normalizedReference(reference, rows, useRaw) {
       epoch = Number(mid.measurement_epoch_yr);
     }
   }
-  return { ra, dec, epoch };
+  // Keep display-only ignored rows plottable even if no valid reference exists.
+  return { ra: finite(ra) ? ra : 0, dec: finite(dec) ? dec : 0, epoch: finite(epoch) ? epoch : 2000 };
 }
 
 function buildAstrometryModel({
@@ -1323,7 +1333,7 @@ function astrometryRaDegreeDivisor(prepared) {
 function buildAstrometryAssumedParallaxCurve(prepared) {
   if (!atmEl["atm-subtract-pm"]?.checked || !atmEl["atm-phase-yearly"]?.checked) return null;
   if (!finite(prepared.reference.ra) || !finite(prepared.reference.dec)) return null;
-  const centerEpoch = mean(prepared.rows.map((row) => row.plot_epoch_abs).filter(finite));
+  const centerEpoch = mean(astrometryAcceptedRows(prepared.rows).map((row) => row.plot_epoch_abs).filter(finite));
   const baseYear = Math.round(centerEpoch || prepared.reference.epoch || 2000);
   const n = 240;
   const x = [];
@@ -1410,7 +1420,8 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
   const missionStyles = astrometryMissionStyles(prepared.rows);
   const missions = [...missionStyles.keys()];
   missions.forEach((mission) => {
-    const rows = prepared.rows.filter((row) => String(row.mission || "No mission") === mission);
+    const rows = prepared.rows.filter((row) => !isIgnoredAstrometryRow(row) && String(row.mission || "No mission") === mission);
+    if (!rows.length) return;
     const markerStyle = astrometryMarkerStyle(mission, missionStyles);
     traces.push({
       x: rows.map((row) => row.plot_x),
@@ -1438,6 +1449,21 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
       hovertemplate: "%{text}<extra></extra>",
     });
   });
+  const ignoredRows = prepared.rows.filter(isIgnoredAstrometryRow);
+  if (ignoredRows.length) {
+    traces.push({
+      x: ignoredRows.map((row) => row.plot_x),
+      y: ignoredRows.map((row) => astrometryYValue(prepared, axis, row)),
+      customdata: ignoredRows.map((row) => row.id),
+      text: ignoredRows.map((row) => hoverText(row)),
+      type: "scatter",
+      mode: "markers",
+      marker: { symbol: "x", size: 12, color: "#a64b00", line: { width: 1.5 } },
+      name: "Ignored in MOCAdb (ignored=1)",
+      legendgroup: "astrometry-ignored",
+      hovertemplate: "%{text}<extra></extra>",
+    });
+  }
   if (prepared.binned.length) {
     traces.push({
       x: prepared.binned.map((row) => row.plot_x),
@@ -1585,12 +1611,12 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
     ...(referenceMarker ? [astrometryYValue(prepared, axis, referenceMarker)] : []),
     ...(fittedReferenceMarker ? [astrometryYValue(prepared, axis, fittedReferenceMarker)] : []),
   ].filter(finite);
-  const computedYRange = paddedRange(yValues, null);
+  const computedYRange = paddedRange(yValues, null) || [-1, 1];
   const computedXRange = paddedRange([
-    ...prepared.rows.map((row) => row.plot_x),
+    ...rangeRows.map((row) => row.plot_x),
     ...(referenceMarker ? [referenceMarker.plot_x] : []),
     ...(fittedReferenceMarker ? [fittedReferenceMarker.plot_x] : []),
-  ].filter(finite), atmEl["atm-phase-yearly"].checked ? [0, 1] : null);
+  ].filter(finite), atmEl["atm-phase-yearly"].checked ? [0, 1] : null) || [1999, 2001];
   const heldXRange = options.heldRanges?.[axis]?.x;
   const heldYRange = options.heldRanges?.[axis]?.y;
   const xRange = heldXRange || computedXRange;
@@ -1711,6 +1737,7 @@ function buildAstrometryFitRequest(mode, prepared) {
     && Number(row.pm_corrected) === 0
     && Number(row.plx_corrected) === 0
     && String(row.point_of_view || "").trim().toLowerCase() === "earth"
+    && !isIgnoredAstrometryRow(row)
     && !isManuallyRejectedAstrometryRow(row)
   )).map((row) => ({
     id: row.id,
@@ -1730,6 +1757,7 @@ function buildAstrometryFitRequest(mode, prepared) {
     point_of_view: row.point_of_view,
     mission_name: row.mission_name,
     data_release: row.data_release,
+    ignored: row.ignored ?? 0,
   }));
   return {
     mode,
@@ -1766,7 +1794,7 @@ function clearAstrometryFit(options = {}) {
 }
 
 function computeAstrometryFit(mode, prepared) {
-  const rows = prepared.rows.filter((row) => (
+  const rows = manualAstrometryFitRows(prepared.rows).filter((row) => (
     finite(row.plot_epoch_abs)
     && finite(row.base_rel_ra)
     && finite(row.base_rel_dec)
@@ -1835,13 +1863,14 @@ function computeAstrometryFit(mode, prepared) {
 }
 
 function buildAstrometryFitCurve(fit, prepared) {
-  const xValues = prepared.rows.map((row) => row.plot_x).filter(finite);
+  const acceptedRows = astrometryAcceptedRows(prepared.rows);
+  const xValues = acceptedRows.map((row) => row.plot_x).filter(finite);
   const xRange = paddedRange(xValues, atmEl["atm-phase-yearly"].checked ? [0, 1] : null);
   if (!xRange || !finite(xRange[0]) || !finite(xRange[1]) || xRange[0] === xRange[1]) {
     return null;
   }
   const n = 500;
-  const centerEpoch = mean(prepared.rows.map((row) => row.plot_epoch_abs).filter(finite));
+  const centerEpoch = mean(acceptedRows.map((row) => row.plot_epoch_abs).filter(finite));
   const roundedCenter = Math.round(centerEpoch || fit.t0 || 0);
   const x = [];
   const ra = [];
@@ -1921,7 +1950,7 @@ function setAstrometryFitDisabled(disabled) {
 }
 
 function manualAstrometryFitRows(rows) {
-  return (rows || []).filter((row) => !isManuallyRejectedAstrometryRow(row));
+  return (rows || []).filter((row) => !isIgnoredAstrometryRow(row) && !isManuallyRejectedAstrometryRow(row));
 }
 
 function updateAstrometryFitSummary(message = "") {
@@ -1954,6 +1983,7 @@ function astrometryFitMissionCounts(prepared) {
       !finite(row.plot_epoch_abs)
       || !finite(row.base_rel_ra)
       || !finite(row.base_rel_dec)
+      || isIgnoredAstrometryRow(row)
       || isManuallyRejectedAstrometryRow(row)
     ) {
       return;
@@ -2107,14 +2137,15 @@ function astrometryFitOutlierRows(prepared, component = null) {
   const ids = astrometryFitRejectedIdSet();
   if (!ids.size) return [];
   return prepared.rows.filter((row) => (
-    ids.has(astrometryRowIdKey(row))
+    !isIgnoredAstrometryRow(row)
+    && ids.has(astrometryRowIdKey(row))
     && (!component || astrometryFitOutlierComponent(row.id) === component)
   ));
 }
 
 function astrometryManualRejectedRows(prepared) {
   if (!atmState.manualRejectedIds.size) return [];
-  return prepared.rows.filter((row) => isManuallyRejectedAstrometryRow(row));
+  return prepared.rows.filter((row) => !isIgnoredAstrometryRow(row) && isManuallyRejectedAstrometryRow(row));
 }
 
 function astrometryFitResponsibility(rowId) {
@@ -2532,6 +2563,7 @@ function renderAstrometrySummary(prepared) {
   const calibrationAcceptedCount = prepared.calibration?.selected?.length || 0;
   const calibrationTotalCount = prepared.calibration?.options?.length || 0;
   const manualRejectedCount = astrometryManualRejectedRows(prepared).length;
+  const ignoredCount = rows.filter(isIgnoredAstrometryRow).length;
   const recalcNote = prepared.usedFallbackRecalibration ? " Recalibrated-only filter had no rows, so all rows are shown." : "";
   const fit = atmState.fitResult;
   const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
@@ -2595,6 +2627,7 @@ function renderAstrometrySummary(prepared) {
       <strong>${escapeHtml(targetShortName(target))}</strong>
       <span>oid${escapeHtml(target.moca_oid)}</span>
       <span>${rows.length} measurements</span>
+      ${ignoredCount ? `<span>${ignoredCount} ignored in MOCAdb (×); excluded from fits, binning and automatic ranges</span>` : ""}
       <span>${missionCount} missions</span>
       ${calibrationTotalCount ? `<span>${calibrationAcceptedCount}/${calibrationTotalCount} calibration methods accepted</span>` : ""}
       ${manualRejectedCount ? `<span>${manualRejectedCount} manually rejected from fit</span>` : ""}
@@ -2623,7 +2656,11 @@ function renderAstrometryTable() {
         <tr>
           <th>Symbol</th>
           <th>ID</th>
-          <th>Mission</th>
+          <th>Status</th>
+          <th>Mission name</th>
+          <th>Data release</th>
+          <th>moca_psid</th>
+          <th>Airmass</th>
           <th>Epoch</th>
           <th>R.A. offset</th>
           <th>Decl. offset</th>
@@ -2635,10 +2672,14 @@ function renderAstrometryTable() {
       </thead>
       <tbody>
         ${rows.map((row) => `
-          <tr>
+          <tr class="${isIgnoredAstrometryRow(row) ? "astrometry-ignored-row" : ""}">
             <td class="astrometry-symbol-cell">${astrometrySymbolMarkup(row, missionStyles)}</td>
             <td>${escapeHtml(row.id)}</td>
-            <td>${escapeHtml(row.mission || "")}</td>
+            <td title="${isIgnoredAstrometryRow(row) ? "Excluded from fits, binning, reference adjustment and automatic ranges" : "Active in MOCAdb"}">${isIgnoredAstrometryRow(row) ? "Ignored (ignored=1)" : "Active"}</td>
+            <td>${escapeHtml(row.mission_name || "—")}</td>
+            <td>${escapeHtml(row.data_release || "—")}</td>
+            <td>${escapeHtml(row.moca_psid ?? "—")}</td>
+            <td>${row.airmass == null ? "N/A" : formatNumber(row.airmass, 3)}</td>
             <td>${formatNumber(row.measurement_epoch_yr, 5)}</td>
             <td>${formatNumber(row.rel_ra, 2)} +/- ${formatNumber(row.ra_unc_mas, 2)} mas</td>
             <td>${formatNumber(row.rel_dec, 2)} +/- ${formatNumber(row.dec_unc_mas, 2)} mas</td>
@@ -2653,6 +2694,9 @@ function renderAstrometryTable() {
 }
 
 function astrometrySymbolMarkup(row, missionStyles) {
+  if (isIgnoredAstrometryRow(row)) {
+    return '<span class="astrometry-ignored-symbol" title="Ignored in MOCAdb (ignored=1); excluded from fits and automatic ranges" aria-label="Ignored measurement">×</span>';
+  }
   const mission = String(row.mission || "No mission");
   const markerStyle = astrometryMarkerStyle(mission, missionStyles);
   const title = `${mission}: marker size ${markerStyle.size}, color ${markerStyle.color}`;
@@ -2718,7 +2762,11 @@ function formatPaddedSeconds(value, precision) {
 function hoverText(row) {
   return [
     `<b>ID:</b> ${escapeHtml(row.id)}`,
+    `<b>Status:</b> ${isIgnoredAstrometryRow(row) ? "Ignored in MOCAdb (ignored=1); excluded from fits, binning and automatic ranges" : "Active (ignored=0)"}`,
     `<b>Mission:</b> ${escapeHtml(row.mission || "N/A")}`,
+    `<b>Mission name:</b> ${escapeHtml(row.mission_name || "N/A")}`,
+    `<b>Data release:</b> ${escapeHtml(row.data_release || "N/A")}`,
+    `<b>Airmass:</b> ${row.airmass == null ? "N/A" : formatNumber(row.airmass, 3)}`,
     `<b>Epoch:</b> ${formatNumber(row.measurement_epoch_yr, 5)} yr`,
     `<b>R.A. offset:</b> ${formatNumber(row.rel_ra, 2)} +/- ${formatNumber(row.ra_unc_mas, 2)} mas`,
     `<b>Decl. offset:</b> ${formatNumber(row.rel_dec, 2)} +/- ${formatNumber(row.dec_unc_mas, 2)} mas`,
@@ -2789,8 +2837,8 @@ function renderEmptyAstrometry(message) {
   setAstrometryLoading(false);
 }
 
-const astrometryExportColumns = ["id", "mission", "measurement_epoch_yr", "rel_ra", "rel_dec", "ra_unc_mas", "dec_unc_mas", "plot_ra", "plot_dec", "origin", "moca_pid", "calibration_method", "comments"];
-const astrometryNumericExportColumns = new Set(["id", "measurement_epoch_yr", "rel_ra", "rel_dec", "ra_unc_mas", "dec_unc_mas", "plot_ra", "plot_dec", "moca_pid"]);
+const astrometryExportColumns = ["id", "ignored", "mission", "mission_name", "data_release", "moca_psid", "airmass", "measurement_epoch_yr", "rel_ra", "rel_dec", "ra_unc_mas", "dec_unc_mas", "plot_ra", "plot_dec", "origin", "moca_pid", "calibration_method", "comments"];
+const astrometryNumericExportColumns = new Set(["id", "ignored", "airmass", "measurement_epoch_yr", "rel_ra", "rel_dec", "ra_unc_mas", "dec_unc_mas", "plot_ra", "plot_dec", "moca_pid"]);
 
 function exportAstrometry(format) {
   const rows = atmState.selectedIds.size
@@ -2809,7 +2857,7 @@ function exportAstrometry(format) {
 }
 
 function setAstrometryExportDisabled(disabled) {
-  for (const id of ["atm-export-csv", "atm-export-tsv", "atm-export-fits", "atm-export-votable"]) {
+  for (const id of ["atm-export-csv", "atm-table-export-csv", "atm-export-tsv", "atm-export-fits", "atm-export-votable"]) {
     if (atmEl[id]) atmEl[id].disabled = disabled;
   }
 }
@@ -2976,6 +3024,16 @@ function plotConfig(filename) {
   return {
     responsive: true,
     displaylogo: false,
+    doubleClick: "reset",
+    modeBarButtonsToRemove: ["autoScale2d"],
+    modeBarButtonsToAdd: [{
+      name: "Autoscale active measurements",
+      icon: Plotly.Icons?.autoscale,
+      click: (plotEl) => {
+        if (!atmState.payload) return;
+        renderAstrometryPlot(plotEl === atmEl["atm-ra-plot"] ? "ra" : "dec", prepareAstrometryRows());
+      },
+    }],
     toImageButtonOptions: {
       format: "png",
       height: 700,

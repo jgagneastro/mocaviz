@@ -117,6 +117,13 @@ http://127.0.0.1:8050/rvbam-explorer?mock=1
   endpoints; the browser handles mission toggles, residual transforms, binned
   display, selections, Plotly rendering, CSV export, URL state, and cache
   clearing.
+- Ignored astrometric measurements (`ignored=1`) remain available as labelled
+  × markers and table rows. They do not enter SciPy/UltraNest fits, binned
+  measurements, reference-coordinate adjustment, or automatic x/y ranges.
+  Points outside the initial view can be inspected by panning or zooming.
+  The measurement table and exports include mission name, data release,
+  `moca_psid`, airmass, and the ignored flag. **Export table as CSV** exports the
+  selected measurements, or all filtered measurements when nothing is selected.
 - The spectral explorer loads selected spectra through compact JSON
   endpoints; the browser handles normalization, flux-unit conversion,
   low-resolution display styling, chemical feature overlays, selections,

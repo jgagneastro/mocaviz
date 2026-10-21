@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-astrometry-ignored-20261021a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a-astrometry-auth-20261021a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -118,6 +118,7 @@
             <button id="atm-reset-manual-rejections" type="button" disabled>Reset manual rejections</button>
           </div>
           <div id="atm-manual-rejection-note" class="plot-hint">0 manually rejected points; no selected points</div>
+          <div class="plot-hint">× marks ignored MOCAdb measurements (ignored=1). They are excluded from fits, binning, reference adjustment, and automatic axis ranges. Zoom or pan to inspect ignored points outside the initial view.</div>
           <div class="button-grid astrometry-fit-actions">
             <button id="atm-fit-pm" type="button" disabled>Fit proper motion</button>
             <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
@@ -205,6 +206,7 @@
               <strong id="atm-table-title">Measurements</strong>
               <div id="atm-table-subtitle" class="plot-hint">Click or box-select points in either plot.</div>
             </div>
+            <button id="atm-table-export-csv" type="button" disabled title="Export selected rows, or all filtered measurements when no points are selected">Export table as CSV</button>
           </div>
           <div id="atm-table" class="table-scroll"></div>
         </div>
@@ -253,6 +255,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-capabilities-20261021a"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-ignored-20261021a"></script>
 </body>
 </html>

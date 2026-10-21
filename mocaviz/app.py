@@ -20627,7 +20627,7 @@ def _mock_mflows_payload(args: dict[str, Any]) -> dict[str, Any]:
 def _astrometry_db_cache_key(args: dict[str, Any], oid: int) -> str:
     cfg = _db_config(args)
     return "|".join([
-        "refunc-pubrefs-v1",
+        "ignored-measurements-v2",
         cfg["host"],
         cfg["username"],
         cfg["dbname"],
@@ -20793,6 +20793,8 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
 
     for index, raw_row in enumerate(rows_in):
         if not isinstance(raw_row, Mapping):
+            continue
+        if _as_bool(raw_row.get("ignored")):
             continue
         point_of_view = str(raw_row.get("point_of_view") or "").strip().casefold()
         if not (
@@ -23546,6 +23548,7 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
         rows_df = _read_sql(conn, """
             SELECT
                 deq.id,
+                deq.ignored,
                 deq.ra,
                 deq.`dec`,
                 deq.ra - IFNULL(
@@ -23585,7 +23588,6 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
                 ON mm.mission_name = deq.mission_name
                 AND mm.data_release = deq.data_release
             WHERE deq.moca_oid = :oid
-                AND deq.ignored = 0
                 AND {single_epoch_filter}
             ORDER BY deq.measurement_epoch_yr, deq.id
             LIMIT 20000
@@ -23596,7 +23598,8 @@ def _load_astrometry_object_from_db(args: dict[str, Any], oid: int) -> dict[str,
     if reference is None and rows:
         finite_rows = [
             row for row in rows
-            if row.get("ra") is not None and row.get("dec") is not None and row.get("measurement_epoch_yr") is not None
+            if not _as_bool(row.get("ignored"))
+            and row.get("ra") is not None and row.get("dec") is not None and row.get("measurement_epoch_yr") is not None
         ]
         if finite_rows:
             median_index = len(finite_rows) // 2
@@ -23680,6 +23683,7 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
         calibrated = index % 5 != 0
         rows.append({
             "id": index + 1,
+            "ignored": int(index in {11, 37, 65}),
             "ra": round(ra, 9),
             "dec": round(dec, 9),
             "raw_ra": round(ra - (0.008 if calibrated else 0.0) / (math.cos(math.radians(base_dec)) * 3600 * 1000), 9),
@@ -23715,6 +23719,7 @@ def _mock_astrometry_object(oid: int, include_merged: bool = False) -> dict[str,
             dec = base_dec + ddec_mas / (3600 * 1000)
             rows.append({
                 "id": f"merged-{merged_index + 1}",
+                "ignored": int(merged_index == 0),
                 "ra": round(ra, 9),
                 "dec": round(dec, 9),
                 "raw_ra": round(ra, 9),
