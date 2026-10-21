@@ -86,6 +86,17 @@ test('ignored rows never enter client fits, requests, fit counts, or fitted curv
   assert.ok(Math.max(...curve.x) < 2020);
 });
 
+test('ignored calibrated rows do not suppress the fallback to active uncalibrated measurements', () => {
+  const f = fixture();
+  f.run('atmEl["atm-only-recalibrated"].checked = true');
+  const before = plain(f.run('prepareAstrometryRows()'));
+  f.context.payload.rows.push({...f.rows[0], id:'ignored', ignored:1, calibration_method:'ignored-only calibration'});
+  const after = plain(f.run('prepareAstrometryRows()'));
+  assert.deepEqual(after.rows, before.rows);
+  assert.deepEqual(after.model, before.model);
+  assert.equal(after.usedFallbackRecalibration, true);
+});
+
 test('table marks ignored measurements and includes all requested metadata', () => {
   const f = fixture();
   f.context.payload.rows.push({...f.rows[0], id:'ignored', ignored:1, airmass:null});

@@ -884,7 +884,8 @@ function prepareAstrometryRows() {
   const recalFiltered = atmEl["atm-only-recalibrated"].checked
     ? allRows.filter((row) => row.calibration_method || Number(row.include_in_recalibrated_display) === 1 || (displayMerged && Number(row.single_epoch) === 0))
     : allRows;
-  const baseRows = recalFiltered.length ? recalFiltered : allRows;
+  const hasRecalibratedActiveRows = recalFiltered.some((row) => !isIgnoredAstrometryRow(row));
+  const baseRows = hasRecalibratedActiveRows ? recalFiltered : allRows;
   const calibrationOptions = astrometryCalibrationMethodOptions(allRows);
   const selectedCalibrationMethods = new Set([...atmState.selectedCalibrationMethods].map((method) => astrometryCalibrationMethodKey(method)));
   const calibrationRows = selectedCalibrationMethods.size
@@ -1072,7 +1073,7 @@ function prepareAstrometryRows() {
       rejected: calibrationOptions.filter((method) => !selectedCalibrationMethods.has(method.value)),
       filteredOutCount: baseRows.length - calibrationRows.length,
     },
-    usedFallbackRecalibration: atmEl["atm-only-recalibrated"].checked && !recalFiltered.length && allRows.length > 0,
+    usedFallbackRecalibration: atmEl["atm-only-recalibrated"].checked && !hasRecalibratedActiveRows && allRows.some((row) => !isIgnoredAstrometryRow(row)),
   };
 }
 
