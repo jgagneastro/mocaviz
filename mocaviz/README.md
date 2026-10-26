@@ -168,3 +168,29 @@ http://127.0.0.1:8050/rvbam-explorer?mock=1
 Optional index recommendations are in `INDEX_RECOMMENDATIONS.md`, with
 reviewable SQL in `../sql/indexes/`. They are never applied automatically by
 the application.
+
+
+### Astrometry UltraNest progress and cancellation (2026-10-26)
+
+UltraNest runs as a bounded background fit with one active job per web process.
+The page polls short status requests, showing the current moving/stationary
+model, elapsed time, and likelihood evaluations. **Cancel fit** requests a real
+sampler stop, acknowledged before reporting cancellation. **Retry status**
+reattaches after a connection failure without starting a second sampler. Identical
+active requests reuse the same job. Changing fit inputs discards a late result
+and cancels that page's previous job.
+
+The default combined fit budget is 900 seconds and 2,000,000 likelihood calls,
+configurable server-side with `ASTROMETRY_FIT_TIMEOUT_SECONDS` (up to 7200) and
+`ASTROMETRY_ULTRANEST_MAX_NCALLS` (up to 20,000,000). Limits are checked during
+prior/likelihood evaluation; the native sampler also receives the remaining
+call budget. Limit exits are **incomplete** with no usable fit/evidence returned.
+Native live-point, evidence, posterior, and mixture-model criteria are retained.
+SciPy fitting and database push controls retain their existing separate routes.
+
+Jobs use `/api/astrometry/fit/jobs`, with GET status and POST cancellation at
+`/<job_id>` and `/<job_id>/cancel`. Tokens are scoped to a hash of the connection
+credentials, which are never stored in job responses or receipts. Completed
+jobs expire after an hour, and at most 32 are retained in memory. Reloading the
+web service clears in-memory jobs; it does not write measurements or fitted
+values to MOCAdb. UltraNest point stores are closed on cancellation and errors.

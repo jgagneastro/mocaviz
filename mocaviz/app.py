@@ -26,6 +26,8 @@ from threading import Event, Lock
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote_plus
 
+from mocaviz.astrometry_jobs import FitJobs, FitControl, FitBusy, FitLimitReached, current_control
+
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -157,6 +159,7 @@ def _is_cacheable_api_request() -> bool:
         and request.blueprint not in {"gnirs_planner", "gnirs_planner_compat"}
         and request.blueprint not in {"spectrum_compare", "spectrum_compare_compat"}
         and request.blueprint not in {"spherex_review", "spherex_review_compat"}
+        and not request.path.startswith(("/api/astrometry/fit/jobs", "/js/api/astrometry/fit/jobs"))
         and ENCODED_RESPONSE_CACHE_SECONDS > 0
         and (request.path.startswith("/api/") or request.path.startswith("/js/api/"))
     )
@@ -250,6 +253,8 @@ def _release_encoded_response_inflight(cache_key: str) -> None:
 
 @app.after_request
 def _optimize_http_response(response: Response) -> Response:
+    if request.path.startswith(("/api/astrometry/fit/jobs", "/js/api/astrometry/fit/jobs")):
+        response.headers["Cache-Control"] = "no-store"
     if (
         request.method == "GET"
         and request.args.get("v")
@@ -22309,6 +22314,9 @@ def _astrometry_ultranest_bounds(
     return widened
 
 
+_ASTROMETRY_FIT_JOBS = FitJobs()
+
+
 def _astrometry_ultranest_fit(
     arrays: Mapping[str, Any],
     seed_fit: Mapping[str, Any],
@@ -22323,6 +22331,8 @@ def _astrometry_ultranest_fit(
     import ultranest
     import ultranest.stepsampler
 
+    control = current_control() or FitControl()
+    control.check()
     seed_params = np.asarray(seed_fit["params"], dtype=float)
     bounds = _astrometry_ultranest_bounds(
         arrays,
@@ -22383,6 +22393,11 @@ def _astrometry_ultranest_fit(
         return float(1.0 - (1.0 - u) ** (1.0 / beta))
 
     def run_model(include_stationary: bool) -> dict[str, Any]:
+        total_models = 2 if outlier_mixture else 1
+        control.check(phase=(
+            f"Sampling {'stationary-source' if include_stationary else 'moving-source'} model "
+            f"({2 if include_stationary else 1}/{total_models})"
+        ))
         param_names = list(physical_names)
         if error_floor:
             param_names.extend(["error_floor_ra", "error_floor_dec"])
@@ -22392,6 +22407,7 @@ def _astrometry_ultranest_fit(
             param_names.extend(["stationary_fraction", "stationary_ra", "stationary_dec"])
 
         def transform(unit_cube: Any) -> list[float]:
+            control.check()
             u = np.asarray(unit_cube, dtype=float)
             transformed = [lo + u[index] * (hi - lo) for index, (lo, hi) in enumerate(bounds)]
             if bool(arrays["fit_parallax"]) and parallax_prior is not None:
@@ -22498,6 +22514,7 @@ def _astrometry_ultranest_fit(
             )
 
         def loglike(theta: Any) -> float:
+            control.check(likelihood=True)
             (
                 physical,
                 weights,
@@ -22546,10 +22563,26 @@ def _astrometry_ultranest_fit(
             log_dir=str(log_dir),
         )
         sampler.stepsampler = ultranest.stepsampler.RegionSliceSampler(nsteps=32)
-        result = sampler.run(
-            min_num_live_points=int(os.environ.get("ASTROMETRY_ULTRANEST_LIVE_POINTS", "300")),
-            dlogz=float(os.environ.get("ASTROMETRY_ULTRANEST_DLOGZ", "0.5")),
-        )
+        remaining_calls = control.remaining_calls
+        try:
+            result = sampler.run(
+                min_num_live_points=int(os.environ.get("ASTROMETRY_ULTRANEST_LIVE_POINTS", "300")),
+                dlogz=float(os.environ.get("ASTROMETRY_ULTRANEST_DLOGZ", "0.5")),
+                max_ncalls=remaining_calls,
+                show_status=False,
+                viz_callback=False,
+            )
+        finally:
+            pointstore = getattr(sampler, "pointstore", None)
+            if pointstore is not None:
+                pointstore.close()
+
+        control.check()
+        # UltraNest may return a partial posterior on its call-count boundary.
+        # Such a posterior is not a finished fit or a usable model evidence.
+        result_map = result if isinstance(result, Mapping) else sampler.results
+        if int(result_map.get("ncall", 0)) >= remaining_calls:
+            raise FitLimitReached("UltraNest reached the likelihood-call limit before verified completion. No unfinished fit was applied.")
         result_map = result if isinstance(result, Mapping) else sampler.results
         posterior = result_map.get("posterior") or sampler.results.get("posterior")
         mean = np.asarray(posterior["mean"], dtype=float)
@@ -22739,7 +22772,12 @@ def _run_astrometry_fit(body: Mapping[str, Any], args: dict[str, Any]) -> dict[s
             "measured/distance Gaussian parallax constraint."
         )
 
+    control = current_control()
+    if control is not None:
+        control.check(phase="Preparing robust starting fit")
     scipy_fit = _astrometry_scipy_fit(arrays, outlier_mixture=outlier_mixture, error_floor=error_floor)
+    if control is not None:
+        control.check()
     if fitter == "ultranest":
         capabilities = _astrometry_fit_capabilities(args)
         ultranest_capability = capabilities["fitters"]["ultranest"]
@@ -36489,6 +36527,46 @@ def astrometry_fit():
             "capabilities": _astrometry_fit_capabilities(args),
             "meta": {"loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
         }), 500
+
+
+def _astrometry_fit_job_owner(args):
+    cfg = _db_config(args)
+    # Credentials never appear in job payloads, tokens, logs or disk receipts.
+    return hashlib.sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()
+
+
+@app.post("/api/astrometry/fit/jobs")
+def astrometry_fit_job_start():
+    args = dict(request.args)
+    body = request.get_json(silent=True) or {}
+    try:
+        if not isinstance(body, Mapping):
+            raise ValueError("A fit request object is required.")
+        if str(body.get("fitter", "")).lower() != "ultranest":
+            raise ValueError("Background fit jobs require fitter='ultranest'.")
+        capabilities = _astrometry_fit_capabilities(args)
+        if not capabilities["fitters"]["ultranest"]["enabled"]:
+            return jsonify(ok=False, error=capabilities["fitters"]["ultranest"]["message"]), 403
+        _astrometry_fit_arrays(body)  # Validate before reserving the single worker.
+        job = _ASTROMETRY_FIT_JOBS.start(
+            _astrometry_fit_job_owner(args), body, lambda: _run_astrometry_fit(body, args))
+        return jsonify(ok=True, job=job), 202
+    except FitBusy as exc:
+        return jsonify(ok=False, error=str(exc)), 409
+    except (ValueError, TypeError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@app.get("/api/astrometry/fit/jobs/<job_id>")
+@app.post("/api/astrometry/fit/jobs/<job_id>/cancel")
+def astrometry_fit_job_status(job_id):
+    try:
+        job = _ASTROMETRY_FIT_JOBS.status(
+            _astrometry_fit_job_owner(dict(request.args)), job_id,
+            cancel=request.method == "POST")
+        return jsonify(ok=True, job=job)
+    except KeyError:
+        return jsonify(ok=False, error="Fit job not found or expired. Start a new fit."), 404
 
 
 @app.post("/api/astrometry/fit/push")

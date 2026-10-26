@@ -34,6 +34,7 @@ const atmState = {
   initialCalibrationMethods: [],
   fitResult: null,
   fitBusy: false,
+  fitTask: null,
   pushBusy: false,
   ignoreBusy: false,
   fitCapabilities: null,
@@ -106,6 +107,8 @@ function collectAstrometryElements() {
     "atm-fit-pm",
     "atm-fit-plx",
     "atm-clear-fit",
+    "atm-cancel-fit",
+    "atm-retry-fit",
     "atm-fit-summary",
     "atm-management-tools",
     "atm-push-coordinate",
@@ -281,6 +284,10 @@ function bindAstrometryControls() {
       updateAstrometryUrl();
     });
   }
+  atmEl["atm-cancel-fit"]?.addEventListener("click", cancelAstrometryFit);
+  atmEl["atm-retry-fit"]?.addEventListener("click", () => {
+    if (atmState.fitTask?.disconnected && !atmState.fitTask.polling) executeAstrometryFitTask(atmState.fitTask);
+  });
   atmEl["atm-fit-pm"].addEventListener("click", () => runAstrometryFit("pm"));
   atmEl["atm-fit-plx"].addEventListener("click", () => runAstrometryFit("pm_plx"));
   if (atmEl["atm-reject-selected-fit"]) atmEl["atm-reject-selected-fit"].addEventListener("click", addSelectedAstrometryFitRejections);
@@ -358,7 +365,7 @@ function updateAstrometryFitControlState() {
   if (atmEl["atm-fit-method-note"]) {
     const note = ultraOption?.disabled
       ? ultranest.message || "UltraNest is not available."
-      : select.value === "ultranest" ? "UltraNest fits run on the server and can be slow." : "";
+      : select.value === "ultranest" ? "UltraNest samples moving and stationary-source models. Progress and cancellation are shown below; unfinished sampling never returns fitted values." : "";
     atmEl["atm-fit-method-note"].textContent = note;
   }
   updateManualAstrometryRejectionControls();
@@ -1789,30 +1796,158 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
 }
 
 async function runAstrometryFit(mode) {
-  if (!atmState.payload) return;
+  if (!atmState.payload || atmState.fitBusy) return;
   const prepared = prepareAstrometryRows();
-  const fitter = selectedAstrometryFitMethod();
+  const task = {mode, fitter:selectedAstrometryFitMethod(), body:buildAstrometryFitRequest(mode, prepared),
+    oid:atmState.selectedOid, active:true, polling:false, disconnected:false, id:null};
+  atmState.fitTask = task;
+  return executeAstrometryFitTask(task);
+}
+
+function astrometryFitProgressText(job) {
+  const elapsed = Math.max(0, Math.floor(Number(job.elapsedSeconds) || 0));
+  const duration = `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
+  const calls = Number(job.likelihoodCalls || 0).toLocaleString();
+  const seconds = Number(job.timeoutSeconds || 900);
+  const limit = seconds >= 60 ? `${Math.round(seconds / 60)} min` : `${Math.round(seconds)} s`;
+  return `${job.state === "cancelling" ? "Cancelling" : job.phase || "Running UltraNest"} · ${duration} elapsed · ${calls} likelihood calls · ${limit} limit`;
+}
+
+async function astrometryFitJobJson(path, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  const params = apiParams();
+  const url = atmAppUrl(`${path}${params.toString() ? `?${params}` : ""}`);
   try {
-    setAstrometryFitBusy(true, `Running ${fitter === "ultranest" ? "UltraNest" : "SciPy"} fit`);
-    const payload = await postAstrometryJson("api/astrometry/fit", buildAstrometryFitRequest(mode, prepared));
-    if (!payload?.ok || !payload.fit) {
-      throw new Error(payload?.error || "Fit failed");
+    const response = await fetch(url, {method:body === undefined ? "GET" : "POST",
+      headers:body === undefined ? {} : {"Content-Type":"application/json"},
+      body:body === undefined ? undefined : JSON.stringify(body), cache:"no-store", signal:controller.signal});
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const error = new Error(data.error || (response.status === 404
+        ? "Fit job unavailable. Reload the page and start a new fit."
+        : `Fit request failed (${response.status}).`));
+      error.retryable = response.status >= 500;
+      throw error;
     }
+    return await response.json();
+  } catch (error) {
+    if (error.name === "AbortError" || error instanceof TypeError) {
+      const failure = new Error("Fit status connection lost. Use Retry status to reconnect, or Cancel fit. The server runtime limit still applies.");
+      failure.retryable = true;
+      throw failure;
+    }
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+
+async function pollAstrometryFitJob(task) {
+  while (task === atmState.fitTask && task.active) {
+    const response = await astrometryFitJobJson(`api/astrometry/fit/jobs/${encodeURIComponent(task.id)}`);
+    if (task !== atmState.fitTask) throw new Error("Fit inputs changed; old result discarded.");
+    const job = response.job;
+    if (!response.ok || !job) throw new Error(response.error || "Fit status unavailable.");
+    if (job.state === "complete") return job.result;
+    if (["failed", "cancelled", "incomplete"].includes(job.state)) {
+      throw new Error(job.error || `Fit ${job.state}; no result applied.`);
+    }
+    updateAstrometryFitSummary(astrometryFitProgressText(job));
+    setAstrometryStatus(astrometryFitProgressText(job), "");
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error("Fit inputs changed; old result discarded.");
+}
+
+async function executeAstrometryFitTask(task) {
+  task.polling = true;
+  task.disconnected = false;
+  try {
+    setAstrometryFitBusy(true, `Starting ${task.fitter === "ultranest" ? "UltraNest" : "SciPy"} fit…`);
+    let payload;
+    if (task.fitter === "ultranest") {
+      if (!task.id) {
+        const started = await astrometryFitJobJson("api/astrometry/fit/jobs", task.body);
+        if (!started.ok || !started.job) throw new Error(started.error || "Fit could not start.");
+        task.id = started.job.id;
+        if (task !== atmState.fitTask || !task.active) {
+          astrometryFitJobJson(`api/astrometry/fit/jobs/${encodeURIComponent(task.id)}/cancel`, {}).catch(() => {});
+          return;
+        }
+        updateAstrometryFitSummary(astrometryFitProgressText(started.job));
+        updateAstrometryFitJobControls();
+      }
+      setAstrometryLoading(false);
+      payload = await pollAstrometryFitJob(task);
+    } else {
+      payload = await postAstrometryJson("api/astrometry/fit", task.body);
+    }
+    if (task !== atmState.fitTask) return;
+    if (task.cancelRequested) throw new Error("Fit cancelled; no result applied.");
+    if (task.oid !== atmState.selectedOid || JSON.stringify(task.body) !== JSON.stringify(buildAstrometryFitRequest(task.mode, prepareAstrometryRows()))) {
+      throw new Error("The selected measurements changed. Old fit discarded; start a new fit.");
+    }
+    if (!payload?.fit) throw new Error(payload?.error || "Fit failed");
     atmState.fitCapabilities = payload.capabilities || atmState.fitCapabilities;
     atmState.fitResult = payload.fit;
+    task.active = false;
     updateAstrometryFitControlState();
     updateAstrometryManagementVisibility();
     renderAstrometry();
     setAstrometryStatus(`${atmState.fitResult.fitterLabel || "Astrometry"} fit complete`, "");
   } catch (error) {
+    if (task !== atmState.fitTask) return;
     atmState.fitResult = null;
+    task.disconnected = Boolean(error.retryable && task.fitter === "ultranest");
+    task.active = task.disconnected;
     updateAstrometryFitSummary(error.message || "Fit failed");
     updateAstrometryManagementVisibility();
-    setAstrometryFitDisabled(!prepared.rows.length);
     setAstrometryStatus(error.message || "Fit failed", "error");
   } finally {
-    setAstrometryFitBusy(false);
+    task.polling = false;
+    if (task === atmState.fitTask) {
+      if (!task.active) atmState.fitTask = null;
+      setAstrometryFitBusy(task.active);
+      // A disconnected job is explicit, not a spinner claiming live progress.
+      if (task.disconnected) setAstrometryLoading(false);
+      updateAstrometryFitJobControls();
+    }
   }
+}
+
+function updateAstrometryFitJobControls() {
+  const task = atmState.fitTask;
+  const cancel = atmEl["atm-cancel-fit"], retry = atmEl["atm-retry-fit"];
+  if (cancel) { cancel.hidden = !task?.active || task.fitter !== "ultranest"; cancel.disabled = !task?.id || Boolean(task.cancelRequested); }
+  if (retry) { retry.hidden = !task?.disconnected; retry.disabled = Boolean(task?.polling); }
+}
+
+async function cancelAstrometryFit() {
+  const task = atmState.fitTask;
+  if (!task?.id || !task.active) return;
+  task.cancelRequested = true;
+  updateAstrometryFitJobControls();
+  try {
+    await astrometryFitJobJson(`api/astrometry/fit/jobs/${encodeURIComponent(task.id)}/cancel`, {});
+    if (task !== atmState.fitTask) return;
+    updateAstrometryFitSummary("Cancellation requested; waiting for the sampler to stop…");
+    if (!task.polling) await executeAstrometryFitTask(task);
+  } catch (error) {
+    if (task !== atmState.fitTask) return;
+    task.cancelRequested = false;
+    task.disconnected = true;
+    updateAstrometryFitSummary(error.message || "Cancellation could not be confirmed; retry status.");
+    updateAstrometryFitJobControls();
+  }
+}
+
+function abandonAstrometryFitTask() {
+  const task = atmState.fitTask;
+  if (!task?.active) return;
+  task.active = false;
+  atmState.fitTask = null;
+  if (task.id) astrometryFitJobJson(`api/astrometry/fit/jobs/${encodeURIComponent(task.id)}/cancel`, {}).catch(() => {});
+  setAstrometryFitBusy(false);
+  updateAstrometryFitJobControls();
 }
 
 function selectedAstrometryFitMethod() {
@@ -1881,6 +2016,7 @@ function setAstrometryFitBusy(busy, message = "") {
 }
 
 function clearAstrometryFit(options = {}) {
+  abandonAstrometryFitTask();
   atmState.fitResult = null;
   updateAstrometryFitSummary();
   updateAstrometryManagementVisibility();

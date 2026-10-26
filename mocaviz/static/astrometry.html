@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MOCAdb Astrometric Explorer</title>
-  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-astrometry-management-20261021b">
+  <link rel="stylesheet" href="static/styles.css?v=dataviz-links-20260626a-astrometry-management-20261021b-fit-progress-20261026a">
   <script src="static/auth_theme.js?v=request-coordinator-20260709a-astrometry-auth-20261021a"></script>
   <script src="plotly.min.js?v=plotly-5.9.0"></script>
   <script src="static/plotly_export_fix.js?v=20260709a"></script>
@@ -128,7 +128,11 @@
             <button id="atm-fit-plx" type="button" disabled>Fit parallax</button>
           </div>
           <button id="atm-clear-fit" type="button" disabled>Clear fit</button>
-          <div id="atm-fit-summary" class="plot-hint"></div>
+          <div id="atm-fit-summary" class="plot-hint" role="status" aria-live="polite"></div>
+          <div class="button-grid astrometry-fit-actions">
+            <button id="atm-cancel-fit" type="button" hidden>Cancel fit</button>
+            <button id="atm-retry-fit" type="button" hidden>Retry status</button>
+          </div>
         </section>
 
         <section id="atm-management-tools" class="control-section astrometry-management-section" hidden>
@@ -267,6 +271,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b-fit-progress-20261026a"></script>
 </body>
 </html>
