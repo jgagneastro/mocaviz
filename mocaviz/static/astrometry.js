@@ -1817,10 +1817,18 @@ async function astrometryFitJobJson(path, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   const params = apiParams();
+  const headers = body === undefined ? {} : {"Content-Type":"application/json"};
+  // Polling URLs must not repeat database credentials in access logs.
+  for (const [header, keys] of [["X-MOCA-User", ["user", "username"]],
+    ["X-MOCA-Password", ["pwd", "password"]], ["X-MOCA-Database", ["dbase", "db", "database"]]]) {
+    const value = keys.map(key => params.get(key)).find(Boolean);
+    if (value) headers[header] = value;
+    keys.forEach(key => params.delete(key));
+  }
   const url = atmAppUrl(`${path}${params.toString() ? `?${params}` : ""}`);
   try {
     const response = await fetch(url, {method:body === undefined ? "GET" : "POST",
-      headers:body === undefined ? {} : {"Content-Type":"application/json"},
+      headers,
       body:body === undefined ? undefined : JSON.stringify(body), cache:"no-store", signal:controller.signal});
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));

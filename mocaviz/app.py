@@ -36529,6 +36529,15 @@ def astrometry_fit():
         }), 500
 
 
+def _astrometry_fit_job_args():
+    args = dict(request.args)
+    for key, header in (("user", "X-MOCA-User"), ("pwd", "X-MOCA-Password"),
+                        ("dbase", "X-MOCA-Database")):
+        if key not in args and request.headers.get(header):
+            args[key] = request.headers[header]
+    return args
+
+
 def _astrometry_fit_job_owner(args):
     cfg = _db_config(args)
     # Credentials never appear in job payloads, tokens, logs or disk receipts.
@@ -36537,7 +36546,7 @@ def _astrometry_fit_job_owner(args):
 
 @app.post("/api/astrometry/fit/jobs")
 def astrometry_fit_job_start():
-    args = dict(request.args)
+    args = _astrometry_fit_job_args()
     body = request.get_json(silent=True) or {}
     try:
         if not isinstance(body, Mapping):
@@ -36562,7 +36571,7 @@ def astrometry_fit_job_start():
 def astrometry_fit_job_status(job_id):
     try:
         job = _ASTROMETRY_FIT_JOBS.status(
-            _astrometry_fit_job_owner(dict(request.args)), job_id,
+            _astrometry_fit_job_owner(_astrometry_fit_job_args()), job_id,
             cancel=request.method == "POST")
         return jsonify(ok=True, job=job)
     except KeyError:

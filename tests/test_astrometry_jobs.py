@@ -98,6 +98,18 @@ class FitJobTests(unittest.TestCase):
                 self.assertNotEqual(second.headers.get('X-MOCA-Response-Cache'),'HIT')
         finally:release.set()
 
+    def test_job_headers_preserve_authenticated_owner_without_query_credentials(self):
+        headers={'X-MOCA-User':'management','X-MOCA-Password':'synthetic',
+                 'X-MOCA-Database':'mocadb_private_tables'}
+        jobs=FitJobs()
+        with patch.object(api,'_ASTROMETRY_FIT_JOBS',jobs),patch.object(api,'_astrometry_fit_arrays',return_value={}),patch.object(api,'_run_astrometry_fit',return_value={'fit':{'pmra':10}}):
+            client=api.app.test_client()
+            started=client.post('/api/astrometry/fit/jobs',headers=headers,json={'fitter':'ultranest'})
+            self.assertEqual(started.status_code,202)
+            key=started.get_json()['job']['id']
+            self.assertEqual(client.get('/api/astrometry/fit/jobs/'+key,headers=headers).status_code,200)
+            self.assertEqual(client.get('/api/astrometry/fit/jobs/'+key,headers={**headers,'X-MOCA-Password':'wrong'}).status_code,404)
+
     def test_capabilities_and_job_routes_validate_scope_and_inputs(self):
         jobs=FitJobs();args={'user':'management','pwd':'synthetic','dbase':'mocadb_private_tables'}
         rows=[dict(id=i,plot_epoch_abs=2010+i,base_rel_ra=10*i,base_rel_dec=5*i,

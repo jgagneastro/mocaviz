@@ -95,3 +95,14 @@ test('a late job-start response is cancelled after the user changes inputs',asyn
  f.run('abandonAstrometryFitTask()');release();await promise;
  assert.ok(cancel);assert.equal(f.run('atmState.fitResult'),null);
 });
+
+
+test('fit polling puts credentials in headers and keeps them out of request URLs',async()=>{
+ const seen=[];
+ const f=fixture(async(url,options)=>{seen.push({url,headers:options.headers});return response(running)});
+ f.run('window.location.search="?user=management&pwd=synthetic-secret&dbase=mocadb_private_tables&mock=1"');
+ await f.run('astrometryFitJobJson("api/astrometry/fit/jobs/test-job")');
+ assert.equal(seen.length,1);assert.ok(!seen[0].url.includes('synthetic-secret'));
+ assert.ok(!seen[0].url.includes('user='));assert.ok(seen[0].url.includes('mock=1'));
+ assert.equal(seen[0].headers['X-MOCA-Password'],'synthetic-secret');
+});
