@@ -162,7 +162,7 @@ def api(operation):
 # comparators for managed packages 113 and 114, respectively.
 MANAGED_PACKAGES = (
     106, 107, 108, 109, 113, 114,
-    118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129,
+    118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
 )
 IGRINS_ARCHIVE_LEGACY_PACKAGE = 110
 ESO_ARCHIVE_LEGACY_PACKAGE = 115

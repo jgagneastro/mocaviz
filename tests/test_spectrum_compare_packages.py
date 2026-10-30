@@ -10,6 +10,7 @@ PACKAGES = {
     121: "arcoiris_ctio_blanco", 122: "tspec_soar", 123: "tspec_palomar",
     124: "triplespec_apo", 125: "niri_gemini_north", 126: "crires_vlt",
     127: "isaac_vlt", 128: "mosfire_keck", 129: "nirspec_jwst",
+    130: "miri_jwst",
 }
 
 

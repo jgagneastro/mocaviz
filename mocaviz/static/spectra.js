@@ -157,6 +157,8 @@ function readSpectraUrlState() {
 }
 
 function bindSpectraControls() {
+  document.getElementById("spe-open-joint-fit").addEventListener("click", () => openSelectedJointFit());
+  document.getElementById("spe-open-orders").addEventListener("click", () => openSelectedJointFit(true));
   speEl["spe-search"].addEventListener("input", () => {
     const value = speEl["spe-search"].value.trim();
     clearTimeout(speState.searchTimer);
@@ -1617,18 +1619,50 @@ function spectralTypingLinkHtml(specid) {
   return `<a class="button-link spectra-typing-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="Open spectral typing for specid ${parsedSpecid}">Spectral type</a>`;
 }
 
+function jointFitLinkHtml(specid) {
+  const id = parseInteger(specid);
+  if (id === null || id <= 0) return "";
+  return `<a class="button-link spectra-joint-fit-link" href="http://127.0.0.1:8773/?specid=${id}" target="_blank" rel="noopener noreferrer" aria-label="Open local A0 joint fit for specid ${id}">A0 joint fit ↗</a>`;
+}
+
+function orderExplorerLinkHtml(specid) {
+  const id = parseInteger(specid);
+  if (id === null || id <= 0) return "";
+  return `<a class="button-link" href="http://127.0.0.1:8774/?specid=${id}" target="_blank" rel="noopener noreferrer">Orders / stitching ↗</a>`;
+}
+
+function openSelectedJointFit(orders = false) {
+  const source = speState.selectedPoints.length ? speState.selectedPoints : speState.processed;
+  const ids = [...new Set(source.map(row => parseInteger(row.specid)).filter(id => id > 0))];
+  if (ids.length !== 1) {
+    speEl["spe-table-subtitle"].textContent = "Select a point from one spectrum, or use its viewer link below.";
+    return;
+  }
+  window.open(`http://127.0.0.1:${orders ? 8774 : 8773}/?specid=${ids[0]}`, "_blank", "noopener,noreferrer");
+}
+
+document.addEventListener("keydown", event => {
+  if (event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.target.isContentEditable || event.target.closest("input,select,textarea,[role=dialog]")) return;
+  if (["j", "s"].includes(event.key.toLowerCase()) && speEl["spe-table-subtitle"]) {
+    event.preventDefault();
+    openSelectedJointFit(event.key.toLowerCase() === "s");
+  }
+});
+
 function renderSpectraTable() {
   if (speState.selectedPoints.length) {
     speEl["spe-table-title"].textContent = `${speState.selectedPoints.length} selected spectral rows`;
     speEl["spe-table-subtitle"].textContent = speEl["spe-snr"].checked
       ? "Rows reflect displayed S/N per pixel."
       : "Rows reflect the displayed flux unit and normalization state.";
-    const columns = ["plot", "specid", "typing", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flux_units", "ignored"];
+    const columns = ["plot", "specid", "typing", "joint_fit", "orders", "oid", "reference", "wavelength_um", "display_flux", "display_error", "raw_flambda", "raw_flux_units", "ignored"];
     if (spectraManagementToolsVisible()) columns.splice(3, 0, "row_id");
     const rows = speState.selectedPoints.map((point) => ({
       plot: swatchHtml(point.color || spectraColorForSpecid(point.specid)),
       specid: point.specid,
       typing: spectralTypingLinkHtml(point.specid),
+      joint_fit: jointFitLinkHtml(point.specid),
+      orders: orderExplorerLinkHtml(point.specid),
       oid: point.oid,
       row_id: point.dataSpectraId ?? "",
       reference: spectrumReferenceHtml(point),
@@ -1639,7 +1673,7 @@ function renderSpectraTable() {
       raw_flux_units: point.rawFluxUnit || "",
       ignored: point.ignored,
     }));
-    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "typing", "reference"]) });
+    speEl["spe-table"].innerHTML = tableHtml(columns, rows, { htmlColumns: new Set(["plot", "typing", "joint_fit", "orders", "reference"]) });
     return;
   }
   const rows = (speState.processed || []).map((spectrum) => {
@@ -1651,6 +1685,8 @@ function renderSpectraTable() {
       object: spectrum.metadata?.designation || "",
       spectral_type: spectrum.metadata?.spectral_type || "",
       typing: spectralTypingLinkHtml(spectrum.specid),
+      joint_fit: jointFitLinkHtml(spectrum.specid),
+      orders: orderExplorerLinkHtml(spectrum.specid),
       instrument: instrumentLabel(spectrum.metadata),
       flux_units: spectrum.metadata?.flux_units || "",
       reference: spectrumReferenceHtml(spectrum.metadata),
@@ -1661,7 +1697,7 @@ function renderSpectraTable() {
   });
   speEl["spe-table-title"].textContent = `Selected spectra (${pluralize(rows.length, "spectrum", "spectra")})`;
   speEl["spe-table-subtitle"].textContent = "Click or box-select plotted points to inspect spectral rows.";
-  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "typing", "instrument", "flux_units", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "typing", "reference", "report"]) });
+  speEl["spe-table"].innerHTML = tableHtml(["plot", "specid", "oid", "object", "spectral_type", "typing", "joint_fit", "orders", "instrument", "flux_units", "reference", "rows", "resolving_power", "report"], rows, { htmlColumns: new Set(["plot", "typing", "joint_fit", "orders", "reference", "report"]) });
 }
 
 function spectraColorForSpecid(specid) {

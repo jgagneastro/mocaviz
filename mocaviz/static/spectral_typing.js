@@ -216,6 +216,8 @@ function collectSpectralElements() {
     "spt-management-proposal",
     "spt-management-rls",
     "spt-management-author",
+    "spt-management-peculiarities",
+    "spt-management-comments",
     "spt-push-spectral-type",
     "spt-management-status",
     "spt-plot",
@@ -381,7 +383,7 @@ function bindSpectralControls() {
   sptEl["spt-export-chi2-csv"].addEventListener("click", exportSpectralChi2Csv);
   sptEl["spt-clear-cache"].addEventListener("click", () => clearSpectralCache());
   sptEl["spt-push-spectral-type"]?.addEventListener("click", () => pushCurrentSpectralType());
-  for (const id of ["spt-management-rls", "spt-management-author"]) {
+  for (const id of ["spt-management-rls", "spt-management-author", "spt-management-peculiarities", "spt-management-comments"]) {
     sptEl[id]?.addEventListener("input", () => updateSpectralManagementControls());
   }
   window.addEventListener("mocaviz-auth-context", (event) => {
@@ -1227,12 +1229,18 @@ function currentSpectralTypeProposal() {
     stitching_summary: composite ? spectralStitchingComment(payload.stitching) : "",
     rls: managementInputValue("spt-management-rls", "gagne"),
     author: managementInputValue("spt-management-author", "gagne"),
+    peculiarities: managementInputValue("spt-management-peculiarities", ""),
+    comments: managementInputValue("spt-management-comments", ""),
   };
 }
 
 function managementInputValue(id, fallback) {
   const value = String(sptEl[id]?.value || "").trim();
   return value || fallback;
+}
+
+function spectralManagementTypeLabel(proposal) {
+  return [proposal.spectral_type, proposal.peculiarities].filter(Boolean).join(" ");
 }
 
 function spectralManagementUnavailableReason(proposal = currentSpectralTypeProposal()) {
@@ -1271,7 +1279,7 @@ function spectralManagementProposalHtml(proposal) {
   const chi = finiteNumber(proposal.reduced_chi2) ? formatNumber(proposal.reduced_chi2, 2) : "N/A";
   const standard = proposal.standard_label || proposal.standard_designation || `specid${proposal.spectral_standard_moca_specid}`;
   return [
-    `<div><strong>${escapeHtml(proposal.spectral_type)}</strong> for ${escapeHtml(proposal.comparison_label || `specid${proposal.moca_specid}`)}</div>`,
+    `<div><strong>${escapeHtml(spectralManagementTypeLabel(proposal))}</strong> for ${escapeHtml(proposal.comparison_label || `specid${proposal.moca_specid}`)}</div>`,
     proposal.moca_specids?.length > 1 ? `<div>Composite inputs: ${escapeHtml(proposal.moca_specids.map((specid) => `specid${specid}`).join(", "))}; stored moca_specid: NULL</div>` : "",
     `<div>Standard: ${escapeHtml(standard)} (${escapeHtml(proposal.spectral_standard_moca_specid)})</div>`,
     `<div>Grid: ${escapeHtml(proposal.grid || "N/A")}; χ²: ${escapeHtml(chi)}</div>`,
@@ -1289,7 +1297,7 @@ async function pushCurrentSpectralType() {
   const label = proposal.comparison_label || (proposal.moca_specids?.length > 1
     ? `composite ${proposal.moca_specids.join(",")}`
     : `specid${proposal.moca_specid}`);
-  if (!window.confirm(`Push spectral type ${proposal.spectral_type} for ${label} into data_spectral_types?`)) return;
+  if (!window.confirm(`Push spectral type ${spectralManagementTypeLabel(proposal)} for ${label} into data_spectral_types?`)) return;
 
   sptState.managementBusy = true;
   setSpectralManagementStatus("Pushing spectral type...");

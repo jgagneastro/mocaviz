@@ -189,7 +189,7 @@ class ComparisonAccessTests(unittest.TestCase):
             self.assertNotIn(self.password, response.text + output.getvalue())
 
     def test_new_packages_require_private_auth_and_allow_empty_indexes(self):
-        for package in range(118, 130):
+        for package in range(118, 131):
             for prefix in ("", "/js"):
                 path = prefix + "/api/spectrum-compare/spectra?package_id=" + str(package)
                 with patch.object(compare.pymysql, "connect") as connect:

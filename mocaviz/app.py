@@ -6954,6 +6954,9 @@ def _spt_push_comments(body: Mapping[str, Any], standard_row: Mapping[str, Any])
         stitching_summary = _spt_clean_text(body.get("stitching_summary"), 1000)
         if stitching_summary:
             parts.append(f"stitching={stitching_summary}")
+    user_comments = _spt_clean_text(body.get("comments"))
+    if user_comments:
+        parts.append(f"User comments: {user_comments}")
     return "; ".join(parts)
 
 
@@ -7024,6 +7027,9 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
     if not SAFE_ID_RE.fullmatch(rls):
         raise ValueError("RLS must contain only letters, numbers, underscore, dash, period, plus, or colon.")
     author = _spt_clean_text(body.get("author"), 50) or "gagne"
+    peculiarities = _spt_clean_text(body.get("peculiarities"))
+    if peculiarities and len(peculiarities) > 20:
+        raise ValueError("Peculiarities must be at most 20 characters.")
 
     engine = _engine(_connection_string(args))
     with engine.begin() as conn:
@@ -7128,6 +7134,12 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
 
         gravity_class = _spt_normalize_gravity_class(body.get("gravity_class") or standard_row.get("gravity_class"))
         spectral_class, suffix = _spt_parse_spectral_class_and_suffix(standard_spt)
+        spectral_type = standard_spt
+        if peculiarities:
+            suffix = peculiarities
+            spectral_type = f"{standard_spt} {peculiarities}"
+            if len(spectral_type) > 100:
+                raise ValueError("Spectral type including peculiarities must be at most 100 characters.")
         wavelength_regime = _spt_clean_text(body.get("wavelength_regime"), 20)
         if wavelength_regime not in {"visible", "near_infrared"}:
             max_wv = _spt_float(body.get("comparison_wavelength_max_um"))
@@ -7148,7 +7160,7 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
             "moca_oid": int(comparison_row["moca_oid"]),
             "moca_specid": None if is_composite else comparison_specid,
             "moca_instid": _spt_clean_text(comparison_row.get("moca_instid"), 255),
-            "spectral_type": standard_spt,
+            "spectral_type": spectral_type,
             "moca_sptgridhid": grid_history_id,
             "spectral_standard_moca_specid": standard_specid,
             "spectral_type_number": float(standard_sptn),
@@ -7159,7 +7171,7 @@ def _insert_displayed_spectral_type(args: dict[str, Any], body: Mapping[str, Any
             "gravity_class": gravity_class,
             "suffix": suffix,
             "simple_spectral_type": standard_spt,
-            "complete_spectral_type": standard_spt,
+            "complete_spectral_type": spectral_type,
             "wavelength_regime": wavelength_regime,
             "origin": "mocaviz_spectral_typing",
             "author": author,

@@ -9,13 +9,17 @@ Both accounts have **read-only behavior in this tool**. There are no database-wr
 routes or production mock mode.
 
 The dataset menu and All Cameras include managed packages 106, 107, 108, 109,
-113, 114, and 118–129. Packages 118–129 are NIRES, Keck NIRSPEC, SOAR OSIRIS,
+113, 114, and 118–130. Packages 118–129 are NIRES, Keck NIRSPEC, SOAR OSIRIS,
 Blanco ARCoIRIS, TripleSpec at SOAR/Palomar/APO, Gemini North NIRI,
 VLT CRIRES/CRIRES+, VLT ISAAC, Keck MOSFIRE, and JWST NIRSpec, respectively.
 Canonical instrument/site IDs in the dropdown distinguish similarly named
 cameras. Registered empty packages remain selectable with zero spectra;
 registration is not a claim of validated production reductions. All managed
 packages are excluded from both exact and approximate legacy candidates.
+Package 129 (`nirspec_jwst`) is distinct from Keck NIRSPEC package 119.
+Package 130 (`miri_jwst`) is reserved for JWST MIRI LRS fixed-slit and MRS IFU
+spectra; LRS slitless and imaging are excluded. It is initially empty and does
+not assert an implemented or validated MIRI reducer.
 
 ## Credentials
 
@@ -137,3 +141,17 @@ They never authenticate to the real database. The separate localhost-only
 `tests/serve_spectrum_compare_fixture.py` can drive `scripts/chromium_probe.mjs`
 with synthetic spectra while the same file-write guard is active. That fixture
 is never imported or exposed by production.
+
+## Local saved reduction viewers
+
+**A0 joint fit [J]** opens the current main reduction's exact specid at
+`http://127.0.0.1:8773/?specid=<id>`. **Orders / stitching [S]** opens
+`http://127.0.0.1:8774/?specid=<id>`; its identity lookup uses the A0 viewer.
+Start these local services with Web Tools on the browser's computer. The links
+contain only the specid, and use `noopener,noreferrer`; no mocaviz authentication
+parameters are forwarded. Missing saved fits remain an explicit no-match result.
+
+The spectral explorer also offers both actions beside each spectrum and via its
+buttons/shortcuts. With multiple plotted spectra, select a point from one spectrum
+or use its row link; the action never guesses the first spectrum. Shortcuts ignore
+text editing, modifier keys and held-key repeats.
