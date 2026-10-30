@@ -57,6 +57,14 @@ class RootRoutingTests(unittest.TestCase):
                         self.assertEqual(compatibility.mimetype, "text/html")
                         self.assertEqual(root.data, compatibility.data)
 
+    def test_hidden_moon_page_is_served_without_a_homepage_link(self) -> None:
+        with self.client.get("/js/lune_aujourdhui") as page:
+            self.assertEqual(page.status_code, 200)
+            self.assertEqual(page.mimetype, "text/html")
+            self.assertIn("La Lune aujourd’hui", page.get_data(as_text=True))
+        with self.client.get("/js/") as home:
+            self.assertNotIn("lune_aujourdhui", home.get_data(as_text=True))
+
     def test_static_assets_work_at_root_and_through_js(self) -> None:
         with self.client.get("/static/styles.css") as root:
             with self.client.get("/js/static/styles.css") as compatibility:

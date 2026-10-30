@@ -33409,6 +33409,12 @@ def js_index_page():
     return send_from_directory(STATIC_DIR, "js_index.html")
 
 
+@app.get("/lune_aujourdhui")
+@app.get("/js/lune_aujourdhui")
+def lune_aujourdhui_page():
+    return send_from_directory(BASE_DIR / "templates", "lune_aujourdhui.html")
+
+
 @app.get("/api/js-home/context")
 @app.get("/js/api/js-home/context")
 def js_home_context():
