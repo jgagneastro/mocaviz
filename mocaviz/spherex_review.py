@@ -68,6 +68,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
+QUEUE_FILTER_VERSION = 1
+MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both"}
 MAX_BODY = 256 * 1024
 
 
@@ -322,10 +324,24 @@ def queue(cur, body):
     limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
     after = integer(body.get("after", 0), "Queue cursor", 0)
     pending = boolean(body.get("pending_only"), True)
+    missing = body.get("missing_vetting", "lane" if pending else "all")
+    if not isinstance(missing, str) or missing not in MISSING_VETTING_MODES:
+        raise ReviewError("Choose a valid missing spectral-vetting scope.")
+    active_only = missing != "all"
     conditions = ["mo.ignored=0", "s.moca_oid>%s"]
     params = [lane["pack"], after]
-    if pending:
-        conditions.extend(["s.ignored=0", "v.moca_oid IS NULL"])
+    if active_only:
+        conditions.append("s.ignored=0")
+    if missing == "lane":
+        conditions.append("v.moca_oid IS NULL")
+    elif missing != "all":
+        absent = {key: f"NOT EXISTS (SELECT 1 FROM {LANES[key]['table']} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
+                  for key in ("spiff", "spiffstacker")}
+        if missing in absent:
+            conditions.append(absent[missing])
+        else:
+            operator = "OR" if missing == "either" else "AND"
+            conditions.append(f"({absent['spiff']} {operator} {absent['spiffstacker']})")
     if body.get("moca_oids"):
         raw = body["moca_oids"]
         if not isinstance(raw, list) or len(raw) > 500:
@@ -333,6 +349,12 @@ def queue(cur, body):
         ids = [integer(v, "moca_oid") for v in raw]
         conditions.append("s.moca_oid IN (" + ",".join(["%s"] * len(ids)) + ")")
         params.extend(ids)
+    if body.get("min_wiseview_score") not in (None, ""):
+        if isinstance(body["min_wiseview_score"], bool):
+            raise ReviewError("Minimum WiseView score must be a number between -1 and 6.")
+        score = bounded_float(body["min_wiseview_score"], "Minimum WiseView score", -1, 6)
+        conditions.append("EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting motion WHERE motion.moca_oid=s.moca_oid AND motion.classification_integer >= %s)")
+        params.append(score)
     if body.get("min_snr") not in (None, ""):
         conditions.append("s.median_snr_per_pix >= %s")
         params.append(bounded_float(body["min_snr"], "Minimum S/N", 0, 1e9))
@@ -347,7 +369,7 @@ def queue(cur, body):
             AND (known.calculation_method IS NULL OR known.calculation_method NOT IN
                 ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
         )""")
-    conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if pending else ")"))
+    conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
     records = rows(cur, f"""
         SELECT s.moca_oid, s.moca_specid, mo.designation, s.median_snr_per_pix,
                v.classification
@@ -356,7 +378,7 @@ def queue(cur, body):
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
         ORDER BY s.moca_oid LIMIT %s
     """, (*params, limit + 1))
-    return {"items": records[:limit], "has_more": len(records) > limit,
+    return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
             "next_after": records[limit - 1]["moca_oid"] if len(records) >= limit else None}
 
 
@@ -658,6 +680,8 @@ def api(operation):
                     result = submit(conn, cur, auth, body)
                 else:
                     result = undo(conn, cur, auth, body)
+        if operation in {"context", "queue"}:
+            result["queue_filter_version"] = QUEUE_FILTER_VERSION
         return jsonify({"ok": True, **clean(result)})
     except ReviewError as exc:
         return jsonify(ok=False, error=str(exc)), exc.status

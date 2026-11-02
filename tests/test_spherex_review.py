@@ -7,6 +7,7 @@ import copy
 import io
 import json
 import os
+import sqlite3
 from pathlib import Path
 import unittest
 from contextlib import contextmanager
@@ -182,6 +183,84 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("LIMIT 10001 FOR UPDATE", sql)
         self.assertEqual(params, (55,))
         self.assertNotIn("template", sql)
+
+
+
+class QueueSelectionTests(unittest.TestCase):
+    """Run the production queue SQL against a small in-memory review matrix."""
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,ignored INTEGER,designation TEXT)")
+        self.db.execute("CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER,median_snr_per_pix REAL)")
+        self.db.execute("CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INTEGER PRIMARY KEY,classification_integer REAL)")
+        for lane in review.LANES.values():
+            self.db.execute("CREATE TABLE " + lane["table"] + "(moca_oid INTEGER PRIMARY KEY,classification TEXT)")
+        scores = {1:6,2:6,3:5,4:6,5:3,6:4,8:6,9:6,10:1.5,11:6,12:0,13:6}
+        for oid in range(1,14):
+            self.db.execute("INSERT INTO moca_objects VALUES(?,?,?)",(oid,int(oid==9),"Object " + str(oid)))
+            self.db.execute("INSERT INTO moca_spectra VALUES(?,?,?,?,?)",(1000+oid,oid,62,int(oid==8),10))
+            self.db.execute("INSERT INTO moca_spectra VALUES(?,?,?,?,?)",(2000+oid,oid,55,0,10))
+            if oid in scores:self.db.execute("INSERT INTO pcat_wiseview_visual_vetting VALUES(?,?)",(oid,scores[oid]))
+        self.db.execute("INSERT INTO moca_spectra VALUES(2999,11,62,1,50)")
+        self.db.execute("INSERT INTO moca_spectra VALUES(2998,13,62,0,20)")
+        self.db.executemany("INSERT INTO pcat_spherex_visual_vetting VALUES(?,?)",[(2,"good"),(4,"bad")])
+        self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,?)",[(3,"bad"),(4,"good")])
+        class Cursor:
+            def __init__(self,db):self.db=db
+            def execute(self,sql,params):self.current=self.db.execute(sql.replace("%s","?"),params)
+            def fetchall(self):return [dict(row) for row in self.current.fetchall()]
+        self.cur=Cursor(self.db)
+
+    def tearDown(self):self.db.close()
+
+    def selection(self,mode="lane",score=4,**other):
+        return review.queue(self.cur,{"lane":"spiffstacker","missing_vetting":mode,"min_wiseview_score":score,**other})
+
+    def oids(self,mode="lane",score=4,**other):
+        return [row["moca_oid"] for row in self.selection(mode,score,**other)["items"]]
+
+    def test_missing_vetting_and_or_scopes_use_objects_not_only_selected_lane(self):
+        self.assertEqual(self.oids("lane"),[1,2,6,11,13])
+        self.assertEqual(self.oids("spiffstacker"),[1,2,6,11,13])
+        self.assertEqual(self.oids("spiff"),[1,3,6,11,13])
+        self.assertEqual(self.oids("either"),[1,2,3,6,11,13])
+        self.assertEqual(self.oids("both"),[1,6,11,13])
+        self.assertEqual(self.oids("lane",lane="spiff"),[1,3,6,8,11,13])
+
+    def test_inclusive_motion_score_and_missing_motion_rows(self):
+        self.assertEqual(self.oids("either",6),[1,2,11,13])
+        self.assertEqual(self.oids("either",5),[1,2,3,11,13])
+        self.assertEqual(self.oids("both",None),[1,5,6,7,10,11,12,13])
+        self.assertEqual(self.oids("both",0),[1,5,6,10,11,12,13])
+        self.assertEqual(self.oids("both",1.5),[1,5,6,10,11,13])
+
+    def test_latest_active_spectrum_and_legacy_include_reviewed_behavior(self):
+        active={row["moca_oid"]:row["moca_specid"] for row in self.selection("either")["items"]}
+        self.assertEqual(active[11],1011)
+        self.assertEqual(active[13],2998)
+        all_rows=self.selection("all",None)["items"]
+        self.assertIn(8,[row["moca_oid"] for row in all_rows])
+        self.assertEqual(next(row["moca_specid"] for row in all_rows if row["moca_oid"]==11),2999)
+        legacy=review.queue(self.cur,{"lane":"spiffstacker","pending_only":False})
+        self.assertEqual(legacy["items"],all_rows)
+        self.assertEqual(review.queue(self.cur,{"lane":"spiffstacker"})["items"],self.selection("lane",None)["items"])
+
+    def test_new_filters_combine_with_ids_cursor_limit_and_signal_to_noise(self):
+        first=self.selection("either",4,after=1,limit=2,moca_oids=[2,3,6,11,13],min_snr=9)
+        self.assertEqual([row["moca_oid"] for row in first["items"]],[2,3])
+        self.assertTrue(first["has_more"]);self.assertEqual(first["next_after"],3)
+        second=self.selection("either",4,after=first["next_after"],limit=2,moca_oids=[2,3,6,11,13])
+        self.assertEqual([row["moca_oid"] for row in second["items"]],[6,11])
+        self.assertEqual(self.oids("either",4,min_snr=15),[13])
+
+    def test_invalid_filter_inputs_never_execute_sql(self):
+        for body in ({"missing_vetting":"bad; DROP TABLE x"},{"missing_vetting":[]},
+                     *[{"min_wiseview_score":value} for value in (True,-2,7,"nan","1 OR 1=1")]):
+            with self.subTest(body=body):
+                cursor=MagicMock()
+                with self.assertRaises(review.ReviewError):review.queue(cursor,body)
+                cursor.execute.assert_not_called()
 
 
 def make_item(lane="spiffstacker"):

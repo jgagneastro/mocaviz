@@ -71,8 +71,34 @@ these spectra and continues to verify package membership on submission and undo.
 
 Existing legacy spherex_sublimeap_autotype rows remain supported. The queue selects
 the newest spectrum in the chosen lane for each active object. It supports
-explicit object IDs, minimum S/N, minimum **stored** autotype number, pending-only,
-and exclusion of already known nonphotometric M/L/T/Y spectral types.
+explicit object IDs, minimum S/N, minimum **stored** autotype number, missing
+spectral-vetting scope, a minimum WiseView motion score, and exclusion of already
+known nonphotometric M/L/T/Y spectral types.
+
+**Missing spectral vetting** defaults to the selected reduction lane on the
+review page, and to **No restriction** on the autotype page. Other choices are
+SPIFF, SPIFFStacker, **either missing** (OR), and **both missing** (AND).
+“Missing” means no row in the corresponding visual-vetting table, regardless
+of the class stored in any existing row. A missing-vetting filter selects
+non-ignored spectra, taking the latest active spectrum in the chosen reduction
+lane. **No restriction** retains the previous include-reviewed behavior,
+including ignored spectra. The API's existing `pending_only` option remains
+supported when `missing_vetting` is omitted.
+
+**WiseView score ≥** uses `pcat_wiseview_visual_vetting.classification_integer`.
+Blank disables this filter; a number from −1 through 6 applies an inclusive
+threshold, so 4 selects scores 4, 5, and 6, and 6 selects score 6. Objects without
+a numeric motion review do not pass a nonblank threshold. Both filters combine
+with the other queue filters and persist for **Next batch**. They select objects;
+**Reduction lane** still determines which spectrum loads and which table gets
+reviewed. For example, choose SPIFFStacker, missing SPIFFStacker, and score ≥4
+to review unvetted stacked spectra of objects with a motion score of at least 4.
+
+The query parameters `missing_vetting=lane|spiff|spiffstacker|either|both|all`
+and `min_wiseview_score=4` can preset these controls. Exact spectrum-ID mode
+continues to bypass every queue filter. No classification or spectral-type
+write behavior changes. New filters fail visibly against outdated API workers
+rather than silently loading an unfiltered queue.
 It pages in batches of 100 (API maximum 500), using an object-ID cursor.
 The next two fits are prefetched into a bounded browser-memory cache.
 

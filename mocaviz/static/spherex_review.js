@@ -27,6 +27,8 @@
     $("load").disabled = closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
+    for (const name of ["missing-vetting", "wiseview-score"])
+      $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
     $("write-enabled").disabled = !context?.can_write || current?.read_only || closed;
@@ -101,9 +103,12 @@
       if (!more) {
         const specid = $("specid").value.trim();
         const request = specid ? {moca_specid: spectrumId(specid)} :
-          {lane: $("lane").value, moca_oids: ids(), pending_only: $("pending-only").checked,
+          {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
+            missing_vetting: $("missing-vetting").value, min_wiseview_score: $("wiseview-score").value || null,
             min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
             no_known: $("no-known").checked, limit: 100};
+        if (!specid && (request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting)) && context?.queue_filter_version !== 1)
+          throw new Error("The review service needs to be restarted to enable WiseView and missing-vetting filters. No queue was loaded.");
         queueLane = $("lane").value;
         queueRequest = request;
         hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
@@ -115,6 +120,8 @@
       loading = true; updateControls(); status("Loading spectra from MOCAdb…");
       const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
       if (closed) return;
+      if (!queueRequest.moca_specid && (queueRequest.min_wiseview_score !== null || !["lane", "all"].includes(queueRequest.missing_vetting)) && data.queue_filter_version !== 1)
+        throw new Error("The review service needs to be restarted to apply these queue filters. No queue was loaded.");
       if (queueRequest.moca_specid && (data.items?.length !== 1 ||
           Number(data.items[0].moca_specid) !== queueRequest.moca_specid ||
           !Object.hasOwn(data, "lane") || typeof data.read_only !== "boolean")) {
@@ -373,7 +380,9 @@
     $("specid").value = params.get("specid") || params.get("moca_specid") || "";
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
-    if (location.pathname.endsWith("spherex-autotype")) $("pending-only").checked = false;
+    if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
+    if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");
+    if (params.has("min_wiseview_score")) $("wiseview-score").value = params.get("min_wiseview_score");
     try {
       if (auth.host !== "mocadb.ca" || auth.port !== "3306") throw new Error("These tools connect only to mocadb.ca:3306.");
       context = await api("context");
