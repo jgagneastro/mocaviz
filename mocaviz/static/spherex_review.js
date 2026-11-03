@@ -96,6 +96,11 @@
     }
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
+  function requiredQueueFilterVersion(request) {
+    if (request.moca_specid) return 0;
+    if (request.missing_vetting === "viable_elsewhere") return 2;
+    return request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting) ? 1 : 0;
+  }
   async function loadQueue(more = false) {
     if (pendingCount() || loading || closed || busyUndo) return;
     error("");
@@ -107,8 +112,8 @@
             missing_vetting: $("missing-vetting").value, min_wiseview_score: $("wiseview-score").value || null,
             min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
             no_known: $("no-known").checked, limit: 100};
-        if (!specid && (request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting)) && context?.queue_filter_version !== 1)
-          throw new Error("The review service needs to be restarted to enable WiseView and missing-vetting filters. No queue was loaded.");
+        if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
+          throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;
         queueRequest = request;
         hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
@@ -120,7 +125,7 @@
       loading = true; updateControls(); status("Loading spectra from MOCAdb…");
       const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
       if (closed) return;
-      if (!queueRequest.moca_specid && (queueRequest.min_wiseview_score !== null || !["lane", "all"].includes(queueRequest.missing_vetting)) && data.queue_filter_version !== 1)
+      if ((data.queue_filter_version ?? 0) < requiredQueueFilterVersion(queueRequest))
         throw new Error("The review service needs to be restarted to apply these queue filters. No queue was loaded.");
       if (queueRequest.moca_specid && (data.items?.length !== 1 ||
           Number(data.items[0].moca_specid) !== queueRequest.moca_specid ||

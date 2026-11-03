@@ -19,14 +19,17 @@ await page.route("**/api/spherex-review/*", async (route) => {
   });
   if (op === "context") {
     const response = await route.fetch({postData: JSON.stringify({mock: true})});
-    return fulfill({...await response.json(), role: "management", can_write: true});
+    const payload = await response.json();
+    if (staleMode === "filter-version-1-context") payload.queue_filter_version = 1;
+    return fulfill({...payload, role: "management", can_write: true});
   }
-  if (op === "queue" && (body.min_wiseview_score || staleMode === "filter-version")) {
+  if (op === "queue" && (body.min_wiseview_score || body.missing_vetting === "viable_elsewhere" || staleMode === "filter-version")) {
     const response = await route.fetch({postData: JSON.stringify({...body, mock: true})});
     const payload = await response.json();
     payload.has_more = !body.after;
     payload.next_after = body.after ? null : 1006;
     if (staleMode === "filter-version") delete payload.queue_filter_version;
+    if (staleMode === "filter-version-1-queue") payload.queue_filter_version = 1;
     return fulfill(payload);
   }
   if (op === "queue" && staleMode === "queue")
@@ -89,7 +92,7 @@ try {
   await title("1001");
   assert.equal(await page.locator("#missing-vetting").inputValue(), "either");
   assert.equal(await page.locator("#wiseview-score").inputValue(), "6");
-  for (const mode of ["lane", "spiff", "spiffstacker", "either", "both", "all"]) {
+  for (const mode of ["lane", "spiff", "spiffstacker", "either", "both", "all", "viable_elsewhere"]) {
     await page.locator("#missing-vetting").selectOption(mode);
     await page.locator("#wiseview-score").fill("4");
     await page.locator("#load").click(); await title("1001");
@@ -104,7 +107,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#more").disabled);
   const nextRequest = apiRequests.filter((r) => r.op === "queue").at(-1).body;
   assert.equal(nextRequest.after, 1006);
-  assert.equal(nextRequest.missing_vetting, "all");
+  assert.equal(nextRequest.missing_vetting, "viable_elsewhere");
   assert.equal(nextRequest.min_wiseview_score, "4");
   staleMode = "filter-version";
   const beforeFilters = apiRequests.length;
@@ -112,6 +115,16 @@ try {
   await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted"));
   assert(!apiRequests.slice(beforeFilters).some((r) => r.op === "analyze"));
   assert.equal(await page.locator("#plot").evaluate((el) => el.data?.length || 0), 0);
+  staleMode = null;
+  for (const mode of ["filter-version-1-context", "filter-version-1-queue"]) {
+    staleMode = mode;
+    const before = apiRequests.length;
+    await page.goto(reviewURL + "&missing_vetting=viable_elsewhere");
+    await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted"));
+    const requests = apiRequests.slice(before);
+    assert(!requests.some((r) => r.op === "analyze"));
+    assert.equal(requests.some((r) => r.op === "queue"), mode.endsWith("-queue"));
+  }
   staleMode = null;
   // New static assets with old Python workers must never show an unrelated spectrum.
   for (const mode of ["queue", "queue-metadata", "analyze-specid", "analyze-oid", "analyze-metadata"]) {

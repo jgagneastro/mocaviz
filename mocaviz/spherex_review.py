@@ -56,11 +56,11 @@ CLASSIFICATIONS = [
     ("scatter", "c"), ("star", "t"), ("giant", "i"), ("early", "e"),
     ("late_M", "m"),
 ]
-USABLE = {
-    "good", "good_candidate", "late_M", "incomplete_but_promising",
-    "good_plus_star", "contaminated_ucd", "good_reddened", "weird",
-    "risky_andromeda", "giant", "peculiar_ucd",
-}
+VIABLE_OTHER_LANE = (
+    "good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
+    "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M",
+)
+USABLE = {*VIABLE_OTHER_LANE, "risky_andromeda", "giant"}
 SPT_FIELDS = (
     "moca_oid", "moca_specid", "moca_instid", "spectral_type", "complete_spectral_type",
     "spectral_type_number", "spectral_type_unc", "spectral_class", "quality_flag",
@@ -68,8 +68,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 1
-MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both"}
+QUEUE_FILTER_VERSION = 2
+MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both", "viable_elsewhere"}
 MAX_BODY = 256 * 1024
 
 
@@ -320,7 +320,7 @@ def queue(cur, body):
         key = spectrum_lane(meta)
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
-    _, lane = lane_for(body)
+    key, lane = lane_for(body)
     limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
     after = integer(body.get("after", 0), "Queue cursor", 0)
     pending = boolean(body.get("pending_only"), True)
@@ -332,7 +332,7 @@ def queue(cur, body):
     params = [lane["pack"], after]
     if active_only:
         conditions.append("s.ignored=0")
-    if missing == "lane":
+    if missing in {"lane", "viable_elsewhere"}:
         conditions.append("v.moca_oid IS NULL")
     elif missing != "all":
         absent = {key: f"NOT EXISTS (SELECT 1 FROM {LANES[key]['table']} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
@@ -342,6 +342,18 @@ def queue(cur, body):
         else:
             operator = "OR" if missing == "either" else "AND"
             conditions.append(f"({absent['spiff']} {operator} {absent['spiffstacker']})")
+    spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
+    if missing == "viable_elsewhere":
+        placeholders = ",".join(["%s"] * len(VIABLE_OTHER_LANE))
+        matches = [
+            f"SELECT moca_oid FROM {other['table']} WHERE classification IN ({placeholders})"
+            for other_key, other in LANES.items() if other_key != key
+        ]
+        # Start with viable reviews to avoid scanning spectra for unrelated objects.
+        candidates = " UNION ".join(matches)
+        spectrum_source = f"({candidates}) viable JOIN moca_spectra s ON s.moca_oid=viable.moca_oid"
+        order_oid = "viable.moca_oid"
+        params[:0] = VIABLE_OTHER_LANE * len(matches)
     if body.get("moca_oids"):
         raw = body["moca_oids"]
         if not isinstance(raw, list) or len(raw) > 500:
@@ -373,10 +385,10 @@ def queue(cur, body):
     records = rows(cur, f"""
         SELECT s.moca_oid, s.moca_specid, mo.designation, s.median_snr_per_pix,
                v.classification
-        FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
+        FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
-        ORDER BY s.moca_oid LIMIT %s
+        ORDER BY {order_oid} LIMIT %s
     """, (*params, limit + 1))
     return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
             "next_after": records[limit - 1]["moca_oid"] if len(records) >= limit else None}

@@ -254,6 +254,30 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual([row["moca_oid"] for row in second["items"]],[6,11])
         self.assertEqual(self.oids("either",4,min_snr=15),[13])
 
+    def test_viable_elsewhere_uses_either_other_lane_and_excludes_current_reviews(self):
+        self.db.executemany("INSERT INTO moca_spectra VALUES(?,?,76,0,10)",
+                            [(3000 + oid, oid) for oid in range(1, 14)])
+        self.db.executemany("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES(?,?)", [
+            (1, "late_M"), (2, "weird"), (3, "peculiar_ucd"), (5, "giant"),
+            (6, "bad"), (8, "good"), (9, "good"), (10, "risky_andromeda"),
+        ])
+        self.assertEqual(self.oids("viable_elsewhere", None), [1, 2])
+        self.assertEqual(self.oids("viable_elsewhere", None, lane="spiff"), [1, 3, 8])
+        self.assertEqual(self.oids("viable_elsewhere", None, lane="sublimeaperture"), [4])
+        first = self.selection("viable_elsewhere", 6, limit=1)
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["next_after"], 1)
+        self.assertEqual(self.oids("viable_elsewhere", 6, after=1, limit=1), [2])
+
+    def test_viable_elsewhere_accepts_the_requested_labels(self):
+        labels = ["good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
+                  "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M"]
+        self.db.execute("DELETE FROM pcat_spherex_visual_vetting")
+        self.db.execute("DELETE FROM pcat_spherex_spiffstacker_visual_vetting")
+        oids = [1, 2, 3, 4, 5, 6, 7, 10, 11]
+        self.db.executemany("INSERT INTO pcat_spherex_visual_vetting VALUES(?,?)", zip(oids, labels))
+        self.assertEqual(self.oids("viable_elsewhere", None), oids)
+
     def test_invalid_filter_inputs_never_execute_sql(self):
         for body in ({"missing_vetting":"bad; DROP TABLE x"},{"missing_vetting":[]},
                      *[{"min_wiseview_score":value} for value in (True,-2,7,"nan","1 OR 1=1")]):

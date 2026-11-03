@@ -77,13 +77,19 @@ known nonphotometric M/L/T/Y spectral types.
 
 **Missing spectral vetting** defaults to the selected reduction lane on the
 review page, and to **No restriction** on the autotype page. Other choices are
-SPIFF, SPIFFStacker, **either missing** (OR), and **both missing** (AND).
+SPIFF, SPIFFStacker, **either missing** (OR), **both missing** (AND), and
+**Unreviewed here · viable elsewhere**.
 “Missing” means no row in the corresponding visual-vetting table, regardless
 of the class stored in any existing row. A missing-vetting filter selects
 non-ignored spectra, taking the latest active spectrum in the chosen reduction
 lane. **No restriction** retains the previous include-reviewed behavior,
 including ignored spectra. The API's existing `pending_only` option remains
 supported when `missing_vetting` is omitted.
+
+The viable option requires no review in the selected lane and at least one
+review of **good**, **good candidate**, **peculiar UCD**, **contaminated UCD**,
+**incomplete but promising**, **good plus star**, **good reddened**, **weird**,
+or **late M** in either companion lane.
 
 **WiseView score ≥** uses `pcat_wiseview_visual_vetting.classification_integer`.
 Blank disables this filter; a number from −1 through 6 applies an inclusive
@@ -94,7 +100,7 @@ with the other queue filters and persist for **Next batch**. They select objects
 reviewed. For example, choose SPIFFStacker, missing SPIFFStacker, and score ≥4
 to review unvetted stacked spectra of objects with a motion score of at least 4.
 
-The query parameters `missing_vetting=lane|spiff|spiffstacker|either|both|all`
+The query parameters `missing_vetting=lane|spiff|spiffstacker|either|both|viable_elsewhere|all`
 and `min_wiseview_score=4` can preset these controls. Exact spectrum-ID mode
 continues to bypass every queue filter. No classification or spectral-type
 write behavior changes. New filters fail visibly against outdated API workers

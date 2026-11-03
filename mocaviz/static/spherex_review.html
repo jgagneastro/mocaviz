@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261103-single-lane">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261103-single-lane"></script>
+  <script defer src="static/spherex_review.js?v=20261103-viable-elsewhere"></script>
 </head>
 <body>
   <header>
@@ -41,9 +41,9 @@
         <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
         <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label><span tabindex="0" title="Uses the stored autotype for the selected reduction lane: SPIFF, SPIFFStacker, or SUBLIMEaperture.">Stored type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
-        <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
+        <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
         <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
-        <small>Missing means no review row in that spectrum's vetting table. The score threshold is inclusive; blank allows any score. These filters select objects; the reduction lane chooses the spectrum you review.</small>
+        <small>Missing means no review row in that spectrum's vetting table. The viable option requires a viable classification in at least one of the other two lanes. The score threshold is inclusive; blank allows any score. These filters select objects; the reduction lane chooses the spectrum you review.</small>
         <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types</label>
         <button id="load">Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
