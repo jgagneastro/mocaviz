@@ -49,7 +49,7 @@ await page.route("**/api/spherex-review/*", async (route) => {
       lane: "spiff", read_only: false, has_more: false, next_after: null});
   if (op === "queue" && body.moca_specid === 999999)
     return fulfill({error: "Spectrum not found for an active object. Check the spectrum ID."}, 404);
-  if (op === "queue" || op === "analyze")
+  if (op === "queue" || op === "queue-count" || op === "analyze")
     return route.fulfill({response: await route.fetch({postData: JSON.stringify({...body, mock: true})})});
   if (op === "preview") return fulfill({receipt: "test-plan", row_counts: {vetting: 1}, plan: {operations: []}});
   if (op === "undo") { undos++; return fulfill({undone: true}); }
@@ -101,6 +101,10 @@ try {
     assert.equal(body.min_wiseview_score, "4");
     assert.equal(body.pending_only, mode !== "all");
   }
+  await page.waitForFunction(() => document.querySelector("#queue-total").textContent === "6 total matches at load");
+  const countRequests = apiRequests.filter((r) => r.op === "queue-count");
+  assert.equal(countRequests.at(-1).body.missing_vetting, "viable_elsewhere");
+  assert.equal(countRequests.at(-1).body.min_wiseview_score, "4");
   await page.locator("#missing-vetting").selectOption("both");
   await page.locator("#wiseview-score").fill("6");
   await page.locator("#more").click();
@@ -109,6 +113,8 @@ try {
   assert.equal(nextRequest.after, 1006);
   assert.equal(nextRequest.missing_vetting, "viable_elsewhere");
   assert.equal(nextRequest.min_wiseview_score, "4");
+  assert.equal(apiRequests.filter((r) => r.op === "queue-count").length, countRequests.length);
+  assert.equal(await page.locator("#queue-total").textContent(), "6 total matches at load");
   staleMode = "filter-version";
   const beforeFilters = apiRequests.length;
   await page.goto(reviewURL + "&missing_vetting=both&min_wiseview_score=6");

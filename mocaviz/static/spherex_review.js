@@ -101,6 +101,16 @@
     if (request.missing_vetting === "viable_elsewhere") return 2;
     return request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting) ? 1 : 0;
   }
+  async function showQueueTotal(request) {
+    const label = $("queue-total");
+    label.textContent = "Counting all matches…";
+    try {
+      const {total} = await api("queue-count", request);
+      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + " total matches at load";
+    } catch {
+      if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
+    }
+  }
   async function loadQueue(more = false) {
     if (pendingCount() || loading || closed || busyUndo) return;
     error("");
@@ -119,6 +129,7 @@
         hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
+        $("queue-total").textContent = "";
         $("preview-output").textContent = ""; $("preview-panel").open = false;
         await show(0);
       }
@@ -142,6 +153,9 @@
       $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
         (data.read_only ? " · read only" : " · " + queueLane) :
         items.length + " objects loaded" + (hasMore ? " · more available" : " · end of queue");
+      if (!more && !queueRequest.moca_specid && (data.queue_filter_version ?? 0) >= 3) {
+        void showQueueTotal(queueRequest);
+      }
       await show(start < items.length ? start : Math.max(0, items.length - 1));
     } catch (e) { if (!closed) { error(e.message); status("Spectra could not be loaded."); } }
     finally { loading = false; if (!closed) updateControls(); }
@@ -184,7 +198,7 @@
     const item = items[index];
     $("object-title").textContent = item.designation || "moca_oid=" + item.moca_oid;
     $("object-meta").textContent = "Loading spectrum " + item.moca_specid + "…";
-    $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining";
+    $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining in loaded queue";
     status("Fitting spectrum…"); updateControls();
     try {
       const data = await analysis(item, queueLane, options(), refresh);

@@ -106,6 +106,8 @@ continues to bypass every queue filter. No classification or spectral-type
 write behavior changes. New filters fail visibly against outdated API workers
 rather than silently loading an unfiltered queue.
 It pages in batches of 100 (API maximum 500), using an object-ID cursor.
+Loading a new queue also counts all objects matching its filters. The total
+is shown separately from the objects loaded into the tab.
 The next two fits are prefetched into a bounded browser-memory cache.
 
 Fits use database moca_spherex_templates/data_spherex_templates and

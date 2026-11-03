@@ -68,7 +68,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 2
+QUEUE_FILTER_VERSION = 3
 MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both", "viable_elsewhere"}
 MAX_BODY = 256 * 1024
 
@@ -314,15 +314,17 @@ def analyze(cur, body):
     })
 
 
-def queue(cur, body):
+def queue(cur, body, *, count_only=False):
     if body.get("moca_specid") not in (None, ""):
         meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"))
+        if count_only:
+            return {"total": 1}
         key = spectrum_lane(meta)
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
-    limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
-    after = integer(body.get("after", 0), "Queue cursor", 0)
+    after = 0 if count_only else integer(body.get("after", 0), "Queue cursor", 0)
+    limit = None if count_only else integer(body.get("limit", 100), "Queue batch size", 1, 500)
     pending = boolean(body.get("pending_only"), True)
     missing = body.get("missing_vetting", "lane" if pending else "all")
     if not isinstance(missing, str) or missing not in MISSING_VETTING_MODES:
@@ -382,12 +384,18 @@ def queue(cur, body):
                 ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
         )""")
     conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
-    records = rows(cur, f"""
-        SELECT s.moca_oid, s.moca_specid, mo.designation, s.median_snr_per_pix,
-               v.classification
+    selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
+    """
+    if count_only:
+        return rows(cur, f"SELECT COUNT(*) AS total {selection}", tuple(params))[0]
+
+    records = rows(cur, f"""
+        SELECT s.moca_oid, s.moca_specid, mo.designation, s.median_snr_per_pix,
+               v.classification
+        {selection}
         ORDER BY {order_oid} LIMIT %s
     """, (*params, limit + 1))
     return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
@@ -658,13 +666,15 @@ def api(operation):
         if not isinstance(body, dict):
             raise ReviewError("Provide a JSON object.")
         mock = boolean(body.get("mock"))
-        if operation not in {"context", "queue", "analyze", "preview", "submit", "undo"}:
+        if operation not in {"context", "queue", "queue-count", "analyze", "preview", "submit", "undo"}:
             raise ReviewError("Unknown review operation.", 404)
         if mock:
             if operation in {"preview", "submit", "undo"}:
                 raise ReviewError("Demo results cannot be written to MOCAdb.", 403)
             if operation == "context":
                 result = {"role": "demo", "can_write": False, "lanes": LANES, "classifications": CLASSIFICATIONS}
+            elif operation == "queue-count":
+                result = {"total": 1 if body.get("moca_specid") not in (None, "") else 6}
             elif operation == "queue":
                 if body.get("moca_specid") not in (None, ""):
                     specid = integer(body["moca_specid"], "moca_specid")
@@ -682,8 +692,8 @@ def api(operation):
                 if operation == "context":
                     result = {"role": auth["user"], "can_write": auth["user"] == "management",
                               "lanes": LANES, "classifications": CLASSIFICATIONS}
-                elif operation == "queue":
-                    result = queue(cur, body)
+                elif operation in {"queue", "queue-count"}:
+                    result = queue(cur, body, count_only=operation == "queue-count")
                 elif operation == "analyze":
                     result = analyze(cur, body)
                 elif operation == "preview":

@@ -268,6 +268,10 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertTrue(first["has_more"])
         self.assertEqual(first["next_after"], 1)
         self.assertEqual(self.oids("viable_elsewhere", 6, after=1, limit=1), [2])
+        body = {"lane": "spiffstacker", "missing_vetting": "viable_elsewhere",
+                "min_wiseview_score": 6, "after": 1, "limit": 1}
+        self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 2})
+        self.assertEqual(review.queue(self.cur, {**body, "min_snr": 15}, count_only=True), {"total": 0})
 
     def test_viable_elsewhere_accepts_the_requested_labels(self):
         labels = ["good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
