@@ -70,10 +70,13 @@ Histogram, RA/Dec or Mollweide sky projection, spectral type versus absolute
 W2, synthetic-minus-measured W2, WiseView motion score and adopted total
 proper motion versus spectral type, adopted distance versus spectral type,
 and overlapping recovery counts by catalog. Each scatter-plot point opens the same inspector, also
-available from the object table and flipbook cards. The proper-motion plot
+available from the object table and flipbook cards. Scatter plots shift each
+object horizontally by up to 0.2 spectral subtype to separate overlapping
+points. Hover labels show the actual subtype. The proper-motion plot
 uses the selected spectral type and the adopted, non-ignored MOCAdb
 `data_proper_motions.pmtot_masyr` value. The CSV includes the measurement ID.
 
+The proper-motion and distance plots use logarithmic vertical axes.
 The distance plot uses positive, adopted, non-ignored `data_distances.distance_pc`
 values. Triangles mark photometric estimates, circles mark parallax-linked
 distances, and diamonds mark nonphotometric distances without a parallax link.
