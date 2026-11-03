@@ -96,6 +96,18 @@ async function apply(){if(!canWrite){$('write-status').textContent='Management a
 function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at:new Date().toISOString(),decisions:staged},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='association-audit-decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
   const colors={target:"#2563eb",candidate:"#c34432"};
+  const uvwFields = ["avg_u_kms", "avg_v_kms", "avg_w_kms"];
+  const uvwSphereRadius = 3;
+  const uvwSphereOffsets = [[0, 0, -uvwSphereRadius], [0, 0, uvwSphereRadius]];
+  for (let ring = 1; ring < 12; ring++) {
+    const polar = Math.PI * ring / 12;
+    const radial = uvwSphereRadius * Math.sin(polar);
+    const z = uvwSphereRadius * Math.cos(polar);
+    for (let step = 0; step < 24; step++) {
+      const azimuth = Math.PI * step / 12;
+      uvwSphereOffsets.push([radial * Math.cos(azimuth), radial * Math.sin(azimuth), z]);
+    }
+  }
   function plotPointRows(aid) {
     return audit.points[aid] || [];
   }
@@ -126,9 +138,14 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
     });
   }
 
-  function addCenterTrace(traces, summary, indices, scene, role) {
-    const values = indices.map((field) => summary[field]);
-    if (!values.every((value) => value !== null && value !== undefined && Number.isFinite(Number(value)))) return;
+  function centerCoordinates(summary, fields) {
+    const values = fields.map((field) => summary[field]);
+    if (values.some((value) => value == null || !Number.isFinite(Number(value)))) return null;
+    return values.map(Number);
+  }
+
+  function addCenterTrace(traces, values, scene, role) {
+    if (!values) return;
     traces.push({
       type: "scatter3d",
       mode: "markers",
@@ -137,6 +154,22 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
       x: [values[0]], y: [values[1]], z: [values[2]],
       hoverinfo: "skip",
       marker: { color: colors[role], size: 8, symbol: "cross", line: { color: "#ffffff", width: 1 } },
+    });
+  }
+
+  function addUvwSphere(traces, [u, v, w], role) {
+    traces.push({
+      type: "mesh3d",
+      scene: "scene2",
+      x: uvwSphereOffsets.map(([du]) => u + du),
+      y: uvwSphereOffsets.map(([, dv]) => v + dv),
+      z: uvwSphereOffsets.map(([, , dw]) => w + dw),
+      alphahull: 0,
+      color: colors[role],
+      opacity: 0.17,
+      lighting: { ambient: 0.9, diffuse: 0.45, specular: 0.08 },
+      hoverinfo: "skip",
+      showlegend: false,
     });
   }
 
@@ -196,7 +229,96 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
     return [lower - padding, upper + padding];
   }
 
+  function sceneAspectRatio(...axisRanges) {
+    if (axisRanges.some((range) => !range)) return undefined;
+    const [x, y, z] = axisRanges.map(([lower, upper]) => upper - lower);
+    // Normalize the box diagonal so elongated groups fit at the same camera distance.
+    const scale = Math.sqrt(3) / Math.hypot(x, y, z);
+    return { x: x * scale, y: y * scale, z: z * scale };
+  }
+
+  const plot = $("plots");
+  const sceneNames = ["scene", "scene2"];
+  const sceneSelector = "#scene, #scene2";
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const orbitPeriod = 60_000;
+  const orbitInterval = 50;
+  const activePointers = new Set();
+  let orbitResumeAt = 0;
+  let lastOrbitTick = performance.now();
+  let plotUpdate = null;
+  let plotWidth = 0;
+
+  function trackPlotUpdate(update) {
+    plotUpdate = update;
+    const finish = () => {
+      if (plotUpdate === update) plotUpdate = null;
+    };
+    update.then(finish, finish);
+  }
+
+  function delayOrbit() {
+    orbitResumeAt = performance.now() + 1500;
+  }
+
+  function delayOrbitInScene(event) {
+    if (event.target.closest(sceneSelector)) delayOrbit();
+  }
+
+  plot.addEventListener("pointermove", delayOrbitInScene, { passive: true });
+  plot.addEventListener("wheel", delayOrbitInScene, { capture: true, passive: true });
+  plot.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(sceneSelector)) activePointers.add(event.pointerId);
+  }, true);
+  for (const event of ["pointerup", "pointercancel"]) {
+    window.addEventListener(event, (release) => {
+      if (activePointers.delete(release.pointerId)) delayOrbit();
+    }, true);
+  }
+  window.addEventListener("blur", () => {
+    activePointers.clear();
+    delayOrbit();
+  });
+
+  setInterval(() => {
+    const now = performance.now();
+    const elapsed = Math.min(now - lastOrbitTick, 2 * orbitInterval);
+    lastOrbitTick = now;
+    if (closed || !current() || plotUpdate || document.hidden || reducedMotion.matches ||
+        activePointers.size || now < orbitResumeAt) return;
+    const visibleScene = [...plot.querySelectorAll("#scene canvas, #scene2 canvas")].some((canvas) => {
+      const { top, bottom } = canvas.getBoundingClientRect();
+      return bottom > 0 && top < window.innerHeight;
+    });
+    if (!visibleScene) return;
+
+    // Orbit around each scene's vertical axis at the current tilt and zoom.
+    const angle = 2 * Math.PI * elapsed / orbitPeriod;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const updates = {};
+    for (const scene of sceneNames) {
+      const camera = plot.layout[scene].camera;
+      const { eye, center } = camera;
+      const { x: centerX = 0, y: centerY = 0 } = center ?? {};
+      const x = eye.x - centerX;
+      const y = eye.y - centerY;
+      updates[`${scene}.camera.eye`] = {
+        x: centerX + x * cos - y * sin,
+        y: centerY + x * sin + y * cos,
+        z: eye.z,
+      };
+    }
+    trackPlotUpdate(Plotly.relayout(plot, updates));
+  }, orbitInterval);
+
+  new ResizeObserver(() => {
+    const candidate = current();
+    if (candidate && plot.clientWidth !== plotWidth) drawPlots(candidate);
+  }).observe(plot);
+
   function drawPlots(candidate) {
+    plotWidth = plot.clientWidth;
     const targetAid = audit.target_aid;
     const candidateAid = candidate.candidate_aid;
     const targetRows = plotPointRows(targetAid);
@@ -209,6 +331,8 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
     const ranges = Object.fromEntries(
       [2, 3, 4, 5, 6, 7].map((index) => [index, centralRange(baseGroups, index)])
     );
+    const uvwRanges = [ranges[5], ranges[6], ranges[7]];
+    const sphereExtent = uvwSphereRadius * 1.08;
     const traces = [];
     const panels = [
       { indices: [2, 3], fields: ["avg_x_pc", "avg_y_pc"], axes: ["x", "y"] },
@@ -220,10 +344,19 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
     ];
 
     groups.forEach((group) => {
+      const uvwCenter = centerCoordinates(group.summary, uvwFields);
+      if (uvwCenter) {
+        addUvwSphere(traces, uvwCenter, group.role);
+        // Fit the whole sphere in 3D while keeping the 2D velocity ranges.
+        uvwCenter.forEach((value, axis) => {
+          const [lower, upper] = uvwRanges[axis] ?? [Infinity, -Infinity];
+          uvwRanges[axis] = [Math.min(lower, value - sphereExtent), Math.max(upper, value + sphereExtent)];
+        });
+      }
       addThreeDimensionalTrace(traces, group.aid, group.rows, [2, 3, 4], "scene", group.role, true);
       addThreeDimensionalTrace(traces, group.aid, group.rows, [5, 6, 7], "scene2", group.role, false);
-      addCenterTrace(traces, group.summary, ["avg_x_pc", "avg_y_pc", "avg_z_pc"], "scene", group.role);
-      addCenterTrace(traces, group.summary, ["avg_u_kms", "avg_v_kms", "avg_w_kms"], "scene2", group.role);
+      addCenterTrace(traces, centerCoordinates(group.summary, ["avg_x_pc", "avg_y_pc", "avg_z_pc"]), "scene", group.role);
+      addCenterTrace(traces, uvwCenter, "scene2", group.role);
       panels.forEach((panel) => {
         addTwoDimensionalTrace(traces, group.aid, group.rows, panel.indices, panel.axes, group.role);
         addTwoDimensionalCenter(traces, group.summary, panel.fields, panel.axes, group.role);
@@ -232,33 +365,58 @@ function exportJSON(){const blob=new Blob([JSON.stringify({version:2,exported_at
 
     const axisStyle = { gridcolor: "#cbd5e155", zerolinecolor: "#94a3b877", showbackground: true, backgroundcolor: "#fbfdff" };
     const axis2dStyle = { gridcolor: "#cbd5e177", zerolinecolor: "#94a3b899" };
+    const margin = { l: 10, r: 10, t: 46, b: 54 };
+    const innerWidth = Math.max(1, plotWidth - margin.l - margin.r);
+    const stackScenes = innerWidth < 620;
+    const sceneWidth = stackScenes ? innerWidth : innerWidth * 0.49;
+    const sceneHeight = Math.round(sceneWidth * (sceneWidth < 420 ? 0.72 : 0.92));
+    const sceneGap = 16;
+    const projectionHeight = 180;
+    const projectionGap = 70;
+    const projectionRows = 2 * (projectionHeight + projectionGap);
+    const uvwBottom = projectionRows;
+    const xyzBottom = stackScenes ? uvwBottom + sceneHeight + sceneGap : uvwBottom;
+    const innerHeight = xyzBottom + sceneHeight;
+    const domainY = (bottom, height) => [bottom / innerHeight, (bottom + height) / innerHeight];
+    // Only the projections need an outer gutter for their 2D axis labels.
+    const projectionLeft = 48;
+    const projectionWidth = innerWidth - projectionLeft - 20;
+    const projectionX = (left, right) => [left, right].map((x) => (projectionLeft + x * projectionWidth) / innerWidth);
+    const xyzProjectionY = domainY(projectionHeight + projectionGap, projectionHeight);
+    const uvwProjectionY = domainY(0, projectionHeight);
+    const defaultCamera = { eye: { x: 1.43, y: 1.43, z: 1.14 } };
+    const revision = `${targetAid}:${candidateAid}`;
+    const previousLayout = plot.layout?.uirevision === revision ? plot.layout : null;
     const layout = {
-      autosize: true,
-      margin: { l: 58, r: 30, t: 60, b: 46 },
+      width: plotWidth,
+      height: innerHeight + margin.t + margin.b,
+      margin,
       paper_bgcolor: "#ffffff",
       plot_bgcolor: "#fbfdff",
       font: { color: getComputedStyle(document.documentElement).getPropertyValue("--text").trim() },
       hovermode: false,
-      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1.075 },
-      uirevision: `${targetAid}:${candidateAid}`,
+      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1, yanchor: "bottom" },
+      uirevision: revision,
       scene: {
-        domain: { x: [0, 0.485], y: [0, 0.27] },
+        domain: { x: [0, stackScenes ? 1 : 0.49], y: domainY(xyzBottom, sceneHeight) },
         xaxis: { title: "X [pc]", range: ranges[2], ...axisStyle }, yaxis: { title: "Y [pc]", range: ranges[3], ...axisStyle }, zaxis: { title: "Z [pc]", range: ranges[4], ...axisStyle },
-        aspectmode: "data", camera: { eye: { x: 1.45, y: 1.45, z: 1.15 } },
+        aspectratio: sceneAspectRatio(ranges[2], ranges[3], ranges[4]),
+        camera: previousLayout?.scene.camera ?? defaultCamera,
       },
       scene2: {
-        domain: { x: [0.515, 1], y: [0, 0.27] },
-        xaxis: { title: "U [km/s]", range: ranges[5], ...axisStyle }, yaxis: { title: "V [km/s]", range: ranges[6], ...axisStyle }, zaxis: { title: "W [km/s]", range: ranges[7], ...axisStyle },
-        aspectmode: "data", camera: { eye: { x: 1.45, y: 1.45, z: 1.15 } },
+        domain: { x: [stackScenes ? 0 : 0.51, 1], y: domainY(uvwBottom, sceneHeight) },
+        xaxis: { title: "U [km/s]", range: uvwRanges[0], ...axisStyle }, yaxis: { title: "V [km/s]", range: uvwRanges[1], ...axisStyle }, zaxis: { title: "W [km/s]", range: uvwRanges[2], ...axisStyle },
+        aspectratio: sceneAspectRatio(...uvwRanges),
+        camera: previousLayout?.scene2.camera ?? defaultCamera,
       },
-      xaxis: { domain: [0, 0.31], anchor: "y", title: "X [pc]", range: ranges[2], ...axis2dStyle }, yaxis: { domain: [0.74, 0.96], anchor: "x", title: "Y [pc]", range: ranges[3], ...axis2dStyle },
-      xaxis2: { domain: [0.345, 0.655], anchor: "y2", title: "X [pc]", range: ranges[2], ...axis2dStyle }, yaxis2: { domain: [0.74, 0.96], anchor: "x2", title: "Z [pc]", range: ranges[4], ...axis2dStyle },
-      xaxis3: { domain: [0.69, 1], anchor: "y3", title: "Y [pc]", range: ranges[3], ...axis2dStyle }, yaxis3: { domain: [0.74, 0.96], anchor: "x3", title: "Z [pc]", range: ranges[4], ...axis2dStyle },
-      xaxis4: { domain: [0, 0.31], anchor: "y4", title: "U [km/s]", range: ranges[5], ...axis2dStyle }, yaxis4: { domain: [0.40, 0.62], anchor: "x4", title: "V [km/s]", range: ranges[6], ...axis2dStyle },
-      xaxis5: { domain: [0.345, 0.655], anchor: "y5", title: "U [km/s]", range: ranges[5], ...axis2dStyle }, yaxis5: { domain: [0.40, 0.62], anchor: "x5", title: "W [km/s]", range: ranges[7], ...axis2dStyle },
-      xaxis6: { domain: [0.69, 1], anchor: "y6", title: "V [km/s]", range: ranges[6], ...axis2dStyle }, yaxis6: { domain: [0.40, 0.62], anchor: "x6", title: "W [km/s]", range: ranges[7], ...axis2dStyle },
+      xaxis: { domain: projectionX(0, 0.31), anchor: "y", title: "X [pc]", range: ranges[2], ...axis2dStyle }, yaxis: { domain: xyzProjectionY, anchor: "x", title: "Y [pc]", range: ranges[3], ...axis2dStyle },
+      xaxis2: { domain: projectionX(0.345, 0.655), anchor: "y2", title: "X [pc]", range: ranges[2], ...axis2dStyle }, yaxis2: { domain: xyzProjectionY, anchor: "x2", title: "Z [pc]", range: ranges[4], ...axis2dStyle },
+      xaxis3: { domain: projectionX(0.69, 1), anchor: "y3", title: "Y [pc]", range: ranges[3], ...axis2dStyle }, yaxis3: { domain: xyzProjectionY, anchor: "x3", title: "Z [pc]", range: ranges[4], ...axis2dStyle },
+      xaxis4: { domain: projectionX(0, 0.31), anchor: "y4", title: "U [km/s]", range: ranges[5], ...axis2dStyle }, yaxis4: { domain: uvwProjectionY, anchor: "x4", title: "V [km/s]", range: ranges[6], ...axis2dStyle },
+      xaxis5: { domain: projectionX(0.345, 0.655), anchor: "y5", title: "U [km/s]", range: ranges[5], ...axis2dStyle }, yaxis5: { domain: uvwProjectionY, anchor: "x5", title: "W [km/s]", range: ranges[7], ...axis2dStyle },
+      xaxis6: { domain: projectionX(0.69, 1), anchor: "y6", title: "V [km/s]", range: ranges[6], ...axis2dStyle }, yaxis6: { domain: uvwProjectionY, anchor: "x6", title: "W [km/s]", range: ranges[7], ...axis2dStyle },
     };
-    Plotly.react("plots", traces, layout, { responsive: true, displayModeBar: false, scrollZoom: true });
+    trackPlotUpdate(Plotly.react(plot, traces, layout, { displayModeBar: false, scrollZoom: true }));
   }
 
 $('sample').onchange=()=>{updateSampleNote();const url=new URL(location.href);if($('sample').value==='all')url.searchParams.delete('sample');else url.searchParams.set('sample',$('sample').value);window.history.replaceState(null,'',url);filteredGroups();loadGroup(gi);};
