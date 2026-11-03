@@ -11,9 +11,7 @@ The dashboard uses the private management connection supplied by the launcher.
 It also accepts the existing SPHEREx tool's URL/fragment credential conventions.
 A credential-free synthetic demo is at `http://127.0.0.1:8901/?mock=1`.
 
-This is a separate read-only Flask entry point, sharing MOCAviz's existing
-SPHEREx fitter and browser renderer. The already-running MOCAviz and SUBLIME
-reviewer services do not need to restart. It starts no scientific workers.
+This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser renderer.
 
 ## Selection
 
@@ -99,10 +97,21 @@ previews, as in the reviewer. Requests include only coordinates and field size.
 2MASS/PS1 show a center crosshair; NSC's per-exposure previews are not assumed
 to be centered. No proper-motion epoch propagation is claimed.
 
+## Potential duplicates
+
+The tab scans the selected sample for other active MOCAdb objects with published,
+nonphotometric spectroscopic L0+ types within 100 arcseconds. It compares stored
+positions at their catalog epochs and shows the spectral type and ADS reference,
+adopted proper motions for both objects, and existing duplicate decisions.
+
+With management access, **Declare potential duplicate** confirms the pair from the
+chosen row and saves a `y` decision in `pcat_duplicated_vetting` with a changelog entry.
+The endpoint checks the current positions, counterpart type and prior decisions
+before committing. The entry starts with `applied=0`.
+
 ## Runtime and safeguards
 
-All database request paths use explicit read-only transactions, rollback and
-close. There are no submit, classify or write endpoints. Credentials are passed
+Exploration and duplicate scans use read-only transactions. Credentials are passed
 per request in memory and never written to cache, catalog, scientific files,
 browser storage or logs. No request URL logging is enabled by the launcher.
 Data live in tab memory; fits have a 180-entry tab-memory bound. Survey previews

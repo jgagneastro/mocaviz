@@ -1,4 +1,4 @@
-"""Read-only SUBLIME findings dashboard, using the shared SPHEREx fitter.
+"""SUBLIME findings dashboard, using the shared SPHEREx fitter.
 
 Launch with python -B -m mocaviz.sublime_findings --port 8901.
 No application import starts jobs, queries the database, or writes files.
@@ -17,6 +17,7 @@ from werkzeug.exceptions import HTTPException
 
 from . import spherex_review as sr
 from . import sublime_findings_inspector as inspector
+from . import sublime_findings_duplicates as duplicates
 
 STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
@@ -451,13 +452,49 @@ def plotly_asset():
 @findings.post('/api/findings/<operation>')
 def api(operation):
     try:
-        if operation not in ('load','spectra','cutouts','survey'):raise sr.ReviewError('Unknown operation.',404)
+        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate'):raise sr.ReviewError('Unknown operation.',404)
         if request.content_length and request.content_length>32768:raise sr.ReviewError('Request too large.',413)
         if not request.is_json:raise sr.ReviewError('Provide JSON.',415)
         body=request.get_json()
         if not isinstance(body,dict):raise sr.ReviewError('Provide a JSON object.')
         mock=sr.boolean(body.get('mock',False))
         started=time.monotonic()
+        if operation=='duplicate-matches':
+            raw_ids=body.get('oids')
+            if not isinstance(raw_ids,list) or len(raw_ids)>duplicates.BATCH_SIZE:
+                raise sr.ReviewError(f'Request up to {duplicates.BATCH_SIZE} selected object IDs.')
+            ids=sorted({sr.integer(value,'Object ID') for value in raw_ids})
+            if mock:
+                matches=[]
+                for oid in ids[::7]:
+                    target={'moca_oid':oid,'designation':'Demo J%04d'%(oid-1001),
+                            'measurement_epoch_yr':2025.5,'pmra_masyr':240,'pmdec_masyr':-180}
+                    known={'moca_oid':100000000+oid,'designation':'Demo published UCD',
+                           'spectral_type':'L5', 'reference_name':'Synthetic reference','measurement_epoch_yr':2016,
+                           'in_byw':True,'pmra_masyr':243,'pmdec_masyr':-175,'pmra_masyr_unc':4,'pmdec_masyr_unc':5}
+                    matches.append({'target':target,'known':known,'separation_arcsec':oid%23+3.4})
+                positioned=len(ids)
+                can_write=True
+            else:
+                auth=sr.credentials()
+                with sr.connection(auth) as (_,cur):
+                    cur.execute('START TRANSACTION READ ONLY')
+                    matches,positioned=duplicates.scan(cur,ids)
+                can_write=auth['user']=='management'
+            return jsonify(sr.clean({'ok':True,'matches':matches,'positioned':positioned,'can_write':can_write}))
+        if operation=='declare-duplicate':
+            oid=sr.integer(body.get('moca_oid'),'Selected object ID')
+            primary=sr.integer(body.get('primary_oid'),'Counterpart object ID')
+            if oid==primary:
+                raise sr.ReviewError('Select two distinct MOCAdb objects.')
+            if mock:
+                decision={'moca_oid':primary,'potential_duplicated_moca_oid':oid,'classification':'y','applied':False}
+            else:
+                auth=sr.credentials()
+                sr.require_management(auth)
+                with sr.connection(auth) as (conn,cur):
+                    decision=duplicates.declare(conn,cur,auth,oid,primary)
+            return jsonify(ok=True,decision=decision)
         if operation=='survey':
             if not mock:sr.credentials()
             try:
@@ -522,8 +559,12 @@ def api(operation):
     except sr.ReviewError as exc:return jsonify(ok=False,error=str(exc)),exc.status
     except HTTPException as exc:return jsonify(ok=False,error=exc.name),exc.code
     except pymysql.MySQLError:
+        if operation=='declare-duplicate':
+            return jsonify(ok=False,error='Could not verify the declaration. Rescan to check its status.'),503
         return jsonify(ok=False,error='Database request failed. Check the connection and retry; no database changes were made.'),503
     except Exception:
+        if operation=='declare-duplicate':
+            return jsonify(ok=False,error='Could not verify the declaration. Rescan to check its status.'),500
         return jsonify(ok=False,error='Dashboard request failed. No database changes were made.'),500
 
 
@@ -581,7 +622,7 @@ def main():
     parser.add_argument('--port',type=int,default=8901)
     args=parser.parse_args()
     print('SUBLIME Findings Dashboard: http://127.0.0.1:%d/'%args.port,flush=True)
-    print('Read-only queries and on-demand template fits. No scientific workers are started.',flush=True)
+    print('Catalog queries, on-demand template fits, and individual duplicate review.',flush=True)
     from werkzeug.serving import WSGIRequestHandler
     class QuietHandler(WSGIRequestHandler):
         def log_request(self,*args,**kwargs):pass

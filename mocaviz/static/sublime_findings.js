@@ -1,4 +1,4 @@
-/* Read-only findings atlas. Credentials and scientific data stay in tab memory. */
+/* SUBLIME findings atlas. Credentials and scientific data stay in tab memory. */
 const FindingClasses = (() => {
   'use strict';
   const accepted = new Set(['good', 'good_candidate', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
@@ -83,14 +83,14 @@ async function load(){
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. Previous plots remain labeled below until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
-  rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;
+  rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
   for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
   $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
   const m=rows.filter(r=>finite(r.M_w2)).length,s=rows.filter(r=>finite(r.M_synthetic_w2)).length;
   $('count-mw2').textContent=num(m);$('count-mw2-note').textContent=`Measured: ${num(m)} · synthetic: ${num(s)}`;
-  if(tab==='overview')renderCharts();else if(tab==='spectra')renderFlipbook();else renderObjects();
+  setTab(tab);
  }catch(e){if(e.name!=='AbortError'&&seq===dataGeneration){showError(e.message);$('status').textContent=rows.length?'Load failed. Plots still show the previously applied sample.':'Load failed. Adjust filters or check your Web Tools connection.';}}
  finally{clearInterval(timer);if(seq===dataGeneration)$('apply').disabled=false;}
 }
@@ -121,7 +121,7 @@ function renderCharts(){
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.motion,n,c)),l);
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
 }
-function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();}
+function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}
 async function getFits(data,lane,signal){const missing=data.filter(r=>r[lane+'_specid']&&!fitCache.has(fitKey(r,lane)));if(missing.length){const result=await api('spectra',{lane,items:missing.map(r=>({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid']}))},signal);for(const item of result.items){const r=byId.get(item.object.moca_oid)||data.find(r=>r.moca_oid===item.object.moca_oid);if(r){fitCache.set(fitKey(r,lane),item);while(fitCache.size>180)fitCache.delete(fitCache.keys().next().value);}}}return data.map(r=>fitCache.get(fitKey(r,lane)));}
 function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card spectrum-card"><div class="card-head"><div><h3>${inspect?esc(laneNames[lane]):esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div>${inspect?'':`<button data-inspect="${r.moca_oid}">Inspect ↗</button>`}</div><div class="spec-meta">${inspect?'':'OID '+r.moca_oid+' · '}${esc(laneNames[lane])} · spectrum ${r[lane+'_specid']||'unavailable'} · stored type ${esc(spt(r[lane+'_spt']))} · ${esc(r[lane+'_quality']||'unreviewed')}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">${r[lane+'_specid']?'Loading spectrum & best-fit template…':'No active spectrum in this reduction.'}</div></div></article>`;}
@@ -165,6 +165,112 @@ async function renderFlipbook(){
  }
 }
 function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt))}<small>${esc(r.plot_class_label)}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
+const DUPLICATE_BATCH_SIZE=1500;
+let duplicateRows=null,duplicatePage=0,duplicateScan=null,duplicateCanWrite=false,duplicateSaving=false;
+
+function resetDuplicates(){
+ duplicateScan?.abort();duplicateScan=null;duplicateRows=null;duplicatePage=0;
+ $('duplicates-count').textContent='';$('duplicate-status').textContent='';
+}
+function reportLink(object){
+ const oid=Number(object.moca_oid);
+ if(mock)return esc(object.designation||'OID '+oid);
+ return `<a href="https://mocadb.ca/search/results?search-query=oid%28${oid}%29&amp;search-type=star" target="_blank" rel="noreferrer">${esc(object.designation||'OID '+oid)} ↗</a>`;
+}
+function duplicateMotion(object){
+ const component=(value,unc)=>value==null?'—':fmt(value,1)+(unc==null?'':' ± '+fmt(unc,1));
+ const source=[object.pm_mission,object.pm_release].filter(Boolean).join(' ');
+ return `${component(object.pmra_masyr,object.pmra_masyr_unc)} / ${component(object.pmdec_masyr,object.pmdec_masyr_unc)}<small>${esc([source,object.pm_pid].filter(Boolean).join(' · '))}</small>`;
+}
+function duplicateReference(known){
+ const label=esc(known.reference_name||known.moca_pid||'—');
+ const cite=known.bibcode?`<a href="https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(known.bibcode)}/abstract" target="_blank" rel="noreferrer">${label} ↗</a>`:label;
+ const provenance=[known.reference_name&&known.moca_pid,known.origin].filter(Boolean).join(' · ');
+ return `${cite}<small>${esc(provenance)}</small>`;
+}
+function duplicateDecision(pair){
+ if(pair.decision?.classification==='y')return pair.decision.applied?'Duplicate applied':'Declared duplicate';
+ if(pair.decision)return `Existing decision (${pair.decision.classification})`;
+ if(pair.target_decision)return `Already declared against OID ${pair.target_decision.moca_oid}`;
+ if(pair.known_decision)return `Counterpart is a duplicate of OID ${pair.known_decision.moca_oid}`;
+ return '';
+}
+function renderDuplicates(){
+ const matches=duplicateRows||[],pageSize=50;
+ const pages=Math.ceil(matches.length/pageSize);
+ duplicatePage=Math.max(0,Math.min(duplicatePage,pages-1));
+ $('duplicate-rows').innerHTML=matches.slice(duplicatePage*pageSize,(duplicatePage+1)*pageSize).map((pair,i)=>{
+  const {target,known,separation_arcsec}=pair,record=byId.get(target.moca_oid);
+  const decision=duplicateDecision(pair);
+  const epoch=object=>object.measurement_epoch_yr==null?'epoch unavailable':`epoch ${fmt(object.measurement_epoch_yr,2)}`;
+  return `<tr><td><button class="text-button" data-inspect="${target.moca_oid}">${esc(target.designation||'OID '+target.moca_oid)}</button><small>OID ${target.moca_oid} · ${esc(record?spt(record.spt):(target.adopted_type||'—'))} · ${epoch(target)}</small></td>
+   <td>${reportLink(known)}<small>OID ${known.moca_oid} · ${epoch(known)}${known.in_byw?' · BYW':''}</small></td>
+   <td>${fmt(separation_arcsec,1)}″</td><td>${esc(known.spectral_type)}</td><td>${duplicateReference(known)}</td>
+   <td>${duplicateMotion(target)}</td><td>${duplicateMotion(known)}</td>
+   <td>${decision?`<span class="duplicate-decision">${esc(decision)}</span>`:`<button type="button" data-declare-pair="${duplicatePage*pageSize+i}" ${!duplicateCanWrite||duplicateSaving||duplicateScan?'disabled':''}>Declare potential duplicate</button>`}</td></tr>`;
+ }).join('');
+ $('duplicate-position').textContent=matches.length?`Page ${duplicatePage+1} of ${pages}`:'';
+ $('duplicate-prev').disabled=!duplicatePage;$('duplicate-next').disabled=duplicatePage>=pages-1;
+ $('duplicate-rescan').disabled=Boolean(duplicateScan)||duplicateSaving;
+}
+async function scanDuplicates(){
+ if(duplicateScan||duplicateSaving)return;
+ if(!rows.length){$('duplicate-status').textContent='Apply filters to select objects to scan.';renderDuplicates();return;}
+ const controller=new AbortController();duplicateScan=controller;
+ const sample=rows, matches=[];
+ let positioned=0;
+ $('duplicate-error').hidden=true;renderDuplicates();
+ try{
+  for(let i=0;i<sample.length;i+=DUPLICATE_BATCH_SIZE){
+   $('duplicate-status').textContent=`Checking ${num(sample.length)} selected objects… ${num(i)} checked`;
+   const result=await api('duplicate-matches',{oids:sample.slice(i,i+DUPLICATE_BATCH_SIZE).map(r=>r.moca_oid)},controller.signal);
+   if(duplicateScan!==controller)return;
+   positioned+=result.positioned;duplicateCanWrite=result.can_write;matches.push(...result.matches);
+  }
+  matches.sort((a,b)=>a.separation_arcsec-b.separation_arcsec||a.target.moca_oid-b.target.moca_oid||a.known.moca_oid-b.known.moca_oid);
+  duplicateRows=matches;duplicatePage=0;
+  const count=new Set(matches.map(pair=>pair.target.moca_oid)).size;
+  $('duplicates-count').textContent=num(count);
+  const skipped=sample.length-positioned;
+  $('duplicate-status').textContent=`${num(matches.length)} pairs across ${num(count)} selected objects${skipped?` · ${num(skipped)} unavailable or missing a reference position`:''}${duplicateCanWrite?'':' · Management access required to declare a duplicate'}`;
+ }catch(e){
+  if(e.name!=='AbortError'&&duplicateScan===controller){
+   $('duplicate-error').textContent=e.message;$('duplicate-error').hidden=false;
+   $('duplicate-status').textContent='Scan failed. Use Rescan to try again.';
+  }
+ }finally{
+  if(duplicateScan===controller){duplicateScan=null;renderDuplicates();}
+ }
+}
+async function declareDuplicate(pair){
+ if(!pair||duplicateDecision(pair)||duplicateSaving||!duplicateCanWrite||duplicateScan)return;
+ const {target,known}=pair;
+ if(!confirm(`Declare ${target.designation||'OID '+target.moca_oid} as a potential duplicate of ${known.designation||'OID '+known.moca_oid}?`))return;
+ duplicateSaving=true;$('duplicate-error').hidden=true;renderDuplicates();
+ try{
+  const {decision}=await api('declare-duplicate',{moca_oid:target.moca_oid,primary_oid:known.moca_oid});
+  for(const match of duplicateRows||[]){
+   if(match.target.moca_oid===target.moca_oid){
+    match.target_decision=decision;
+    if(match.known.moca_oid===known.moca_oid)match.decision=decision;
+   }
+   if(match.known.moca_oid===target.moca_oid)match.known_decision=decision;
+  }
+  $('duplicate-status').textContent=`${mock?'Demo declaration':'Declared potential duplicate'} · OID ${target.moca_oid} → OID ${known.moca_oid}`;
+ }catch(e){$('duplicate-error').textContent=e.message;$('duplicate-error').hidden=false;}
+ finally{
+  duplicateSaving=false;renderDuplicates();
+  if(tab==='duplicates'&&duplicateRows===null)scanDuplicates();
+ }
+}
+$('duplicate-rescan').onclick=scanDuplicates;
+$('duplicate-prev').onclick=()=>{duplicatePage--;renderDuplicates();};
+$('duplicate-next').onclick=()=>{duplicatePage++;renderDuplicates();};
+$('duplicate-rows').onclick=e=>{
+ const button=e.target.closest('[data-declare-pair]');
+ if(button)declareDuplicate(duplicateRows?.[Number(button.dataset.declarePair)]);
+};
+
 function wiseHash(r){return new URLSearchParams({ra:r.ra,dec:r.dec,size:30,band:3,speed:313,minbright:-50,maxbright:500,window:2.64664,diff_window:1,linear:1,color:'',zoom:20,border:0,gaia:1,invert:1,maxdyr:1,scandir:0,neowise:0,diff:0}).toString();}
 function closeInspector(){inspectorGeneration++;inspectController?.abort();if($('inspector').open)$('inspector').close();$('wise-frame').src='about:blank';purgePlots($('inspect-spectra'));}
 async function openInspector(r){
