@@ -26,6 +26,7 @@ reviewer services do not need to restart. It starts no scientific workers.
   SPIFF, then public spectroscopic type. Adopted type is an explicit alternative.
 - Default catalog: **SUBLIME2 only**. All five catalog/claim membership
   selectors (BYW, BYW claims, Yadu, Azul, SMDET) default to **Absent / no**.
+- Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
 - Other defaults: L0+, unpublished, not the duplicate side of confirmed duplicate
   pairs, with `good` or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog
