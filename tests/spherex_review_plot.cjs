@@ -99,3 +99,35 @@ test("selected number of ranked matches is drawn without mutating the fit", () =
   }
   assert.equal(JSON.stringify(data), original);
 });
+
+
+test("three reduction panels use distinct template colors and independent flux axes", () => {
+  const primary = fixture(); primary.read_only = false;
+  primary.comparison = {spiff: {...fixture(), lane: "spiff"}, sublimeaperture: {...fixture(), lane: "sublimeaperture"}};
+  const before = JSON.stringify(primary);
+  const {comparisonFigure, lanes} = require("../mocaviz/static/spherex_review_plot.js");
+  const plot = comparisonFigure(primary, "object", 800, 3);
+  assert.equal(byRole(plot, "template-curve").length, 9);
+  for (const [index, lane] of lanes.entries()) {
+    const curves = byRole(plot, "template-curve").filter(t => t.meta.lane === lane.key);
+    assert.equal(curves.length, 3);
+    assert(curves.every(t => t.line.color === lane.color && t.yaxis === "y" + (index ? index + 1 : "")));
+  }
+  assert.deepEqual(plot.layout.xaxis.range, plot.layout.xaxis3.range);
+  assert(plot.layout.yaxis.domain[0] > plot.layout.yaxis2.domain[1]);
+  assert(plot.layout.yaxis2.domain[0] > plot.layout.yaxis3.domain[1]);
+  assert(plot.layout.annotations.some(a => a.text.includes("SPIFFStacker · review lane")));
+  assert.equal(JSON.stringify(primary), before);
+});
+
+test("missing reduction spectra keep their labeled slots and exact read-only spectra stay exact", () => {
+  const {comparisonFigure} = require("../mocaviz/static/spherex_review_plot.js");
+  const primary = {...fixture(), read_only:false, comparison:{}};
+  const plot = comparisonFigure(primary, "object", 800, 1);
+  assert.equal(byRole(plot, "template-curve").length, 1);
+  assert(plot.layout.annotations.some(a => a.text === "No active SPIFF spectrum"));
+  assert(plot.layout.annotations.some(a => a.text === "No active SUBLIMEaperture spectrum"));
+  const exact = comparisonFigure({...primary, read_only:true}, "exact");
+  assert.equal(byRole(exact, "template-curve").length, 3);
+  assert(!exact.layout.xaxis2);
+});

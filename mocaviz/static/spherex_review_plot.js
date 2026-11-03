@@ -16,7 +16,7 @@
     return finite(low) ? [low, high] : [0, 0];
   }
 
-  function figure(data, revision, width = 800, count = 3) {
+  function figure(data, revision, width = 800, count = 3, templateColor = "red") {
     // The reference figure is 10 inches wide; convert its point sizes to this viewport.
     const pt = (size, minimum = 0) => Math.max(minimum, size * Math.min(width, 1000) / 720);
     const raw = data.raw_spectrum || [], fit = data.fit;
@@ -86,13 +86,13 @@
         x: overlay.curve_wavelength_um || overlay.wavelength_um,
         y: (overlay.curve_flux || overlay.flux).map((f) => finite(f) ? (f + shift) / unit : null),
         type: "scatter", mode: "lines", name: templateName, showlegend: false,
-        meta: {role: "template-curve", rank: i}, line: {color: "red", width: pt(1.5, 1)},
+        meta: {role: "template-curve", rank: i}, line: {color: templateColor, width: pt(1.5, 1)},
         hoverinfo: "skip", connectgaps: false,
       }, {
         x: overlay.wavelength_um, y: overlay.flux.map((f) => finite(f) ? (f + shift) / unit : null),
         customdata: overlay.flux, type: "scatter", mode: "markers", name: templateName,
         showlegend: false, meta: {role: "template-points", rank: i},
-        marker: {size: pt(3.8, 3), color: "red", opacity: 0.7, line: {color: "red", width: pt(0.5, 0.3)}},
+        marker: {size: pt(3.8, 3), color: templateColor, opacity: 0.7, line: {color: templateColor, width: pt(0.5, 0.3)}},
         hovertemplate: "Wavelength: %{x:.4f} µm<br>Fλ: %{customdata:.4g}<extra>%{fullData.name}</extra>",
       });
       const row = fit.matches?.[i] || {};
@@ -103,7 +103,7 @@
         y: (templateBounds[i][0] + shift - 0.5 * freeSpace) / unit,
         xref: "x", yref: "y", text: "<b>" + escapeText(overlay.label) + "  χ²<sub>r</sub>=" +
           (finite(chi2) ? chi2.toFixed(1) : "—") + "</b>",
-        showarrow: false, xanchor: "right", yanchor: "middle", font: {color: "red", size: pt(14, 11)},
+        showarrow: false, xanchor: "right", yanchor: "middle", font: {color: templateColor, size: pt(14, 11)},
       });
     }
     if (power) annotations.push({xref: "paper", yref: "paper", x: 0, y: 1, yshift: 3,
@@ -131,7 +131,53 @@
     }};
   }
 
-  const api = {figure};
+  const lanes = [
+    {key: "spiffstacker", label: "SPIFFStacker", color: "#2563eb"},
+    {key: "spiff", label: "SPIFF", color: "#159570"},
+    {key: "sublimeaperture", label: "SUBLIMEaperture", color: "#c75b12"},
+  ];
+  function comparisonFigure(data, revision, width = 800, count = 3) {
+    if (data.read_only) return figure(data, revision, width, count);
+    const available = {...data.comparison, [data.lane]: data};
+    const traces = [], annotations = [], shapes = [], layout = {};
+    let sharedRange = [Infinity, -Infinity], legendShown = false;
+    lanes.forEach((lane, i) => {
+      const item = available[lane.key], suffix = i ? String(i + 1) : "";
+      const x = "x" + suffix, y = "y" + suffix, low = (2 - i) / 3;
+      const row = figure(item || {raw_spectrum: []}, revision, width, count, lane.color);
+      const domain = [low + 0.025, low + 0.285];
+      if (item) sharedRange = [Math.min(sharedRange[0], row.layout.xaxis.range[0]), Math.max(sharedRange[1], row.layout.xaxis.range[1])];
+      if (!i) Object.assign(layout, row.layout);
+      layout["xaxis" + suffix] = {...row.layout.xaxis, anchor: y, matches: i ? "x" : undefined,
+        title: i === 2 ? row.layout.xaxis.title : {text: ""}};
+      layout["yaxis" + suffix] = {...row.layout.yaxis, anchor: x, domain,
+        title: {...row.layout.yaxis.title, text: "F<sub>λ</sub> + offset"}};
+      for (const trace of item ? row.traces : []) {
+        if (trace.showlegend) {trace.showlegend = !legendShown; legendShown = true;}
+        traces.push({...trace, xaxis: x, yaxis: y, meta: {...trace.meta, lane: lane.key}});
+      }
+      for (const shape of item ? row.layout.shapes : []) shapes.push({...shape, yref: y});
+      for (const a of item ? row.layout.annotations : []) annotations.push({...a,
+        xref: a.xref === "paper" ? x + " domain" : x,
+        yref: a.yref === "paper" ? y + " domain" : y,
+        y: a.yref === "paper" ? a.y : Math.max(a.y, row.layout.yaxis.range[0] +
+          0.075 * (row.layout.yaxis.range[1] - row.layout.yaxis.range[0]))});
+      annotations.push({xref: "paper", yref: "paper", x: 0.5, y: domain[1] + 0.014,
+        text: "<b>" + lane.label + (lane.key === data.lane ? " · review lane" : "") + "</b>",
+        showarrow: false, xanchor: "center", yanchor: "bottom", font: {color: lane.color, size: 15}});
+      if (!item) {
+        layout["yaxis" + suffix].visible = false;
+        annotations.push({xref: "paper", yref: "paper", x: 0.5, y: (domain[0] + domain[1]) / 2,
+          text: Object.hasOwn(data, "comparison") ? "No active " + lane.label + " spectrum" : "Restart the review service to load companion spectra",
+          showarrow: false, font: {color: "#637787", size: 13}});
+      }
+    });
+    for (let i = 0; i < 3; i++) if (sharedRange.every(Number.isFinite)) layout["xaxis" + (i ? i + 1 : "")].range = sharedRange;
+    Object.assign(layout, {annotations, shapes, height: Math.max(840, count * 180 + 300),
+      margin: {l: 75, r: 18, t: 45, b: 55}, uirevision: revision, showlegend: legendShown});
+    return {traces, layout};
+  }
+  const api = {figure, comparisonFigure, lanes};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.SpherexReviewPlot = api;
 })(typeof window === "undefined" ? globalThis : window);

@@ -186,6 +186,42 @@ class ReviewTests(unittest.TestCase):
 
 
 
+class ComparisonTests(unittest.TestCase):
+    def test_comparison_uses_same_objects_active_latest_spectra_and_shared_templates(self):
+        selected = make_item()
+        meta = selected["object"]
+        templates = [{"fixture": "templates"}]
+        def data(cur, lane, oid, specid, shared=None):
+            pack = 62 if lane is None else lane["pack"]
+            return {**meta, "moca_specid": specid, "moca_specpackid": pack}, selected["raw_spectrum"], templates
+        cursor = MagicMock()
+        with patch.object(review, "dataset", side_effect=data) as dataset, \
+             patch.object(review, "snapshot", return_value=selected["state"]), \
+             patch.object(review, "fit_spectrum", return_value=selected["fit"]), \
+             patch.object(review, "rows", return_value=[{"moca_specid": 111, "moca_specpackid": 62},
+                 {"moca_specid": 222, "moca_specpackid": 55}]) as rows:
+            result = review.analyze(cursor, {"moca_oid": meta["moca_oid"], "moca_specid": meta["moca_specid"],
+                                            "lane": "spiffstacker", "compare_lanes": True})
+        self.assertEqual(set(result["comparison"]), {"spiff"})
+        self.assertEqual(result["comparison"]["spiff"]["object"]["moca_specid"], 222)
+        self.assertEqual(result["comparison"]["spiff"]["object"]["moca_oid"], meta["moca_oid"])
+        self.assertIs(dataset.call_args.args[4], templates)
+        self.assertEqual(len(dataset.call_args_list), 2)
+        sql, params = rows.call_args.args[1:]
+        self.assertIn("s.ignored=0", sql)
+        self.assertIn("newer.ignored=0", sql)
+        self.assertEqual(params, (meta["moca_oid"],))
+
+    def test_demo_comparison_contains_all_three_lane_identities(self):
+        client = app.test_client()
+        result = client.post("/api/spherex-review/analyze", json={"mock": True, "lane": "spiffstacker",
+                             "moca_oid": 1001, "moca_specid": 11001, "compare_lanes": True}).json
+        self.assertEqual(result["lane"], "spiffstacker")
+        self.assertEqual(set(result["comparison"]), {"spiff", "sublimeaperture"})
+        self.assertEqual({v["object"]["moca_oid"] for v in result["comparison"].values()}, {1001})
+        self.assertEqual({v["object"]["moca_specpackid"] for v in result["comparison"].values()}, {55, 76})
+
+
 class QueueSelectionTests(unittest.TestCase):
     """Run the production queue SQL against a small in-memory review matrix."""
     def setUp(self):
