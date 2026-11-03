@@ -71,8 +71,10 @@ or distance is invented when absent. Magnitude-plus-parallax uncertainties are
 propagated when both exist; distance-only error bars are not fabricated.
 CSV includes measurement IDs, spectrum IDs, distance provenance and all flags.
 
-The flipbook has ten objects per page, decreasing stored selected SPT, with
-reduction selector and optional omission of objects lacking active spectra.
+The flipbook offers 10, 20, 30, 40 or 50 objects per page (default 10),
+decreasing stored selected SPT, with reduction selector and optional omission
+of objects lacking active spectra. Larger pages render progressively in batches
+of ten, retaining the bounded API requests and cancellation on page changes.
 Its plots are 75% of their original height; inspector plots retain their size.
 Inspector: **three plots**, SPIFFStacker / SPIFF / SUBLIME aperture, with
 one best-fit template each. Fits are recomputed with the existing autotype
