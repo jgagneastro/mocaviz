@@ -51,6 +51,7 @@ const mock=params.get('mock')==='1';
 const getAuth=(keys)=>{for(const key of keys){const v=fragment.get(key)??params.get(key);if(v!==null)return v;}return '';};
 const auth={'X-MOCA-User':getAuth(['user','username']),'X-MOCA-Password':getAuth(['pwd','password']),'X-MOCA-Database':getAuth(['dbase','db','database'])};
 let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='overview',flipPage=0,objectPage=0,flipGeneration=0,flipController=null;
+let hasAstrometryPlots=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
 const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
@@ -86,6 +87,7 @@ async function load(){
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
   if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
+  hasAstrometryPlots=result.astrometry_plot_version===1;
   rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
@@ -103,7 +105,7 @@ function plot(id,traces,layout,clickable=true){const el=$(id);Plotly.react(el,tr
 function spectralAxis(layout){layout.xaxis.tickmode='array';layout.xaxis.tickvals=ticks;layout.xaxis.ticktext=ticktext;return layout;}
 function scatterTrace(data,x,y,name,color,extra={}){return {type:'scattergl',mode:'markers',x:data.map(x),y:data.map(y),name,marker:{size:7,color,opacity:.76,line:{color:'white',width:.5}},customdata:data.map(r=>[r.moca_oid,r.designation,spt(r.spt)]),text:data.map(r=>esc(r.designation)),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>x: %{x:.3f} · y: %{y:.3f}<extra>'+name+'</extra>',...extra};}
 function groups(data,fn){return FindingClasses.groups(data,fn);}
-function emptyNote(layout,count){if(count)return;layout.annotations=[{text:'No objects with the required data under these cuts',showarrow:false,x:.5,y:.5,xref:'paper',yref:'paper',font:{color:'#7d8d85',size:12}}];}
+function emptyNote(layout,count,text='No objects with the required data under these cuts'){if(count)return;layout.annotations=[{text,showarrow:false,x:.5,y:.5,xref:'paper',yref:'paper',font:{color:'#7d8d85',size:12}}];}
 function mollweide(ra,dec){const lon=(((ra-180+540)%360)-180)*Math.PI/180,lat=dec*Math.PI/180;let theta=lat;for(let i=0;i<20;i++){const d=2+2*Math.cos(2*theta);if(Math.abs(d)<1e-8)break;const step=(2*theta+Math.sin(2*theta)-Math.PI*Math.sin(lat))/d;theta-=step;if(Math.abs(step)<1e-9)break;}return [-2*Math.SQRT2/Math.PI*lon*Math.cos(theta),Math.SQRT2*Math.sin(theta)];}
 function renderCharts(){
  const typed=rows.filter(r=>finite(r.spt)),bin=Number($('hist-bin').value);
@@ -131,24 +133,25 @@ function renderCharts(){
  $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangles) · error bars require magnitude and parallax uncertainties`;
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.motion,n,c)),l);
+ const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
  const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));
  l=spectralAxis(baseLayout('Spectral type','Total proper motion (mas/yr)'));
- emptyNote(l,withProperMotion.length);
+ emptyNote(l,withProperMotion.length,astrometryNote);
  plot('proper-motion',groups(withProperMotion,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.pmtot_masyr,n,c,{
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted total proper motion: %{y:.1f} mas/yr<extra>'+n+'</extra>'
  })),l);
- $('proper-motion-note').textContent=`${num(withProperMotion.length)} with adopted total proper motion · ${num(typed.length-withProperMotion.length)} typed objects without a measurement`;
+ $('proper-motion-note').textContent=astrometryNote??`${num(withProperMotion.length)} with adopted total proper motion · ${num(typed.length-withProperMotion.length)} typed objects without a measurement`;
  const distances=typed.filter(r=>finite(r.adopted_distance_pc));
  const distanceSymbols={photometric:'triangle-up',trigonometric:'circle',nonphotometric:'diamond'};
  l=spectralAxis(baseLayout('Spectral type','Adopted distance (pc)'));
- emptyNote(l,distances.length);
+ emptyNote(l,distances.length,astrometryNote);
  plot('adopted-distance',groups(distances,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.adopted_distance_pc,n,c,{
   marker:{size:8,color:c,opacity:.76,symbol:d.map(r=>distanceSymbols[r.adopted_distance_kind]),line:{color:'white',width:.5}},
   text:d.map(r=>esc(r.designation)+'<br>'+r.adopted_distance_kind+' distance'),
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted distance: %{y:.2f} pc<extra>'+n+'</extra>'
  })),l);
  const otherDistance=distances.some(r=>r.adopted_distance_kind==='nonphotometric')?' · ◆ Nonphotometric, no parallax link':'';
- $('adopted-distance-note').textContent=`▲ Photometric · ● Trigonometric${otherDistance} · ${num(distances.length)} with adopted distances`;
+ $('adopted-distance-note').textContent=astrometryNote??`▲ Photometric · ● Trigonometric${otherDistance} · ${num(distances.length)} with adopted distances`;
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}

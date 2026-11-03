@@ -547,7 +547,7 @@ def api(operation):
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
                                      'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
-                                     'other_sample_version':1}))
+                                     'other_sample_version':1,'astrometry_plot_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')
