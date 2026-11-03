@@ -138,6 +138,17 @@ function renderCharts(){
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted total proper motion: %{y:.1f} mas/yr<extra>'+n+'</extra>'
  })),l);
  $('proper-motion-note').textContent=`${num(withProperMotion.length)} with adopted total proper motion · ${num(typed.length-withProperMotion.length)} typed objects without a measurement`;
+ const distances=typed.filter(r=>finite(r.adopted_distance_pc));
+ const distanceSymbols={photometric:'triangle-up',trigonometric:'circle',nonphotometric:'diamond'};
+ l=spectralAxis(baseLayout('Spectral type','Adopted distance (pc)'));
+ emptyNote(l,distances.length);
+ plot('adopted-distance',groups(distances,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.adopted_distance_pc,n,c,{
+  marker:{size:8,color:c,opacity:.76,symbol:d.map(r=>distanceSymbols[r.adopted_distance_kind]),line:{color:'white',width:.5}},
+  text:d.map(r=>esc(r.designation)+'<br>'+r.adopted_distance_kind+' distance'),
+  hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted distance: %{y:.2f} pc<extra>'+n+'</extra>'
+ })),l);
+ const otherDistance=distances.some(r=>r.adopted_distance_kind==='nonphotometric')?' · ◆ Nonphotometric, no parallax link':'';
+ $('adopted-distance-note').textContent=`▲ Photometric · ● Trigonometric${otherDistance} · ${num(distances.length)} with adopted distances`;
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}

@@ -353,11 +353,14 @@ def photometry(cur, rows, f):
         for r in fetch(cur, 'SELECT id,moca_oid,parallax_mas,parallax_mas_unc FROM data_parallaxes WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND parallax_mas>0',ids):
             by_oid[r['moca_oid']].update(parallax_id=r['id'],parallax=r['parallax_mas'],parallax_unc=r['parallax_mas_unc'],
                  distance_pc=1000/float(r['parallax_mas']),distance_kind='parallax')
-        dist_filter='' if f['distance_mode']=='include_photometric' else ' AND photometric_estimate=0'
-        for r in fetch(cur, 'SELECT id,moca_oid,distance_pc,photometric_estimate FROM data_distances WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND distance_pc>0'+dist_filter,ids):
+        for r in fetch(cur, 'SELECT id,moca_oid,distance_pc,photometric_estimate,parallax_id FROM data_distances'
+                       ' WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND distance_pc>0', ids):
             obj=by_oid[r['moca_oid']]
-            if not obj.get('distance_pc'):
-                obj.update(distance_id=r['id'],distance_pc=r['distance_pc'],distance_kind='photometric' if r['photometric_estimate'] else 'nonphotometric')
+            photometric=bool(r['photometric_estimate'])
+            kind='photometric' if photometric else ('trigonometric' if r['parallax_id'] is not None else 'nonphotometric')
+            obj.update(adopted_distance_id=r['id'], adopted_distance_pc=r['distance_pc'], adopted_distance_kind=kind)
+            if not obj.get('distance_pc') and (not photometric or f['distance_mode']=='include_photometric'):
+                obj.update(distance_id=r['id'],distance_pc=r['distance_pc'],distance_kind='photometric' if photometric else 'nonphotometric')
         data=fetch(cur, '''SELECT p.id,p.moca_oid,p.magnitude,p.magnitude_unc,p.is_synthetic,p.moca_specid,p.calculation_method,p.origin,s.moca_specpackid
             FROM data_photometry p LEFT JOIN moca_spectra s ON s.moca_specid=p.moca_specid
             WHERE p.moca_oid IN ('''+ph+''') AND p.system_band_simple='W2' AND p.ignored=0 AND p.magnitude IS NOT NULL
@@ -424,6 +427,9 @@ def demo_rows(f):
                  distance_pc=1000/(40+i),distance_kind='parallax',spt_source='spiffstacker',
                  w2=14+i/40,synthetic_w2=14.1+i/40,w2_difference=.1,
                  M_w2=10+i/40,M_synthetic_w2=10.1+i/40,M_w2_unc=.1,M_synthetic_w2_unc=.12)
+        if i%7!=0:
+            r.update(adopted_distance_pc=9+(i*11)%80,
+                     adopted_distance_kind='photometric' if i%2 else 'trigonometric')
         r['samples']=[s for s in SOURCES if r[s]]
         if not any(r.get(s) for s in f['sources']):continue
         if f['min_spt'] is not None and r['spt']<f['min_spt']:continue

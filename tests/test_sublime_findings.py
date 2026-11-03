@@ -176,6 +176,25 @@ class FindingsTests(unittest.TestCase):
         r=copy.deepcopy(r);r.pop('distance_pc')
         self.assertIsNone(sf.photometry(MagicMock(),[r],f)[0]['M_w2'])
 
+    def test_distance_plot_uses_adopted_values_independently_of_cmd(self):
+        filters = sf.parse_filters({})
+        objects = [{'moca_oid': oid, 'best_spt_source': 'spiff', 'known': False} for oid in (1, 2, 3)]
+        parallaxes = [{'id': 5, 'moca_oid': 1, 'parallax_mas': 50, 'parallax_mas_unc': 1}]
+        adopted = [
+            {'id': 7, 'moca_oid': 1, 'distance_pc': 21, 'parallax_id': 5, 'photometric_estimate': 0},
+            {'id': 8, 'moca_oid': 2, 'distance_pc': 18, 'parallax_id': None, 'photometric_estimate': 1},
+        ]
+        for mode in ('astrometric', 'include_photometric'):
+            with self.subTest(mode=mode), patch.object(sf, 'fetch', side_effect=[parallaxes, adopted, []]):
+                trig, photo, missing = sf.photometry(MagicMock(), copy.deepcopy(objects), dict(filters, distance_mode=mode))
+                self.assertEqual(trig['adopted_distance_pc'], 21)
+                self.assertEqual(trig['adopted_distance_kind'], 'trigonometric')
+                self.assertEqual(trig['distance_pc'], 20)
+                self.assertEqual(photo['adopted_distance_pc'], 18)
+                self.assertEqual(photo['adopted_distance_kind'], 'photometric')
+                self.assertEqual(photo.get('distance_pc'), 18 if mode == 'include_photometric' else None)
+                self.assertIsNone(missing.get('adopted_distance_pc'))
+
     def test_body_limits_and_spectrum_identifiers(self):
         self.assertEqual(self.client.post('/api/findings/spectra',json={'mock':True,'items':[{}]*11}).status_code,400)
         self.assertEqual(self.client.post('/api/findings/spectra',json={'mock':True,'items':[{'moca_oid':1,'moca_specid':'oops'}]}).status_code,400)
