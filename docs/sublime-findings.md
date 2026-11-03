@@ -17,8 +17,10 @@ reviewer services do not need to restart. It starts no scientific workers.
 
 ## Selection
 
-- Combine SUBLIME1, SUBLIME2, CatWISE red movers, and other active private
-  MOCAdb objects outside those catalogs. Catalog unions count each OID once.
+- Combine SUBLIME1, SUBLIME2, CatWISE red movers, and other active
+  MOCAdb objects outside those catalogs without a public nonphotometric M0+
+  classification, including confirmed duplicate links. Public catalog identifiers
+  do not by themselves make an object a published late-type discovery. Catalog unions count each OID once.
 - Latest candidate rows and latest non-ignored stored lane autotypes are used.
   The default type order is SPIFFStacker, SUBLIME aperture, SUBLIME2 candidate,
   SPIFF, then public spectroscopic type. Adopted type is an explicit alternative.
@@ -74,8 +76,10 @@ under the local SUBLIME cutout tree and Phoenix_A fallback. Files are read only,
 not unpacked on disk. Missing disks/files are reported. The on-disk cutout PNGs
 may themselves contain the original extraction's plotted spectrum.
 WiseView uses the reviewer's 30 arcsec / maxdyr=1 settings in a sandboxed frame
-with no database credentials. Its fixed vendor JS/CSS are proxied for the
-frame. Finder charts use 2MASS IRSA Finder Chart, PS1 i/z/y cutouts, and NSC DR2 SIA
+with no database credentials. Its fixed vendor JS/CSS and public pawnstars/xref lookups are proxied for the
+opaque-origin frame. The lookup routes validate coordinates and cannot request
+arbitrary upstream URLs or read private data. Missing survey coverage is a
+normal panel result, not a failed dashboard load. Finder charts use 2MASS IRSA Finder Chart, PS1 i/z/y cutouts, and NSC DR2 SIA
 previews, as in the reviewer. Requests include only coordinates and field size.
 2MASS/PS1 show a center crosshair; NSC's per-exposure previews are not assumed
 to be centered. No proper-motion epoch propagation is claimed.

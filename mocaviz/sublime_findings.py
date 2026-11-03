@@ -93,13 +93,37 @@ def fetch(cur, sql, params=()):
     return list(cur.fetchall())
 
 
+
+def known_expression(alias):
+    """Published late-type status follows both sides of confirmed duplicate links."""
+    oid=alias+'.moca_oid'
+    published="d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>=0"
+    return '('+(' OR '.join((
+        'EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid='+oid+' AND '+published+')',
+        "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.moca_oid WHERE dup.classification='y' AND dup.potential_duplicated_moca_oid="+oid+' AND '+published+')',
+        "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.potential_duplicated_moca_oid WHERE dup.classification='y' AND dup.moca_oid="+oid+' AND '+published+')'
+    )))+')'
+
+
 def selected_sql(f):
     """Keep the large catalogue union in SQL; never download an unfiltered catalogue."""
     unions = ['SELECT moca_oid FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
               for s in f['sources'] if s in SOURCES]
     if 'other' in f['sources']:
-        unions.append('SELECT mo.moca_oid FROM moca_objects mo WHERE mo.ignored=0 AND mo.is_public=0 AND ' +
-                      ' AND '.join('NOT EXISTS (SELECT 1 FROM `' + t + '` c WHERE c.moca_oid=mo.moca_oid)' for t in SOURCES.values()))
+        other_from='moca_objects mo'
+        if f['quality_any'] in ('good','reviewed'):
+            quality_where=" WHERE classification IN ('good','good_candidate')" if f['quality_any']=='good' else ''
+            seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in sr.LANES.values())
+            other_from='('+seed+') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
+        elif f['min_spt'] is not None:
+            threshold=str(float(f['min_spt']))
+            seed='SELECT DISTINCT moca_oid FROM data_spectral_types WHERE ignored=0 AND spectral_type_number>='+threshold
+            seed+=" AND (calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype')"
+            if f['spt_source']=='adopted':seed+=' OR adopted=1'
+            seed+=')'
+            other_from='('+seed+') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
+        unions.append('SELECT mo.moca_oid FROM '+other_from+' WHERE mo.ignored=0 AND NOT '+known_expression('mo')+' AND ' +
+                      ' AND '.join('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `' + t + '` c WHERE c.moca_oid IS NOT NULL)' for t in SOURCES.values()))
     type_cols, type_joins = [], []
     for lane, config in sr.LANES.items():
         methods = ','.join("'" + m + "'" for m in config['methods'])
@@ -306,7 +330,7 @@ def photometry(cur, rows, f):
                 obj['synthetic_w2_pack']=p['moca_specpackid'];obj['synthetic_w2_specid']=p['moca_specid'];obj['synthetic_w2_method']=p['calculation_method'] or p['origin']
     result=[]
     for r in rows:
-        r['other']=not any(r.get(s) for s in SOURCES)
+        r['other']=not any(r.get(s) for s in SOURCES) and not r['known']
         r['samples']=[s for s in (*SOURCES,'other') if r.get(s)]
         r['spt_source']=r['best_spt_source'] if f['spt_source']=='best' else f['spt_source']
         p,pu=r.get('parallax'),r.get('parallax_unc')
@@ -403,9 +427,9 @@ def api(operation):
             if not mock:sr.credentials()
             try:
                 result=inspector.survey(body.get('survey'),float(body.get('ra')),float(body.get('dec')),float(body.get('fov',60)))
-                return jsonify(ok=True,**result)
-            except (ValueError,TypeError):return jsonify(ok=False,error='Survey unavailable or no image coverage at this position.'),502
-            except Exception:return jsonify(ok=False,error='Survey service is currently unavailable. Use the survey link to retry.'),502
+                return jsonify(ok=True,available=True,**result)
+            except (ValueError,TypeError):return jsonify(ok=True,available=False,error='Survey unavailable or no image coverage at this position.')
+            except Exception:return jsonify(ok=True,available=False,error='Survey service is currently unavailable. Try this panel again later.')
         if operation=='cutouts':
             oid=sr.integer(body.get('moca_oid'),'Object ID')
             if mock:result={'images':[],'missing_cutouts':0,'source_keys':0}
@@ -485,6 +509,29 @@ def wiseview_asset(name):
         response.headers['Access-Control-Allow-Origin']='*'
         return response
     except Exception:return jsonify(ok=False,error='WiseView asset unavailable.'),502
+
+
+@findings.route('/pawnstars',methods=['GET','OPTIONS'])
+@findings.route('/xref',methods=['GET','OPTIONS'])
+def wiseview_public_lookup():
+    # These two fixed public lookups support WiseView's opaque sandbox origin.
+    # No credentials, arbitrary destinations or private database access cross it.
+    cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, OPTIONS',
+          'Access-Control-Allow-Headers':'X-Requested-With, Content-Type'}
+    if request.method=='OPTIONS':return ('',204,cors)
+    try:
+        if set(request.args)-{'ra','dec','size','_'}:raise ValueError()
+        ra=float(request.args['ra']);dec=float(request.args['dec'])
+        if not math.isfinite(ra) or not math.isfinite(dec) or not 0<=ra<360 or not -90<=dec<=90:raise ValueError()
+        params={'ra':ra,'dec':dec}
+        if request.path.endswith('/pawnstars'):
+            size=sr.bounded_float(request.args.get('size',120),'Finder image size',32,4096)
+            params['size']=size
+        from urllib.parse import urlencode
+        data=json.loads(inspector.remote_text('http://byw.tools/'+request.path.rsplit('/',1)[-1]+'?'+urlencode(params),limit=1_000_000))
+        return jsonify(data),200,cors
+    except (ValueError,KeyError,sr.ReviewError):return jsonify(error='Invalid public survey coordinates.'),400,cors
+    except Exception:return jsonify(error='WiseView public lookup unavailable.'),502,cors
 
 
 def create_app():

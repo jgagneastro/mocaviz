@@ -119,6 +119,17 @@ class FindingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):inspector.survey('bad',12,-4,60)
         with self.assertRaises(ValueError):inspector.survey('ps1',12,-4,9999)
 
+    def test_other_unpublished_uses_classification_status_not_object_visibility(self):
+        f=sf.parse_filters({'sources':['other'],'min_spt':10})
+        sql,_=sf.selected_sql(f)
+        self.assertNotIn('mo.is_public=0',sql)
+        self.assertIn('d.public_adopted=1',sql)
+        self.assertIn('d.photometric_estimate=0',sql)
+        self.assertIn('dup.potential_duplicated_moca_oid=mo.moca_oid',sql)
+        self.assertIn('dup.moca_oid=mo.moca_oid',sql)
+        self.assertIn('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `pcat_sublime_candidates`',sql)
+        self.assertIn('WHERE c.moca_oid IS NOT NULL',sql)
+
     def test_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
         spectrum=[{'wavelength_angstrom':10000,'flux_flambda':1,'flux_flambda_unc':.1,'ignored':0}]
         conn,cur=MagicMock(),MagicMock()
@@ -148,6 +159,20 @@ class FindingsTests(unittest.TestCase):
         self.assertEqual(result['url'],'https://example.org/preview.png')
         self.assertTrue(result['flip_x']);self.assertFalse(result['crosshair'])
         self.assertIn('2019-01-01',result['label'])
+
+    def test_wiseview_auxiliary_lookups_are_fixed_public_paths(self):
+        response=self.client.options('/xref',headers={'Origin':'null','Access-Control-Request-Headers':'X-Requested-With'})
+        self.assertEqual(response.status_code,204)
+        self.assertEqual(response.headers['Access-Control-Allow-Origin'],'*')
+        with patch.object(inspector,'remote_text',return_value='[]') as remote:
+            response=self.client.get('/xref?ra=12&dec=-4')
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.get_json(),[])
+            self.assertTrue(remote.call_args[0][0].startswith('http://byw.tools/xref?'))
+        with patch.object(inspector,'remote_text') as remote:
+            self.assertEqual(self.client.get('/xref?ra=12&dec=-4&url=https://other.example/').status_code,400)
+            self.assertEqual(self.client.get('/xref?ra=nan&dec=-4').status_code,400)
+            remote.assert_not_called()
 
     def test_private_headers_and_asset_allowlist(self):
         response=self.client.post('/api/findings/load',json={'mock':True})

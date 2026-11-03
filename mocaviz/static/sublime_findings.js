@@ -116,6 +116,7 @@ function renderFinders(generation=inspectorGeneration,signal=inspectController?.
  if(mock)return;
  for(const survey of ['2mass','ps1','nsc'])api('survey',{survey,ra:r.ra,dec:r.dec,fov:Number($('finder-fov').value)},signal).then(result=>{
   if(generation!==inspectorGeneration||fgen!==finderGeneration)return;
+  if(!result.url){$('finder-'+survey).innerHTML='<div class="spec-empty">'+esc(result.error||'No survey coverage returned.')+'</div>';return;}
   const el=$('finder-'+survey),img=document.createElement('img');img.alt=result.label;img.referrerPolicy='no-referrer';img.src=result.url;if(result.flip_x)img.style.transform='scaleX(-1)';let settled=false;
   const timer=setTimeout(()=>{if(!settled&&el.isConnected){settled=true;el.innerHTML='<div class="spec-empty">Image service did not finish. <a target="_blank" rel="noreferrer" href="'+esc(result.url)+'">Open image ↗</a></div>';}},survey==='2mass'?60000:30000);
   img.onload=()=>{if(generation!==inspectorGeneration||fgen!==finderGeneration||settled)return;settled=true;clearTimeout(timer);el.replaceChildren(img);if(result.crosshair){const marker=document.createElement('span');marker.className='finder-crosshair';el.append(marker);}};
