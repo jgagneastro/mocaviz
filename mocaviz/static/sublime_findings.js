@@ -114,7 +114,10 @@ function renderCharts(){
  const start=binEdge(Math.min(-5,lo)),last=binEdge(Math.max(35,hi)),centers=[];
  for(let edge=start;edge<=last;edge+=bin)centers.push(edge+bin/2);
  const hist=groups(typed,(data,name,color)=>{const count=centers.map(()=>0);for(const r of data){const i=Math.floor((r.spt-start)/bin);if(i>=0&&i<count.length)count[i]++;}return {type:'bar',x:centers,y:count,name,marker:{color},width:bin*.86,hovertemplate:'%{x}: %{y} objects<extra>'+name+'</extra>'};});
- let l=spectralAxis(baseLayout('Spectral type','Unique objects'));l.xaxis.range=[binEdge(9),binEdge(32)+bin];l.xaxis.tickvals=[9,10,15,20,25,30,32];l.xaxis.ticktext=l.xaxis.tickvals.map(spt);l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
+ let l=spectralAxis(baseLayout('Spectral type','Unique objects'));l.xaxis.range=[binEdge(9),binEdge(32)+bin];l.xaxis.tickvals=[9,10,15,20,25,30,32];l.xaxis.ticktext=l.xaxis.tickvals.map(spt);
+ l.yaxis.type=$('hist-ylog').checked?'log':'linear';
+ l.yaxis.uirevision=l.uirevision+':'+l.yaxis.type;
+ l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
  const skyRows=rows.filter(r=>finite(r.ra)&&finite(r.dec)),moll=$('sky-projection').value==='mollweide';
  l=baseLayout(moll?'Right ascension (ICRS)':'Right ascension (deg)','Declination (deg)');l.xaxis.range=moll?[-2.91,2.91]:[360,0];l.yaxis.range=moll?[-1.48,1.48]:[-90,90];
  let skyTraces=groups(skyRows,(d,n,c)=>scatterTrace(d,r=>moll?mollweide(r.ra,r.dec)[0]:r.ra,r=>moll?mollweide(r.ra,r.dec)[1]:r.dec,n,c,{hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<extra>'+n+'</extra>'}));
@@ -433,7 +436,7 @@ $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-for(const id of ['hist-bin','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
+for(const id of ['hist-bin','hist-ylog','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
 for(const id of ['available-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
 for(const suffix of ['','-bottom']){$('flip-prev'+suffix).onclick=()=>{flipPage--;renderFlipbook();};$('flip-next'+suffix).onclick=()=>{flipPage++;renderFlipbook();};}
 $('object-search').oninput=()=>{objectPage=0;renderObjects();};$('objects-prev').onclick=()=>{objectPage--;renderObjects();};$('objects-next').onclick=()=>{objectPage++;renderObjects();};
