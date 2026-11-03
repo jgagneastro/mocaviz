@@ -53,7 +53,7 @@ const auth={'X-MOCA-User':getAuth(['user','username']),'X-MOCA-Password':getAuth
 let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='overview',flipPage=0,objectPage=0,flipGeneration=0,flipController=null;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
-const defaults={sources:['sublime2'],min_spt:10,min_motion:1,known:'no',byw:'no',byw_claim:'no',yadu:'no',azul:'no',smdet:'no',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
+const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
 function range(key,label){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum')}${input('max_'+key,'Maximum')}</div>`;}
@@ -62,7 +62,7 @@ const laneOptions=Object.entries(laneNames).map(([k,v])=>[k,v]);
 const triOptions=[['either','Either'],['yes','Present / yes'],['no','Absent / no']];
 $('plot-classes').innerHTML=classDefinitions.map(d=>`<span class="plot-class" title="${esc(d.detail)}"><i style="background:${d.color}"></i>${esc(d.label)} <b id="class-count-${d.key}">—</b></span>`).join('');
 $('filter-fields').innerHTML=
-fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished candidates'],['yes','Known recovered'],['either','Both populations']])+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
+fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished'],['yes','Known recovered'],['either','Both populations']])+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
 fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Best available (priority order)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
 fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text'))+
 fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>')+
@@ -423,7 +423,12 @@ function renderFinders(generation=inspectorGeneration,signal=inspectController?.
 }
 function csvCell(v){let s=Array.isArray(v)?v.join('; '):v==null?'':String(v);if(typeof v==='string'&&/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}
 function exportCSV(){const keys=[...new Set(rows.flatMap(Object.keys))];const content='\ufeff'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(r[k])).join(','))].join('\r\n');const blob=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=blob;a.download='sublime-findings-'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(blob),1000);}
-$('filters').onsubmit=e=>{e.preventDefault();load();};$('filters').oninput=()=>{$('dirty').textContent='Filters changed — apply to update the sample.';};$('reset').onclick=()=>{setFilters(defaults);$('dirty').textContent='Filters reset — apply to update the sample.';};
+$('filters').onsubmit=e=>{e.preventDefault();load();};$('filters').oninput=()=>{$('dirty').textContent='Filters changed — apply to update the sample.';};$('reset').onclick=()=>{setFilters(defaults);load();};
+$('preset-sublime2').onclick=()=>{
+ setFilters({...readFilters(),sources:['sublime2'],known:'no',
+  byw:'no',byw_claim:'no',yadu:'no',azul:'no',smdet:'no'});
+ load();
+};
 $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};

@@ -52,7 +52,7 @@ def parse_filters(raw):
     if set(raw) - allowed:
         raise sr.ReviewError('Unknown dashboard filter.')
     out = dict(raw)
-    sources = out.get('sources', ['sublime2'])
+    sources = out.get('sources', [*SOURCES, 'other'])
     if not isinstance(sources, list) or not sources or any(s not in {*SOURCES, 'other'} for s in sources):
         raise sr.ReviewError('Choose at least one valid sample.')
     out['sources'] = sorted(set(sources))
@@ -78,7 +78,7 @@ def parse_filters(raw):
         if out[key] is not None and not 0 <= out[key] <= 1:
             raise sr.ReviewError('CNN probability must be between 0 and 1.')
     for key in TRI:
-        out.setdefault(key, 'no')
+        out.setdefault(key, 'either')
         if out[key] not in ('yes', 'no', 'either'):
             raise sr.ReviewError('Membership filters must be yes, no, or either.')
     defaults = {'spt_source':'best', 'snr_lane':'spiffstacker', 'duplicates':'exclude',

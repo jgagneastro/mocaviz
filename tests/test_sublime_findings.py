@@ -41,8 +41,8 @@ class FindingsTests(unittest.TestCase):
 
     def test_default_sample_and_catalog_memberships(self):
         f=sf.parse_filters({})
-        self.assertEqual(f['sources'],['sublime2'])
-        self.assertEqual({key:f[key] for key in sf.TRI},{key:'no' for key in sf.TRI})
+        self.assertEqual(f['sources'],['other','redmovers','sublime1','sublime2'])
+        self.assertEqual({key:f[key] for key in sf.TRI},{key:'either' for key in sf.TRI})
 
     def test_new_quality_modes_accept_mock_requests(self):
         for mode in ('one_good','all_good','all_good_candidate'):

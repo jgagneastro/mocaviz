@@ -25,11 +25,16 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
 - Latest candidate rows and latest non-ignored stored lane autotypes are used.
   The default type order is SPIFFStacker, SUBLIME aperture, SUBLIME2 candidate,
   SPIFF, then public spectroscopic type. Adopted type is an explicit alternative.
-- Default catalog: **SUBLIME2 only**. All five catalog/claim membership
-  selectors (BYW, BYW claims, Yadu, Azul, SMDET) default to **Absent / no**.
+- All four catalogs are selected by default. The five catalog and claim
+  selectors (BYW, BYW claims, Yadu, Azul, SMDET) default to **Either**, and
+  the published spectroscopic type filter defaults to **Both populations**.
+- **Trigger SUBLIME2 discoveries only** selects just SUBLIME2, sets all five
+  membership selectors to **Absent / no** and selects **Unpublished**. It
+  immediately applies those settings with the other current cuts.
+  **Reset to default filter** restores and applies the dashboard defaults.
 - Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
-- Other defaults: L0+, unpublished, not the duplicate side of confirmed duplicate
-  pairs, with good-family or `good_candidate` spectral quality in at least one lane.
+- The default sample includes L0+ objects outside the duplicate side of
+  confirmed pairs, with good-family or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog
   load focused on visually vetted findings.
 - In quality requirements, **good** includes `good`, `contaminated_ucd`,
