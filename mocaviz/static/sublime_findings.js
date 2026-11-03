@@ -5,13 +5,15 @@ const FindingClasses = (() => {
   const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
   const definitions = [
     {key:'known', label:'Known recovered', color:'#bc7a3d', detail:'Existing published spectroscopic status, including confirmed duplicate links; takes precedence over the other classes.'},
-    {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'; WiseView score ≥ 5; not known recovered.'},
-    {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'; WiseView score ≥ 3 and < 5; not known recovered.'},
-    {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'; WiseView score from 1 through 2 inclusive; not known recovered.'},
+    {key:'claimed', label:'Claimed UCDs', color:'#b14e5a', detail:'BYW membership, a BYW, Yadu or Azul claim, or an SMDET designation. Applies after Known recovered and before the motion categories.'},
+    {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'. WiseView score ≥ 5. Excludes known and claimed objects.'},
+    {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'. WiseView score ≥ 3 and < 5. Excludes known and claimed objects.'},
+    {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'. WiseView score from 1 through 2 inclusive. Excludes known and claimed objects.'},
     {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including missing or nonqualifying reviews.'},
   ];
   function classify(row) {
     if(row.known) return 'known';
+    if(row.byw || row.byw_claim || row.yadu || row.azul || row.smdet) return 'claimed';
     const qualifies=['spiffstacker','spiff','sublimeaperture'].some(lane=>accepted.has(String(row[lane+'_quality']??'').trim().toLowerCase()));
     const score=row.motion===null || row.motion===undefined || row.motion==='' ? NaN : Number(row.motion);
     if(!qualifies || !Number.isFinite(score)) return 'others';

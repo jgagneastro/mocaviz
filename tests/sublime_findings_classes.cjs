@@ -12,6 +12,13 @@ test('every accepted review in any reduction qualifies at the requested motion b
 test('known recovered takes precedence even without an acceptable spectrum or score',()=>{
   for(const motion of [null,-1,1,3,5,6]) assert.equal(classify({known:true,spiff_quality:'good',motion}),'known');
   assert.equal(classify({known:true}),'known');
+  assert.equal(classify({known:true,byw_claim:true}),'known');
+});
+test('any claim indicator takes precedence over the motion classes',()=>{
+  for(const indicator of ['byw','byw_claim','yadu','azul','smdet']) {
+    for(const motion of [1,3,6]) assert.equal(classify({[indicator]:true,spiff_quality:'good',motion}),'claimed');
+    assert.equal(classify({[indicator]:true}),'claimed');
+  }
 });
 test('unreviewed and other spectral labels remain Others, even with clear motion',()=>{
   for(const quality of [null,undefined,'','bad','good_reddened','weird','late_M','incomplete_but_promising'])
@@ -20,11 +27,11 @@ test('unreviewed and other spectral labels remain Others, even with clear motion
   assert.equal(classify({spiff_quality:'good',motion:''}),'others');
 });
 test('each filtered object belongs to exactly one class and all plots use the class color',()=>{
-  const rows=[{known:true},{spiff_quality:'good',motion:6},{spiffstacker_quality:'good_candidate',motion:3},{sublimeaperture_quality:'peculiar_ucd',motion:2},{motion:6}].map((r,i)=>annotate({...r,moca_oid:i+1}));
-  assert.equal(new Set(definitions.map(d=>d.color)).size,5);
+  const rows=[{known:true},{smdet:true},{spiff_quality:'good',motion:6},{spiffstacker_quality:'good_candidate',motion:3},{sublimeaperture_quality:'peculiar_ucd',motion:2},{motion:6}].map((r,i)=>annotate({...r,moca_oid:i+1}));
+  assert.equal(new Set(definitions.map(d=>d.color)).size,6);
   const traces=groups(rows,(data,name,color)=>({name,marker:{color},ids:data.map(r=>r.moca_oid)}));
-  assert.deepEqual(traces.flatMap(t=>t.ids).sort(),[1,2,3,4,5]);
-  assert.equal(traces.length,5);
+  assert.deepEqual(traces.flatMap(t=>t.ids).sort(),[1,2,3,4,5,6]);
+  assert.equal(traces.length,6);
   for(const [i,trace] of traces.entries()) {
     assert.equal(trace.name,definitions[i].label);
     assert.equal(trace.marker.color,definitions[i].color);
