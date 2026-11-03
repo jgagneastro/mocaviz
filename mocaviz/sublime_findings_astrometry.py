@@ -78,7 +78,7 @@ def spectrum_positions(cur, oid, ids):
         FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN data_proper_motions pm ON pm.id=(SELECT MAX(p.id) FROM data_proper_motions p
           WHERE p.moca_oid=mo.moca_oid AND p.ignored=0 AND p.adopted=1)
-        WHERE mo.moca_oid=%s AND mo.ignored=0 AND s.ignored=0 AND s.moca_specid IN ('''
+        WHERE mo.moca_oid=%s AND mo.ignored=0 AND s.moca_specid IN ('''
         + ','.join(['%s']*len(ids)) + ')', (oid,*ids.values()))
     by_id = {row['moca_specid']:row for row in rows}
     result = {}

@@ -92,7 +92,9 @@ class FindingsTests(unittest.TestCase):
                     db.execute('INSERT INTO '+cfg['table']+' VALUES (?,?)',(oid,quality[i]))
                 if i in active or i in ignored:
                     db.execute('INSERT INTO moca_spectra VALUES (?,?,?)',(oid,cfg['pack'],int(i in ignored)))
-                if i in active:r[lane+'_specid']=oid*10+i
+                if i in active or i in ignored:
+                    r[lane+'_specid']=oid*10+i
+                    r[lane+'_ignored']=i in ignored
             records.append((r,expected))
         for index,mode in enumerate(modes):
             with self.subTest(mode=mode):
@@ -207,16 +209,17 @@ class FindingsTests(unittest.TestCase):
         self.assertIn('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `pcat_sublime_candidates`',sql)
         self.assertIn('WHERE c.moca_oid IS NOT NULL',sql)
 
-    def test_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
+    def test_ignored_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
         spectrum=[{'wavelength_angstrom':10000,'flux_flambda':1,'flux_flambda_unc':.1,'ignored':0}]
         conn,cur=MagicMock(),MagicMock()
         with patch.object(sf.sr,'credentials',return_value={}),patch.object(sf.sr,'connection') as context, \
-             patch.object(sf.sr,'spectrum_metadata',return_value={'moca_oid':1,'moca_specid':2,'ignored':0}), \
+             patch.object(sf.sr,'spectrum_metadata',return_value={'moca_oid':1,'moca_specid':2,'ignored':1}), \
              patch.object(sf,'fetch',side_effect=[spectrum,[]]),patch.object(sf.sr,'fit_spectrum',side_effect=ValueError('Too few usable pixels')):
             context.return_value.__enter__.return_value=(conn,cur)
             response=self.client.post('/api/findings/spectra',json={'items':[{'moca_oid':1,'moca_specid':2}],'lane':'spiff'})
             self.assertEqual(response.status_code,200)
             item=response.get_json()['items'][0]
+            self.assertEqual(item['object']['ignored'],1)
             self.assertEqual(item['raw_spectrum'],spectrum)
             self.assertIsNone(item['fit'])
             self.assertIn('Too few',item['warning'])

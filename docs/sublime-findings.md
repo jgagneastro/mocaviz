@@ -74,8 +74,10 @@ propagated when both exist; distance-only error bars are not fabricated.
 CSV includes measurement IDs, spectrum IDs, distance provenance and all flags.
 
 The flipbook offers 10, 20, 30, 40 or 50 objects per page (default 50),
-decreasing stored selected SPT, with optional omission of objects lacking
-active spectra in all three lanes. Larger pages render progressively in batches
+decreasing stored selected SPT, with optional omission of objects without
+stored spectra in any lane. The flipbook and inspector show the newest active
+spectrum in each reduction, falling back to the newest ignored spectrum
+when needed and labeling it as ignored. Larger pages render progressively in batches
 of ten, retaining the bounded API requests and cancellation on page changes.
 Its taller cards contain three vertically stacked panels; inspector plots retain their size.
 Inspector: **three plots**, SPIFFStacker / SPIFF / SUBLIME aperture, with

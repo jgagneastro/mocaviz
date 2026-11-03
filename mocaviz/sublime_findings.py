@@ -292,12 +292,14 @@ def enrich(cur, rows):
         for lane, cfg in sr.LANES.items():
             for r in fetch(cur, 'SELECT moca_oid,classification FROM `' + cfg['table'] + '` WHERE moca_oid IN (' + ph + ')', ids):
                 by_oid[r['moca_oid']][lane+'_quality'] = r['classification']
-            for r in fetch(cur, '''SELECT s.moca_oid,s.moca_specid,s.median_snr_per_pix FROM moca_spectra s JOIN
-                (SELECT moca_oid,MAX(moca_specid) AS moca_specid FROM moca_spectra
-                 WHERE moca_oid IN (''' + ph + ''') AND moca_specpackid=%s AND ignored=0 GROUP BY moca_oid) latest
+            for r in fetch(cur, '''SELECT s.moca_oid,s.moca_specid,s.median_snr_per_pix,s.ignored FROM moca_spectra s JOIN
+                (SELECT moca_oid,COALESCE(MAX(CASE WHEN ignored=0 THEN moca_specid END),MAX(moca_specid)) AS moca_specid
+                 FROM moca_spectra WHERE moca_oid IN (''' + ph + ''') AND moca_specpackid=%s GROUP BY moca_oid) latest
                 ON latest.moca_specid=s.moca_specid''', (*ids,cfg['pack'])):
                 by_oid[r['moca_oid']][lane+'_specid'] = r['moca_specid']
-                by_oid[r['moca_oid']][lane+'_snr'] = r['median_snr_per_pix']
+                by_oid[r['moca_oid']][lane+'_ignored'] = bool(r['ignored'])
+                if not r['ignored']:
+                    by_oid[r['moca_oid']][lane+'_snr'] = r['median_snr_per_pix']
     return rows
 
 
@@ -305,7 +307,8 @@ def passes(r, f):
     quality=[str(r.get(lane+'_quality') or '').lower() for lane in LANES]
     mode=f['quality_any']
     if mode in ALL_QUALITY:
-        available=[str(r.get(lane+'_quality') or '').lower() for lane in LANES if r.get(lane+'_specid')]
+        available=[str(r.get(lane+'_quality') or '').lower() for lane in LANES
+                   if r.get(lane+'_specid') and not r.get(lane+'_ignored')]
         if not available or not all(v in QUALITY_CLASSES[mode] for v in available):return False
     elif mode in QUALITY_CLASSES and not any(v in QUALITY_CLASSES[mode] for v in quality):return False
     if f['quality_any']=='reviewed' and not any(quality):return False
@@ -549,7 +552,6 @@ def api(operation):
                 for oid,specid in parsed:
                     try:
                         meta=sr.spectrum_metadata(cur,specid,oid,sr.LANES[lane_key])
-                        if meta['ignored']:raise sr.ReviewError('Spectrum is now ignored. Reload the dashboard.',409)
                         spectrum=fetch(cur,'SELECT id AS data_spectra_id,wavelength_angstrom,flux_flambda,flux_flambda_unc,ignored FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom,id LIMIT 10001',(specid,))
                         if len(spectrum)>10000:raise sr.ReviewError('Spectrum exceeds interactive size limit.')
                         if templates is None:
