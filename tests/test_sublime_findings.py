@@ -209,6 +209,44 @@ class FindingsTests(unittest.TestCase):
         self.assertIn('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `pcat_sublime_candidates`',sql)
         self.assertIn('WHERE c.moca_oid IS NOT NULL',sql)
 
+    def test_other_requires_private_adopted_m0_and_current_spherex_type(self):
+        with sqlite3.connect(':memory:') as db:
+            db.executescript('''
+                CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY, designation TEXT, ra REAL, dec REAL, ignored INT, is_public INT);
+                CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY, moca_oid INT, spectral_type_number REAL,
+                    adopted INT, public_adopted INT, ignored INT, photometric_estimate INT, calculation_method TEXT);
+                CREATE TABLE pcat_sublime_candidates(id INT, moca_oid INT, detection_snr REAL);
+                CREATE TABLE pcat_sublime_candidates_v2(id INT, moca_oid INT, detection_snr REAL, autotype_spectral_type_number REAL,
+                    visual_nn_good_probability REAL, visual_nn_classification TEXT, autotype_reduced_chi2 REAL);
+                CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
+                CREATE TABLE pcat_duplicated_vetting(moca_oid INT, potential_duplicated_moca_oid INT, classification TEXT);
+            ''')
+            db.executemany("INSERT INTO moca_objects VALUES (?, 'Fixture', 0, 0, 0, 1)", [(oid,) for oid in range(1, 10)])
+            for cfg in sf.sr.LANES.values():
+                db.execute('CREATE TABLE ' + cfg['table'] + '(moca_oid INT, classification TEXT)')
+            db.executemany("INSERT INTO pcat_spherex_visual_vetting VALUES (?, 'good')", [(oid,) for oid in range(1, 10)])
+            db.execute("INSERT INTO pcat_sublime_candidates VALUES (1, 8, 10)")
+            db.executemany('INSERT INTO data_spectral_types VALUES (NULL, ?, ?, ?, ?, ?, 0, NULL)', [
+                (1, 0, 1, 0, 0), (2, 12, 0, 0, 0), (3, -1, 1, 0, 0),
+                (4, 11, 1, 0, 1), (5, 11, 1, 0, 0), (6, 11, 1, 0, 0),
+                (7, 11, 1, 1, 0), (9, 11, 1, 0, 0),
+            ])
+            db.executemany('INSERT INTO data_spectral_types VALUES (NULL, ?, ?, 0, 0, ?, 0, ?)', [
+                (oid, 14, int(oid == 5), 'spherex_autotype') for oid in range(1, 9)
+            ])
+            db.execute("INSERT INTO data_spectral_types VALUES (NULL, 6, NULL, 0, 0, 0, 0, 'spherex_autotype')")
+            db.execute("INSERT INTO data_spectral_types VALUES (NULL, 9, 19, 0, 0, 0, 0, 'spherex_sublimeap_autotype')")
+
+            def oids(**filters):
+                sql, params = sf.selected_sql(sf.parse_filters({'sources':['other'], **filters}))
+                return [row[0] for row in db.execute(sql.replace('%s', '?'), params)]
+
+            self.assertEqual(oids(), [1, 9])
+            self.assertEqual(oids(quality_any='any', spt_source='adopted'), [1, 9])
+            self.assertEqual(oids(quality_any='any', spt_source='adopted', min_spt=10), [9])
+            self.assertEqual(oids(min_spt=10, max_spt=16), [1])
+            self.assertEqual(oids(sources=['other', 'sublime1']), [1, 8, 9])
+
     def test_ignored_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
         spectrum=[{'wavelength_angstrom':10000,'flux_flambda':1,'flux_flambda_unc':.1,'ignored':0}]
         conn,cur=MagicMock(),MagicMock()

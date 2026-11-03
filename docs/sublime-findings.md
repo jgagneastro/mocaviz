@@ -15,10 +15,13 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
 
 ## Selection
 
-- Combine SUBLIME1, SUBLIME2, CatWISE red movers, and other active
-  MOCAdb objects outside those catalogs without a public nonphotometric M0+
-  classification, including confirmed duplicate links. Public catalog identifiers
-  do not by themselves make an object a published late-type discovery. Catalog unions count each OID once.
+- Combine SUBLIME1, SUBLIME2, CatWISE red movers, and other active MOCAdb objects.
+  **Other unpublished MOCAdb objects** requires an active M0+ type with
+  `adopted=1` in private MOCAdb and a numeric stored SPHEREx autotype in at
+  least one lane. The dashboard applies its selected type, quality, and other
+  filters to this sample. It excludes the other three catalogs and objects
+  with a public nonphotometric M0+ classification, including confirmed
+  duplicate links. Catalog unions count each OID once.
 - Latest candidate rows and latest non-ignored stored lane autotypes are used.
   The default type order is SPIFFStacker, SUBLIME aperture, SUBLIME2 candidate,
   SPIFF, then public spectroscopic type. Adopted type is an explicit alternative.

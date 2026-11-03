@@ -143,23 +143,22 @@ def quality_condition(mode, oid='mo.moca_oid'):
 
 def selected_sql(f):
     """Keep the large catalogue union in SQL; never download an unfiltered catalogue."""
-    unions = ['SELECT moca_oid FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
+    unions = ['SELECT moca_oid, 0 AS is_other FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
               for s in f['sources'] if s in SOURCES]
     if 'other' in f['sources']:
-        other_from='moca_objects mo'
         if f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed':
             classes=QUALITY_CLASSES.get(f['quality_any'])
             quality_where=' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
             seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in sr.LANES.values())
-            other_from='('+seed+') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
-        elif f['min_spt'] is not None:
-            threshold=str(float(f['min_spt']))
-            seed='SELECT DISTINCT moca_oid FROM data_spectral_types WHERE ignored=0 AND spectral_type_number>='+threshold
-            seed+=" AND (calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype')"
-            if f['spt_source']=='adopted':seed+=' OR adopted=1'
-            seed+=')'
-            other_from='('+seed+') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
-        unions.append('SELECT mo.moca_oid FROM '+other_from+' WHERE mo.ignored=0 AND NOT '+known_expression('mo')+' AND ' +
+        else:
+            methods = ','.join("'" + method + "'" for cfg in sr.LANES.values() for method in cfg['methods'])
+            seed = ('SELECT DISTINCT moca_oid FROM data_spectral_types WHERE ignored=0 '
+                    'AND spectral_type_number IS NOT NULL AND calculation_method IN (' + methods + ')')
+        other_from = '(' + seed + ') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
+        adopted_m0 = ('EXISTS (SELECT 1 FROM data_spectral_types private_type WHERE private_type.moca_oid=mo.moca_oid '
+                      'AND private_type.adopted=1 AND private_type.ignored=0 AND private_type.spectral_type_number>=0)')
+        unions.append('SELECT mo.moca_oid, 1 AS is_other FROM '+other_from+' WHERE mo.ignored=0 AND '+adopted_m0+
+                      ' AND NOT '+known_expression('mo')+' AND ' +
                       ' AND '.join('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `' + t + '` c WHERE c.moca_oid IS NOT NULL)' for t in SOURCES.values()))
     type_cols, type_joins = [], []
     for lane, config in sr.LANES.items():
@@ -193,6 +192,9 @@ def selected_sql(f):
                 UNION SELECT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='''+threshold
         preselect='JOIN ('+candidates+') typed ON typed.moca_oid=sample.moca_oid'
     where, params = ['mo.ignored=0'], []
+    if 'other' in f['sources']:
+        lane_types = ','.join(expressions[lane] for lane in LANES)
+        where.append('(sample.is_other=0 OR COALESCE(' + lane_types + ') IS NOT NULL)')
     def bound(expr, low, high=None):
         if f.get(low) is not None:
             where.append(expr + '>=%s'); params.append(f[low])
@@ -534,7 +536,8 @@ def api(operation):
                     cur.execute('START TRANSACTION READ ONLY')
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
-                                     'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2}))
+                                     'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
+                                     'other_sample_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')

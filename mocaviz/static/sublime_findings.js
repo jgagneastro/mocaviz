@@ -85,6 +85,7 @@ async function load(){
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. Previous plots remain labeled below until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
+  if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
   rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
