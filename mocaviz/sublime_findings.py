@@ -452,7 +452,7 @@ def plotly_asset():
 @findings.post('/api/findings/<operation>')
 def api(operation):
     try:
-        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate'):raise sr.ReviewError('Unknown operation.',404)
+        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions'):raise sr.ReviewError('Unknown operation.',404)
         if request.content_length and request.content_length>32768:raise sr.ReviewError('Request too large.',413)
         if not request.is_json:raise sr.ReviewError('Provide JSON.',415)
         body=request.get_json()
@@ -495,10 +495,23 @@ def api(operation):
                 with sr.connection(auth) as (conn,cur):
                     decision=duplicates.declare(conn,cur,auth,oid,primary)
             return jsonify(ok=True,decision=decision)
+        if operation=='spectrum-positions':
+            oid=sr.integer(body.get('moca_oid'),'Object ID')
+            raw_ids=body.get('specids')
+            if not isinstance(raw_ids,dict) or set(raw_ids)-set(LANES):
+                raise sr.ReviewError('Invalid spectrum lanes.')
+            ids={lane:sr.integer(specid,'Spectrum ID') for lane,specid in raw_ids.items()}
+            positions={}
+            if not mock:
+                with sr.connection(sr.credentials()) as (_,cur):
+                    cur.execute('START TRANSACTION READ ONLY')
+                    positions=inspector.astrometry.spectrum_positions(cur,oid,ids)
+            return jsonify(sr.clean({'ok':True,'positions':positions}))
         if operation=='survey':
             if not mock:sr.credentials()
             try:
-                result=inspector.survey(body.get('survey'),float(body.get('ra')),float(body.get('dec')),float(body.get('fov',60)))
+                result=inspector.survey(body.get('survey'),float(body.get('ra')),float(body.get('dec')),float(body.get('fov',60)),
+                                        inspector.chart_positions(body.get('positions',{})))
                 return jsonify(ok=True,available=True,**result)
             except (ValueError,TypeError):return jsonify(ok=True,available=False,error='Survey unavailable or no image coverage at this position.')
             except Exception:return jsonify(ok=True,available=False,error='Survey service is currently unavailable. Try this panel again later.')
@@ -508,7 +521,7 @@ def api(operation):
             else:
                 with sr.connection(sr.credentials()) as (conn,cur):
                     cur.execute('START TRANSACTION READ ONLY')
-                    result=inspector.cutouts(cur,oid)
+                    result=inspector.cutouts(cur,oid,inspector.chart_positions(body.get('positions',{})))
             return jsonify(sr.clean({'ok':True,**result}))
         if operation=='load':
             f=parse_filters(body.get('filters',{}))

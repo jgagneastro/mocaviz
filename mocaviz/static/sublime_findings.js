@@ -272,9 +272,85 @@ $('duplicate-rows').onclick=e=>{
 };
 
 function wiseHash(r){return new URLSearchParams({ra:r.ra,dec:r.dec,size:30,band:3,speed:313,minbright:-50,maxbright:500,window:2.64664,diff_window:1,linear:1,color:'',zoom:20,border:0,gaia:1,invert:1,maxdyr:1,scandir:0,neowise:0,diff:0}).toString();}
+let inspectorPositions=null, wiseAstrometry=null;
+
+function skyCrosshairs(container, markers) {
+ let overlay=container.querySelector(':scope > .spectrum-crosshairs');
+ if(!overlay){overlay=document.createElement('div');overlay.className='spectrum-crosshairs';overlay.setAttribute('aria-hidden','true');container.append(overlay);}
+ overlay.replaceChildren();
+ for(const {lane,x,y} of markers){
+  const i=SpherexReviewPlot.lanes.findIndex(entry=>entry.key===lane);
+  if(i<0||![x,y].every(v=>finite(v)&&v>=0&&v<=1))continue;
+  const crosshair=document.createElement('span');
+  crosshair.className='spectrum-crosshair';crosshair.dataset.lane=lane;
+  crosshair.style.left=`${100*x}%`;crosshair.style.top=`${100*y}%`;
+  crosshair.style.setProperty('--marker-color',SpherexReviewPlot.lanes[i].color);
+  crosshair.style.setProperty('--marker-gap',`${2+i*6}px`);
+  for(let arm=0;arm<4;arm++)crosshair.append(document.createElement('i'));
+  overlay.append(crosshair);
+ }
+}
+function calibratedImage(container, image, alt) {
+ const holder=document.createElement('div');holder.className='calibrated-image';
+ const img=document.createElement('img');img.alt=alt;img.src=image.data;
+ holder.append(img);skyCrosshairs(holder,image.markers);container.replaceChildren(holder);
+}
+function imageEpochNote(image) {
+ if(!Array.isArray(image.markers))return '';
+ const label=image.label?.includes('stack coadd')?'stack header epoch':'image epoch';
+ const epoch=image.image_epoch==null?`${label} unavailable`:`${label} ${fmt(image.image_epoch,3)}`;
+ return ` · ${epoch}${image.markers.length?'':' · no spectrum position inside this field'}`;
+}
+function renderAstrometryLegend() {
+ $('inspect-astrometry').innerHTML=SpherexReviewPlot.lanes.map(lane=>{
+  const point=inspectorPositions?.[lane.key];
+  const detail=point?`${fmt(point.ra,6)}°, ${fmt(point.dec,6)}° · ${point.epoch==null?'reference epoch unavailable':`epoch ${fmt(point.epoch,3)}`} · ${point.source}`:'reference position unavailable';
+  return `<span><b style="color:${lane.color}">${esc(lane.label)}</b> <small>${esc(detail)}</small></span>`;
+ }).join('');
+}
+function atEpoch(point, epoch) {
+ const rad=Math.PI/180,ra=point.ra*rad,dec=point.dec*rad;
+ if(![epoch,point.epoch,point.pmra,point.pmdec].every(finite))return [ra,dec];
+ const bearing=Math.atan2(point.pmra,point.pmdec);
+ const distance=Math.hypot(point.pmra,point.pmdec)*(epoch-point.epoch)*rad/3600000;
+ const lat=Math.asin(Math.max(-1,Math.min(1,Math.sin(dec)*Math.cos(distance)+Math.cos(dec)*Math.sin(distance)*Math.cos(bearing))));
+ const lon=ra+Math.atan2(Math.sin(bearing)*Math.sin(distance)*Math.cos(dec),Math.cos(distance)-Math.sin(dec)*Math.sin(lat));
+ return [lon,lat];
+}
+function renderWiseAstrometry() {
+ if(!wiseAstrometry||!inspectorPositions)return;
+ const {wcs,bounds,size,epoch}=wiseAstrometry;
+ const [ra0,dec0,crpix1,crpix2,naxis2]=wcs;
+ const [left,top,width,height]=bounds,[nx,ny]=size;
+ const frame=$('wise-frame').getBoundingClientRect();
+ const rad=Math.PI/180,lon0=ra0*rad,lat0=dec0*rad,scale=3600/2.75/rad;
+ const markers=[];
+ for(const [lane,point] of Object.entries(inspectorPositions)){
+  const [lon,lat]=atEpoch(point,epoch),delta=lon-lon0;
+  const den=Math.sin(lat0)*Math.sin(lat)+Math.cos(lat0)*Math.cos(lat)*Math.cos(delta);
+  if(den<=0)continue;
+  const px=crpix1-.5-scale*Math.cos(lat)*Math.sin(delta)/den;
+  const py=naxis2-crpix2+.5-scale*(Math.cos(lat0)*Math.sin(lat)-Math.sin(lat0)*Math.cos(lat)*Math.cos(delta))/den;
+  if(px<0||px>nx||py<0||py>ny)continue;
+  markers.push({lane,x:(left+px/nx*width)/frame.width,y:(top+py/ny*height)/frame.height});
+ }
+ skyCrosshairs($('wise-image-content'),markers);
+ $('wise-epoch').textContent=epoch===null?'WISE epoch unavailable':`Median WISE frame epoch ${fmt(epoch,3)}`;
+}
+window.addEventListener('message',event=>{
+ const message=event.data;
+ if(event.source!==$('wise-frame').contentWindow||message?.kind!=='sublime-wiseview-wcs'||message.frame!==String(inspectorGeneration)||!$('inspector').open)return;
+ const {wcs,bounds,size,epoch}=message;
+ if(![[wcs,5],[bounds,4],[size,2]].every(([v,n])=>Array.isArray(v)&&v.length===n&&v.every(finite)))return;
+ if(size.some(v=>v<=0)||bounds[2]<=0||bounds[3]<=0||(epoch!==null&&!finite(epoch)))return;
+ wiseAstrometry=message;renderWiseAstrometry();
+});
+
 function closeInspector(){inspectorGeneration++;inspectController?.abort();if($('inspector').open)$('inspector').close();$('wise-frame').src='about:blank';purgePlots($('inspect-spectra'));}
 async function openInspector(r){
- closeInspector();current=r;cutouts=[];cutIndex=0;const generation=++inspectorGeneration;inspectController=new AbortController();const signal=inspectController.signal;
+ closeInspector();current=r;cutouts=[];cutIndex=0;inspectorPositions=null;wiseAstrometry=null;
+ $('inspect-astrometry').textContent='Loading spectrum reference positions…';$('wise-epoch').textContent='';skyCrosshairs($('wise-image-content'),[]);
+ const generation=++inspectorGeneration;inspectController=new AbortController();const signal=inspectController.signal;
  $('wise-frame').removeAttribute('srcdoc');
  $('inspect-title').textContent=r.designation+' · '+spt(r.spt);$('inspect-meta').textContent=`OID ${r.moca_oid} · RA ${fmt(r.ra,6)}° · Dec ${fmt(r.dec,6)}° · ${r.plot_class_label} · ${r.samples.map(s=>sourceNames[s]).join(', ')}`;
  $('inspect-report').href='https://mocadb.ca/search/results?search-query=oid%28'+r.moca_oid+'%29&search-type=star';
@@ -282,26 +358,51 @@ async function openInspector(r){
  $('inspect-spectra').innerHTML=['spiffstacker','spiff','sublimeaperture'].map(lane=>spectrumCard(r,lane,'inspect-'+lane,true)).join('');
  $('cutout-content').innerHTML='<div class="spec-empty">Loading locally available SUBLIME cutouts…</div>';$('cut-label').textContent='';$('cut-prev').disabled=true;$('cut-next').disabled=true;
  $('inspector').showModal();$('inspector').scrollTop=0;
- if(!mock&&finite(r.ra)&&finite(r.dec)){$('wise-frame').removeAttribute('srcdoc');$('wise-frame').src='wiseview-frame#'+wiseHash(r);}else $('wise-frame').srcdoc='<p style="font:14px system-ui;padding:20px">WiseView is unavailable in the synthetic demo.</p>';
+ if(!mock&&finite(r.ra)&&finite(r.dec)){$('wise-frame').removeAttribute('srcdoc');$('wise-frame').src='wiseview-frame?frame='+generation+'#'+wiseHash(r);}else $('wise-frame').srcdoc='<p style="font:14px system-ui;padding:20px">WiseView is unavailable in the synthetic demo.</p>';
  for(const lane of ['spiffstacker','spiff','sublimeaperture']){
   if(!r[lane+'_specid'])continue;
   getFits([r],lane,signal).then(items=>{if(generation===inspectorGeneration)renderFit($('inspect-'+lane),items[0],lane);}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('inspect-'+lane).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
  }
- api('cutouts',{moca_oid:r.moca_oid},signal).then(result=>{if(generation!==inspectorGeneration)return;cutouts=result.images;showCutout();if(!cutouts.length)$('cut-label').textContent=`${result.source_keys||0} catalog source keys · ${result.missing_cutouts||0} files unavailable locally`;}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('cutout-content').innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
  renderFinders(generation,signal);
+ const specids=Object.fromEntries(SpherexReviewPlot.lanes.filter(lane=>r[lane.key+'_specid']).map(lane=>[lane.key,r[lane.key+'_specid']]));
+ try{
+  const result=await api('spectrum-positions',{moca_oid:r.moca_oid,specids},signal);
+  if(generation!==inspectorGeneration)return;
+  inspectorPositions=result.positions;
+ }catch(e){
+  if(generation!==inspectorGeneration||e.name==='AbortError')return;
+  inspectorPositions={};
+ }
+ renderAstrometryLegend();renderWiseAstrometry();renderFinders(generation,signal);
+ try{
+  const result=await api('cutouts',{moca_oid:r.moca_oid,positions:inspectorPositions},signal);
+  if(generation!==inspectorGeneration)return;
+  cutouts=result.images;showCutout();
+  if(!cutouts.length)$('cut-label').textContent=`${result.source_keys||0} catalog source keys · ${result.missing_cutouts||0} unavailable`;
+ }catch(e){if(e.name!=='AbortError'&&generation===inspectorGeneration)$('cutout-content').innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';}
+
 }
-function showCutout(){$('cut-prev').disabled=cutouts.length<2;$('cut-next').disabled=cutouts.length<2;if(!cutouts.length){$('cutout-content').innerHTML='<div class="spec-empty">No SUBLIME cutout is available locally.<br>The source may belong only to another catalog, or its cutout disk may be unavailable.</div>';return;}const image=cutouts[cutIndex];$('cut-label').textContent=`${cutIndex+1} / ${cutouts.length} · ${image.source_key} · ${image.epochs.map(e=>e.sample+' '+fmt(e.epoch_yr,2)).join(' / ')}`;$('cutout-content').innerHTML='<img alt="SUBLIME source cutout" src="'+image.data+'">';}
+function showCutout(){$('cut-prev').disabled=cutouts.length<2;$('cut-next').disabled=cutouts.length<2;if(!cutouts.length){$('cutout-content').innerHTML='<div class="spec-empty">No SUBLIME cutout is available locally.<br>The source may belong only to another catalog, or its cutout disk may be unavailable.</div>';return;}const image=cutouts[cutIndex];$('cut-label').textContent=`${cutIndex+1} / ${cutouts.length} · ${image.source_key} · ${image.epochs.map(e=>e.sample+' '+fmt(e.epoch_yr,2)).join(' / ')}`;if(Array.isArray(image.markers)){
+  calibratedImage($('cutout-content'),image,'SUBLIME science cutout');$('cut-label').textContent+=imageEpochNote(image);
+ }else{
+  $('cutout-content').innerHTML='<img alt="SUBLIME source cutout" src="'+image.data+'">';
+  if(Object.keys(inspectorPositions||{}).length)$('cut-label').textContent+=' · FITS WCS unavailable for spectrum overlays';
+ }}
 let finderGeneration=0;
 function renderFinders(generation=inspectorGeneration,signal=inspectController?.signal){
  const fgen=++finderGeneration,r=current;if(!r)return;
  $('finders').innerHTML=['2mass','ps1','nsc'].map(s=>`<article class="card"><div class="card-head"><h3>${{ '2mass':'2MASS',ps1:'PS1',nsc:'NSC DR2'}[s]}</h3></div><div class="image-content" id="finder-${s}"><div class="spec-empty">${mock?'Finder charts are disabled in demo mode.':'Resolving survey coverage…'}</div></div><p class="hint" id="finder-note-${s}"></p></article>`).join('');
- if(mock)return;
- for(const survey of ['2mass','ps1','nsc'])api('survey',{survey,ra:r.ra,dec:r.dec,fov:Number($('finder-fov').value)},signal).then(result=>{
+ if(mock||inspectorPositions===null)return;
+ for(const survey of ['2mass','ps1','nsc'])api('survey',{survey,ra:r.ra,dec:r.dec,fov:Number($('finder-fov').value),positions:inspectorPositions},signal).then(result=>{
   if(generation!==inspectorGeneration||fgen!==finderGeneration)return;
+  if(result.data){
+   calibratedImage($('finder-'+survey),result,result.label);
+   $('finder-note-'+survey).textContent=result.label+' · '+result.orientation+imageEpochNote(result);return;
+  }
   if(!result.url){$('finder-'+survey).innerHTML='<div class="spec-empty">'+esc(result.error||'No survey coverage returned.')+'</div>';return;}
   const el=$('finder-'+survey),img=document.createElement('img');img.alt=result.label;img.referrerPolicy='no-referrer';img.src=result.url;if(result.flip_x)img.style.transform='scaleX(-1)';let settled=false;
   const timer=setTimeout(()=>{if(!settled&&el.isConnected){settled=true;el.innerHTML='<div class="spec-empty">Image service did not finish. <a target="_blank" rel="noreferrer" href="'+esc(result.url)+'">Open image ↗</a></div>';}},survey==='2mass'?60000:30000);
-  img.onload=()=>{if(generation!==inspectorGeneration||fgen!==finderGeneration||settled)return;settled=true;clearTimeout(timer);el.replaceChildren(img);if(result.crosshair){const marker=document.createElement('span');marker.className='finder-crosshair';el.append(marker);}};
+  img.onload=()=>{if(generation!==inspectorGeneration||fgen!==finderGeneration||settled)return;settled=true;clearTimeout(timer);el.replaceChildren(img);};
   img.onerror=()=>{if(generation!==inspectorGeneration||fgen!==finderGeneration||settled)return;settled=true;clearTimeout(timer);el.innerHTML='<div class="spec-empty">Image unavailable or no coverage.</div>';};
   $('finder-note-'+survey).textContent=result.label+' · '+result.orientation+(result.note?' · '+result.note:'');
  }).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration&&fgen===finderGeneration)$('finder-'+survey).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});

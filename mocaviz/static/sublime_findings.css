@@ -17,3 +17,19 @@
 .duplicate-table td small{min-width:6em}
 .duplicate-decision{color:#326d59;font-weight:600}
 .tabs{flex-wrap:wrap}
+
+.inspect-astrometry{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 16px;font-size:12px}
+.inspect-astrometry small{color:var(--muted)}
+.wise-image-content,.calibrated-image{position:relative;width:100%;overflow:hidden}
+.wise-image-content iframe{display:block}
+.image-content .calibrated-image img{display:block;width:100%;height:auto;max-height:none}
+.finder-grid .image-content:has(.calibrated-image){aspect-ratio:auto;max-height:none}
+.spectrum-crosshairs{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.spectrum-crosshair{position:absolute;width:0;height:0}
+.spectrum-crosshair i{position:absolute;background:var(--marker-color);box-shadow:0 0 2px 1px #0009}
+.spectrum-crosshair i:nth-child(-n+2){width:5px;height:2px;top:-1px}
+.spectrum-crosshair i:nth-child(1){left:var(--marker-gap)}
+.spectrum-crosshair i:nth-child(2){right:var(--marker-gap)}
+.spectrum-crosshair i:nth-child(n+3){height:5px;width:2px;left:-1px}
+.spectrum-crosshair i:nth-child(3){top:var(--marker-gap)}
+.spectrum-crosshair i:nth-child(4){bottom:var(--marker-gap)}

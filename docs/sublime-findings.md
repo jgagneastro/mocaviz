@@ -84,18 +84,17 @@ options and can differ from stored types used for filtering and ordering.
 Fits use only non-ignored pixels and the shared MOCAdb template grid. A missing
 reduction keeps its own explicit empty panel.
 
-Inspector cutouts follow the reviewer's source-key paths, including PNG.bz2,
-under the local SUBLIME cutout tree and Phoenix_A fallback. Files are read only,
-not unpacked on disk. Missing disks/files are reported. The on-disk cutout PNGs
-may themselves contain the original extraction's plotted spectrum.
-WiseView uses the reviewer's 30 arcsec / maxdyr=1 settings in a sandboxed frame
-with no database credentials. Its fixed vendor JS/CSS and public pawnstars/xref lookups are proxied for the
-opaque-origin frame. The lookup routes validate coordinates and cannot request
-arbitrary upstream URLs or read private data. Missing survey coverage is a
-normal panel result, not a failed dashboard load. Finder charts use 2MASS IRSA Finder Chart, PS1 i/z/y cutouts, and NSC DR2 SIA
-previews, as in the reviewer. Requests include only coordinates and field size.
-2MASS/PS1 show a center crosshair; NSC's per-exposure previews are not assumed
-to be centered. No proper-motion epoch propagation is claimed.
+The inspector uses each spectrum’s stored reference coordinates, or the exact
+SPIFF reduction record or local SPIFFStacker manifest when needed. The legend
+shows the coordinate source and epoch, and labels missing references.
+
+The SUBLIME panel uses the science pixels and WCS from the matching FITS cutout
+when available. Finder panels use calibrated 2MASS J, PS1 z, and NSC DR2 FITS
+cutouts. If calibration is unavailable, the original preview remains available
+where there is coverage. The crosshairs propagate with proper motion when the
+reference epoch, motion, and image epoch are available. Pan-STARRS uses its
+stack header epoch. WiseView uses the median epoch of the displayed frames and
+reports its canvas WCS to the inspector from the sandboxed frame.
 
 ## Potential duplicates
 
@@ -157,4 +156,4 @@ use open diamonds (open triangles for photometric distances). The on-page legend
 shows class counts and hover definitions. CSV exports include `plot_class` and
 `plot_class_label`; the object table and inspector show the same class labels.
 
-Each flipbook card now stacks SPIFFStacker, SPIFF and SUBLIMEaperture vertically. Each lane shows its own best template: blue, green and orange respectively, matching the WiseView reviewer. Missing lanes remain explicitly labelled. Requests are bounded to ten spectra per lane and cards render progressively.
+Each flipbook card now stacks SPIFFStacker, SPIFF and SUBLIMEaperture vertically. Each lane shows its own best template: red, blue and bright purple respectively, matching the WiseView reviewer. Missing lanes remain explicitly labelled. Requests are bounded to ten spectra per lane and cards render progressively.

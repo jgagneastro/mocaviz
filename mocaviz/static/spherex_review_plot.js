@@ -155,9 +155,9 @@
   }
 
   const lanes = [
-    {key: "spiffstacker", label: "SPIFFStacker", color: "#2563eb"},
-    {key: "spiff", label: "SPIFF", color: "#159570"},
-    {key: "sublimeaperture", label: "SUBLIMEaperture", color: "#c75b12"},
+    {key: "spiffstacker", label: "SPIFFStacker", color: "red"},
+    {key: "spiff", label: "SPIFF", color: "#2563eb"},
+    {key: "sublimeaperture", label: "SUBLIMEaperture", color: "#d020ff"},
   ];
   function comparisonFigure(data, revision, width = 800, count = 3, markReviewLane = true) {
     if (data.read_only) return figure(data, revision, width, count);
