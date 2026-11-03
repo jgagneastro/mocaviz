@@ -664,7 +664,7 @@ def fit_spectrum(rows, template_rows, options=None):
             row.spectral_type, row.spectral_type_number, row.red_chi2_10pct)
         record["pec_metric"] = _compute_pec_ratio(row.spectral_type_number, row.red_chi2_10pct)
         records.append(record)
-        if rank < 3:
+        if rank < 10:
             template = templates[int(row.moca_spherex_template_id)]
             wavelength_um = template["wavelength_angstrom"] / 1e4
             flux = template["flux_flambda"] * float(row.scale_s)

@@ -600,10 +600,10 @@ def demo_item(body):
         for i, (w, f) in enumerate(zip(wavelengths, flux))
     ]
     templates = [
-        {"moca_spherex_template_id": t + 1, "spectral_type": f"L{t + 3}",
+        {"moca_spherex_template_id": t + 1, "spectral_type": (f"L{t + 3}" if t < 7 else f"T{t - 7}"),
          "spectral_type_number": t + 13, "grid_type": "field",
          "wavelength_angstrom": w, "flux_flambda": f * (1 + t * 0.15 * np.cos(w / 5000))}
-        for t in range(3) for w, f in zip(wavelengths, flux)
+        for t in range(10) for w, f in zip(wavelengths, flux)
     ]
     return clean({
         "lane": lane, "read_only": lane is None, "object": {"moca_oid": oid, "moca_specid": specid,

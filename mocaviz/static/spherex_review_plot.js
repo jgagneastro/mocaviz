@@ -16,7 +16,7 @@
     return finite(low) ? [low, high] : [0, 0];
   }
 
-  function figure(data, revision, width = 800) {
+  function figure(data, revision, width = 800, count = 3) {
     // The reference figure is 10 inches wide; convert its point sizes to this viewport.
     const pt = (size, minimum = 0) => Math.max(minimum, size * Math.min(width, 1000) / 720);
     const raw = data.raw_spectrum || [], fit = data.fit;
@@ -25,7 +25,7 @@
       flux: raw.map((r) => r.flux_flambda), error: raw.map((r) => r.flux_flambda_unc),
       flagged: raw.map((r) => Boolean(r.ignored)),
     };
-    const overlays = fit?.overlays || [];
+    const overlays = (fit?.overlays || []).slice(0, Math.max(1, Math.min(10, count)));
     const goodFlux = spectrum.flux.filter((f, i) => finite(f) && !spectrum.flagged[i]);
     const dataBounds = extent(goodFlux.length ? goodFlux : spectrum.flux);
     const dataSpan = dataBounds[1] - dataBounds[0] || Math.abs(dataBounds[1]) || 1;

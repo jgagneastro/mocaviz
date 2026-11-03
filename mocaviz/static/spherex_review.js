@@ -228,7 +228,10 @@
       }
       $("matches").append(tr);
     }
-    const figure = SpherexReviewPlot.figure(data, key(obj), $("plot").clientWidth);
+    const count = Number($("match-count").value);
+    if (fit && (fit.overlays?.length || 0) < Math.min(count, fit.matches?.length || 0))
+      $("fit-detail").textContent += " · Restart the review service and reload to show more matches.";
+    const figure = SpherexReviewPlot.figure(data, key(obj) + ":" + count, $("plot").clientWidth, count);
     Plotly.react($("plot"), figure.traces, figure.layout,
       {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
   }
@@ -345,6 +348,7 @@
     if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
   });
   $("refit").onclick = () => { cache.clear(); show(index, true); };
+  $("match-count").onchange = () => { if (current) render(current); };
   for (const name of ["first", "previous", "next", "last"]) $(name).onclick = () => navigate(name);
   $("undo").onclick = undoLast; $("report").onclick = openReport; $("wiseview").onclick = openWiseView;
   $("quit").onclick = quit; $("retry").onclick = retryFailed; $("preview").onclick = () => preview();

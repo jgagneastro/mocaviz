@@ -547,6 +547,12 @@ class TransactionTests(unittest.TestCase):
 
 
 class FitTests(unittest.TestCase):
+    def test_up_to_ten_ranked_template_curves_are_available(self):
+        item = make_item()
+        self.assertEqual(len(item["fit"]["overlays"]), 10)
+        self.assertEqual([v["label"] for v in item["fit"]["overlays"]],
+                         [v["display_type"] for v in item["fit"]["matches"][:10]])
+
     def test_template_curves_match_png_cubic_interpolation(self):
         from scipy.interpolate import UnivariateSpline
         item = make_item()

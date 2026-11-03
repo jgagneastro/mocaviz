@@ -85,3 +85,17 @@ test("figure construction never mutates a prefetched fit", () => {
   figure(data, "42"); figure(data, "42");
   assert.equal(JSON.stringify(data), before);
 });
+
+
+test("selected number of ranked matches is drawn without mutating the fit", () => {
+  const data = fixture();
+  data.fit.overlays = Array.from({length: 10}, (_, i) => ({...data.fit.overlays[i % 3], label: "L" + i}));
+  data.fit.matches = Array.from({length: 10}, (_, i) => ({reduced_chi2: i}));
+  const original = JSON.stringify(data);
+  for (const count of [1, 3, 10]) {
+    const plot = figure(data, "42", 800, count);
+    assert.equal(byRole(plot, "template-curve").length, count);
+    assert.equal(plot.layout.shapes.length, count);
+  }
+  assert.equal(JSON.stringify(data), original);
+});
