@@ -123,13 +123,24 @@ function renderCharts(){
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}
-async function getFits(data,lane,signal){const missing=data.filter(r=>r[lane+'_specid']&&!fitCache.has(fitKey(r,lane)));if(missing.length){const result=await api('spectra',{lane,items:missing.map(r=>({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid']}))},signal);for(const item of result.items){const r=byId.get(item.object.moca_oid)||data.find(r=>r.moca_oid===item.object.moca_oid);if(r){fitCache.set(fitKey(r,lane),item);while(fitCache.size>90)fitCache.delete(fitCache.keys().next().value);}}}return data.map(r=>fitCache.get(fitKey(r,lane)));}
+async function getFits(data,lane,signal){const missing=data.filter(r=>r[lane+'_specid']&&!fitCache.has(fitKey(r,lane)));if(missing.length){const result=await api('spectra',{lane,items:missing.map(r=>({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid']}))},signal);for(const item of result.items){const r=byId.get(item.object.moca_oid)||data.find(r=>r.moca_oid===item.object.moca_oid);if(r){fitCache.set(fitKey(r,lane),item);while(fitCache.size>180)fitCache.delete(fitCache.keys().next().value);}}}return data.map(r=>fitCache.get(fitKey(r,lane)));}
 function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card spectrum-card"><div class="card-head"><div><h3>${inspect?esc(laneNames[lane]):esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div>${inspect?'':`<button data-inspect="${r.moca_oid}">Inspect ↗</button>`}</div><div class="spec-meta">${inspect?'':'OID '+r.moca_oid+' · '}${esc(laneNames[lane])} · spectrum ${r[lane+'_specid']||'unavailable'} · stored type ${esc(spt(r[lane+'_spt']))} · ${esc(r[lane+'_quality']||'unreviewed')}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">${r[lane+'_specid']?'Loading spectrum & best-fit template…':'No active spectrum in this reduction.'}</div></div></article>`;}
-function renderFit(el,item){if(!item){el.innerHTML='<div class="spec-empty">No active spectrum in this reduction.</div>';return;}if(item.error){el.innerHTML='<div class="spec-empty">'+esc(item.error)+'</div>';return;}const best=item.fit?.overlays?.[0];const meta=el.previousElementSibling;let label=meta?.querySelector('.fit-label');if(meta&&!label){label=document.createElement('div');label.className='fit-label';meta.append(label);}if(label)label.textContent=best?'Best template: '+best.label+' · χ²r = '+fmt(best.display_reduced_chi2,2):'No valid template fit'+(item.warning?' · '+item.warning:'');const figure=SpherexReviewPlot.figure(item,String(item.object.moca_specid),el.clientWidth,1);figure.layout.height=Math.round(Math.min(510,Math.max(290,el.clientWidth))*(el.closest('#flipbook')?0.75:1));el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);}
+function renderFit(el,item,lane){if(!item){el.innerHTML='<div class="spec-empty">No active spectrum in this reduction.</div>';return;}if(item.error){el.innerHTML='<div class="spec-empty">'+esc(item.error)+'</div>';return;}const best=item.fit?.overlays?.[0];const meta=el.previousElementSibling;let label=meta?.querySelector('.fit-label');if(meta&&!label){label=document.createElement('div');label.className='fit-label';meta.append(label);}if(label)label.textContent=best?'Best template: '+best.label+' · χ²r = '+fmt(best.display_reduced_chi2,2):'No valid template fit'+(item.warning?' · '+item.warning:'');const figure=SpherexReviewPlot.figure(item,String(item.object.moca_specid),el.clientWidth,1,SpherexReviewPlot.lanes.find(v=>v.key===lane)?.color);figure.layout.height=Math.round(Math.min(510,Math.max(290,el.clientWidth))*(el.closest('#flipbook')?0.75:1));el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);}
+function comparisonCard(r,plotId){
+ const meta=SpherexReviewPlot.lanes.map(lane=>`<span style="color:${lane.color}">${esc(lane.label)}</span>: ${r[lane.key+'_specid']?'#'+r[lane.key+'_specid']:'unavailable'} · ${esc(spt(r[lane.key+'_spt']))} · ${esc(r[lane.key+'_quality']||'unreviewed')}`).join('<br>');
+ return `<article class="card spectrum-card comparison-card"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><button data-inspect="${r.moca_oid}">Inspect ↗</button></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
+}
+function renderComparison(el,r,items,errors){
+ const available=Object.fromEntries(SpherexReviewPlot.lanes.filter(lane=>items[lane.key]&&!items[lane.key].error).map(lane=>[lane.key,items[lane.key]]));
+ const first=Object.keys(available)[0],comparison={...available};delete comparison[first];
+ const figure=SpherexReviewPlot.comparisonFigure({...available[first],lane:first||null,comparison,comparison_errors:errors},String(r.moca_oid),el.clientWidth,1,false);
+ figure.layout.height=720;el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);
+}
 async function renderFlipbook(){
  const generation=++flipGeneration;flipController?.abort();flipController=new AbortController();
- const lane=$('flip-lane').value,pageSize=Math.min(50,Math.max(1,parseInt($('flip-page-size').value,10)||10));
- const data=$('available-only').checked?rows.filter(r=>r[lane+'_specid']):rows;
+ const signal=flipController.signal,pageSize=Math.min(50,Math.max(1,parseInt($('flip-page-size').value,10)||50));
+ const lanes=SpherexReviewPlot.lanes.map(lane=>lane.key);
+ const data=$('available-only').checked?rows.filter(r=>lanes.some(lane=>r[lane+'_specid'])):rows;
  const pages=Math.ceil(data.length/pageSize);flipPage=Math.max(0,Math.min(flipPage,Math.max(0,pages-1)));
  const selected=data.slice(flipPage*pageSize,(flipPage+1)*pageSize);$('spectra-count').textContent=num(data.length);
  for(const suffix of ['','-bottom']){
@@ -137,18 +148,20 @@ async function renderFlipbook(){
   $('flip-prev'+suffix).textContent=`← Previous ${pageSize}`;$('flip-next'+suffix).textContent=`Next ${pageSize} →`;
   $('flip-prev'+suffix).disabled=flipPage===0;$('flip-next'+suffix).disabled=flipPage>=pages-1;
  }
- purgePlots($('flipbook'));$('flipbook').innerHTML=selected.map((r,i)=>spectrumCard(r,lane,'flip-plot-'+i)).join('');
- if(!selected.length){$('flipbook').innerHTML='<p class="hint">No objects with an available spectrum in the chosen lane. Try another reduction or disable “Available spectra only”.</p>';return;}
- let completed=0;
- try{
-  // Render progressively, retaining the API's bounded ten-spectrum requests.
-  for(let offset=0;offset<selected.length;offset+=10){
-   const batch=selected.slice(offset,offset+10),result=await getFits(batch,lane,flipController.signal);
-   if(generation!==flipGeneration)return;
-   batch.forEach((r,i)=>renderFit($('flip-plot-'+(offset+i)),result[i]));completed=offset+batch.length;
-  }
- }catch(e){
-  if(e.name!=='AbortError'&&generation===flipGeneration)for(let i=completed;i<selected.length;i++)$('flip-plot-'+i).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';
+ purgePlots($('flipbook'));$('flipbook').innerHTML=selected.map((r,i)=>comparisonCard(r,'flip-plot-'+i)).join('');
+ if(!selected.length){$('flipbook').innerHTML='<p class="hint">No objects with available spectra under these cuts. Try disabling “Available spectra only”.</p>';return;}
+ // Three bounded ten-spectrum requests per batch; render progressively.
+ for(let offset=0;offset<selected.length;offset+=10){
+  const batch=selected.slice(offset,offset+10);
+  const results=await Promise.allSettled(lanes.map(lane=>getFits(batch,lane,signal)));
+  if(generation!==flipGeneration)return;
+  batch.forEach((r,i)=>{
+   const items={},errors={};results.forEach((result,j)=>{
+    const lane=lanes[j];
+    if(result.status==='fulfilled'){items[lane]=result.value[i];if(items[lane]?.error)errors[lane]=items[lane].error;}
+    else if(result.reason.name!=='AbortError')errors[lane]=result.reason.message;
+   });renderComparison($('flip-plot-'+(offset+i)),r,items,errors);
+  });
  }
 }
 function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt))}<small>${esc(r.plot_class_label)}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
@@ -166,7 +179,7 @@ async function openInspector(r){
  if(!mock&&finite(r.ra)&&finite(r.dec)){$('wise-frame').removeAttribute('srcdoc');$('wise-frame').src='wiseview-frame#'+wiseHash(r);}else $('wise-frame').srcdoc='<p style="font:14px system-ui;padding:20px">WiseView is unavailable in the synthetic demo.</p>';
  for(const lane of ['spiffstacker','spiff','sublimeaperture']){
   if(!r[lane+'_specid'])continue;
-  getFits([r],lane,signal).then(items=>{if(generation===inspectorGeneration)renderFit($('inspect-'+lane),items[0]);}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('inspect-'+lane).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
+  getFits([r],lane,signal).then(items=>{if(generation===inspectorGeneration)renderFit($('inspect-'+lane),items[0],lane);}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('inspect-'+lane).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
  }
  api('cutouts',{moca_oid:r.moca_oid},signal).then(result=>{if(generation!==inspectorGeneration)return;cutouts=result.images;showCutout();if(!cutouts.length)$('cut-label').textContent=`${result.source_keys||0} catalog source keys · ${result.missing_cutouts||0} files unavailable locally`;}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('cutout-content').innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
  renderFinders(generation,signal);
@@ -195,7 +208,7 @@ for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 for(const id of ['hist-bin','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
-for(const id of ['flip-lane','available-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
+for(const id of ['available-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
 for(const suffix of ['','-bottom']){$('flip-prev'+suffix).onclick=()=>{flipPage--;renderFlipbook();};$('flip-next'+suffix).onclick=()=>{flipPage++;renderFlipbook();};}
 $('object-search').oninput=()=>{objectPage=0;renderObjects();};$('objects-prev').onclick=()=>{objectPage--;renderObjects();};$('objects-next').onclick=()=>{objectPage++;renderObjects();};
 document.addEventListener('click',e=>{const target=e.target.closest('[data-inspect]');if(target){const r=byId.get(Number(target.dataset.inspect));if(r)openInspector(r);}});

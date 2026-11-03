@@ -75,11 +75,11 @@ or distance is invented when absent. Magnitude-plus-parallax uncertainties are
 propagated when both exist; distance-only error bars are not fabricated.
 CSV includes measurement IDs, spectrum IDs, distance provenance and all flags.
 
-The flipbook offers 10, 20, 30, 40 or 50 objects per page (default 10),
-decreasing stored selected SPT, with reduction selector and optional omission
-of objects lacking active spectra. Larger pages render progressively in batches
+The flipbook offers 10, 20, 30, 40 or 50 objects per page (default 50),
+decreasing stored selected SPT, with optional omission of objects lacking
+active spectra in all three lanes. Larger pages render progressively in batches
 of ten, retaining the bounded API requests and cancellation on page changes.
-Its plots are 75% of their original height; inspector plots retain their size.
+Its taller cards contain three vertically stacked panels; inspector plots retain their size.
 Inspector: **three plots**, SPIFFStacker / SPIFF / SUBLIME aperture, with
 one best-fit template each. Fits are recomputed with the existing autotype
 options and can differ from stored types used for filtering and ordering.
@@ -105,7 +105,7 @@ All database request paths use explicit read-only transactions, rollback and
 close. There are no submit, classify or write endpoints. Credentials are passed
 per request in memory and never written to cache, catalog, scientific files,
 browser storage or logs. No request URL logging is enabled by the launcher.
-Data live in tab memory; fits have a 90-entry tab-memory bound. Survey previews
+Data live in tab memory; fits have a 180-entry tab-memory bound. Survey previews
 settle independently. Old page/selection requests are cancelled and stale
 responses cannot replace a newer object's panels.
 
@@ -147,3 +147,5 @@ color classes. Measured and synthetic W2 share class colors; synthetic points
 use open diamonds (open triangles for photometric distances). The on-page legend
 shows class counts and hover definitions. CSV exports include `plot_class` and
 `plot_class_label`; the object table and inspector show the same class labels.
+
+Each flipbook card now stacks SPIFFStacker, SPIFF and SUBLIMEaperture vertically. Each lane shows its own best template: blue, green and orange respectively, matching the WiseView reviewer. Missing lanes remain explicitly labelled. Requests are bounded to ten spectra per lane and cards render progressively.

@@ -26,7 +26,8 @@
       flagged: raw.map((r) => Boolean(r.ignored)),
     };
     const overlays = (fit?.overlays || []).slice(0, Math.max(1, Math.min(10, count)));
-    const goodFlux = spectrum.flux.filter((f, i) => finite(f) && !spectrum.flagged[i]);
+    const spectra = overlays.length ? overlays.map(o => o.spectrum || spectrum) : [spectrum];
+    const goodFlux = spectra.flatMap(v => v.flux.filter((f, i) => finite(f) && !v.flagged[i]));
     const dataBounds = extent(goodFlux.length ? goodFlux : spectrum.flux);
     const dataSpan = dataBounds[1] - dataBounds[0] || Math.abs(dataBounds[1]) || 1;
     // The default PNG uses the scaled template span, never a data outlier, for spacing.
@@ -37,17 +38,37 @@
     let yBounds = overlays.length ? extent(templateBounds.flatMap(([a, b], i) =>
       [a + shifts[i], b + shifts[i]])) : extent(spectrum.flux.flatMap((f, i) =>
       finite(f) ? [f - (spectrum.error[i] || 0), f + (spectrum.error[i] || 0)] : []));
+    const rowBounds = [];
+    let laneGap = 0;
+    if (data.stackLanes && overlays.length) {
+      // Each reduction can have its own flux baseline and range. Give each
+      // measured spectrum room rather than clipping it to a template's span.
+      const bounds = spectra.map((v, i) => extent([
+        ...overlays[i].flux, ...(overlays[i].curve_flux || []),
+        ...v.flux.filter((f, j) => !v.flagged[j]),
+      ]));
+      laneGap = 0.18 * (Math.max(...bounds.map(([lo, hi]) => hi - lo)) || dataSpan);
+      let bottom = bounds[bounds.length - 1][0] - laneGap / 2;
+      for (let i = bounds.length - 1; i >= 0; i--) {
+        const [lo, hi] = bounds[i];
+        shifts[i] = bottom + laneGap / 2 - lo;
+        rowBounds[i] = [bottom, bottom + (hi - lo) + laneGap];
+        bottom = rowBounds[i][1];
+      }
+      yBounds = [rowBounds[rowBounds.length - 1][0], rowBounds[0][1]];
+    }
     const yPad = 0.05 * (yBounds[1] - yBounds[0] || Math.abs(yBounds[1]) || 1);
     yBounds = [yBounds[0] - yPad, yBounds[1] + yPad];
     // Matplotlib's separate scientific multiplier; this is NOT median normalization.
     const exponent = Math.floor(Math.log10(Math.max(...yBounds.map(Math.abs)) || 1));
     const power = exponent <= -5 || exponent >= 6 ? exponent : 0;
     const unit = 10 ** power;
-    const xBounds = extent(spectrum.wavelength_um);
+    const xBounds = extent(spectra.flatMap(v => v.wavelength_um));
     const xPad = 0.03 * (xBounds[1] - xBounds[0] || Math.abs(xBounds[1]) || 1);
     const traces = [], annotations = [], shapes = [];
 
     function points(flagged, shift, lower, upper, rank) {
+      const spectrum = overlays[rank]?.spectrum || spectra[0];
       const x = [], y = [], plus = [], minus = [], original = [];
       for (let i = 0; i < spectrum.flux.length; i++) {
         const w = spectrum.wavelength_um[i], f = spectrum.flux[i], value = f + shift;
@@ -74,25 +95,27 @@
 
     for (let i = 0; i < Math.max(1, overlays.length); i++) {
       const overlay = overlays[i], shift = shifts[i] || 0;
-      const lower = overlay ? shift : -Infinity, upper = overlay && i > 0 ? shift + offset : Infinity;
+      const [lower, upper] = rowBounds[i] || [overlay ? shift : -Infinity, overlay && i > 0 ? shift + offset : Infinity];
       // Draw flagged points behind the unflagged measurements, as in the PNG.
       points(true, shift, lower, upper, i);
       points(false, shift, lower, upper, i);
-      shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: shift / unit, y1: shift / unit,
+      const baseline = (rowBounds[i]?.[0] ?? shift) / unit;
+      shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: baseline, y1: baseline,
         layer: "below", line: {color: "rgba(185,217,247,0.9)", width: pt(0.9, 0.7)}});
       if (!overlay) continue;
+      const color = overlay.color || templateColor;
       const templateName = escapeText(overlay.label) + " (" + escapeText(overlay.grid) + ")";
-      traces.push({
+      if (!overlay.no_template) traces.push({
         x: overlay.curve_wavelength_um || overlay.wavelength_um,
         y: (overlay.curve_flux || overlay.flux).map((f) => finite(f) ? (f + shift) / unit : null),
         type: "scatter", mode: "lines", name: templateName, showlegend: false,
-        meta: {role: "template-curve", rank: i}, line: {color: templateColor, width: pt(1.5, 1)},
+        meta: {role: "template-curve", rank: i}, line: {color, width: pt(1.5, 1)},
         hoverinfo: "skip", connectgaps: false,
       }, {
         x: overlay.wavelength_um, y: overlay.flux.map((f) => finite(f) ? (f + shift) / unit : null),
         customdata: overlay.flux, type: "scatter", mode: "markers", name: templateName,
         showlegend: false, meta: {role: "template-points", rank: i},
-        marker: {size: pt(3.8, 3), color: templateColor, opacity: 0.7, line: {color: templateColor, width: pt(0.5, 0.3)}},
+        marker: {size: pt(3.8, 3), color, opacity: 0.7, line: {color, width: pt(0.5, 0.3)}},
         hovertemplate: "Wavelength: %{x:.4f} µm<br>Fλ: %{customdata:.4g}<extra>%{fullData.name}</extra>",
       });
       const row = fit.matches?.[i] || {};
@@ -100,10 +123,10 @@
         row.reduced_chi2_10pct_cap, row.reduced_chi2].find(finite);
       annotations.push({
         x: xBounds[1] - 0.005 * (xBounds[1] - xBounds[0]),
-        y: (templateBounds[i][0] + shift - 0.5 * freeSpace) / unit,
+        y: (rowBounds[i] ? rowBounds[i][0] + laneGap * 0.24 : templateBounds[i][0] + shift - 0.5 * freeSpace) / unit,
         xref: "x", yref: "y", text: "<b>" + escapeText(overlay.label) + "  χ²<sub>r</sub>=" +
           (finite(chi2) ? chi2.toFixed(1) : "—") + "</b>",
-        showarrow: false, xanchor: "right", yanchor: "middle", font: {color: templateColor, size: pt(14, 11)},
+        showarrow: false, xanchor: "right", yanchor: "middle", font: {color, size: pt(14, 11)},
       });
     }
     if (power) annotations.push({xref: "paper", yref: "paper", x: 0, y: 1, yshift: 3,
@@ -136,7 +159,7 @@
     {key: "spiff", label: "SPIFF", color: "#159570"},
     {key: "sublimeaperture", label: "SUBLIMEaperture", color: "#c75b12"},
   ];
-  function comparisonFigure(data, revision, width = 800, count = 3) {
+  function comparisonFigure(data, revision, width = 800, count = 3, markReviewLane = true) {
     if (data.read_only) return figure(data, revision, width, count);
     const available = {...data.comparison, [data.lane]: data};
     const traces = [], annotations = [], shapes = [], layout = {};
@@ -163,12 +186,12 @@
         y: a.yref === "paper" ? a.y : Math.max(a.y, row.layout.yaxis.range[0] +
           0.075 * (row.layout.yaxis.range[1] - row.layout.yaxis.range[0]))});
       annotations.push({xref: "paper", yref: "paper", x: 0.5, y: domain[1] + 0.014,
-        text: "<b>" + lane.label + (lane.key === data.lane ? " · review lane" : "") + "</b>",
+        text: "<b>" + lane.label + (markReviewLane && lane.key === data.lane ? " · review lane" : "") + "</b>",
         showarrow: false, xanchor: "center", yanchor: "bottom", font: {color: lane.color, size: 15}});
       if (!item) {
         layout["yaxis" + suffix].visible = false;
         annotations.push({xref: "paper", yref: "paper", x: 0.5, y: (domain[0] + domain[1]) / 2,
-          text: Object.hasOwn(data, "comparison") ? "No active " + lane.label + " spectrum" : "Restart the review service to load companion spectra",
+          text: escapeText(data.comparison_errors?.[lane.key] || (Object.hasOwn(data, "comparison") ? "No active " + lane.label + " spectrum" : "Restart the review service to load companion spectra")),
           showarrow: false, font: {color: "#637787", size: 13}});
       }
     });
@@ -177,7 +200,31 @@
       margin: {l: 75, r: 18, t: 45, b: 55}, uirevision: revision, showlegend: legendShown});
     return {traces, layout};
   }
-  const api = {figure, comparisonFigure, lanes};
+  function laneStackFigure(available, revision, width = 800) {
+    const rows = lanes.filter(lane => available[lane.key] && !available[lane.key].missing && !available[lane.key].error);
+    const values = item => item.fit?.spectrum || {
+      wavelength_um: (item.raw_spectrum || []).map(r => r.wavelength_angstrom / 1e4),
+      flux: (item.raw_spectrum || []).map(r => r.flux_flambda),
+      error: (item.raw_spectrum || []).map(r => r.flux_flambda_unc),
+      flagged: (item.raw_spectrum || []).map(r => Boolean(r.ignored)),
+    };
+    const overlays = rows.map(lane => {
+      const item = available[lane.key], spectrum = values(item), best = item.fit?.overlays?.[0];
+      return {...best, color: lane.color, spectrum,
+        label: lane.label + " · " + (best?.label || "no valid fit"),
+        grid: best?.grid || "", no_template: !best,
+        wavelength_um: best?.wavelength_um || spectrum.wavelength_um,
+        flux: best?.flux || spectrum.flux};
+    });
+    const data = {stackLanes: true, fit: {overlays, spectrum: rows.length ? values(available[rows[0].key]) :
+      {wavelength_um: [], flux: [], error: [], flagged: []},
+      matches: rows.map(lane => available[lane.key].fit?.matches?.[0] || {})}};
+    const result = figure(data, revision, width, 3);
+    for (const trace of result.traces) trace.meta.lane = rows[trace.meta.rank]?.key;
+    result.layout.height = Math.max(400, Math.min(700, width));
+    return result;
+  }
+  const api = {figure, comparisonFigure, laneStackFigure, lanes};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.SpherexReviewPlot = api;
 })(typeof window === "undefined" ? globalThis : window);

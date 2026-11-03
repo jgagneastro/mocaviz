@@ -131,3 +131,41 @@ test("missing reduction spectra keep their labeled slots and exact read-only spe
   assert.equal(byRole(exact, "template-curve").length, 3);
   assert(!exact.layout.xaxis2);
 });
+
+test("WiseView stacks each lane's own data and single best template in fixed colors", () => {
+  const {laneStackFigure,lanes}=require('../mocaviz/static/spherex_review_plot.js');
+  const available=Object.fromEntries(lanes.map((lane,i)=>{
+    const item=fixture();item.fit.spectrum.flux=[1.1+i,1.2+i,1.3+i,1.4+i,1.5+i];
+    item.fit.spectrum.flagged=[false,false,false,false,false];
+    item.fit.spectrum.wavelength_um=[1+i*.01,2,3,4,5];
+    item.fit.overlays[0].label='Best '+lane.label;
+    return [lane.key,item];
+  }));
+  const before=structuredClone(available),plot=laneStackFigure(available,'42',700);
+  assert.equal(byRole(plot,'template-curve').length,3);
+  assert.equal(plot.layout.yaxis2,undefined); // Existing one-figure format.
+  lanes.forEach((lane,i)=>{
+    const curve=byRole(plot,'template-curve').find(t=>t.meta.lane===lane.key);
+    assert.equal(curve.line.color,lane.color);
+    assert(curve.name.includes('Best '+lane.label));
+    const data=byRole(plot,'data').find(t=>t.meta.lane===lane.key);
+    assert.deepEqual(data.customdata,available[lane.key].fit.spectrum.flux);
+    assert.equal(data.x[0],1+i*.01);
+  });
+  assert.deepEqual(available,before);
+});
+
+test("unfitted lanes retain their own raw data and missing lanes add no fake rows", () => {
+  const {laneStackFigure,comparisonFigure}=require('../mocaviz/static/spherex_review_plot.js');
+  const raw={raw_spectrum:[{wavelength_angstrom:15000,flux_flambda:2,flux_flambda_unc:.1,ignored:0}]};
+  const plot=laneStackFigure({spiffstacker:fixture(),spiff:raw,sublimeaperture:{missing:true}},'raw');
+  assert.equal(byRole(plot,'template-curve').length,1);
+  const data=byRole(plot,'data').find(t=>t.meta.lane==='spiff');
+  assert.deepEqual(data.x,[1.5]);assert.deepEqual(data.customdata,[2]);
+  assert(plot.layout.annotations.some(a=>a.text.includes('SPIFF · no valid fit')));
+  assert(!plot.traces.some(t=>t.meta.lane==='sublimeaperture'));
+  const atlas=comparisonFigure({lane:null,comparison:{},comparison_errors:{spiff:'Example <error>'}},'empty',500,1,false);
+  assert.equal(atlas.traces.length,0);
+  assert(atlas.layout.annotations.some(a=>a.text==='Example &lt;error&gt;'));
+  assert(!atlas.layout.annotations.some(a=>a.text.includes('review lane')));
+});

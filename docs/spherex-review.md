@@ -232,15 +232,3 @@ The browser regression test intercepts every API call and uses only synthetic
 reads or simulated writes. It checks query/fragment URL retention and reload,
 absence of cookies and Web Storage, immediate transitions, pending counts, numpad decisions, failure
 recovery, retry, undo, object links and quitting with queued requests.
-
-
-The object flipbook plots SPIFFStacker (blue), SPIFF (green), and
-SUBLIMEaperture (orange) in three vertically stacked panels with aligned
-wavelength axes. Missing active spectra retain a labeled empty panel. The
-selected queue/classification lane is marked **review lane**: the quality,
-type-save, bad-pixel, preview, and undo actions still affect that lane only.
-The best-matches selector (1–10, default 3) applies to every panel and redraws
-without a new query or a write. Companion spectra use the latest active spectrum
-in each package and share a single fetched template grid with the primary fit.
-Exact IDs outside the three supported packages retain their exact single-spectrum,
-read-only display. Fitting, comparison data, and plots remain in memory.

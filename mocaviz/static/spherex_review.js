@@ -146,7 +146,7 @@
     const k = key(item, lane) + ":" + JSON.stringify(fitOptions);
     if (refresh) cache.delete(k);
     if (!cache.has(k)) {
-      const promise = api("analyze", {...item, lane, options: fitOptions, compare_lanes: true}).then((data) => {
+      const promise = api("analyze", {...item, lane, options: fitOptions}).then((data) => {
         if (Number(data.object?.moca_specid) !== Number(item.moca_specid) ||
             Number(data.object?.moca_oid) !== Number(item.moca_oid) ||
             typeof data.read_only !== "boolean") {
@@ -212,7 +212,6 @@
   }
   function render(data) {
     const obj = data.object, fit = data.fit;
-    $("classification-lane").textContent = "Visual quality · " + (context?.lanes?.[data.lane]?.label || "read only");
     $("object-title").textContent = obj.designation || "Object " + obj.moca_oid;
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
@@ -232,7 +231,7 @@
     const count = Number($("match-count").value);
     if (fit && (fit.overlays?.length || 0) < Math.min(count, fit.matches?.length || 0))
       $("fit-detail").textContent += " · Restart the review service and reload to show more matches.";
-    const figure = SpherexReviewPlot.comparisonFigure(data, key(obj) + ":" + count, $("plot").clientWidth, count);
+    const figure = SpherexReviewPlot.figure(data, key(obj) + ":" + count, $("plot").clientWidth, count);
     Plotly.react($("plot"), figure.traces, figure.layout,
       {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
   }

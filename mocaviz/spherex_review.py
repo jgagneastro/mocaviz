@@ -273,23 +273,22 @@ def spectrum_lane(meta):
     return next((key for key, lane in LANES.items() if lane["pack"] == meta["moca_specpackid"]), None)
 
 
-def dataset(cur, lane, oid, specid, templates=None):
+def dataset(cur, lane, oid, specid):
     meta = spectrum_metadata(cur, specid, oid, lane)
     spectrum = rows(cur, """
         SELECT id AS data_spectra_id, wavelength_angstrom, flux_flambda, flux_flambda_unc, ignored
         FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom, id LIMIT 10001
     """, (specid,))
-    if templates is None:
-        templates = rows(cur, """
-            SELECT t.moca_spherex_template_id, t.spectral_type, t.spectral_type_number, t.grid_type,
-                   dt.wavelength_angstrom, dt.flux_flambda
-            FROM moca_spherex_templates t JOIN data_spherex_templates dt
-              ON dt.moca_spherex_template_id=t.moca_spherex_template_id
-            WHERE t.ignored=0 AND dt.ignored=0 AND dt.flux_flambda>0
-              AND dt.wavelength_angstrom IS NOT NULL
-              AND t.spectral_type IS NOT NULL AND t.spectral_type_number IS NOT NULL
-            ORDER BY t.moca_spherex_template_id, dt.wavelength_angstrom LIMIT 200001
-        """)
+    templates = rows(cur, """
+        SELECT t.moca_spherex_template_id, t.spectral_type, t.spectral_type_number, t.grid_type,
+               dt.wavelength_angstrom, dt.flux_flambda
+        FROM moca_spherex_templates t JOIN data_spherex_templates dt
+          ON dt.moca_spherex_template_id=t.moca_spherex_template_id
+        WHERE t.ignored=0 AND dt.ignored=0 AND dt.flux_flambda>0
+          AND dt.wavelength_angstrom IS NOT NULL
+          AND t.spectral_type IS NOT NULL AND t.spectral_type_number IS NOT NULL
+        ORDER BY t.moca_spherex_template_id, dt.wavelength_angstrom LIMIT 200001
+    """)
     if len(spectrum) > 10000 or len(templates) > 200000:
         raise ReviewError("The spectrum/template grid exceeds this interactive tool's size limit.")
     return meta, spectrum, templates
@@ -300,28 +299,9 @@ def analyze(cur, body):
     oid = integer(body["moca_oid"], "moca_oid") if body.get("moca_oid") is not None else None
     specid = integer(body.get("moca_specid"), "moca_specid")
     meta, spectrum, templates = dataset(cur, lane, oid, specid)
-    result = analysis_result(cur, meta, spectrum, templates, fit_options(body))
-    if boolean(body.get("compare_lanes")) and result["lane"]:
-        spectra = rows(cur, """
-            SELECT s.moca_specid,s.moca_specpackid FROM moca_spectra s
-            WHERE s.moca_oid=%s AND s.ignored=0 AND s.moca_specpackid IN (55,62,76)
-              AND NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid
-                AND newer.moca_specpackid=s.moca_specpackid AND newer.ignored=0
-                AND newer.moca_specid>s.moca_specid)
-        """, (meta["moca_oid"],))
-        result["comparison"] = {}
-        for row in spectra:
-            key = spectrum_lane(row)
-            if key == result["lane"]:
-                continue
-            other_meta, points, _ = dataset(cur, LANES[key], meta["moca_oid"], row["moca_specid"], templates)
-            result["comparison"][key] = analysis_result(cur, other_meta, points, templates, fit_options(body))
-    return result
-
-
-def analysis_result(cur, meta, spectrum, templates, options):
     key = spectrum_lane(meta)
     state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
+    options = fit_options(body)
     fit, warning = None, None
     try:
         fit = fit_spectrum(spectrum, templates, options)
@@ -682,12 +662,6 @@ def api(operation):
                     result = {"items": [{"moca_oid": n, "moca_specid": n + 10000, "designation": f"Demonstration {n}"} for n in range(1001, 1007)], "has_more": False, "next_after": None}
             else:
                 result = demo_item(body)
-                if boolean(body.get("compare_lanes")) and result["lane"]:
-                    result["comparison"] = {
-                        key: demo_item({**body, "lane": key, "moca_specid": result["object"]["moca_oid"] + offset})
-                        for key, offset in (("spiffstacker", 10000), ("spiff", 20000), ("sublimeaperture", 30000))
-                        if key != result["lane"]
-                    }
         else:
             auth = credentials()
             if operation in {"preview", "submit", "undo"}:

@@ -191,14 +191,14 @@ try {
       boxed: plot.layout.xaxis.showline && plot.layout.yaxis.mirror,
       square: Math.abs(plot.clientWidth - plot.clientHeight) <= 1};
   });
-  assert.deepEqual(plotStyle, {curves: 9, hidden: false, baselines: 9, boxed: true, square: false});
+  assert.deepEqual(plotStyle, {curves: 3, hidden: false, baselines: 3, boxed: true, square: true});
   const readsBeforeCount = apiRequests.length;
-  for (const [count, curves] of [[1, 3], [10, 30], [3, 9]]) {
+  for (const count of [1, 10, 3]) {
     await page.locator("#match-count").selectOption(String(count));
-    await page.waitForFunction((n) => document.querySelector("#plot").data.filter(t => t.meta?.role === "template-curve").length === n, curves);
+    await page.waitForFunction(n => document.querySelector("#plot").data.filter(t => t.meta?.role === "template-curve").length === n, count);
   }
   assert.equal(apiRequests.length, readsBeforeCount, "display changes should not query or submit");
-  assert((await page.locator("#classification-lane").textContent()).includes("SPIFFStacker"));
+  assert(!apiRequests.some(r => r.body.compare_lanes), "only the selected lane is analyzed");
   assert.equal(page.url(), reviewURL);
   assert(await page.locator("#write-enabled").isEnabled());
   await page.locator("#write-enabled").check();

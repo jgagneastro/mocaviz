@@ -22,10 +22,10 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=20261103-three-panels1">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261103-single-lane">
   <script defer src="plotly.min.js"></script>
-  <script defer src="static/spherex_review_plot.js?v=20261103-three-panels1"></script>
-  <script defer src="static/spherex_review.js?v=20261103-three-panels1"></script>
+  <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
+  <script defer src="static/spherex_review.js?v=20261103-single-lane"></script>
 </head>
 <body>
   <header>
@@ -38,12 +38,12 @@
         <h2>Review queue</h2>
         <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
         <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
-        <label>Queue &amp; classification lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
+        <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
         <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label><span tabindex="0" title="Uses the stored autotype for the selected reduction lane: SPIFF, SPIFFStacker, or SUBLIMEaperture.">Stored type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
         <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
         <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
-        <small>Missing means no review row in that spectrum's vetting table. The score threshold is inclusive; blank allows any score. All three reductions are plotted together. This lane controls queue filters and the spectrum whose quality/type you save; it is marked “review lane” in the plot.</small>
+        <small>Missing means no review row in that spectrum's vetting table. The score threshold is inclusive; blank allows any score. These filters select objects; the reduction lane chooses the spectrum you review.</small>
         <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types</label>
         <button id="load">Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
@@ -82,9 +82,9 @@
         <button id="retry" disabled>Retry failed [Alt+R]</button><button id="quit">Quit [Q]</button>
       </div>
       <div class="review-layout">
-        <div class="review-spectrum"><div id="plot" aria-label="SPIFFStacker, SPIFF and SUBLIMEaperture spectra and best matching templates"></div>
+        <div class="review-spectrum"><div id="plot" aria-label="Spectrum and best matching templates"></div>
         <div class="result-strip"><strong id="best-type">No fit loaded</strong><span id="fit-detail"></span></div></div>
-        <section class="decisions"><h2 id="classification-lane">Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
+        <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
       </div>
       <details><summary>Template ranking and stored result</summary><div class="table-wrap"><table><thead><tr><th>Type</th><th>Grid</th><th>Score</th><th>χ² (robust)</th><th>Points</th></tr></thead><tbody id="matches"></tbody></table></div><pre id="stored"></pre></details>
       <details id="preview-panel"><summary>Write preview (no database changes)</summary><pre id="preview-output">Use “Preview write” to inspect the current best-fit upsert.</pre></details>
