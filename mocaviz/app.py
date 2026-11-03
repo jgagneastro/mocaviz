@@ -205,6 +205,12 @@ app.register_blueprint(spherex_review_blueprint)
 app.register_blueprint(spherex_review_blueprint, url_prefix="/js", name="spherex_review_compat")
 
 
+from .association_audit import routes as association_audit_routes
+
+app.register_blueprint(association_audit_routes.review)
+app.register_blueprint(association_audit_routes.review, url_prefix="/js", name="association_audit_compat")
+
+
 @app.before_request
 def _reuse_encoded_api_response() -> Response | None:
     if not _is_cacheable_api_request():
@@ -33400,13 +33406,18 @@ def _retrieval_solar_references() -> list[dict[str, Any]]:
 
 @app.get("/")
 def index():
+    private_card = association_audit_routes.private_home_card()
+    if private_card:
+        html = (STATIC_DIR / "js_index.html").read_text(encoding="utf-8")
+        return Response(html.replace("<!-- authenticated-tools -->", private_card), mimetype="text/html",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     return send_from_directory(STATIC_DIR, "js_index.html")
 
 
 @app.get("/js")
 @app.get("/js/")
 def js_index_page():
-    return send_from_directory(STATIC_DIR, "js_index.html")
+    return index()
 
 
 @app.get("/lune_aujourdhui")
