@@ -135,12 +135,16 @@ function renderCharts(){
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.motion,n,c)),l);
  const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
  const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));
+ const positiveProperMotion=withProperMotion.filter(r=>r.pmtot_masyr>0);
  l=spectralAxis(baseLayout('Spectral type','Total proper motion (mas/yr)'));
- emptyNote(l,withProperMotion.length,astrometryNote);
- plot('proper-motion',groups(withProperMotion,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.pmtot_masyr,n,c,{
+ l.yaxis.type='log';
+ emptyNote(l,positiveProperMotion.length,astrometryNote);
+ plot('proper-motion',groups(positiveProperMotion,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.pmtot_masyr,n,c,{
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted total proper motion: %{y:.1f} mas/yr<extra>'+n+'</extra>'
  })),l);
- $('proper-motion-note').textContent=astrometryNote??`${num(withProperMotion.length)} with adopted total proper motion · ${num(typed.length-withProperMotion.length)} typed objects without a measurement`;
+ const nonpositiveCount=withProperMotion.length-positiveProperMotion.length;
+ const nonpositiveNote=nonpositiveCount?` · ${num(nonpositiveCount)} nonpositive values omitted`:'';
+ $('proper-motion-note').textContent=astrometryNote??`${num(positiveProperMotion.length)} plotted on a log scale · ${num(typed.length-withProperMotion.length)} typed objects without a measurement${nonpositiveNote}`;
  const distances=typed.filter(r=>finite(r.adopted_distance_pc));
  const distanceSymbols={photometric:'triangle-up',trigonometric:'circle',nonphotometric:'diamond'};
  l=spectralAxis(baseLayout('Spectral type','Adopted distance (pc)'));
