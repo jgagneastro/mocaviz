@@ -24,6 +24,7 @@ class FindingsTests(unittest.TestCase):
             response=self.client.post('/api/findings/load',json={'mock':True,'filters':{'min_spt':10}})
             self.assertEqual(response.status_code,200)
             data=response.get_json();self.assertTrue(data['complete'])
+            self.assertEqual(data['quality_definition_version'],2)
             self.assertGreater(len(data['rows']),10)
             self.assertEqual(len(data['rows']),len({r['moca_oid'] for r in data['rows']}))
             self.assertEqual([r['spt'] for r in data['rows']],sorted([r['spt'] for r in data['rows']],reverse=True))
@@ -52,7 +53,7 @@ class FindingsTests(unittest.TestCase):
 
     def test_quality_modes_sql_and_rows_agree_on_available_reductions(self):
         # Quality order is SPIFF, SPIFFStacker, SUBLIME aperture. The expected
-        # columns are any good/candidate, any exact good, all exact good,
+        # columns are any good/candidate, any good family, all good family,
         # and all good/candidate. Available unreviewed lanes must fail both all cuts.
         cases=[
             ((None,None,None),(),(),(False,False,False,False)),
@@ -66,7 +67,13 @@ class FindingsTests(unittest.TestCase):
             (('good','bad',None),(1,),(0,),(True,True,False,False)),
             (('good',None,None),(),(0,),(True,True,False,False)),
             (('good','good','good'),(0,1,2),(),(True,True,True,True)),
-            (('good','peculiar_ucd',None),(0,1),(),(True,True,False,False)),
+            (('good','peculiar_ucd',None),(0,1),(),(True,True,True,True)),
+            (('contaminated_ucd',None,None),(0,),(),(True,True,True,True)),
+            ((None,'peculiar_ucd',None),(1,),(),(True,True,True,True)),
+            ((None,None,'good_plus_star'),(2,),(),(True,True,True,True)),
+            (('good_candidate','contaminated_ucd',None),(0,1),(),(True,True,False,True)),
+            (('contaminated_ucd',None,None),(0,1),(),(True,True,False,False)),
+            (('good_reddened','weird','incomplete_but_promising'),(0,1,2),(),(False,False,False,False)),
         ]
         modes=('good','one_good','all_good','all_good_candidate')
         db=sqlite3.connect(':memory:')
@@ -95,6 +102,17 @@ class FindingsTests(unittest.TestCase):
                 row_ids={r['moca_oid'] for r,_ in records if sf.passes(r,sf.parse_filters({'quality_any':mode}))}
                 self.assertEqual(sql_ids,expected)
                 self.assertEqual(row_ids,expected)
+
+    def test_per_lane_good_includes_ucd_variants_but_not_candidate(self):
+        for lane in sf.LANES:
+            f=sf.parse_filters({'known':'either','quality_any':'any','include_'+lane:'good'})
+            self.assertEqual(set(f['include_'+lane]),set(sf.GOOD_QUALITY))
+            for quality in (*sf.GOOD_QUALITY,'good_candidate','bad'):
+                r=sf.demo_rows(sf.parse_filters({'known':'either','quality_any':'any'}))[1]
+                r[lane+'_quality']=quality
+                self.assertEqual(sf.passes(r,f),quality in sf.GOOD_QUALITY)
+            excluded=sf.parse_filters({'known':'either','exclude_'+lane:'good'})
+            self.assertEqual(excluded['exclude_'+lane],['good'])
 
     def test_memberships_and_confirmed_duplicate_side(self):
         f=sf.parse_filters({'known':'either'})

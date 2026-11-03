@@ -25,11 +25,13 @@ SOURCES = {'sublime1': 'pcat_sublime_candidates', 'sublime2': 'pcat_sublime_cand
 CLAIM_TOKENS = ('yadu', 'tom', 'bickle', 'sarah', 'azul', 'eastonh')
 MAX_OBJECTS = 100000
 LANES = tuple(sr.LANES)
+GOOD_QUALITY = ('good', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star')
+GOOD_CANDIDATE_QUALITY = (*GOOD_QUALITY, 'good_candidate')
 QUALITY_CLASSES = {
-    'good': ('good', 'good_candidate'),
-    'one_good': ('good',),
-    'all_good': ('good',),
-    'all_good_candidate': ('good', 'good_candidate'),
+    'good': GOOD_CANDIDATE_QUALITY,
+    'one_good': GOOD_QUALITY,
+    'all_good': GOOD_QUALITY,
+    'all_good_candidate': GOOD_CANDIDATE_QUALITY,
 }
 ALL_QUALITY = frozenset(('all_good', 'all_good_candidate'))
 NUMERIC = {'min_spt', 'max_spt', 'min_detection_snr', 'max_detection_snr', 'min_cnn', 'max_cnn',
@@ -92,6 +94,12 @@ def parse_filters(raw):
         if not isinstance(val, str) or len(val) > 1000:
             raise sr.ReviewError('Class lists must be comma-separated text.')
         out[key] = [v.strip().lower() for v in val.split(',') if v.strip()]
+    # Requiring good in a specific reduction uses the same UCD family as the
+    # global good modes. Exclusions remain the explicit classes entered.
+    for lane in LANES:
+        key = 'include_' + lane
+        if 'good' in out[key]:
+            out[key] = list(dict.fromkeys([*out[key], *GOOD_QUALITY[1:]]))
     return out
 
 
@@ -473,7 +481,7 @@ def api(operation):
                     cur.execute('START TRANSACTION READ ONLY')
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
-                                     'mock':mock,'loaded_at':time.time(),'complete':True}))
+                                     'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')

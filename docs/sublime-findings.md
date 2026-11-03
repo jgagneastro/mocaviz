@@ -28,11 +28,14 @@ reviewer services do not need to restart. It starts no scientific workers.
   selectors (BYW, BYW claims, Yadu, Azul, SMDET) default to **Absent / no**.
 - Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
 - Other defaults: L0+, unpublished, not the duplicate side of confirmed duplicate
-  pairs, with `good` or `good_candidate` spectral quality in at least one lane.
+  pairs, with good-family or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog
   load focused on visually vetted findings.
-- Global spectral-quality modes include **At least one good**, which requires
-  the exact `good` class in one or more reductions, and **All available good**
+- In quality requirements, **good** includes `good`, `contaminated_ucd`,
+  `peculiar_ucd`, and `good_plus_star`. **Good/candidate** also includes
+  `good_candidate`. This applies to the global modes and per-lane `good`
+  include lists; explicit exclusion lists retain their literal classes.
+- Global spectral-quality modes include **At least one good** and **All available good**
   / **All available good/good candidate**. The all-available modes require at
   least one active spectrum and an accepted review in every reduction that has
   an active spectrum. Missing reductions are skipped; available but unreviewed
