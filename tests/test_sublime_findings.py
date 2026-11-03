@@ -135,6 +135,17 @@ class FindingsTests(unittest.TestCase):
         self.assertFalse(sf.passes(r,dict(f,min_snr=1)))
         self.assertFalse(sf.passes(r,dict(f,min_cutout=1)))
 
+    def test_known_recovered_bypasses_only_motion_quality(self):
+        f=sf.parse_filters({'min_motion':2,'max_motion':4,'motion_classes':'clear motion'})
+        r=sf.demo_rows(sf.parse_filters({}))[1]
+        for score, motion_class in ((None,None),(1,'clear motion'),(5,'clear motion'),(3,'still')):
+            with self.subTest(score=score, motion_class=motion_class):
+                candidate=dict(r,known=False,motion=score,motion_class=motion_class)
+                known=dict(candidate,known=True)
+                self.assertFalse(sf.passes(candidate,f))
+                self.assertTrue(sf.passes(known,f))
+                self.assertFalse(sf.passes(known,dict(f,min_snr=1000)))
+
     def test_cutout_any_all_and_missing_scores(self):
         f=sf.parse_filters({'known':'either','min_cutout':4})
         r=sf.demo_rows(dict(f,min_cutout=None))[1]

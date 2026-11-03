@@ -33,6 +33,7 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
   immediately applies those settings with the other current cuts.
   **Reset to default filter** restores and applies the dashboard defaults.
 - Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
+  Known recovered objects bypass the WiseView score and motion class cuts.
 - The default sample includes L0+ objects outside the duplicate side of
   confirmed pairs, with good-family or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog

@@ -219,7 +219,8 @@ def selected_sql(f):
         motion=['w.moca_oid=mo.moca_oid']
         for key,op in (('min_motion','>='),('max_motion','<=')):
             if f[key] is not None:motion.append('w.classification_integer'+op+'%s');params.append(f[key])
-        where.append('EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting w WHERE '+' AND '.join(motion)+')')
+        motion_review = 'EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting w WHERE ' + ' AND '.join(motion) + ')'
+        where.append('(' + known_expression('mo') + ' OR ' + motion_review + ')')
     bound(spt, 'min_spt', 'max_spt')
     for lane in LANES:
         bound(expressions[lane], 'min_' + lane + '_spt', 'max_' + lane + '_spt')
@@ -323,12 +324,15 @@ def passes(r, f):
             return False
     if f['duplicates'] != 'either' and bool(r['duplicate']) != (f['duplicates']=='only'):
         return False
-    for field,lo,hi in ((f['snr_lane']+'_snr','min_snr','max_snr'), ('motion','min_motion','max_motion')):
+    numeric_cuts = [(f['snr_lane']+'_snr','min_snr','max_snr')]
+    if not r.get('known'):
+        numeric_cuts.append(('motion','min_motion','max_motion'))
+        if f['motion_classes'] and str(r.get('motion_class') or 'none').lower() not in f['motion_classes']:
+            return False
+    for field,lo,hi in numeric_cuts:
         val=r.get(field)
         if f[lo] is not None and (val is None or val < f[lo]): return False
         if f[hi] is not None and (val is None or val > f[hi]): return False
-    if f['motion_classes'] and str(r.get('motion_class') or 'none').lower() not in f['motion_classes']:
-        return False
     for lane in LANES:
         quality = str(r.get(lane+'_quality') or 'none').lower()
         if f['include_'+lane] and quality not in f['include_'+lane]: return False
