@@ -25,6 +25,13 @@ SOURCES = {'sublime1': 'pcat_sublime_candidates', 'sublime2': 'pcat_sublime_cand
 CLAIM_TOKENS = ('yadu', 'tom', 'bickle', 'sarah', 'azul', 'eastonh')
 MAX_OBJECTS = 100000
 LANES = tuple(sr.LANES)
+QUALITY_CLASSES = {
+    'good': ('good', 'good_candidate'),
+    'one_good': ('good',),
+    'all_good': ('good',),
+    'all_good_candidate': ('good', 'good_candidate'),
+}
+ALL_QUALITY = frozenset(('all_good', 'all_good_candidate'))
 NUMERIC = {'min_spt', 'max_spt', 'min_detection_snr', 'max_detection_snr', 'min_cnn', 'max_cnn',
            'min_snr', 'max_snr', 'min_motion', 'max_motion', 'min_cutout',
            'min_spiff_spt', 'max_spiff_spt', 'min_spiffstacker_spt', 'max_spiffstacker_spt',
@@ -42,7 +49,7 @@ def parse_filters(raw):
     if set(raw) - allowed:
         raise sr.ReviewError('Unknown dashboard filter.')
     out = dict(raw)
-    sources = out.get('sources', ['sublime1', 'sublime2', 'redmovers'])
+    sources = out.get('sources', ['sublime2'])
     if not isinstance(sources, list) or not sources or any(s not in {*SOURCES, 'other'} for s in sources):
         raise sr.ReviewError('Choose at least one valid sample.')
     out['sources'] = sorted(set(sources))
@@ -68,14 +75,14 @@ def parse_filters(raw):
         if out[key] is not None and not 0 <= out[key] <= 1:
             raise sr.ReviewError('CNN probability must be between 0 and 1.')
     for key in TRI:
-        out.setdefault(key, 'no' if key == 'known' else 'either')
+        out.setdefault(key, 'no')
         if out[key] not in ('yes', 'no', 'either'):
             raise sr.ReviewError('Membership filters must be yes, no, or either.')
     defaults = {'spt_source':'best', 'snr_lane':'spiffstacker', 'duplicates':'exclude',
                 'cutout_policy':'all', 'distance_mode':'astrometric', 'synthetic_lane':'any', 'quality_any':'good'}
     options = {'spt_source': ('best', 'sublime2', 'adopted', 'published', *LANES), 'snr_lane': LANES,
                'duplicates': ('exclude', 'only', 'either'), 'cutout_policy': ('all', 'any'),
-               'distance_mode': ('astrometric', 'include_photometric'), 'synthetic_lane': ('any', *LANES), 'quality_any': ('any','good','reviewed','unreviewed')}
+               'distance_mode': ('astrometric', 'include_photometric'), 'synthetic_lane': ('any', *LANES), 'quality_any': ('any',*QUALITY_CLASSES,'reviewed','unreviewed')}
     for key, default in defaults.items():
         out.setdefault(key, default)
         if out[key] not in options[key]:
@@ -105,14 +112,35 @@ def known_expression(alias):
     )))+')'
 
 
+
+def quality_condition(mode, oid='mo.moca_oid'):
+    """SQL quality semantics, including unreviewed active reductions for all modes."""
+    def reviewed(cfg, classes=None):
+        sql='EXISTS (SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid='+oid
+        if classes:
+            sql+=' AND LOWER(q.classification) IN ('+','.join("'"+c+"'" for c in classes)+')'
+        return sql+')'
+    if mode=='any':return '1=1'
+    if mode in ALL_QUALITY:
+        available=[];passing=[]
+        for cfg in sr.LANES.values():
+            active='EXISTS (SELECT 1 FROM moca_spectra active_s WHERE active_s.moca_oid='+oid+' AND active_s.moca_specpackid='+str(cfg['pack'])+' AND active_s.ignored=0)'
+            available.append(active)
+            passing.append('(NOT '+active+' OR '+reviewed(cfg,QUALITY_CLASSES[mode])+')')
+        return '('+' OR '.join(available)+') AND '+' AND '.join(passing)
+    clauses=[reviewed(cfg,QUALITY_CLASSES.get(mode)) for cfg in sr.LANES.values()]
+    return ('NOT ' if mode=='unreviewed' else '')+'('+' OR '.join(clauses)+')'
+
+
 def selected_sql(f):
     """Keep the large catalogue union in SQL; never download an unfiltered catalogue."""
     unions = ['SELECT moca_oid FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
               for s in f['sources'] if s in SOURCES]
     if 'other' in f['sources']:
         other_from='moca_objects mo'
-        if f['quality_any'] in ('good','reviewed'):
-            quality_where=" WHERE classification IN ('good','good_candidate')" if f['quality_any']=='good' else ''
+        if f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed':
+            classes=QUALITY_CLASSES.get(f['quality_any'])
+            quality_where=' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
             seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in sr.LANES.values())
             other_from='('+seed+') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
         elif f['min_spt'] is not None:
@@ -162,12 +190,7 @@ def selected_sql(f):
         if high and f.get(high) is not None:
             where.append(expr + '<=%s'); params.append(f[high])
     if f['quality_any']!='any':
-        clauses=[]
-        for cfg in sr.LANES.values():
-            clause='EXISTS (SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid=mo.moca_oid'
-            if f['quality_any']=='good':clause+=" AND q.classification IN ('good','good_candidate')"
-            clauses.append(clause+')')
-        where.append(('NOT ' if f['quality_any']=='unreviewed' else '')+'('+' OR '.join(clauses)+')')
+        where.append('('+quality_condition(f['quality_any'])+')')
     if f['duplicates']!='either':
         where.append(('NOT ' if f['duplicates']=='exclude' else '')+"EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup WHERE dup.potential_duplicated_moca_oid=mo.moca_oid AND dup.classification='y')")
     for lane,cfg in sr.LANES.items():
@@ -270,8 +293,12 @@ def enrich(cur, rows):
 
 
 def passes(r, f):
-    quality=[r.get(lane+'_quality') for lane in LANES]
-    if f['quality_any']=='good' and not any(v in ('good','good_candidate') for v in quality):return False
+    quality=[str(r.get(lane+'_quality') or '').lower() for lane in LANES]
+    mode=f['quality_any']
+    if mode in ALL_QUALITY:
+        available=[str(r.get(lane+'_quality') or '').lower() for lane in LANES if r.get(lane+'_specid')]
+        if not available or not all(v in QUALITY_CLASSES[mode] for v in available):return False
+    elif mode in QUALITY_CLASSES and not any(v in QUALITY_CLASSES[mode] for v in quality):return False
     if f['quality_any']=='reviewed' and not any(quality):return False
     if f['quality_any']=='unreviewed' and any(quality):return False
     for key in TRI:
@@ -365,7 +392,7 @@ def load(cur,f):
 
 def demo_rows(f):
     rows=[]
-    for i in range(54):
+    for i in range(180):
         r={'moca_oid':1001+i,'designation':'Demo J%04d'%i,'ra':(i*137.508)%360,'dec':-78+(i*19)%156,
            'spt':10+(i%24)*.9,'sublime1':i%3==0,'sublime2':i%3==1,'redmovers':i%3==2,'other':False,
            'detection_snr':7+i%30,'cnn':.7+(i%29)/100,'cnn_class':'good',

@@ -24,10 +24,18 @@ reviewer services do not need to restart. It starts no scientific workers.
 - Latest candidate rows and latest non-ignored stored lane autotypes are used.
   The default type order is SPIFFStacker, SUBLIME aperture, SUBLIME2 candidate,
   SPIFF, then public spectroscopic type. Adopted type is an explicit alternative.
-- Default: L0+, unpublished, not the duplicate side of confirmed duplicate
+- Default catalog: **SUBLIME2 only**. All five catalog/claim membership
+  selectors (BYW, BYW claims, Yadu, Azul, SMDET) default to **Absent / no**.
+- Other defaults: L0+, unpublished, not the duplicate side of confirmed duplicate
   pairs, with `good` or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog
   load focused on visually vetted findings.
+- Global spectral-quality modes include **At least one good**, which requires
+  the exact `good` class in one or more reductions, and **All available good**
+  / **All available good/good candidate**. The all-available modes require at
+  least one active spectrum and an accepted review in every reduction that has
+  an active spectrum. Missing reductions are skipped; available but unreviewed
+  spectra fail. Existing any-good/candidate and reviewed/unreviewed modes remain.
 - **Recovered known** uses public nonphotometric spectral types, L0+, and
   removes the global spectral-quality requirement. Publication status includes
   public-adopted M0+ types across confirmed duplicate links, as in the reviewer.
@@ -65,6 +73,7 @@ CSV includes measurement IDs, spectrum IDs, distance provenance and all flags.
 
 The flipbook has ten objects per page, decreasing stored selected SPT, with
 reduction selector and optional omission of objects lacking active spectra.
+Its plots are 75% of their original height; inspector plots retain their size.
 Inspector: **three plots**, SPIFFStacker / SPIFF / SUBLIME aperture, with
 one best-fit template each. Fits are recomputed with the existing autotype
 options and can differ from stored types used for filtering and ordering.

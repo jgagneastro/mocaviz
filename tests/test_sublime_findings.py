@@ -1,5 +1,6 @@
 """Selection, missing-data and read-only endpoint regressions; no live database."""
 import copy
+import sqlite3
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -13,7 +14,7 @@ class FindingsTests(unittest.TestCase):
     def test_invalid_filters_rejected_without_opening_database(self):
         for filters in ({'sources':[]},{'sources':['not-a-table']},{'min_spt':float('nan')},
                         {'min_spt':20,'max_spt':10},{'byw':'maybe'},{'min_cnn':1.1},
-                        {'min_motion':True},{'include_spiff':['good']},{'unknown':'x'}):
+                        {'min_motion':True},{'include_spiff':['good']},{'quality_any':'invented_mode'},{'unknown':'x'}):
             with self.subTest(filters=filters),patch.object(sf.sr,'connection') as conn:
                 response=self.client.post('/api/findings/load',json={'filters':filters})
                 self.assertEqual(response.status_code,400);conn.assert_not_called()
@@ -36,6 +37,64 @@ class FindingsTests(unittest.TestCase):
             with patch.object(sf.sr,'connection') as conn:
                 response=self.client.post('/api/findings/'+operation,json={})
                 self.assertEqual(response.status_code,404);conn.assert_not_called()
+
+    def test_default_sample_and_catalog_memberships(self):
+        f=sf.parse_filters({})
+        self.assertEqual(f['sources'],['sublime2'])
+        self.assertEqual({key:f[key] for key in sf.TRI},{key:'no' for key in sf.TRI})
+
+    def test_new_quality_modes_accept_mock_requests(self):
+        for mode in ('one_good','all_good','all_good_candidate'):
+            with self.subTest(mode=mode):
+                response=self.client.post('/api/findings/load',json={'mock':True,'filters':{'quality_any':mode}})
+                self.assertEqual(response.status_code,200)
+                self.assertGreater(len(response.get_json()['rows']),0)
+
+    def test_quality_modes_sql_and_rows_agree_on_available_reductions(self):
+        # Quality order is SPIFF, SPIFFStacker, SUBLIME aperture. The expected
+        # columns are any good/candidate, any exact good, all exact good,
+        # and all good/candidate. Available unreviewed lanes must fail both all cuts.
+        cases=[
+            ((None,None,None),(),(),(False,False,False,False)),
+            (('good',None,None),(0,),(),(True,True,True,True)),
+            (('good','good_candidate',None),(0,1),(),(True,True,False,True)),
+            (('good',None,None),(0,1),(),(True,True,False,False)),
+            (('good_candidate',None,None),(0,),(),(True,False,False,True)),
+            (('good','bad',None),(0,1),(),(True,True,False,False)),
+            (('bad',None,None),(0,),(),(False,False,False,False)),
+            (('good','bad',None),(0,),(1,),(True,True,True,True)),
+            (('good','bad',None),(1,),(0,),(True,True,False,False)),
+            (('good',None,None),(),(0,),(True,True,False,False)),
+            (('good','good','good'),(0,1,2),(),(True,True,True,True)),
+            (('good','peculiar_ucd',None),(0,1),(),(True,True,False,False)),
+        ]
+        modes=('good','one_good','all_good','all_good_candidate')
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE moca_objects (moca_oid INTEGER)')
+        db.execute('CREATE TABLE moca_spectra (moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER)')
+        for cfg in sf.sr.LANES.values():db.execute('CREATE TABLE '+cfg['table']+' (moca_oid INTEGER,classification TEXT)')
+        records=[]
+        for oid,(quality,active,ignored,expected) in enumerate(cases,1):
+            db.execute('INSERT INTO moca_objects VALUES (?)',(oid,))
+            r={key:False for key in sf.TRI}
+            r.update(moca_oid=oid,duplicate=False,cutout_scores=[],cutout_classes=[])
+            for i,(lane,cfg) in enumerate(sf.sr.LANES.items()):
+                if quality[i] is not None:
+                    r[lane+'_quality']=quality[i]
+                    db.execute('INSERT INTO '+cfg['table']+' VALUES (?,?)',(oid,quality[i]))
+                if i in active or i in ignored:
+                    db.execute('INSERT INTO moca_spectra VALUES (?,?,?)',(oid,cfg['pack'],int(i in ignored)))
+                if i in active:r[lane+'_specid']=oid*10+i
+            records.append((r,expected))
+        for index,mode in enumerate(modes):
+            with self.subTest(mode=mode):
+                expected={r['moca_oid'] for r,values in records if values[index]}
+                sql='SELECT mo.moca_oid FROM moca_objects mo WHERE ('+sf.quality_condition(mode)+')'
+                sql_ids={r[0] for r in db.execute(sql)}
+                row_ids={r['moca_oid'] for r,_ in records if sf.passes(r,sf.parse_filters({'quality_any':mode}))}
+                self.assertEqual(sql_ids,expected)
+                self.assertEqual(row_ids,expected)
 
     def test_memberships_and_confirmed_duplicate_side(self):
         f=sf.parse_filters({'known':'either'})
