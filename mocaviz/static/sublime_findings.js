@@ -105,9 +105,15 @@ function groups(data,fn){return FindingClasses.groups(data,fn);}
 function emptyNote(layout,count){if(count)return;layout.annotations=[{text:'No objects with the required data under these cuts',showarrow:false,x:.5,y:.5,xref:'paper',yref:'paper',font:{color:'#7d8d85',size:12}}];}
 function mollweide(ra,dec){const lon=(((ra-180+540)%360)-180)*Math.PI/180,lat=dec*Math.PI/180;let theta=lat;for(let i=0;i<20;i++){const d=2+2*Math.cos(2*theta);if(Math.abs(d)<1e-8)break;const step=(2*theta+Math.sin(2*theta)-Math.PI*Math.sin(lat))/d;theta-=step;if(Math.abs(step)<1e-9)break;}return [-2*Math.SQRT2/Math.PI*lon*Math.cos(theta),Math.SQRT2*Math.sin(theta)];}
 function renderCharts(){
- const typed=rows.filter(r=>finite(r.spt)),bin=Number($('hist-bin').value),lo=typed.length?Math.min(...typed.map(r=>r.spt)):-5,hi=typed.length?Math.max(...typed.map(r=>r.spt)):35,start=Math.min(-5,Math.floor(lo/bin)*bin),end=Math.max(35,Math.ceil((hi+1)/bin)*bin),centers=[];for(let x=start;x<end;x+=bin)centers.push(x+bin/2);
+ const typed=rows.filter(r=>finite(r.spt)),bin=Number($('hist-bin').value);
+ const lo=typed.length?Math.min(...typed.map(r=>r.spt)):-5;
+ const hi=typed.length?Math.max(...typed.map(r=>r.spt)):35;
+ // Integer subtypes are centered in their bins, with edges at half subtypes.
+ const binEdge=type=>Math.floor((type+0.5)/bin)*bin-0.5;
+ const start=binEdge(Math.min(-5,lo)),last=binEdge(Math.max(35,hi)),centers=[];
+ for(let edge=start;edge<=last;edge+=bin)centers.push(edge+bin/2);
  const hist=groups(typed,(data,name,color)=>{const count=centers.map(()=>0);for(const r of data){const i=Math.floor((r.spt-start)/bin);if(i>=0&&i<count.length)count[i]++;}return {type:'bar',x:centers,y:count,name,marker:{color},width:bin*.86,hovertemplate:'%{x}: %{y} objects<extra>'+name+'</extra>'};});
- let l=spectralAxis(baseLayout('Spectral type','Unique objects'));l.xaxis.range=[9,32];l.xaxis.tickvals=[9,10,15,20,25,30,32];l.xaxis.ticktext=l.xaxis.tickvals.map(spt);l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
+ let l=spectralAxis(baseLayout('Spectral type','Unique objects'));l.xaxis.range=[binEdge(9),binEdge(32)+bin];l.xaxis.tickvals=[9,10,15,20,25,30,32];l.xaxis.ticktext=l.xaxis.tickvals.map(spt);l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
  const skyRows=rows.filter(r=>finite(r.ra)&&finite(r.dec)),moll=$('sky-projection').value==='mollweide';
  l=baseLayout(moll?'Right ascension (ICRS)':'Right ascension (deg)','Declination (deg)');l.xaxis.range=moll?[-2.91,2.91]:[360,0];l.yaxis.range=moll?[-1.48,1.48]:[-90,90];
  let skyTraces=groups(skyRows,(d,n,c)=>scatterTrace(d,r=>moll?mollweide(r.ra,r.dec)[0]:r.ra,r=>moll?mollweide(r.ra,r.dec)[1]:r.dec,n,c,{hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<extra>'+n+'</extra>'}));
