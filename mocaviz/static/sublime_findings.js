@@ -131,6 +131,13 @@ function renderCharts(){
  $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangles) · error bars require magnitude and parallax uncertainties`;
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.motion,n,c)),l);
+ const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));
+ l=spectralAxis(baseLayout('Spectral type','Total proper motion (mas/yr)'));
+ emptyNote(l,withProperMotion.length);
+ plot('proper-motion',groups(withProperMotion,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.pmtot_masyr,n,c,{
+  hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted total proper motion: %{y:.1f} mas/yr<extra>'+n+'</extra>'
+ })),l);
+ $('proper-motion-note').textContent=`${num(withProperMotion.length)} with adopted total proper motion · ${num(typed.length-withProperMotion.length)} typed objects without a measurement`;
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}

@@ -265,7 +265,7 @@ def enrich(cur, rows):
         for r in chunk:
             r.update(redmovers=False, byw=False, byw_claim=False, yadu=False, azul=False,
                      smdet=False, duplicate=False, known=False, cutout_scores=[], cutout_classes=[],
-                     cutout_count=0, motion=None, motion_class=None)
+                     cutout_count=0, motion=None, motion_class=None, pmtot_masyr=None)
         tables = {'redmovers':'pcat_catwise2020_red_movers','byw':'pcat_byw_mar9_2026',
                   'yadu':'pcat_kirkpatrick_yadu_2026_claim','azul':'pcat_azul_byw_sample_jul16_2026'}
         for field, table in tables.items():
@@ -286,6 +286,9 @@ def enrich(cur, rows):
             by_oid[r['moca_oid']]['known'] = True
         for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_wiseview_visual_vetting WHERE moca_oid IN (' + ph + ')', ids):
             by_oid[r['moca_oid']].update(motion=r['classification_integer'],motion_class=r['classification'])
+        for r in fetch(cur, 'SELECT id,moca_oid,pmtot_masyr FROM data_proper_motions WHERE moca_oid IN (' + ph + ')'
+                       ' AND adopted=1 AND ignored=0 AND pmtot_masyr IS NOT NULL', ids):
+            by_oid[r['moca_oid']].update(proper_motion_id=r['id'], pmtot_masyr=r['pmtot_masyr'])
         for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_spherex_cutout_visual_vetting WHERE moca_oid IN (' + ph + ') ORDER BY id', ids):
             target=by_oid[r['moca_oid']]
             target['cutout_count'] += 1
@@ -412,7 +415,8 @@ def demo_rows(f):
            'detection_snr':7+i%30,'cnn':.7+(i%29)/100,'cnn_class':'good',
            'best_spt_source':'spiffstacker','motion':3+i%4,'motion_class':'clear motion, red detection',
            'cutout_scores':[3,4],'cutout_classes':['Good centered on PSF but crowded','Good centered on PSF and isolated'],
-           'cutout_count':2,'chi2':1+i/20,'is_public':0}
+           'cutout_count':2,'chi2':1+i/20,'is_public':0,
+           'pmtot_masyr':None if i%7==0 else 20+(i*53)%780}
         for j,k in enumerate(TRI):r[k]=False if k=='known' else i%(j+3)==0
         r['duplicate']=i%17==0
         for lane in LANES:r.update({lane+'_quality':'good',lane+'_spt':r['spt'],lane+'_snr':8+i%15,lane+'_specid':11001+i})

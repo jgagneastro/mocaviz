@@ -66,9 +66,11 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
 ## Science views
 
 Histogram, RA/Dec or Mollweide sky projection, spectral type versus absolute
-W2, synthetic-minus-measured W2, motion versus type, and overlapping recovery
-counts by catalog. Each scatter-plot point opens the same inspector, also
-available from the object table and flipbook cards.
+W2, synthetic-minus-measured W2, WiseView motion score and adopted total
+proper motion versus spectral type, and overlapping recovery counts by catalog. Each scatter-plot point opens the same inspector, also
+available from the object table and flipbook cards. The proper-motion plot
+uses the selected spectral type and the adopted, non-ignored MOCAdb
+`data_proper_motions.pmtot_masyr` value. The CSV includes the measurement ID.
 
 Absolute magnitudes use a positive adopted parallax first, then an adopted
 nonphotometric distance. Photometric distances are an explicit opt-in and their
