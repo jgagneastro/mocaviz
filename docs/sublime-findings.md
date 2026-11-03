@@ -118,3 +118,28 @@ Offline checks:
 node --check mocaviz/static/sublime_findings.js
 node scripts/chromium_probe.mjs --url 'http://127.0.0.1:8901/?mock=1' --wait-js 'window.SublimeFindings?.rows.length>0' --expect-plotly '#cmd::traces>=2,points>=1'
 ```
+
+
+## Plot color classes
+
+All overview plots use the same mutually exclusive categories, in this order:
+
+1. **Known recovered** (ochre): the existing published-spectroscopic status,
+   including confirmed duplicate links, regardless of motion or spectral quality.
+2. **New motion-confirmed** (teal): not known recovered, with an accepted review
+   in any of SPIFFStacker, SPIFF or SUBLIMEaperture, and WiseView motion score ≥5.
+3. **New candidate** (blue): the same spectral-quality requirement, score ≥3 and
+   <5, and not known recovered.
+4. **Still candidates** (purple): the same quality requirement and score in
+   [1,2], including 1.5, and not known recovered.
+5. **Others** (gray): every other object admitted by the current filters.
+
+Accepted reviews are exactly `good`, `good_candidate`, `contaminated_ucd`,
+`peculiar_ucd`, and `good_plus_star`. Missing/nonfinite motion scores and missing
+or nonqualifying spectral reviews fall into Others. A score between 2 and 3 also
+falls into Others. Classification uses the stored visual-vetting labels, not
+the autotype's type string. Existing sample filters remain independent of the
+color classes. Measured and synthetic W2 share class colors; synthetic points
+use open diamonds (open triangles for photometric distances). The on-page legend
+shows class counts and hover definitions. CSV exports include `plot_class` and
+`plot_class_label`; the object table and inspector show the same class labels.

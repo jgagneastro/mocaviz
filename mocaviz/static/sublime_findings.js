@@ -1,5 +1,41 @@
 /* Read-only findings atlas. Credentials and scientific data stay in tab memory. */
-(() => {
+const FindingClasses = (() => {
+  'use strict';
+  const accepted = new Set(['good', 'good_candidate', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
+  const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
+  const definitions = [
+    {key:'known', label:'Known recovered', color:'#bc7a3d', detail:'Existing published spectroscopic status, including confirmed duplicate links; takes precedence over the other classes.'},
+    {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'; WiseView score ≥ 5; not known recovered.'},
+    {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'; WiseView score ≥ 3 and < 5; not known recovered.'},
+    {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'; WiseView score from 1 through 2 inclusive; not known recovered.'},
+    {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including missing or nonqualifying reviews.'},
+  ];
+  function classify(row) {
+    if(row.known) return 'known';
+    const qualifies=['spiffstacker','spiff','sublimeaperture'].some(lane=>accepted.has(String(row[lane+'_quality']??'').trim().toLowerCase()));
+    const score=row.motion===null || row.motion===undefined || row.motion==='' ? NaN : Number(row.motion);
+    if(!qualifies || !Number.isFinite(score)) return 'others';
+    if(score>=5) return 'confirmed';
+    if(score>=3) return 'candidate';
+    if(score>=1 && score<=2) return 'still';
+    return 'others';
+  }
+  function annotate(row) {
+    const key=classify(row), definition=definitions.find(d=>d.key===key);
+    return {...row,plot_class:key,plot_class_label:definition.label};
+  }
+  function groups(data,build) {
+    return definitions.map(def=>{
+      const selected=data.filter(row=>(row.plot_class || classify(row))===def.key);
+      const trace=build(selected,def.label,def.color);
+      return {...trace,legendgroup:def.key,showlegend:trace.showlegend??selected.length>0,
+        meta:{...trace.meta,plot_class:def.key}};
+    });
+  }
+  return {definitions,classify,annotate,groups};
+})();
+if(typeof module!=='undefined' && module.exports) module.exports=FindingClasses;
+if(typeof document!=='undefined') (() => {
 'use strict';
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const finite=Number.isFinite, fmt=(v,n=2)=>v==null||!finite(Number(v))?'—':Number(v).toFixed(n), num=v=>Number(v).toLocaleString();
@@ -7,7 +43,7 @@ const laneNames={spiffstacker:'SPIFFStacker',spiff:'SPIFF',sublimeaperture:'SUBL
 const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',redmovers:'CatWISE red movers',other:'Other unpublished'};
 const spt=v=>!finite(Number(v))||v==null?'—':(v<0?'K'+fmt(10+Number(v),1):v<10?'M'+fmt(v,1):v<20?'L'+fmt(v-10,1):v<30?'T'+fmt(v-20,1):'Y'+fmt(v-30,1)).replace('.0','');
 const ticks=Array.from({length:9},(_,i)=>i*5-5),ticktext=ticks.map(spt);
-const colors={new:'#257d76',known:'#bc7a3d',synth:'#7093c7',photo:'#ad82af'};
+const classDefinitions=FindingClasses.definitions;
 const url=new URL(location.href), params=new URLSearchParams(url.search), fragment=new URLSearchParams(location.hash.slice(1));
 const mock=params.get('mock')==='1';
 const getAuth=(keys)=>{for(const key of keys){const v=fragment.get(key)??params.get(key);if(v!==null)return v;}return '';};
@@ -22,6 +58,7 @@ function range(key,label){return `<label>${esc(label)}</label><div class="range"
 function fs(title,html){return `<fieldset><legend>${esc(title)}</legend>${html}</fieldset>`;}
 const laneOptions=Object.entries(laneNames).map(([k,v])=>[k,v]);
 const triOptions=[['either','Either'],['yes','Present / yes'],['no','Absent / no']];
+$('plot-classes').innerHTML=classDefinitions.map(d=>`<span class="plot-class" title="${esc(d.detail)}"><i style="background:${d.color}"></i>${esc(d.label)} <b id="class-count-${d.key}">—</b></span>`).join('');
 $('filter-fields').innerHTML=
 fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished candidates'],['yes','Known recovered'],['either','Both populations']])+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
 fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Best available (priority order)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
@@ -45,9 +82,10 @@ async function load(){
  $('apply').disabled=true;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample…';
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. Previous plots remain labeled below until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
-  rows=result.rows;filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;
+  rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
+  for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
   $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
   const m=rows.filter(r=>finite(r.M_w2)).length,s=rows.filter(r=>finite(r.M_synthetic_w2)).length;
   $('count-mw2').textContent=num(m);$('count-mw2-note').textContent=`Measured: ${num(m)} · synthetic: ${num(s)}`;
@@ -60,7 +98,7 @@ const plotConfig={responsive:true,displaylogo:false,modeBarButtonsToRemove:['sel
 function plot(id,traces,layout,clickable=true){const el=$(id);Plotly.react(el,traces,layout,plotConfig).then(()=>{el.removeAllListeners('plotly_click');if(clickable)el.on('plotly_click',event=>{const id=event.points?.[0]?.customdata?.[0];if(id&&byId.has(id))openInspector(byId.get(id));});});}
 function spectralAxis(layout){layout.xaxis.tickmode='array';layout.xaxis.tickvals=ticks;layout.xaxis.ticktext=ticktext;return layout;}
 function scatterTrace(data,x,y,name,color,extra={}){return {type:'scattergl',mode:'markers',x:data.map(x),y:data.map(y),name,marker:{size:7,color,opacity:.76,line:{color:'white',width:.5}},customdata:data.map(r=>[r.moca_oid,r.designation,spt(r.spt)]),text:data.map(r=>esc(r.designation)),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>x: %{x:.3f} · y: %{y:.3f}<extra>'+name+'</extra>',...extra};}
-function groups(data,fn){return [fn(data.filter(r=>!r.known),'Unpublished',colors.new),fn(data.filter(r=>r.known),'Known recovered',colors.known)];}
+function groups(data,fn){return FindingClasses.groups(data,fn);}
 function emptyNote(layout,count){if(count)return;layout.annotations=[{text:'No objects with the required data under these cuts',showarrow:false,x:.5,y:.5,xref:'paper',yref:'paper',font:{color:'#7d8d85',size:12}}];}
 function mollweide(ra,dec){const lon=(((ra-180+540)%360)-180)*Math.PI/180,lat=dec*Math.PI/180;let theta=lat;for(let i=0;i<20;i++){const d=2+2*Math.cos(2*theta);if(Math.abs(d)<1e-8)break;const step=(2*theta+Math.sin(2*theta)-Math.PI*Math.sin(lat))/d;theta-=step;if(Math.abs(step)<1e-9)break;}return [-2*Math.SQRT2/Math.PI*lon*Math.cos(theta),Math.SQRT2*Math.sin(theta)];}
 function renderCharts(){
@@ -74,8 +112,8 @@ function renderCharts(){
  emptyNote(l,skyRows.length);plot('sky',skyTraces,l);
  const measured=rows.filter(r=>finite(r.spt)&&finite(r.M_w2)),synthetic=rows.filter(r=>finite(r.spt)&&finite(r.M_synthetic_w2));
  const errors=(data,key)=>$('show-errors').checked?{type:'data',array:data.map(r=>r[key+'_unc']),visible:true,color:'#b5c4be',thickness:1,width:0}:{visible:false};
- const traces=groups(measured,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.M_w2,n+' · measured',c,{marker:{size:7,color:c,opacity:.8,symbol:d.map(r=>r.distance_kind==='photometric'?'triangle-up':'circle')},error_y:errors(d,'M_w2')}));
- if($('show-synth').checked)traces.push(scatterTrace(synthetic,r=>r.spt,r=>r.M_synthetic_w2,'SPHEREx synthetic',colors.synth,{marker:{size:8,color:colors.synth,symbol:synthetic.map(r=>r.distance_kind==='photometric'?'triangle-up-open':'diamond-open'),opacity:.85,line:{width:1.5}},error_y:errors(synthetic,'M_synthetic_w2')}));
+ const traces=groups(measured,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.M_w2,n,c,{marker:{size:7,color:c,opacity:.8,symbol:d.map(r=>r.distance_kind==='photometric'?'triangle-up':'circle')},error_y:errors(d,'M_w2')}));
+ if($('show-synth').checked)traces.push(...groups(synthetic,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.M_synthetic_w2,n,c,{showlegend:d.length>0&&!measured.some(r=>r.plot_class_label===n),marker:{size:8,color:c,symbol:d.map(r=>r.distance_kind==='photometric'?'triangle-up-open':'diamond-open'),opacity:.85,line:{width:1.5}},error_y:errors(d,'M_synthetic_w2'),hovertemplate:'%{text}<br>SPHEREx synthetic W2<br>Object %{customdata[0]} · %{customdata[2]}<br>x: %{x:.3f} · y: %{y:.3f}<extra>'+n+'</extra>'})));
  l=spectralAxis(baseLayout('Spectral type','Absolute W2 (mag)'));l.yaxis.autorange='reversed';emptyNote(l,measured.length+($('show-synth').checked?synthetic.length:0));plot('cmd',traces,l);
  $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangles) · error bars require magnitude and parallax uncertainties`;
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>scatterTrace(d,r=>r.spt,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
@@ -112,13 +150,13 @@ async function renderFlipbook(){
   if(e.name!=='AbortError'&&generation===flipGeneration)for(let i=completed;i<selected.length;i++)$('flip-plot-'+i).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';
  }
 }
-function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt))}<small>${r.known?'known recovered':'unpublished'}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
+function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt))}<small>${esc(r.plot_class_label)}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
 function wiseHash(r){return new URLSearchParams({ra:r.ra,dec:r.dec,size:30,band:3,speed:313,minbright:-50,maxbright:500,window:2.64664,diff_window:1,linear:1,color:'',zoom:20,border:0,gaia:1,invert:1,maxdyr:1,scandir:0,neowise:0,diff:0}).toString();}
 function closeInspector(){inspectorGeneration++;inspectController?.abort();if($('inspector').open)$('inspector').close();$('wise-frame').src='about:blank';purgePlots($('inspect-spectra'));}
 async function openInspector(r){
  closeInspector();current=r;cutouts=[];cutIndex=0;const generation=++inspectorGeneration;inspectController=new AbortController();const signal=inspectController.signal;
  $('wise-frame').removeAttribute('srcdoc');
- $('inspect-title').textContent=r.designation+' · '+spt(r.spt);$('inspect-meta').textContent=`OID ${r.moca_oid} · RA ${fmt(r.ra,6)}° · Dec ${fmt(r.dec,6)}° · ${r.known?'known recovered':'unpublished candidate'} · ${r.samples.map(s=>sourceNames[s]).join(', ')}`;
+ $('inspect-title').textContent=r.designation+' · '+spt(r.spt);$('inspect-meta').textContent=`OID ${r.moca_oid} · RA ${fmt(r.ra,6)}° · Dec ${fmt(r.dec,6)}° · ${r.plot_class_label} · ${r.samples.map(s=>sourceNames[s]).join(', ')}`;
  $('inspect-report').href='https://mocadb.ca/search/results?search-query=oid%28'+r.moca_oid+'%29&search-type=star';
  $('inspect-wise-link').href='http://byw.tools/wiseview-v2#'+wiseHash(r);
  $('inspect-spectra').innerHTML=['spiffstacker','spiff','sublimeaperture'].map(lane=>spectrumCard(r,lane,'inspect-'+lane,true)).join('');
@@ -169,5 +207,5 @@ let initial={...defaults};try{if(params.has('filters'))initial={...defaults,...J
 setFilters(initial);$('demo-banner').hidden=!mock;
 if(mock||auth['X-MOCA-Password'])load();else{$('status').textContent='Open this dashboard through Web Tools → Start & open to use your private MOCAdb connection.';$('apply').disabled=false;}
 // Small, read-only hooks let the maintained browser probe exercise Plotly selection.
-window.SublimeFindings={get rows(){return rows;},openObject:id=>{const r=byId.get(Number(id));if(r)openInspector(r);},spt,mollweide};
+window.SublimeFindings={get rows(){return rows;},openObject:id=>{const r=byId.get(Number(id));if(r)openInspector(r);},spt,mollweide,plotClasses:classDefinitions,classify:FindingClasses.classify};
 })();

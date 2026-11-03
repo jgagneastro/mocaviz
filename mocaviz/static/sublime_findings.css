@@ -6,3 +6,5 @@
 /* Compact flipbook plots; the three-spectrum object inspector keeps its size. */
 .flip-grid .spec-plot{aspect-ratio:4/3;min-height:217.5px;max-height:382.5px}
 .flip-grid .spec-empty{min-height:142.5px}
+
+.plot-classes{display:flex;flex-wrap:wrap;gap:9px 20px;margin:15px 0;color:#36534b;font-size:12px}.plot-class{display:inline-flex;align-items:center;gap:6px;cursor:help}.plot-class i{width:10px;height:10px;border-radius:50%;display:inline-block}.plot-class b{font-variant-numeric:tabular-nums;font-weight:600}
