@@ -253,6 +253,9 @@
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
+    const origin = document.createElement("div");
+    origin.textContent = "Object origin: " + (obj.object_origin?.trim() || "—");
+    $("object-meta").append(origin);
     $("best-type").textContent = fit ? fit.best.display_type : "No valid fit";
     $("fit-detail").textContent = fit ? fit.best.grid_type + " · score " + fit.best.selection_score.toFixed(2) +
       " · " + fit.best.n_used + " points · " + fit.bad_pixel_ids.length + " newly flagged pixels" : data.warning || "";
