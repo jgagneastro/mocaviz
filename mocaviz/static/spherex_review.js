@@ -142,7 +142,7 @@
         $("queue-info").textContent = "";
         $("queue-total").textContent = "";
         $("preview-output").textContent = ""; $("preview-panel").open = false;
-        await show(0);
+        clearTarget();
       }
       loading = true; updateControls(); status("Loading spectra from MOCAdb…");
       const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
@@ -190,6 +190,15 @@
     }
     return cache.get(k);
   }
+  function clearFit() {
+    $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
+    $("matches").replaceChildren(); $("stored").textContent = "";
+    Plotly.purge($("plot"));
+  }
+  function clearTarget() {
+    $("object-title").textContent = ""; $("object-meta").textContent = ""; $("position").textContent = "";
+    clearFit();
+  }
   async function show(nextIndex, refresh = false) {
     if (closed) return;
     const gen = ++generation;
@@ -197,18 +206,16 @@
     const visible = visibleIndices();
     if (!visible.length) {
       index = -1;
+      clearTarget();
       $("object-title").textContent = items.length ? "Queue complete" : "No matching spectra";
       $("object-meta").textContent = hasMore ? "Load the next batch to continue." : "";
-      $("position").textContent = ""; $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
-      $("matches").replaceChildren(); $("stored").textContent = "";
-      Plotly.purge($("plot"));
-      status(pendingCount() ? "All loaded objects are queued for submission." : "Ready.");
+      status(pendingCount() ? "All loaded objects are queued for submission." : "");
       updateControls(); return;
     }
     index = visible.includes(nextIndex) ? nextIndex : (visible.find((v) => v >= nextIndex) ?? visible.at(-1));
     const item = items[index];
     $("object-title").textContent = item.designation || "moca_oid=" + item.moca_oid;
-    $("object-meta").textContent = "Loading spectrum " + item.moca_specid + "…";
+    $("object-meta").textContent = "";
     $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining in loaded queue";
     status("Fitting spectrum…"); updateControls();
     try {
@@ -225,9 +232,7 @@
         await show(index + 1);
         return;
       }
-      Plotly.purge($("plot"));
-      $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
-      $("matches").replaceChildren(); $("stored").textContent = "";
+      clearFit();
       $("object-meta").textContent = "Spectrum " + item.moca_specid + " could not be loaded.";
       status("This spectrum could not be loaded; use Next to continue."); error(e.message); updateControls();
     }
@@ -242,7 +247,9 @@
   }
   function render(data) {
     const obj = data.object, fit = data.fit;
-    $("object-title").textContent = obj.designation || "Object " + obj.moca_oid;
+    const name = obj.designation || "Object " + obj.moca_oid;
+    const type = obj.adopted_spectral_type, reference = obj.adopted_spectral_type_reference;
+    $("object-title").textContent = name + (type ? ` · Adopted ${type}${reference ? ` (${reference})` : ""}` : "");
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");

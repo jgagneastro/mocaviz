@@ -259,8 +259,11 @@ def spectrum_metadata(cur, specid, oid=None, lane=None):
         params.append(lane["pack"])
     meta = rows(cur, f"""
         SELECT s.moca_specid, s.moca_oid, s.moca_specpackid, s.ignored, s.median_snr_per_pix,
-               mo.designation, mo.ra, mo.\x60dec\x60
+               mo.designation, mo.ra, mo.\x60dec\x60,
+               COALESCE(NULLIF(TRIM(st.spectral_type), ''), NULLIF(TRIM(st.complete_spectral_type), '')) AS adopted_spectral_type,
+               COALESCE(NULLIF(TRIM(st.moca_pid), ''), NULLIF(TRIM(st.origin), '')) AS adopted_spectral_type_reference
         FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
+        LEFT JOIN data_spectral_types st ON st.moca_oid=mo.moca_oid AND st.adopted=1 AND st.ignored=0
         WHERE {' AND '.join(conditions)}
     """, tuple(params))
     if not meta:
