@@ -27,7 +27,7 @@
     $("load").disabled = closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["missing-vetting", "wiseview-score"])
+    for (const name of ["review-sample", "missing-vetting", "wiseview-score"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
@@ -98,6 +98,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return 0;
+    if (request.public_ucd_only) return 4;
     if (request.missing_vetting === "viable_elsewhere") return 2;
     return request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting) ? 1 : 0;
   }
@@ -111,6 +112,16 @@
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
     }
   }
+  let otherSampleVetting = $("missing-vetting").value;
+  $("review-sample").addEventListener("change", () => {
+    const vetting = $("missing-vetting");
+    if ($("review-sample").value === "public-ucd") {
+      otherSampleVetting = vetting.value;
+      vetting.value = "all";
+    } else {
+      vetting.value = otherSampleVetting;
+    }
+  });
   async function loadQueue(more = false) {
     if (pendingCount() || loading || closed || busyUndo) return;
     error("");
@@ -121,7 +132,7 @@
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value, min_wiseview_score: $("wiseview-score").value || null,
             min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
-            no_known: $("no-known").checked, limit: 100};
+            no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: 100};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;

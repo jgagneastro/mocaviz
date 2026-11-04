@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261103-single-lane">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261103-queue-total"></script>
+  <script defer src="static/spherex_review.js?v=public-ucd"></script>
 </head>
 <body>
   <header>
@@ -39,6 +39,8 @@
         <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
         <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
         <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
+        <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="public-ucd">Public UCD candidates</option></select></label>
+        <small>Public candidates have a public-adopted photometric type of M7 or later. The queue requires a spectrum in the selected lane.</small>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
         <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label><span tabindex="0" title="Uses the stored autotype for the selected reduction lane: SPIFF, SPIFFStacker, or SUBLIMEaperture.">Stored type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
         <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>

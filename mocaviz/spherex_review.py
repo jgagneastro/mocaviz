@@ -68,7 +68,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 3
+QUEUE_FILTER_VERSION = 4
 MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both", "viable_elsewhere"}
 MAX_BODY = 256 * 1024
 
@@ -332,6 +332,13 @@ def queue(cur, body, *, count_only=False):
     active_only = missing != "all"
     conditions = ["mo.ignored=0", "s.moca_oid>%s"]
     params = [lane["pack"], after]
+    if boolean(body.get("public_ucd_only")):
+        conditions.append("""EXISTS (
+            SELECT 1 FROM data_spectral_types candidate
+            WHERE candidate.moca_oid=s.moca_oid AND candidate.public_adopted=1
+              AND candidate.photometric_estimate=1 AND candidate.ignored=0
+              AND candidate.spectral_type_number>=7
+        )""")
     if active_only:
         conditions.append("s.ignored=0")
     if missing in {"lane", "viable_elsewhere"}:
