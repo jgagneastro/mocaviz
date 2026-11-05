@@ -276,6 +276,16 @@ class FindingsTests(unittest.TestCase):
             self.assertEqual(oids(quality_any='any', spt_source='adopted', min_spt=10), [9])
             self.assertEqual(oids(min_spt=10, max_spt=16), [9])
             self.assertEqual(oids(sources=['other', 'sublime1']), [1, 8, 9])
+            # A missing SUBLIME2 detection must not be replaced by SUBLIME1 S/N.
+            db.execute('INSERT INTO pcat_sublime_candidates VALUES (100,1,88)')
+            db.execute("INSERT INTO pcat_sublime_candidates_v2 VALUES (100,1,NULL,14,.9,'good',1)")
+            sql,params=sf.selected_sql(sf.parse_filters({'sources':['sublime2'],'quality_any':'any'}))
+            db.row_factory=sqlite3.Row
+            row=db.execute(sql.replace('%s','?'),params).fetchone()
+            self.assertEqual(row['detection_snr'],88)
+            self.assertIsNone(row['sublime2_detection_snr'])
+            db.execute('UPDATE pcat_sublime_candidates_v2 SET detection_snr=22 WHERE id=100')
+            self.assertEqual(db.execute(sql.replace('%s','?'),params).fetchone()['sublime2_detection_snr'],22)
 
     def test_ignored_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
         spectrum=[{'wavelength_angstrom':10000,'flux_flambda':1,'flux_flambda_unc':.1,'ignored':0}]

@@ -39,3 +39,17 @@
 #cutout-content img{image-rendering:pixelated}
 
 .spectrum-card-actions{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+
+/* Keep Apply outside the scrolling cuts and within the visible viewport. */
+.sidebar{display:flex;flex-direction:column;overflow:hidden;height:calc(100vh - var(--sidebar-top,79px));height:calc(100dvh - var(--sidebar-top,79px))}
+.sidebar-head{flex-shrink:0}
+#filters{display:flex;flex-direction:column;flex:1;min-height:0}
+.filter-scroll{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;padding-right:3px}
+.applybar{position:relative;bottom:auto;flex-shrink:0;padding:12px 0 0}
+.catalog-presets{display:grid;gap:6px}
+@media(max-width:850px){
+ .sidebar{height:min(460px,calc(100dvh - var(--sidebar-top,79px)));max-height:none}
+ .applybar{position:fixed;left:10px;right:10px;bottom:10px;z-index:50;padding:10px;border:1px solid var(--line);border-radius:10px;box-shadow:0 3px 18px #193b3528}
+ .applybar .hint{display:none}
+ body{padding-bottom:90px}
+}

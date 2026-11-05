@@ -168,6 +168,12 @@ function renderCharts(){
  l=spectralAxis(baseLayout('Spectral type','Absolute W2 (mag)'));l.yaxis.autorange='reversed';emptyNote(l,measured.length+($('show-synth').checked?synthetic.length:0));plot('cmd',traces,l);
  $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangle / star-triangle markers) · error bars require magnitude and parallax uncertainties`;
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>spectralScatterTrace(d,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
+ const detections=rows.filter(r=>r.sublime2&&finite(r.spt)&&finite(r.sublime2_detection_snr)),detected=detections.filter(r=>r.sublime2_detection_snr>0);
+ l=spectralAxis(baseLayout('Spectral type','SUBLIME2 detection S/N'));l.yaxis.type='log';emptyNote(l,detected.length);
+ plot('sublime2-detection-snr',groups(detected,(d,n,c)=>spectralScatterTrace(d,r=>r.sublime2_detection_snr,n,c,{
+  type:'scatter',hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>SUBLIME2 detection S/N: %{y:.2f}<extra>'+n+'</extra>'
+ })),l);
+ $('sublime2-detection-snr-note').textContent=`${num(detected.length)} SUBLIME2 objects · ${num(rows.filter(r=>r.sublime2&&finite(r.spt)).length-detections.length)} missing detection S/N · SUBLIME2 catalog measurement · log y-axis${detections.length>detected.length?' · '+num(detections.length-detected.length)+' nonpositive values omitted':''}`;
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>spectralScatterTrace(d,r=>r.motion,n,c)),l);
  const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
  const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));
@@ -200,13 +206,13 @@ function renderDiagnostics(){
  const statistic=$('snr-statistic').value,band=$('snr-band').value;
  const names={all:'all wavelengths',nir:'1–2.5 µm',mid:'2.5–4 µm',red:'4–5 µm'};
  for(const lane of ['sublimeaperture','spiffstacker','spiff']){
-  const data=rows.filter(r=>finite(r.spt)&&finite(r.diagnostics?.[lane]?.snr?.[band]?.[statistic]));
-  const layout=spectralAxis(baseLayout('Spectral type',`${statistic==='mean'?'Mean':'Median'} S/N per pixel`));
+  const available=rows.filter(r=>finite(r.spt)&&finite(r.diagnostics?.[lane]?.snr?.[band]?.[statistic])),data=available.filter(r=>r.diagnostics[lane].snr[band][statistic]>0);
+  const layout=spectralAxis(baseLayout('Spectral type',`${statistic==='mean'?'Mean':'Median'} S/N per pixel`));layout.yaxis.type='log';
   emptyNote(layout,data.length,diagnosticDone<diagnosticTotal?'Loading spectral diagnostics…':'No valid spectral S/N in this range');
   plot('snr-'+lane,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r.diagnostics[lane].snr[band][statistic],n,c,{
    type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[lane]+' #'+r.diagnostics[lane].moca_specid+' · '+r.diagnostics[lane].snr[band].count+' valid pixels · '+names[band])
   })),layout);
-  $('snr-'+lane+'-note').textContent=`${num(data.length)} objects · ${names[band]} · ${statistic==='mean'?'arithmetic mean':'median'} of valid Fλ / uncertainty values`;
+  $('snr-'+lane+'-note').textContent=`${num(data.length)} objects · ${names[band]} · ${statistic==='mean'?'arithmetic mean':'median'} of valid Fλ / uncertainty values · log y-axis${available.length>data.length?' · '+num(available.length-data.length)+' nonpositive values omitted':''}`;
  }
  for(const metric of ['chi2','cnn']){
   const choice=$(metric+'-lane').value;
@@ -557,10 +563,14 @@ function renderFinders(generation=inspectorGeneration,signal=inspectController?.
 function csvCell(v){let s=Array.isArray(v)?v.join('; '):v==null?'':String(v);if(typeof v==='string'&&/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}
 function exportCSV(){const keys=[...new Set(rows.flatMap(Object.keys))];const content='\ufeff'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(r[k])).join(','))].join('\r\n');const blob=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=blob;a.download='sublime-findings-'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(blob),1000);}
 $('filters').onsubmit=e=>{e.preventDefault();load();};$('filters').oninput=()=>{$('dirty').textContent='Filters changed — apply to update the sample.';};$('reset').onclick=()=>{setFilters(defaults);load();};
-$('preset-sublime2').onclick=()=>{
- setFilters({...readFilters(),sources:['sublime2'],known:'no',
-  byw:'no',byw_claim:'no',yadu:'no',azul:'no',smdet:'no'});
- load();
+for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-confirmations',true]])$(id).onclick=()=>{
+ const cuts={...readFilters(),sources:['sublime2'],known:'no',
+  byw:'no',byw_claim:'no',yadu:'no',azul:'no',smdet:'no'};
+ if(confirmations){
+  cuts.quality_any='one_good';cuts.min_motion=5;
+  if(cuts.max_motion!=null&&cuts.max_motion<5)delete cuts.max_motion;
+ }
+ setFilters(cuts);load();
 };
 $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
@@ -583,7 +593,14 @@ $('cut-prev').onclick=()=>{if(cutouts.length){cutIndex=(cutIndex+cutouts.length-
 window.addEventListener('keydown',e=>{if($('inspector').open||/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(tab==='spectra'&&(e.key==='ArrowRight'||e.key==='ArrowLeft')){const b=$(e.key==='ArrowRight'?'flip-next':'flip-prev');if(!b.disabled){e.preventDefault();b.click();}}});
 window.addEventListener('resize',()=>{document.querySelectorAll('.js-plotly-plot').forEach(el=>{if(el.offsetWidth)Plotly.Plots.resize(el);});});
 let initial={...defaults};try{if(params.has('filters'))initial={...defaults,...JSON.parse(params.get('filters'))};}catch{showError('The saved filter link is invalid. Default filters were restored.');}
-setFilters(initial);$('demo-banner').hidden=!mock;
+function fitFilterSidebar(){
+ const sidebar=document.querySelector('.sidebar');
+ const offset=Math.max(0,sidebar.getBoundingClientRect().top);
+ sidebar.style.setProperty('--sidebar-top',offset+'px');
+}
+window.addEventListener('scroll',fitFilterSidebar,{passive:true});
+window.addEventListener('resize',fitFilterSidebar);
+setFilters(initial);$('demo-banner').hidden=!mock;fitFilterSidebar();
 if(mock||auth['X-MOCA-Password'])load();else{$('status').textContent='Open this dashboard through Web Tools → Start & open to use your private MOCAdb connection.';$('apply').disabled=false;}
 // Small, read-only hooks let the maintained browser probe exercise Plotly selection.
 window.SublimeFindings={get rows(){return rows;},openObject:id=>{const r=byId.get(Number(id));if(r)openInspector(r);},spt,mollweide,plotClasses:classDefinitions,classify:FindingClasses.classify};

@@ -264,6 +264,7 @@ def selected_sql(f):
         ''' + best_source + ''' AS best_spt_source,
         p1.id IS NOT NULL AS sublime1,p2.id IS NOT NULL AS sublime2,
         COALESCE(p2.detection_snr,p1.detection_snr) AS detection_snr,
+        p2.detection_snr AS sublime2_detection_snr,
         p2.visual_nn_good_probability AS cnn,p2.visual_nn_classification AS cnn_class,
         p2.autotype_reduced_chi2 AS chi2
         FROM (''' + ' UNION '.join(unions) + ''') sample
@@ -468,6 +469,7 @@ def demo_rows(f):
             r.update(adopted_distance_pc=9+(i*11)%80,
                      adopted_distance_kind='photometric' if i%2 else 'trigonometric')
         r['preferred_spectrum_lane']=preferred_spectrum_lane(r)
+        r['sublime2_detection_snr']=r['detection_snr'] if r['sublime2'] else None
         r['samples']=[s for s in SOURCES if r[s]]
         if not any(r.get(s) for s in f['sources']):continue
         if f['min_spt'] is not None and r['spt']<f['min_spt']:continue
