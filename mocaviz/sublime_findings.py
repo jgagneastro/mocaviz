@@ -168,10 +168,32 @@ def selected_sql(f):
     type_joins.append('LEFT JOIN data_spectral_types ta ON ta.moca_oid=mo.moca_oid AND ta.adopted=1 AND ta.ignored=0')
     expressions = {'sublime2':'p2.autotype_spectral_type_number', 'adopted':'ta.spectral_type_number','published':'tp.spectral_type_number'}
     expressions.update({lane:'t_' + lane + '.spectral_type_number' for lane in LANES})
-    expressions['best'] = 'COALESCE(t_spiffstacker.spectral_type_number,t_sublimeaperture.spectral_type_number,p2.autotype_spectral_type_number,t_spiff.spectral_type_number,tp.spectral_type_number)'
-    type_joins.append('LEFT JOIN data_spectral_types tp ON tp.moca_oid=mo.moca_oid AND tp.public_adopted=1 AND tp.photometric_estimate=0 AND tp.spectral_type_number>=0')
+    type_joins.append('LEFT JOIN data_spectral_types tp ON tp.moca_oid=mo.moca_oid AND tp.public_adopted=1 AND tp.photometric_estimate=0 AND tp.ignored=0')
+    type_choices = [
+        ('ta.spectral_type_number IS NOT NULL AND ta.photometric_estimate=0 AND ta.calculation_method IS NULL', 'ta.spectral_type_number', 'adopted'),
+        ('tp.spectral_type_number IS NOT NULL AND tp.calculation_method IS NULL', 'tp.spectral_type_number', 'published'),
+    ]
+    lane_order = ('spiffstacker', 'spiff', 'sublimeaperture')
+    quality_order = (
+        ('good', 'peculiar_ucd', 'late_m'),
+        ('contaminated_ucd', 'good_plus_star'),
+        ('good_candidate',),
+        ('incomplete_but_promising',),
+    )
+    for lane in lane_order:
+        type_joins.append('LEFT JOIN '+sr.LANES[lane]['table']+' quality_'+lane+' ON quality_'+lane+'.moca_oid=mo.moca_oid')
+    for classes in quality_order:
+        accepted = ','.join("'"+value+"'" for value in classes)
+        for lane in lane_order:
+            value = expressions[lane]
+            condition = value+' IS NOT NULL AND LOWER(TRIM(quality_'+lane+'.classification)) IN ('+accepted+')'
+            type_choices.append((condition, value, lane))
+    for lane in lane_order:
+        type_choices.append((expressions[lane]+' IS NOT NULL', expressions[lane], lane))
+    expressions['best'] = 'CASE '+' '.join('WHEN '+condition+' THEN '+value for condition,value,_ in type_choices)+' ELSE NULL END'
+    best_source = 'CASE '+' '.join("WHEN "+condition+" THEN '"+lane+"'" for condition,_,lane in type_choices)+' ELSE NULL END'
     spt = expressions[f['spt_source']]
-    # A union of potentially passing types is a safe superset of a COALESCE cut.
+    # A union of potentially passing types safely covers the preferred-type cut.
     # Apply it before catalogue joins to avoid hundreds of thousands of lookups.
     preselect = ''
     if f['min_spt'] is not None:
@@ -187,9 +209,9 @@ def selected_sql(f):
             candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='+threshold
         else:
             candidates='''SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0
-                AND d.spectral_type_number>='''+threshold+''' AND (d.public_adopted=1 OR
-                d.calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
-                UNION SELECT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='''+threshold
+                AND d.spectral_type_number>='''+threshold+''' AND (
+                ((d.adopted=1 OR d.public_adopted=1) AND d.photometric_estimate=0)
+                OR d.calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))'''
         preselect='JOIN ('+candidates+') typed ON typed.moca_oid=sample.moca_oid'
     where, params = ['mo.ignored=0'], []
     if 'other' in f['sources']:
@@ -238,10 +260,7 @@ def selected_sql(f):
     return '''SELECT mo.moca_oid,mo.designation,mo.ra,mo.`dec`,mo.is_public,
         ''' + spt + ''' AS spt,''' + ','.join(type_cols) + ''',
         p2.autotype_spectral_type_number AS sublime2_spt,ta.spectral_type_number AS adopted_spt,tp.spectral_type_number AS published_spt,
-        CASE WHEN t_spiffstacker.spectral_type_number IS NOT NULL THEN 'spiffstacker'
-             WHEN t_sublimeaperture.spectral_type_number IS NOT NULL THEN 'sublimeaperture'
-             WHEN p2.autotype_spectral_type_number IS NOT NULL THEN 'sublime2'
-             WHEN t_spiff.spectral_type_number IS NOT NULL THEN 'spiff' ELSE 'published' END AS best_spt_source,
+        ''' + best_source + ''' AS best_spt_source,
         p1.id IS NOT NULL AS sublime1,p2.id IS NOT NULL AS sublime2,
         COALESCE(p2.detection_snr,p1.detection_snr) AS detection_snr,
         p2.visual_nn_good_probability AS cnn,p2.visual_nn_classification AS cnn_class,
@@ -551,7 +570,7 @@ def api(operation):
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
                                      'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
-                                     'other_sample_version':1,'astrometry_plot_version':1}))
+                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')

@@ -274,7 +274,7 @@ class FindingsTests(unittest.TestCase):
             self.assertEqual(oids(), [1, 9])
             self.assertEqual(oids(quality_any='any', spt_source='adopted'), [1, 9])
             self.assertEqual(oids(quality_any='any', spt_source='adopted', min_spt=10), [9])
-            self.assertEqual(oids(min_spt=10, max_spt=16), [1])
+            self.assertEqual(oids(min_spt=10, max_spt=16), [9])
             self.assertEqual(oids(sources=['other', 'sublime1']), [1, 8, 9])
 
     def test_ignored_spectrum_response_keeps_raw_data_when_fit_is_impossible(self):
