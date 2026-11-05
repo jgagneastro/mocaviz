@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
-const {classify,annotate,groups,definitions,isConfirmed,markerSymbol}=require('../mocaviz/static/sublime_findings.js');
+const {classify,annotate,groups,definitions,isConfirmed,markerSymbol,diagnosticLane}=require('../mocaviz/static/sublime_findings.js');
 const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star'];
 test('every accepted review in any reduction qualifies at the requested motion boundaries',()=>{
   const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed'],[null,'others'],[undefined,'others'],[NaN,'others'],[Infinity,'others']];
@@ -67,4 +67,16 @@ test('confirmed symbols preserve synthetic and distance conventions under both s
     assert.equal(markerSymbol(row,base,'good_candidate'),star);
     assert.equal(markerSymbol({...row,spiff_quality:'good'},base,'good'),star);
   }
+});
+
+test('diagnostic auto lane follows review ranking and stable SPIFFStacker ties',()=>{
+  const row={spiff_specid:1,spiffstacker_specid:2,sublimeaperture_specid:3};
+  assert.equal(diagnosticLane({...row,spiff_quality:'good',spiffstacker_quality:'good_candidate'}),'spiff');
+  assert.equal(diagnosticLane({...row,spiff_quality:'good',spiffstacker_quality:'peculiar_ucd'}),'spiffstacker');
+  assert.equal(diagnosticLane({...row,spiff_quality:'late_M',spiffstacker_quality:'contaminated_ucd'}),'spiff');
+  assert.equal(diagnosticLane({...row,spiff_quality:'incomplete_but_promising',spiffstacker_quality:'good_candidate'}),'spiffstacker');
+  assert.equal(diagnosticLane({...row,spiff_quality:'good',spiffstacker_quality:'good',spiffstacker_ignored:true}),'spiff');
+  assert.equal(diagnosticLane({...row,spiff_quality:'good',spiffstacker_quality:'bad'},'spiffstacker'),'spiffstacker');
+  assert.equal(diagnosticLane({sublimeaperture_specid:3,sublimeaperture_quality:'good'}),null);
+  assert.equal(diagnosticLane({spiff_specid:1},'spiffstacker'),null);
 });

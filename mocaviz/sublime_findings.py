@@ -18,6 +18,7 @@ from werkzeug.exceptions import HTTPException
 from . import spherex_review as sr
 from . import sublime_findings_inspector as inspector
 from . import sublime_findings_duplicates as duplicates
+from . import sublime_findings_diagnostics as diagnostics
 
 STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
@@ -504,7 +505,7 @@ def plotly_asset():
 @findings.post('/api/findings/<operation>')
 def api(operation):
     try:
-        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions'):raise sr.ReviewError('Unknown operation.',404)
+        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions','diagnostics'):raise sr.ReviewError('Unknown operation.',404)
         if request.content_length and request.content_length>32768:raise sr.ReviewError('Request too large.',413)
         if not request.is_json:raise sr.ReviewError('Provide JSON.',415)
         body=request.get_json()
@@ -575,6 +576,14 @@ def api(operation):
                     cur.execute('START TRANSACTION READ ONLY')
                     result=inspector.cutouts(cur,oid,inspector.chart_positions(body.get('positions',{})))
             return jsonify(sr.clean({'ok':True,**result}))
+        if operation=='diagnostics':
+            items=diagnostics.parse_items(body.get('items'))
+            if mock:result=diagnostics.demo(items)
+            else:
+                with sr.connection(sr.credentials()) as (conn,cur):
+                    cur.execute('START TRANSACTION READ ONLY')
+                    result=diagnostics.load(cur,items)
+            return jsonify(sr.clean({'ok':True,'items':result}))
         if operation=='load':
             f=parse_filters(body.get('filters',{}))
             if mock:rows=demo_rows(f);preliminary=len(rows)
@@ -584,7 +593,7 @@ def api(operation):
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
                                      'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
-                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1}))
+                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')

@@ -35,6 +35,13 @@ const FindingClasses = (() => {
     const star={circle:'star',diamond:'star-diamond','triangle-up':'star-triangle-up'}[shape]||'star';
     return star+(open?'-open':'');
   }
+  function diagnosticLane(row,choice='auto') {
+    const lanes=['spiffstacker','spiff'].filter(lane=>row[lane+'_specid']&&!row[lane+'_ignored']);
+    if(choice!=='auto')return lanes.includes(choice)?choice:null;
+    const ranks=[['good','peculiar_ucd','late_m'],['contaminated_ucd','good_plus_star'],['good_candidate'],['incomplete_but_promising']];
+    const rank=lane=>{const label=String(row[lane+'_quality']||'').trim().toLowerCase(),i=ranks.findIndex(group=>group.includes(label));return i<0?ranks.length:i;};
+    return lanes.sort((a,b)=>rank(a)-rank(b))[0]||null;
+  }
   function annotate(row) {
     const key=classify(row), definition=definitions.find(d=>d.key===key);
     return {...row,plot_class:key,plot_class_label:definition.label};
@@ -47,7 +54,7 @@ const FindingClasses = (() => {
         meta:{...trace.meta,plot_class:def.key}};
     });
   }
-  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol};
+  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol,diagnosticLane};
 })();
 if(typeof module!=='undefined' && module.exports) module.exports=FindingClasses;
 if(typeof document!=='undefined') (() => {
@@ -67,6 +74,7 @@ let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='
 let hasAstrometryPlots=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
+let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
 const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'no',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
@@ -94,7 +102,7 @@ function showError(message){$('error').textContent=message;$('error').hidden=fal
 function purgePlots(root){for(const el of root.querySelectorAll('.js-plotly-plot'))Plotly.purge(el);}
 async function load(){
  const f=readFilters();if(!f.sources.length){showError('Select at least one catalog.');return;}
- const seq=++dataGeneration;loadController?.abort();loadController=new AbortController();flipController?.abort();closeInspector();
+ const seq=++dataGeneration;diagnosticController?.abort();loadController?.abort();loadController=new AbortController();flipController?.abort();closeInspector();
  $('apply').disabled=false;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample… You can change cuts and Apply again while this loads.';
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. You can change cuts and Apply again; previous plots stay labeled until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
@@ -109,7 +117,7 @@ async function load(){
   $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
   const m=rows.filter(r=>finite(r.M_w2)).length,s=rows.filter(r=>finite(r.M_synthetic_w2)).length;
   $('count-mw2').textContent=num(m);$('count-mw2-note').textContent=`Measured: ${num(m)} · synthetic: ${num(s)}`;
-  setTab(tab);
+  setTab(tab);if(result.spectral_diagnostics_version===1)loadDiagnostics(seq);else $('diagnostics-status').textContent='Restart the Findings Dashboard service to load spectral diagnostics.';
  }catch(e){if(e.name!=='AbortError'&&seq===dataGeneration){showError(e.message);$('status').textContent=rows.length?'Load failed. Plots still show the previously applied sample.':'Load failed. Adjust filters or check your Web Tools connection.';}}
  finally{clearInterval(timer);if(seq===dataGeneration)$('apply').disabled=false;}
 }
@@ -186,6 +194,51 @@ function renderCharts(){
  const otherDistance=distances.some(r=>r.adopted_distance_kind==='nonphotometric')?' · ◆ Nonphotometric, no parallax link':'';
  $('adopted-distance-note').textContent=astrometryNote??`▲ Photometric · ● Trigonometric${otherDistance} · star-shaped variants pass the selected confirmation standard · ${num(distances.length)} plotted on a log scale`;
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
+ renderDiagnostics();
+}
+function renderDiagnostics(){
+ const statistic=$('snr-statistic').value,band=$('snr-band').value;
+ const names={all:'all wavelengths',nir:'1–2.5 µm',mid:'2.5–4 µm',red:'4–5 µm'};
+ for(const lane of ['sublimeaperture','spiffstacker','spiff']){
+  const data=rows.filter(r=>finite(r.spt)&&finite(r.diagnostics?.[lane]?.snr?.[band]?.[statistic]));
+  const layout=spectralAxis(baseLayout('Spectral type',`${statistic==='mean'?'Mean':'Median'} S/N per pixel`));
+  emptyNote(layout,data.length,diagnosticDone<diagnosticTotal?'Loading spectral diagnostics…':'No valid spectral S/N in this range');
+  plot('snr-'+lane,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r.diagnostics[lane].snr[band][statistic],n,c,{
+   type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[lane]+' #'+r.diagnostics[lane].moca_specid+' · '+r.diagnostics[lane].snr[band].count+' valid pixels · '+names[band])
+  })),layout);
+  $('snr-'+lane+'-note').textContent=`${num(data.length)} objects · ${names[band]} · ${statistic==='mean'?'arithmetic mean':'median'} of valid Fλ / uncertainty values`;
+ }
+ for(const metric of ['chi2','cnn']){
+  const choice=$(metric+'-lane').value;
+  const data=rows.map(r=>{const lane=FindingClasses.diagnosticLane(r,choice),value=r.diagnostics?.[lane]?.[metric];return {...r,diagnostic_lane:lane,diagnostic_value:value};})
+    .filter(r=>finite(r.spt)&&finite(r.diagnostic_value));
+  const layout=spectralAxis(baseLayout('Spectral type',metric==='chi2'?'Stored reduced χ²':'CNN P(good)'));
+  if(metric==='cnn')layout.yaxis.range=[-.02,1.02];
+  emptyNote(layout,data.length,diagnosticDone<diagnosticTotal?'Loading spectral diagnostics…':'No matching stored '+(metric==='chi2'?'fit χ²':'CNN probabilities'));
+  plot('fit-'+metric,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r.diagnostic_value,n,c,{
+   type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[r.diagnostic_lane]+' #'+r.diagnostics[r.diagnostic_lane].moca_specid+'<br>'+esc(r.diagnostics[r.diagnostic_lane][metric==='chi2'?'fit_source':'cnn_source']||''))
+  })),layout);
+  $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(rows.filter(r=>finite(r.spt)).length-data.length)} missing for the selected lane · `+(choice==='auto'?'automatic classification ranking; SPIFFStacker wins ties':laneNames[choice]);
+ }
+ $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed; Apply filters to retry':''}. Values update progressively. Missing measurements are omitted.`;
+}
+function queueDiagnosticRender(){if(diagnosticRenderTimer)return;diagnosticRenderTimer=setTimeout(()=>{diagnosticRenderTimer=null;if(tab==='overview')renderDiagnostics();},300);}
+async function loadDiagnostics(seq){
+ diagnosticController?.abort();diagnosticController=new AbortController();
+ const signal=diagnosticController.signal,items=[];
+ for(const r of rows){r.diagnostics={};for(const lane of Object.keys(laneNames))if(r[lane+'_specid']&&!r[lane+'_ignored'])items.push({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid'],lane});}
+ diagnosticDone=0;diagnosticFailed=0;diagnosticTotal=items.length;
+ if(tab==='overview')renderDiagnostics();
+ let cursor=0;
+ const worker=async()=>{while(cursor<items.length&&!signal.aborted&&seq===dataGeneration){
+  const batch=items.slice(cursor,cursor+96);cursor+=batch.length;
+  try{
+   const result=await api('diagnostics',{items:batch},signal);if(seq!==dataGeneration||signal.aborted)return;
+   for(const item of result.items){const r=byId.get(item.moca_oid);if(r&&r[item.lane+'_specid']===item.moca_specid)r.diagnostics[item.lane]=item;}
+  }catch(error){if(error.name==='AbortError')return;diagnosticFailed++;}
+  diagnosticDone+=batch.length;queueDiagnosticRender();
+ }};
+ await Promise.all([worker(),worker()]);
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}
@@ -513,6 +566,7 @@ $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+for(const id of ['snr-statistic','snr-band','chi2-lane','cnn-lane'])$(id).onchange=renderDiagnostics;
 for(const id of ['hist-bin','hist-ylog','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
 $('confirmation-standard').onchange=()=>{renderCharts();flipPage=0;if(tab==='spectra')renderFlipbook();};
 for(const id of ['available-only','confirmed-only','preferred-lane-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
