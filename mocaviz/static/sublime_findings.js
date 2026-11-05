@@ -54,7 +54,7 @@ let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='
 let hasAstrometryPlots=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
-const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
+const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'no',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
 function range(key,label){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum')}${input('max_'+key,'Maximum')}</div>`;}
