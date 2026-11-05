@@ -56,7 +56,40 @@ const FindingClasses = (() => {
   }
   return {definitions,classify,annotate,groups,isConfirmed,markerSymbol,diagnosticLane};
 })();
-if(typeof module!=='undefined' && module.exports) module.exports=FindingClasses;
+const FindingProbability = {
+  epsilon:1e-6,
+  logit(value) {
+    if(!Number.isFinite(value)||value<0||value>1)return NaN;
+    const p=Math.min(1-this.epsilon,Math.max(this.epsilon,value));
+    return Math.log10(p)-Math.log10(1-p);
+  },
+};
+const FindingSky = (() => {
+  const systems = {
+    radec:{x:'Right ascension (deg)',y:'Declination (deg)',note:'ICRS · east to the left'},
+    galactic:{x:'Galactic longitude gl (deg)',y:'Galactic latitude gb (deg)',note:'Galactic · longitude increases to the left'},
+    ecliptic:{x:'Ecliptic longitude λ (deg)',y:'Ecliptic latitude β (deg)',note:'Mean ecliptic J2000 · longitude increases to the left'},
+  };
+  // ICRS Cartesian rotations, generated with Astropy Galactic and
+  // BarycentricMeanEcliptic(equinox=J2000); no observer parallax or epoch propagation.
+  const rotations = {
+    galactic:[[-0.054875657712591654,-0.8734370519556158,-0.48383507361671546],
+              [0.49410943719272676,-0.4448297212232952,0.7469821839866675],
+              [-0.8676661375596576,-0.19807633727300053,0.4559838136873016]],
+    ecliptic:[[0.9999999999999941,-7.078368960971556e-8,8.056213977613186e-8],
+              [3.2897004077419646e-8,0.9174821299149584,0.39777699944404793],
+              [-1.0207044725484355e-7,-0.39777699944404304,0.9174821299149556]],
+  };
+  function transform(ra,dec,system='radec') {
+    if(system==='radec')return [ra,dec];
+    const rad=Math.PI/180,alpha=ra*rad,delta=dec*rad;
+    const v=[Math.cos(delta)*Math.cos(alpha),Math.cos(delta)*Math.sin(alpha),Math.sin(delta)];
+    const [x,y,z]=rotations[system].map(axis=>axis.reduce((sum,c,i)=>sum+c*v[i],0));
+    return [(Math.atan2(y,x)/rad+360)%360,Math.atan2(z,Math.hypot(x,y))/rad];
+  }
+  return {systems,transform};
+})();
+if(typeof module!=='undefined' && module.exports) module.exports={...FindingClasses,skyCoordinates:FindingSky.transform,probabilityLogit:value=>FindingProbability.logit(value)};
 if(typeof document!=='undefined') (() => {
 'use strict';
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
@@ -142,7 +175,6 @@ function spectralScatterTrace(data,y,name,color,extra={}){
 }
 function groups(data,fn){return FindingClasses.groups(data,fn);}
 function emptyNote(layout,count,text='No objects with the required data under these cuts'){if(count)return;layout.annotations=[{text,showarrow:false,x:.5,y:.5,xref:'paper',yref:'paper',font:{color:'#7d8d85',size:12}}];}
-function mollweide(ra,dec){const lon=(((ra-180+540)%360)-180)*Math.PI/180,lat=dec*Math.PI/180;let theta=lat;for(let i=0;i<20;i++){const d=2+2*Math.cos(2*theta);if(Math.abs(d)<1e-8)break;const step=(2*theta+Math.sin(2*theta)-Math.PI*Math.sin(lat))/d;theta-=step;if(Math.abs(step)<1e-9)break;}return [-2*Math.SQRT2/Math.PI*lon*Math.cos(theta),Math.SQRT2*Math.sin(theta)];}
 function renderCharts(){
  const typed=rows.filter(r=>finite(r.spt)),bin=Number($('hist-bin').value);
  const lo=typed.length?Math.min(...typed.map(r=>r.spt)):-5;
@@ -156,10 +188,14 @@ function renderCharts(){
  l.yaxis.type=$('hist-ylog').checked?'log':'linear';
  l.yaxis.uirevision=l.uirevision+':'+l.yaxis.type;
  l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
- const skyRows=rows.filter(r=>finite(r.ra)&&finite(r.dec)),moll=$('sky-projection').value==='mollweide';
- l=baseLayout(moll?'Right ascension (ICRS)':'Right ascension (deg)','Declination (deg)');l.xaxis.range=moll?[-2.91,2.91]:[360,0];l.yaxis.range=moll?[-1.48,1.48]:[-90,90];
- let skyTraces=groups(skyRows,(d,n,c)=>scatterTrace(d,r=>moll?mollweide(r.ra,r.dec)[0]:r.ra,r=>moll?mollweide(r.ra,r.dec)[1]:r.dec,n,c,{hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<extra>'+n+'</extra>'}));
- if(moll){l.yaxis.tickvals=[-60,-30,0,30,60].map(d=>mollweide(180,d)[1]);l.yaxis.ticktext=['−60°','−30°','0°','30°','60°'];l.xaxis.tickvals=[360,300,240,180,120,60,0].map(r=>r===360?-2*Math.SQRT2:r===0?2*Math.SQRT2:mollweide(r,0)[0]);l.xaxis.ticktext=['360°','300°','240°','180°','120°','60°','0°'];l.yaxis.scaleanchor='x';const graticule=[];for(let d=-60;d<=60;d+=30){const p=Array.from({length:121},(_,i)=>mollweide(i*3,d));graticule.push({type:'scatter',mode:'lines',x:p.map(v=>v[0]),y:p.map(v=>v[1]),line:{color:'#dce5df',width:1},hoverinfo:'skip',showlegend:false});}skyTraces=[...graticule,...skyTraces];l.xaxis.showgrid=false;l.yaxis.showgrid=false;}
+ const skySystem=$('sky-projection').value,skyFrame=FindingSky.systems[skySystem];
+ const skyRows=rows.filter(r=>finite(r.ra)&&finite(r.dec)).map(r=>({...r,skyCoordinates:FindingSky.transform(r.ra,r.dec,skySystem)}));
+ l=baseLayout(skyFrame.x,skyFrame.y);l.uirevision+=':sky:'+skySystem;
+ l.xaxis.range=[360,0];l.xaxis.dtick=60;l.yaxis.range=[-90,90];l.yaxis.dtick=30;
+ const skyTraces=groups(skyRows,(d,n,c)=>scatterTrace(d,r=>r.skyCoordinates[0],r=>r.skyCoordinates[1],n,c,{
+  hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>'+skyFrame.x+': %{x:.3f}<br>'+skyFrame.y+': %{y:.3f}<extra>'+n+'</extra>'
+ }));
+ $('sky-note').textContent=skyFrame.note+' · color shows object class';
  emptyNote(l,skyRows.length);plot('sky',skyTraces,l);
  const measured=rows.filter(r=>finite(r.spt)&&finite(r.M_w2)),synthetic=rows.filter(r=>finite(r.spt)&&finite(r.M_synthetic_w2));
  const errors=(data,key)=>$('show-errors').checked?{type:'data',array:data.map(r=>r[key+'_unc']),visible:true,color:'#b5c4be',thickness:1,width:0}:{visible:false};
@@ -217,14 +253,21 @@ function renderDiagnostics(){
  for(const metric of ['chi2','cnn']){
   const choice=$(metric+'-lane').value;
   const data=rows.map(r=>{const lane=FindingClasses.diagnosticLane(r,choice),value=r.diagnostics?.[lane]?.[metric];return {...r,diagnostic_lane:lane,diagnostic_value:value};})
-    .filter(r=>finite(r.spt)&&finite(r.diagnostic_value));
+    .filter(r=>finite(r.spt)&&finite(r.diagnostic_value)&&(metric!=='cnn'||(r.diagnostic_value>=0&&r.diagnostic_value<=1)));
   const layout=spectralAxis(baseLayout('Spectral type',metric==='chi2'?'Stored reduced χ²':'CNN P(good)'));
-  if(metric==='cnn')layout.yaxis.range=[-.02,1.02];
+  if(metric==='cnn'){
+   layout.yaxis.title.text='CNN P(good) · log-odds scale';
+   layout.yaxis.range=[-6.12,6.12];layout.yaxis.uirevision=layout.uirevision+':cnn-logit';
+   layout.yaxis.tickmode='array';
+   layout.yaxis.tickvals=[1e-6,1e-4,.01,.1,.5,.9,.99,.9999,1-1e-6].map(p=>FindingProbability.logit(p));
+   layout.yaxis.ticktext=['≤0.000001','0.0001','0.01','0.1','0.5','0.9','0.99','0.9999','≥0.999999'];
+  }
   emptyNote(layout,data.length,diagnosticDone<diagnosticTotal?'Loading spectral diagnostics…':'No matching stored '+(metric==='chi2'?'fit χ²':'CNN probabilities'));
-  plot('fit-'+metric,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r.diagnostic_value,n,c,{
+  plot('fit-'+metric,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>metric==='cnn'?FindingProbability.logit(r.diagnostic_value):r.diagnostic_value,n,c,{
+   ...(metric==='cnn'?{customdata:d.map(r=>[r.moca_oid,r.designation,spt(r.spt),r.diagnostic_value]),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>CNN P(good): %{customdata[3]:.8g}<extra>'+n+'</extra>'}:{}),
    type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[r.diagnostic_lane]+' #'+r.diagnostics[r.diagnostic_lane].moca_specid+'<br>'+esc(r.diagnostics[r.diagnostic_lane][metric==='chi2'?'fit_source':'cnn_source']||''))
   })),layout);
-  $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(rows.filter(r=>finite(r.spt)).length-data.length)} missing for the selected lane · `+(choice==='auto'?'automatic classification ranking; SPIFFStacker wins ties':laneNames[choice]);
+  $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(rows.filter(r=>finite(r.spt)).length-data.length)} missing for the selected lane · `+(choice==='auto'?'automatic classification ranking; SPIFFStacker wins ties':laneNames[choice])+(metric==='cnn'?' · log-odds scale stretches both probability tails; values ≤0.000001 or ≥0.999999 share the edges (including exact 0 and 1). Hover shows the stored probability.':'');
  }
  $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed; Apply filters to retry':''}. Values update progressively. Missing measurements are omitted.`;
 }
@@ -603,5 +646,5 @@ window.addEventListener('resize',fitFilterSidebar);
 setFilters(initial);$('demo-banner').hidden=!mock;fitFilterSidebar();
 if(mock||auth['X-MOCA-Password'])load();else{$('status').textContent='Open this dashboard through Web Tools → Start & open to use your private MOCAdb connection.';$('apply').disabled=false;}
 // Small, read-only hooks let the maintained browser probe exercise Plotly selection.
-window.SublimeFindings={get rows(){return rows;},openObject:id=>{const r=byId.get(Number(id));if(r)openInspector(r);},spt,mollweide,plotClasses:classDefinitions,classify:FindingClasses.classify};
+window.SublimeFindings={get rows(){return rows;},openObject:id=>{const r=byId.get(Number(id));if(r)openInspector(r);},spt,skyCoordinates:FindingSky.transform,plotClasses:classDefinitions,classify:FindingClasses.classify};
 })();
