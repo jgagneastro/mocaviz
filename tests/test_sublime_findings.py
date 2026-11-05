@@ -196,7 +196,7 @@ class FindingsTests(unittest.TestCase):
             {'id': 8, 'moca_oid': 2, 'distance_pc': 18, 'parallax_id': None, 'photometric_estimate': 1},
         ]
         for mode in ('astrometric', 'include_photometric'):
-            with self.subTest(mode=mode), patch.object(sf, 'fetch', side_effect=[parallaxes, adopted, []]):
+            with self.subTest(mode=mode), patch.object(sf, 'fetch', side_effect=[parallaxes, adopted, [], [], []]):
                 trig, photo, missing = sf.photometry(MagicMock(), copy.deepcopy(objects), dict(filters, distance_mode=mode))
                 self.assertEqual(trig['adopted_distance_pc'], 21)
                 self.assertEqual(trig['adopted_distance_kind'], 'trigonometric')

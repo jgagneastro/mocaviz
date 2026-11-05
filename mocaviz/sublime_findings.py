@@ -383,6 +383,36 @@ def passes(r, f):
     return True
 
 
+def trigonometric_magnitudes(row):
+    """Keep parallax-based luminosities separate from optional photometric distances."""
+    distance = uncertainty = None
+    adopted = row.get('adopted_distance_pc')
+    for key in ('trigonometric_distance_source', 'trigonometric_distance_id', 'trigonometric_parallax_id'):
+        row.pop(key, None)
+    if row.get('adopted_distance_kind') == 'trigonometric' and adopted is not None and adopted > 0:
+        distance = float(adopted)
+        uncertainty = row.get('adopted_distance_unc')
+        row['trigonometric_distance_source'] = 'adopted parallax-linked distance'
+        row['trigonometric_distance_id'] = row.get('adopted_distance_id')
+    elif row.get('parallax') is not None and row['parallax'] > 0:
+        parallax = float(row['parallax'])
+        distance = 1000 / parallax
+        error = row.get('parallax_unc')
+        uncertainty = 1000 * float(error) / parallax**2 if error is not None and error >= 0 else None
+        row['trigonometric_distance_source'] = 'inverse adopted parallax'
+        row['trigonometric_parallax_id'] = row.get('parallax_id')
+    row['trigonometric_distance_pc'] = distance
+    row['trigonometric_distance_unc'] = uncertainty
+    for band in ('gaia_g', 'w2'):
+        magnitude, error = row.get(band), row.get(band+'_unc')
+        key = 'M_'+band+'_trig'
+        row[key] = float(magnitude)-5*math.log10(distance)+5 if magnitude is not None and distance else None
+        row[key+'_unc'] = (math.hypot(float(error), 5/math.log(10)*float(uncertainty)/distance)
+                          if row[key] is not None and error is not None and error >= 0
+                          and uncertainty is not None and uncertainty >= 0 else None)
+    return row
+
+
 def photometry(cur, rows, f):
     by_oid={r['moca_oid']:r for r in rows}
     for start in range(0,len(rows),1000):
@@ -391,14 +421,36 @@ def photometry(cur, rows, f):
         for r in fetch(cur, 'SELECT id,moca_oid,parallax_mas,parallax_mas_unc FROM data_parallaxes WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND parallax_mas>0',ids):
             by_oid[r['moca_oid']].update(parallax_id=r['id'],parallax=r['parallax_mas'],parallax_unc=r['parallax_mas_unc'],
                  distance_pc=1000/float(r['parallax_mas']),distance_kind='parallax')
-        for r in fetch(cur, 'SELECT id,moca_oid,distance_pc,photometric_estimate,parallax_id FROM data_distances'
+        for r in fetch(cur, 'SELECT id,moca_oid,distance_pc,distance_pc_unc,photometric_estimate,parallax_id FROM data_distances'
                        ' WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND distance_pc>0', ids):
             obj=by_oid[r['moca_oid']]
             photometric=bool(r['photometric_estimate'])
             kind='photometric' if photometric else ('trigonometric' if r['parallax_id'] is not None else 'nonphotometric')
-            obj.update(adopted_distance_id=r['id'], adopted_distance_pc=r['distance_pc'], adopted_distance_kind=kind)
+            obj.update(adopted_distance_id=r['id'], adopted_distance_pc=r['distance_pc'],
+                       adopted_distance_unc=r.get('distance_pc_unc'), adopted_distance_kind=kind)
             if not obj.get('distance_pc') and (not photometric or f['distance_mode']=='include_photometric'):
                 obj.update(distance_id=r['id'],distance_pc=r['distance_pc'],distance_kind='photometric' if photometric else 'nonphotometric')
+        gaia = fetch(cur, "SELECT id,moca_oid,moca_psid,magnitude,magnitude_unc FROM data_photometry"
+                     " WHERE moca_oid IN ("+ph+") AND moca_psid IN ('gaiadr3_gmag','gaiadr2_gmag','gaiadr1_gmag')"
+                     " AND ignored=0 AND is_synthetic=0 AND magnitude IS NOT NULL"
+                     " ORDER BY adopted_simpleband DESC,adopted DESC,"
+                     " CASE moca_psid WHEN 'gaiadr3_gmag' THEN 0 WHEN 'gaiadr2_gmag' THEN 1 ELSE 2 END,id DESC", ids)
+        for measurement in gaia:
+            obj = by_oid[measurement['moca_oid']]
+            if obj.get('gaia_g') is not None:continue
+            obj.update(gaia_g=measurement['magnitude'], gaia_g_unc=measurement['magnitude_unc'],
+                       gaia_g_id=measurement['id'], gaia_g_psid=measurement['moca_psid'],
+                       gaia_g_source='data_photometry')
+        missing_gaia = tuple(oid for oid in ids if by_oid[oid].get('gaia_g') is None)
+        if missing_gaia:
+            missing_ph = ','.join(['%s']*len(missing_gaia))
+            for measurement in fetch(cur, 'SELECT id,moca_oid,source_id,phot_g_mean_mag,phot_g_mean_flux_over_error'
+                                     ' FROM cat_gaiadr3 WHERE moca_oid IN ('+missing_ph+') AND phot_g_mean_mag IS NOT NULL', missing_gaia):
+                signal = measurement['phot_g_mean_flux_over_error']
+                error = 2.5/math.log(10)/float(signal) if signal is not None and signal > 0 else None
+                by_oid[measurement['moca_oid']].update(gaia_g=measurement['phot_g_mean_mag'], gaia_g_unc=error,
+                    gaia_g_catalog_id=measurement['id'], gaia_g_source_id=measurement['source_id'],
+                    gaia_g_psid='gaiadr3_gmag', gaia_g_source='cat_gaiadr3')
         data=fetch(cur, '''SELECT p.id,p.moca_oid,p.magnitude,p.magnitude_unc,p.is_synthetic,p.moca_specid,p.calculation_method,p.origin,s.moca_specpackid
             FROM data_photometry p LEFT JOIN moca_spectra s ON s.moca_specid=p.moca_specid
             WHERE p.moca_oid IN ('''+ph+''') AND p.system_band_simple='W2' AND p.ignored=0 AND p.magnitude IS NOT NULL
@@ -422,6 +474,7 @@ def photometry(cur, rows, f):
         r['parallax_snr']=float(p)/float(pu) if p and pu and pu>0 else None
         if f['min_parallax_snr'] is not None and (r['parallax_snr'] is None or r['parallax_snr']<f['min_parallax_snr']): continue
         if any(f[k] is not None and (r.get('w2') is None or (r['w2']<f[k] if k=='min_w2' else r['w2']>f[k])) for k in ('min_w2','max_w2')): continue
+        trigonometric_magnitudes(r)
         d=r.get('distance_pc')
         for key in ('w2','synthetic_w2'):
             mag=r.get(key)
@@ -468,6 +521,9 @@ def demo_rows(f):
         if i%7!=0:
             r.update(adopted_distance_pc=9+(i*11)%80,
                      adopted_distance_kind='photometric' if i%2 else 'trigonometric')
+        r.update(gaia_g=None if i%4==0 else 18+i/50, gaia_g_unc=.02, gaia_g_psid='gaiadr3_gmag',
+                 gaia_g_source='Synthetic demo', adopted_distance_unc=1.0)
+        trigonometric_magnitudes(r)
         r['preferred_spectrum_lane']=preferred_spectrum_lane(r)
         r['sublime2_detection_snr']=r['detection_snr'] if r['sublime2'] else None
         r['samples']=[s for s in SOURCES if r[s]]
@@ -595,7 +651,7 @@ def api(operation):
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
                                      'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
-                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1}))
+                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1,'trigonometric_photometry_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')

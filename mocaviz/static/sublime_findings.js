@@ -104,7 +104,7 @@ const mock=params.get('mock')==='1';
 const getAuth=(keys)=>{for(const key of keys){const v=fragment.get(key)??params.get(key);if(v!==null)return v;}return '';};
 const auth={'X-MOCA-User':getAuth(['user','username']),'X-MOCA-Password':getAuth(['pwd','password']),'X-MOCA-Database':getAuth(['dbase','db','database'])};
 let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='overview',flipPage=0,objectPage=0,flipGeneration=0,flipController=null;
-let hasAstrometryPlots=false;
+let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
 let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
@@ -143,6 +143,7 @@ async function load(){
   if((f.spt_source||'best')==='best' && result.type_priority_version!==1)throw Error('Restart the Findings Dashboard service to apply the adopted and review-ranked type priority.');
   if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
   hasAstrometryPlots=result.astrometry_plot_version===1;
+  hasTrigonometricPhotometry=result.trigonometric_photometry_version===1;
   rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
@@ -203,6 +204,19 @@ function renderCharts(){
  if($('show-synth').checked)traces.push(...groups(synthetic,(d,n,c)=>spectralScatterTrace(d,r=>r.M_synthetic_w2,n,c,{showlegend:d.length>0&&!measured.some(r=>r.plot_class_label===n),marker:{size:d.map(r=>pointSize(r,8)),color:c,symbol:d.map(r=>pointSymbol(r,r.distance_kind==='photometric'?'triangle-up-open':'diamond-open')),opacity:.85,line:{width:1.5}},error_y:errors(d,'M_synthetic_w2'),hovertemplate:'%{text}<br>SPHEREx synthetic W2<br>Object %{customdata[0]} · %{customdata[2]}<br>y: %{y:.3f}<extra>'+n+'</extra>'})));
  l=spectralAxis(baseLayout('Spectral type','Absolute W2 (mag)'));l.yaxis.autorange='reversed';emptyNote(l,measured.length+($('show-synth').checked?synthetic.length:0));plot('cmd',traces,l);
  $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangle / star-triangle markers) · error bars require magnitude and parallax uncertainties`;
+ const trigRows=typed.filter(r=>finite(r.trigonometric_distance_pc)&&r.trigonometric_distance_pc>0);
+ for(const [id,band,label] of [['trig-mg','gaia_g','Gaia M<sub>G</sub> (mag)'],['trig-mw2','w2','M<sub>W2</sub> (mag)']]){
+  const key='M_'+band+'_trig',data=trigRows.filter(r=>finite(r[key]));
+  const unavailable=hasTrigonometricPhotometry?undefined:'Restart the Findings Atlas service to load trigonometric absolute magnitudes.';
+  l=spectralAxis(baseLayout('Spectral type',label));l.yaxis.autorange='reversed';
+  emptyNote(l,data.length,unavailable);
+  plot(id,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r[key],n,c,{
+   error_y:errors(d,key),customdata:d.map(r=>[r.moca_oid,r.designation,spt(r.spt),r.trigonometric_distance_pc]),
+   text:d.map(r=>esc(r.designation)+'<br>'+esc(r.trigonometric_distance_source)+(band==='gaia_g'?'<br>'+esc(r.gaia_g_psid):'<br>Measured W2')),
+   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Trigonometric distance: %{customdata[3]:.2f} pc<br>'+label+': %{y:.3f}<extra>'+n+'</extra>'
+  })),l);
+  $(id+'-note').textContent=unavailable??`${num(data.length)} plotted · ${num(typed.length-trigRows.length)} typed objects without a trigonometric distance · ${num(trigRows.length-data.length)} without ${band==='gaia_g'?'Gaia G':'measured W2'} · adopted parallax-linked distance, otherwise inverse positive adopted parallax`;
+ }
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>spectralScatterTrace(d,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
  const detections=rows.filter(r=>r.sublime2&&finite(r.spt)&&finite(r.sublime2_detection_snr)),detected=detections.filter(r=>r.sublime2_detection_snr>0);
  l=spectralAxis(baseLayout('Spectral type','SUBLIME2 detection S/N'));l.yaxis.type='log';emptyNote(l,detected.length);
