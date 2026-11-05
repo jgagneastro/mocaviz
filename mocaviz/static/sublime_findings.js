@@ -209,9 +209,10 @@ function reviewContext(r){
 }
 function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card spectrum-card"><div class="card-head"><div><h3>${inspect?esc(laneNames[lane]):esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div>${inspect?'':`<button data-inspect="${r.moca_oid}">Inspect ↗</button>`}</div><div class="spec-meta">${inspect?'':'OID '+r.moca_oid+' · '}${esc(laneNames[lane])} · spectrum ${spectrumLabel(r,lane)} · stored type ${esc(spt(r[lane+'_spt']))} · ${esc(r[lane+'_quality']||'unreviewed')}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">${r[lane+'_specid']?'Loading spectrum & best-fit template…':'No stored spectrum in this reduction.'}</div></div></article>`;}
 function renderFit(el,item,lane){if(!item){el.innerHTML='<div class="spec-empty">No stored spectrum in this reduction.</div>';return;}if(item.error){el.innerHTML='<div class="spec-empty">'+esc(item.error)+'</div>';return;}const best=item.fit?.overlays?.[0];const meta=el.previousElementSibling;let label=meta?.querySelector('.fit-label');if(meta&&!label){label=document.createElement('div');label.className='fit-label';meta.append(label);}if(label)label.textContent=best?'Best template: '+best.label+' · χ²r = '+fmt(best.display_reduced_chi2,2):'No valid template fit'+(item.warning?' · '+item.warning:'');const figure=SpherexReviewPlot.figure(item,String(item.object.moca_specid),el.clientWidth,1,SpherexReviewPlot.lanes.find(v=>v.key===lane)?.color);figure.layout.height=Math.round(Math.min(510,Math.max(290,el.clientWidth))*(el.closest('#flipbook')?0.75:1));el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);}
-function comparisonCard(r,plotId){
- const meta=SpherexReviewPlot.lanes.map(lane=>`<span style="color:${lane.color}">${esc(lane.label)}</span>: ${spectrumLabel(r,lane.key)} · ${esc(spt(r[lane.key+'_spt']))} · ${esc(r[lane.key+'_quality']||'unreviewed')}`).join('<br>');
- return `<article class="card spectrum-card comparison-card" data-oid="${r.moca_oid}" data-confirmed="${isConfirmed(r)}"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><div class="spectrum-card-actions"><button data-inspect="${r.moca_oid}">Inspect ↗</button><button type="button" data-open-mocadb="${r.moca_oid}">Open MOCAdb ↗</button></div></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
+function comparisonCard(r,plotId,preferredOnly=false){
+ const chosen=preferredOnly?r.preferred_spectrum_lane:null;
+ const meta=SpherexReviewPlot.lanes.filter(lane=>!preferredOnly||lane.key===chosen).map(lane=>`<span style="color:${lane.color}">${esc(lane.label)}</span>: ${spectrumLabel(r,lane.key)} · ${esc(spt(r[lane.key+'_spt']))} · ${esc(r[lane.key+'_quality']||'unreviewed')}`).join('<br>');
+ return `<article class="card spectrum-card ${preferredOnly?'':'comparison-card'}" data-oid="${r.moca_oid}" data-confirmed="${isConfirmed(r)}"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><div class="spectrum-card-actions"><button data-inspect="${r.moca_oid}">Inspect ↗</button><button type="button" data-open-mocadb="${r.moca_oid}">Open MOCAdb ↗</button></div></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
 }
 function renderComparison(el,r,items,errors){
  const available=Object.fromEntries(SpherexReviewPlot.lanes.filter(lane=>items[lane.key]&&!items[lane.key].error).map(lane=>[lane.key,items[lane.key]]));
@@ -223,7 +224,7 @@ function renderComparison(el,r,items,errors){
 async function renderFlipbook(){
  const generation=++flipGeneration;flipController?.abort();flipController=new AbortController();
  const signal=flipController.signal,pageSize=Math.min(50,Math.max(1,parseInt($('flip-page-size').value,10)||50));
- const lanes=SpherexReviewPlot.lanes.map(lane=>lane.key);
+ const lanes=SpherexReviewPlot.lanes.map(lane=>lane.key),preferredOnly=$('preferred-lane-only').checked;
  const data=rows.filter(r=>(!$('available-only').checked||lanes.some(lane=>r[lane+'_specid']))&&(!$('confirmed-only').checked||isConfirmed(r)));
  const pages=Math.ceil(data.length/pageSize);flipPage=Math.max(0,Math.min(flipPage,Math.max(0,pages-1)));
  const selected=data.slice(flipPage*pageSize,(flipPage+1)*pageSize);$('spectra-count').textContent=num(data.length);
@@ -232,19 +233,28 @@ async function renderFlipbook(){
   $('flip-prev'+suffix).textContent=`← Previous ${pageSize}`;$('flip-next'+suffix).textContent=`Next ${pageSize} →`;
   $('flip-prev'+suffix).disabled=flipPage===0;$('flip-next'+suffix).disabled=flipPage>=pages-1;
  }
- purgePlots($('flipbook'));$('flipbook').innerHTML=selected.map((r,i)=>comparisonCard(r,'flip-plot-'+i)).join('');
+ purgePlots($('flipbook'));$('flipbook').innerHTML=selected.map((r,i)=>comparisonCard(r,'flip-plot-'+i,preferredOnly)).join('');
  if(!selected.length){$('flipbook').innerHTML='<p class="hint">No objects match the flipbook filters. Adjust the confirmation standard, disable “Confirmed only” or “Available spectra only”, or change the sample cuts.</p>';return;}
  // Three bounded ten-spectrum requests per batch; render progressively.
  for(let offset=0;offset<selected.length;offset+=10){
   const batch=selected.slice(offset,offset+10);
-  const results=await Promise.allSettled(lanes.map(lane=>getFits(batch,lane,signal)));
+  const results=await Promise.allSettled(lanes.map(async lane=>{
+   const selected=preferredOnly?batch.filter(r=>r.preferred_spectrum_lane===lane):batch;
+   const fits=await getFits(selected,lane,signal);
+   return new Map(selected.map((r,i)=>[r.moca_oid,fits[i]]));
+  }));
   if(generation!==flipGeneration)return;
   batch.forEach((r,i)=>{
    const items={},errors={};results.forEach((result,j)=>{
     const lane=lanes[j];
-    if(result.status==='fulfilled'){items[lane]=result.value[i];if(items[lane]?.error)errors[lane]=items[lane].error;}
+    if(result.status==='fulfilled'){items[lane]=result.value.get(r.moca_oid);if(items[lane]?.error)errors[lane]=items[lane].error;}
     else if(result.reason.name!=='AbortError')errors[lane]=result.reason.message;
-   });renderComparison($('flip-plot-'+(offset+i)),r,items,errors);
+   });
+   const plot=$('flip-plot-'+(offset+i));
+   if(preferredOnly){
+    const lane=r.preferred_spectrum_lane;
+    renderFit(plot,items[lane]||(errors[lane]?{error:errors[lane]}:null),lane);
+   }else renderComparison(plot,r,items,errors);
   });
  }
 }
@@ -505,7 +515,7 @@ $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLin
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 for(const id of ['hist-bin','hist-ylog','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
 $('confirmation-standard').onchange=()=>{renderCharts();flipPage=0;if(tab==='spectra')renderFlipbook();};
-for(const id of ['available-only','confirmed-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
+for(const id of ['available-only','confirmed-only','preferred-lane-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
 for(const suffix of ['','-bottom']){$('flip-prev'+suffix).onclick=()=>{flipPage--;renderFlipbook();};$('flip-next'+suffix).onclick=()=>{flipPage++;renderFlipbook();};}
 $('object-search').oninput=()=>{objectPage=0;renderObjects();};$('objects-prev').onclick=()=>{objectPage--;renderObjects();};$('objects-next').onclick=()=>{objectPage++;renderObjects();};
 document.addEventListener('click',e=>{const target=e.target.closest('[data-inspect]');if(target){const r=byId.get(Number(target.dataset.inspect));if(r)openInspector(r);}});

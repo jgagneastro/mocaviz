@@ -35,6 +35,13 @@ QUALITY_CLASSES = {
     'all_good_candidate': GOOD_CANDIDATE_QUALITY,
 }
 ALL_QUALITY = frozenset(('all_good', 'all_good_candidate'))
+TYPE_LANE_ORDER = ('spiffstacker', 'spiff', 'sublimeaperture')
+TYPE_QUALITY_ORDER = (
+    ('good', 'peculiar_ucd', 'late_m'),
+    ('contaminated_ucd', 'good_plus_star'),
+    ('good_candidate',),
+    ('incomplete_but_promising',),
+)
 NUMERIC = {'min_spt', 'max_spt', 'min_detection_snr', 'max_detection_snr', 'min_cnn', 'max_cnn',
            'min_snr', 'max_snr', 'min_motion', 'max_motion', 'min_cutout',
            'min_spiff_spt', 'max_spiff_spt', 'min_spiffstacker_spt', 'max_spiffstacker_spt',
@@ -173,22 +180,15 @@ def selected_sql(f):
         ('ta.spectral_type_number IS NOT NULL AND ta.photometric_estimate=0 AND ta.calculation_method IS NULL', 'ta.spectral_type_number', 'adopted'),
         ('tp.spectral_type_number IS NOT NULL AND tp.calculation_method IS NULL', 'tp.spectral_type_number', 'published'),
     ]
-    lane_order = ('spiffstacker', 'spiff', 'sublimeaperture')
-    quality_order = (
-        ('good', 'peculiar_ucd', 'late_m'),
-        ('contaminated_ucd', 'good_plus_star'),
-        ('good_candidate',),
-        ('incomplete_but_promising',),
-    )
-    for lane in lane_order:
+    for lane in TYPE_LANE_ORDER:
         type_joins.append('LEFT JOIN '+sr.LANES[lane]['table']+' quality_'+lane+' ON quality_'+lane+'.moca_oid=mo.moca_oid')
-    for classes in quality_order:
+    for classes in TYPE_QUALITY_ORDER:
         accepted = ','.join("'"+value+"'" for value in classes)
-        for lane in lane_order:
+        for lane in TYPE_LANE_ORDER:
             value = expressions[lane]
             condition = value+' IS NOT NULL AND LOWER(TRIM(quality_'+lane+'.classification)) IN ('+accepted+')'
             type_choices.append((condition, value, lane))
-    for lane in lane_order:
+    for lane in TYPE_LANE_ORDER:
         type_choices.append((expressions[lane]+' IS NOT NULL', expressions[lane], lane))
     expressions['best'] = 'CASE '+' '.join('WHEN '+condition+' THEN '+value for condition,value,_ in type_choices)+' ELSE NULL END'
     best_source = 'CASE '+' '.join("WHEN "+condition+" THEN '"+lane+"'" for condition,_,lane in type_choices)+' ELSE NULL END'
@@ -275,6 +275,17 @@ def selected_sql(f):
         ''' + '\n'.join(type_joins) + '\n WHERE ' + ' AND '.join(where) + ' ORDER BY mo.moca_oid LIMIT ' + str(MAX_OBJECTS + 1), tuple(params)
 
 
+def preferred_spectrum_lane(row):
+    """Use the preferred type's reduction, or rank available spectra for literature types."""
+    available = [lane for lane in TYPE_LANE_ORDER if row.get(lane+'_specid')]
+    source = row.get('best_spt_source')
+    if source in available:
+        return source
+    ranks = {label:rank for rank,group in enumerate(TYPE_QUALITY_ORDER) for label in group}
+    return min(available, key=lambda lane:ranks.get(str(row.get(lane+'_quality') or '').strip().lower(), len(TYPE_QUALITY_ORDER)),
+               default=None)
+
+
 def enrich(cur, rows):
     """Bound queries to selected IDs. Every reduction lane and provenance stays distinct."""
     by_oid = {r['moca_oid']: r for r in rows}
@@ -325,6 +336,8 @@ def enrich(cur, rows):
                 by_oid[r['moca_oid']][lane+'_ignored'] = bool(r['ignored'])
                 if not r['ignored']:
                     by_oid[r['moca_oid']][lane+'_snr'] = r['median_snr_per_pix']
+    for row in rows:
+        row['preferred_spectrum_lane'] = preferred_spectrum_lane(row)
     return rows
 
 
@@ -453,6 +466,7 @@ def demo_rows(f):
         if i%7!=0:
             r.update(adopted_distance_pc=9+(i*11)%80,
                      adopted_distance_kind='photometric' if i%2 else 'trigonometric')
+        r['preferred_spectrum_lane']=preferred_spectrum_lane(r)
         r['samples']=[s for s in SOURCES if r[s]]
         if not any(r.get(s) for s in f['sources']):continue
         if f['min_spt'] is not None and r['spt']<f['min_spt']:continue

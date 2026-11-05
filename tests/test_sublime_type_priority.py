@@ -55,6 +55,26 @@ class TypePriorityTests(unittest.TestCase):
         rows=self.select()
         self.assertEqual({oid:(r["spt"],r["best_spt_source"]) for oid,r in rows.items()},expected)
 
+    def test_preferred_spectrum_uses_ranked_type_and_available_literature_fallback(self):
+        spectra = {lane+'_specid':i+1 for i,lane in enumerate(sf.TYPE_LANE_ORDER)}
+        for classes,expected in [
+            (('weird','good_candidate','good'),'sublimeaperture'),
+            (('good_candidate','good','weird'),'spiff'),
+            (('good','peculiar_ucd','late_M'),'spiffstacker'),
+            ((None,None,None),'spiffstacker'),
+            (('bad','incomplete_but_promising','weird'),'spiff'),
+        ]:
+            row = {**spectra,'best_spt_source':'published',
+                   **{lane+'_quality':value for lane,value in zip(sf.TYPE_LANE_ORDER,classes)}}
+            with self.subTest(classes=classes):
+                self.assertEqual(sf.preferred_spectrum_lane(row),expected)
+        row = {**spectra,'best_spt_source':'sublimeaperture',
+               'spiff_quality':'good','sublimeaperture_quality':'good_candidate'}
+        self.assertEqual(sf.preferred_spectrum_lane(row),'sublimeaperture')
+        row['sublimeaperture_specid'] = None
+        self.assertEqual(sf.preferred_spectrum_lane(row),'spiff')
+        self.assertIsNone(sf.preferred_spectrum_lane({'best_spt_source':'adopted'}))
+
     def test_missing_ignored_null_and_no_sublime_catalog_fallback(self):
         for oid in range(1,5):self.add_object(oid)
         self.add_type(1,23,lane="spiffstacker",ignored=1)
