@@ -355,7 +355,7 @@ $('duplicate-rows').onclick=e=>{
  if(button)declareDuplicate(duplicateRows?.[Number(button.dataset.declarePair)]);
 };
 
-function wiseHash(r){return new URLSearchParams({ra:r.ra,dec:r.dec,size:30,band:3,speed:313,minbright:-50,maxbright:500,window:2.64664,diff_window:1,linear:1,color:'',zoom:20,border:0,gaia:1,invert:1,maxdyr:1,scandir:0,neowise:0,diff:0}).toString();}
+function wiseHash(r){return new URLSearchParams({ra:r.ra,dec:r.dec,size:30,band:3,speed:313,minbright:-50,maxbright:500,window:2.64664,diff_window:1,linear:1,color:'',zoom:20,border:0,outer_epochs:1,gaia:1,invert:1,maxdyr:1,scandir:0,neowise:0,diff:0}).toString();}
 let inspectorPositions=null, wiseAstrometry=null;
 
 function skyCrosshairs(container, markers) {
