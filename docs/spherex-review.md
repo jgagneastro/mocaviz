@@ -240,3 +240,57 @@ The browser regression test intercepts every API call and uses only synthetic
 reads or simulated writes. It checks query/fragment URL retention and reload,
 absence of cookies and Web Storage, immediate transitions, pending counts, numpad decisions, failure
 recovery, retry, undo, object links and quitting with queued requests.
+
+
+### Catalog and quality queue cuts
+
+Review sample can select All objects, SUBLIME2 (`pcat_sublime_candidates_v2`),
+SUBLIME1 (`pcat_sublime_candidates`), CatWISE red movers
+(`pcat_catwise2020_red_movers`), or the existing public UCD candidate sample.
+Membership materializes distinct object IDs once, so multiple catalog apertures
+cannot duplicate a queue item or trigger repeated scans of unindexed catalogs.
+
+The page defaults are SUBLIME2 detection S/N/pix >= 7, SUBLIME2 CNN good
+probability >= 0.8, absolute Galactic latitude >= 15 degrees, spectrum median
+S/N/pix >= 2 across all wavelengths, and stored autotype reduced chi-squared <= 1.5.
+The two SUBLIME2 catalog cuts apply to All objects/SUBLIME2; choosing another
+sample disables those controls and omits the two cuts without discarding their values.
+Numeric blanks disable individual cuts. Missing values fail enabled cuts.
+
+Spectrum S/N is the median of signed flux/positive uncertainty in non-ignored
+pixels of the selected spectrum, with a valid positive wavelength. Choose all
+wavelengths, 1–5, 1–2.5, 2.5–4, or 4–5 microns; interval endpoints are inclusive,
+as in WiseView. Catalog detection S/N is a separate quantity. Reduced chi-squared
+uses the latest non-ignored stored autotype for the exact selected spectrum and
+lane, preferring robust_reduced_chi2_10pct_cap, reduced_chi2_10pct_cap, then
+reduced_chi2 in its comments; no refits or sidecar reads are needed to load a queue.
+Galactic latitude uses calc_galactic_coordinates.adopt_as_reference=1.
+
+Only objects without WiseView scores accepts objects with no review row or a
+NULL classification_integer. Zero and negative recorded scores are still scores.
+The minimum-score control is disabled while this option is checked.
+Exclude declared duplicates is checked by default and excludes an ID when
+pcat_duplicated_vetting.potential_duplicated_moca_oid matches it and
+classification='y'; other duplicate judgments do not exclude it.
+
+Exclude known M/L/T/Y types includes every non-ignored, non-photometric M0+
+published (is_public=1) or public-adopted type, including SPHEREx autotypes,
+plus the existing
+non-autotype spectroscopic types. Unpublished SPHEREx auto classifications are
+still eligible for review.
+
+Queue and total COUNT use identical cuts. Next batch retains the cuts at load;
+loading an exact spectrum ID continues to bypass all queue cuts. Queue filter
+version 5 prevents new pages from silently loading unfiltered results from old
+workers; restart the local service after deploying the Python update.
+
+
+Queue ordering defaults to latest-to-earliest current adopted spectral type
+(adopted=1, ignored=0); earliest-to-latest and ascending/descending object ID
+are available. Type ordering puts untyped objects last and breaks ties by object ID.
+The cursor carries the last type and object ID, rather than an offset, so submitting
+classifications between batches does not skip the next pending objects. Total COUNT
+ignores that cursor. Legacy API requests omitting queue_order retain object-ID order.
+
+The optional user-run [SUBLIME2 object-ID index](sql/sublime2_oid_index.sql)
+improves direct object lookups. The queue does not require this schema change.

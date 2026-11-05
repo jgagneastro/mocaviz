@@ -22,10 +22,10 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=adopted-type">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261105-queue-cuts">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=object-origin"></script>
+  <script defer src="static/spherex_review.js?v=20261105-queue-cuts"></script>
 </head>
 <body>
   <header>
@@ -36,21 +36,36 @@
     <aside>
       <section>
         <h2>Review queue</h2>
-        <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
-        <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
-        <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
-        <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="public-ucd">Public UCD candidates</option></select></label>
-        <small>Public candidates have a public-adopted photometric type of M7 or later. The queue requires a spectrum in the selected lane.</small>
-        <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
-        <div class="pair"><label>Minimum S/N<input id="snr" type="number" min="0" step="any" placeholder="Any"></label><label><span tabindex="0" title="Uses the stored autotype for the selected reduction lane: SPIFF, SPIFFStacker, or SUBLIMEaperture.">Stored type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label></div>
-        <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
-        <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
-        <small>Missing means no review row in that spectrum's vetting table. The viable option requires a viable classification in at least one of the other two lanes. The score threshold is inclusive; blank allows any score. These filters select objects; the reduction lane chooses the spectrum you review.</small>
-        <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types</label>
+        <div id="queue-actions">
         <button id="load">Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
         <small id="queue-info">Up to 100 objects per batch.</small>
         <div role="status"><small id="queue-total"></small></div>
+        </div>
+        <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
+        <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
+        <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
+        <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
+        <label>Queue order<select id="queue-order"><option value="spt_desc" selected>Latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
+        <small>Untyped objects sort last.</small>
+        <small id="sample-hint" hidden>Public candidates have a public-adopted photometric type of M7 or later.</small>
+        <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
+        <div class="pair"><label>SUBLIME2 detection S/N/pix ≥<input id="sublime2-snr" type="number" min="0" step="any" value="7" placeholder="Any"></label><label>SUBLIME2 CNN probability ≥<input id="cnn-probability" type="number" min="0" max="1" step="0.01" value="0.8" placeholder="Any"></label></div>
+        <small>SUBLIME2 cuts apply to All objects and SUBLIME2.</small>
+        <label>Absolute Galactic latitude ≥ (°)<input id="galactic-latitude" type="number" min="0" max="90" step="any" value="15" placeholder="Any"></label>
+        <label>Spectrum S/N wavelengths<select id="snr-wavelength-range"><option value="all">All wavelengths</option><option value="1-5">1–5 µm</option><option value="1-2.5">1–2.5 µm</option><option value="2.5-4">2.5–4 µm</option><option value="4-5">4–5 µm</option></select></label>
+        <div class="pair"><label>Spectrum median S/N/pix ≥<input id="snr" type="number" min="0" step="any" value="2" placeholder="Any"></label><label>Stored autotype reduced χ² ≤<input id="max-chi2" title="Latest stored fit for this spectrum; prefers robust 10% capped reduced chi squared, then capped, then raw." type="number" min="0" step="any" value="1.5" placeholder="Any"></label></div>
+        <small>Spectrum cuts use the selected reduction lane. Blank = no cut; missing values fail enabled cuts.</small>
+        <label><span tabindex="0" title="Uses the stored autotype for the selected reduction lane: SPIFF, SPIFFStacker, or SUBLIMEaperture.">Stored type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
+        <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
+        <label class="check"><input id="no-wiseview-score" type="checkbox">Only objects without WiseView scores</label>
+        <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
+        <small>Without scores includes missing reviews and blank scores. A score of zero counts as scored.</small>
+        <small>The viable option requires a viable classification in another lane and no review in the selected lane.</small>
+        <label class="check"><input id="exclude-duplicates" title="Exclude IDs in potential_duplicated_moca_oid on rows classified y." type="checkbox" checked>Exclude declared duplicates</label>
+
+        <label class="check"><input id="no-known" type="checkbox">Exclude known M/L/T/Y types (including published SPHEREx types)</label>
+
       </section>
       <section>
         <h2>Template fit</h2>

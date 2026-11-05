@@ -206,6 +206,8 @@ class QueueSelectionTests(unittest.TestCase):
         self.db.execute("INSERT INTO moca_spectra VALUES(2998,13,62,0,20)")
         self.db.executemany("INSERT INTO pcat_spherex_visual_vetting VALUES(?,?)",[(2,"good"),(4,"bad")])
         self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,?)",[(3,"bad"),(4,"good")])
+        self.db.execute("CREATE TABLE data_spectra(moca_specid INTEGER,wavelength_angstrom REAL,flux_flambda REAL,flux_flambda_unc REAL,ignored INTEGER)")
+        self.db.execute("INSERT INTO data_spectra SELECT moca_specid,15000,median_snr_per_pix,1,0 FROM moca_spectra")
         class Cursor:
             def __init__(self,db):self.db=db
             def execute(self,sql,params):self.current=self.db.execute(sql.replace("%s","?"),params)

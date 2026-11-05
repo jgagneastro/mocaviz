@@ -68,7 +68,14 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 4
+QUEUE_FILTER_VERSION = 5
+REVIEW_SAMPLES = {
+    "sublime2": "pcat_sublime_candidates_v2",
+    "sublime1": "pcat_sublime_candidates",
+    "catwiseredmovers": "pcat_catwise2020_red_movers",
+}
+SNR_WAVELENGTH_RANGES = {"all": None, "1-5": (1, 5), "1-2.5": (1, 2.5),
+                         "2.5-4": (2.5, 4), "4-5": (4, 5)}
 MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both", "viable_elsewhere"}
 MAX_BODY = 256 * 1024
 
@@ -129,6 +136,8 @@ def boolean(value, default=False):
 
 def bounded_float(value, name, low, high):
     try:
+        if isinstance(value, bool):
+            raise ValueError()
         number = float(value)
         if not math.isfinite(number) or not low <= number <= high:
             raise ValueError()
@@ -317,6 +326,21 @@ def analyze(cur, body):
     })
 
 
+def stored_chi2_sql(column):
+    """Complete numeric comment fields, in the same priority as WiseView.
+
+    REGEXP_SUBSTR avoids treating missing/malformed values as zero or matching
+    reduced_chi2 inside a differently named metric. Only trusted SQL is passed.
+    """
+    expressions = []
+    for key in ("robust_reduced_chi2_10pct_cap", "reduced_chi2_10pct_cap", "reduced_chi2"):
+        pattern = ("(^|;)[[:space:]]*" + key + "=[[:space:]]*[+]?"
+                   "([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*(;|$)")
+        expressions.append("CAST(NULLIF(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX("
+                           f"REGEXP_SUBSTR({column}, '{pattern}'), '=', -1), ';', 1)), '') AS DECIMAL(30,10))")
+    return "COALESCE(" + ",".join(expressions) + ")"
+
+
 def queue(cur, body, *, count_only=False):
     if body.get("moca_specid") not in (None, ""):
         meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"))
@@ -326,16 +350,50 @@ def queue(cur, body, *, count_only=False):
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
-    after = 0 if count_only else integer(body.get("after", 0), "Queue cursor", 0)
+    order = body.get("queue_order", "oid_asc")
+    if not isinstance(order, str) or order not in {"spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
+        raise ReviewError("Choose a valid queue order.")
+    type_order = order.startswith("spt_")
+    after = None if count_only else body.get("after")
+    cursor_oid = 0
+    cursor_spt = None
+    if after not in (None, 0):
+        if type_order:
+            if not isinstance(after, dict) or set(after) != {"moca_oid", "spectral_type_number"}:
+                raise ReviewError("Invalid spectral-type queue cursor. Reload the queue.")
+            cursor_oid = integer(after["moca_oid"], "Queue cursor object ID")
+            if after["spectral_type_number"] is not None:
+                cursor_spt = bounded_float(after["spectral_type_number"], "Queue cursor spectral type", -100, 100)
+        else:
+            cursor_oid = integer(after, "Queue cursor", 0)
     limit = None if count_only else integer(body.get("limit", 100), "Queue batch size", 1, 500)
     pending = boolean(body.get("pending_only"), True)
     missing = body.get("missing_vetting", "lane" if pending else "all")
     if not isinstance(missing, str) or missing not in MISSING_VETTING_MODES:
         raise ReviewError("Choose a valid missing spectral-vetting scope.")
     active_only = missing != "all"
-    conditions = ["mo.ignored=0", "s.moca_oid>%s"]
-    params = [lane["pack"], after]
-    if boolean(body.get("public_ucd_only")):
+    conditions = ["mo.ignored=0"]
+    params = [lane["pack"]]
+    adopted_join = ""
+    type_projection = ""
+    if type_order:
+        adopted_join = """LEFT JOIN data_spectral_types adopted ON adopted.id=(
+            SELECT MAX(a.id) FROM data_spectral_types a WHERE a.moca_oid=s.moca_oid
+              AND a.adopted=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
+        type_projection = ",adopted.spectral_type_number AS sort_spt"
+        if cursor_oid:
+            if cursor_spt is None:
+                conditions.append("adopted.spectral_type_number IS NULL AND s.moca_oid>%s")
+                params.append(cursor_oid)
+            else:
+                comparison = "<" if order == "spt_desc" else ">"
+                conditions.append("(adopted.spectral_type_number IS NULL OR adopted.spectral_type_number" + comparison +
+                                  "%s OR (adopted.spectral_type_number=%s AND s.moca_oid>%s))")
+                params.extend((cursor_spt, cursor_spt, cursor_oid))
+    elif cursor_oid:
+        conditions.append("s.moca_oid" + ("<" if order == "oid_desc" else ">") + "%s")
+        params.append(cursor_oid)
+    if boolean(body.get("public_ucd_only")) or body.get("review_sample") == "public-ucd":
         conditions.append("""EXISTS (
             SELECT 1 FROM data_spectral_types candidate
             WHERE candidate.moca_oid=s.moca_oid AND candidate.public_adopted=1
@@ -355,6 +413,7 @@ def queue(cur, body, *, count_only=False):
             operator = "OR" if missing == "either" else "AND"
             conditions.append(f"({absent['spiff']} {operator} {absent['spiffstacker']})")
     spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
+    source_params = []
     if missing == "viable_elsewhere":
         placeholders = ",".join(["%s"] * len(VIABLE_OTHER_LANE))
         matches = [
@@ -365,7 +424,7 @@ def queue(cur, body, *, count_only=False):
         candidates = " UNION ".join(matches)
         spectrum_source = f"({candidates}) viable JOIN moca_spectra s ON s.moca_oid=viable.moca_oid"
         order_oid = "viable.moca_oid"
-        params[:0] = VIABLE_OTHER_LANE * len(matches)
+        source_params = list(VIABLE_OTHER_LANE * len(matches))
     if body.get("moca_oids"):
         raw = body["moca_oids"]
         if not isinstance(raw, list) or len(raw) > 500:
@@ -379,37 +438,120 @@ def queue(cur, body, *, count_only=False):
         score = bounded_float(body["min_wiseview_score"], "Minimum WiseView score", -1, 6)
         conditions.append("EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting motion WHERE motion.moca_oid=s.moca_oid AND motion.classification_integer >= %s)")
         params.append(score)
+    sample = body.get("review_sample", "all")
+    if not isinstance(sample, str) or sample not in {"all", "public-ucd", *REVIEW_SAMPLES}:
+        raise ReviewError("Choose a valid review sample.")
+    if boolean(body.get("no_wiseview_score")):
+        if body.get("min_wiseview_score") not in (None, ""):
+            raise ReviewError("Clear the minimum WiseView score to select objects without scores.")
+        conditions.append("NOT EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting motion WHERE motion.moca_oid=s.moca_oid AND motion.classification_integer IS NOT NULL)")
+    detection_conditions, detection_params = [], []
+    for name, column, label, upper in (
+        ("min_sublime2_snr", "detection_snr", "Minimum SUBLIME2 detection S/N", 1e9),
+        ("min_cnn_probability", "visual_nn_good_probability", "Minimum SUBLIME2 CNN probability", 1),
+    ):
+        if body.get(name) not in (None, ""):
+            detection_conditions.append(f"detection.{column}>=%s")
+            detection_params.append(bounded_float(body[name], label, 0, upper))
+    # These catalogs have no moca_oid index. Materialize DISTINCT object IDs
+    # once, rather than rescanning the catalog in a dependent EXISTS per spectrum.
+    catalogs = []
+    if sample in REVIEW_SAMPLES and not (sample == "sublime2" and detection_conditions):
+        catalogs.append((f"SELECT DISTINCT moca_oid FROM {REVIEW_SAMPLES[sample]} WHERE moca_oid IS NOT NULL", []))
+    if detection_conditions:
+        catalogs.append(("SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 detection WHERE moca_oid IS NOT NULL AND " +
+                         " AND ".join(detection_conditions), detection_params))
+    for number, (catalog, catalog_params) in enumerate(catalogs):
+        alias = f"selected_catalog_{number}"
+        if spectrum_source == "moca_spectra s":
+            spectrum_source = f"({catalog}) {alias} JOIN moca_spectra s ON s.moca_oid={alias}.moca_oid"
+        else:
+            spectrum_source += f" JOIN ({catalog}) {alias} ON {alias}.moca_oid=s.moca_oid"
+        source_params.extend(catalog_params)
+    if body.get("min_abs_galactic_latitude") not in (None, ""):
+        conditions.append("EXISTS (SELECT 1 FROM calc_galactic_coordinates gal WHERE gal.moca_oid=s.moca_oid AND gal.adopt_as_reference=1 AND ABS(gal.gb)>=%s)")
+        params.append(bounded_float(body["min_abs_galactic_latitude"], "Minimum absolute Galactic latitude", 0, 90))
+    if body.get("max_reduced_chi2") not in (None, ""):
+        # Use the latest non-ignored stored fit of this exact spectrum/lane.
+        # Unrelated reductions or older successful fits cannot admit an object.
+        methods = ",".join(["%s"] * len(lane["methods"]))
+        conditions.append("(SELECT " + stored_chi2_sql("fit.comments") +
+                          " FROM data_spectral_types fit WHERE fit.moca_oid=s.moca_oid AND fit.moca_specid=s.moca_specid"
+                          f" AND fit.calculation_method IN ({methods}) AND fit.ignored=0 ORDER BY fit.id DESC LIMIT 1)<=%s")
+        params.extend(lane["methods"])
+        params.append(bounded_float(body["max_reduced_chi2"], "Maximum stored reduced chi squared", 0, 1e9))
+    band = body.get("snr_wavelength_range", "all")
+    if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
+        raise ReviewError("Choose a valid spectrum S/N wavelength range.")
+    min_snr = None
     if body.get("min_snr") not in (None, ""):
-        conditions.append("s.median_snr_per_pix >= %s")
-        params.append(bounded_float(body["min_snr"], "Minimum S/N", 0, 1e9))
+        min_snr = bounded_float(body["min_snr"], "Minimum spectrum median S/N", 0, 1e9)
     if body.get("min_sptn") not in (None, ""):
         conditions.append("EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid=s.moca_oid AND d.calculation_method IN (" + ",".join(["%s"] * len(lane["methods"])) + ") AND d.spectral_type_number>=%s)")
         params.extend(lane["methods"])
         params.append(bounded_float(body["min_sptn"], "Minimum spectral-type number", -60, 40))
+    if boolean(body.get("exclude_duplicates")):
+        conditions.append("NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting duplicate WHERE duplicate.potential_duplicated_moca_oid=s.moca_oid AND duplicate.classification='y')")
     if boolean(body.get("no_known")):
         conditions.append("""NOT EXISTS (
             SELECT 1 FROM data_spectral_types known WHERE known.moca_oid=s.moca_oid
             AND known.ignored=0 AND known.photometric_estimate=0 AND known.spectral_type_number>=0
-            AND (known.calculation_method IS NULL OR known.calculation_method NOT IN
+            AND (known.is_public=1 OR known.public_adopted=1 OR known.calculation_method IS NULL OR known.calculation_method NOT IN
                 ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
         )""")
     conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
     selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
+        {adopted_join}
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
     """
+    params = [*source_params, *params]
+    prefix = ""
+    if min_snr is not None:
+        # Apply catalog, review and fit cuts first. The pixel window visits only
+        # candidate spectra through data_spectra's moca_specid index.
+        pixel_conditions = ["d.ignored=0", "d.wavelength_angstrom>0",
+                            "d.flux_flambda IS NOT NULL", "d.flux_flambda_unc>0"]
+        if SNR_WAVELENGTH_RANGES[band] is not None:
+            low, high = SNR_WAVELENGTH_RANGES[band]
+            pixel_conditions.append("d.wavelength_angstrom BETWEEN %s AND %s")
+            params.extend((low * 10000, high * 10000))
+        prefix = f"""WITH candidates AS (
+            SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification{type_projection} {selection}
+        ), snr_samples AS (
+            SELECT c.moca_specid,d.flux_flambda/d.flux_flambda_unc AS snr,
+              ROW_NUMBER() OVER (PARTITION BY c.moca_specid ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
+              COUNT(*) OVER (PARTITION BY c.moca_specid) AS sample_count
+            FROM candidates c JOIN data_spectra d ON d.moca_specid=c.moca_specid
+            WHERE {' AND '.join(pixel_conditions)}
+        ), snr_medians AS (
+            SELECT moca_specid,AVG(snr) AS median_snr FROM snr_samples
+            WHERE sample_rank IN (FLOOR((sample_count+1)/2.0),FLOOR((sample_count+2)/2.0))
+            GROUP BY moca_specid
+        ) """
+        selection = "FROM candidates s JOIN snr_medians sm ON sm.moca_specid=s.moca_specid WHERE sm.median_snr>=%s"
+        params.append(min_snr)
+        order_oid = "s.moca_oid"
+        projection = "s.*"
+    else:
+        projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
+    if type_order:
+        order_oid = "sort_spt IS NULL,sort_spt " + ("DESC" if order == "spt_desc" else "ASC") + ",s.moca_oid ASC"
+    elif order == "oid_desc":
+        order_oid += " DESC"
     if count_only:
-        return rows(cur, f"SELECT COUNT(*) AS total {selection}", tuple(params))[0]
+        return rows(cur, f"{prefix}SELECT COUNT(*) AS total {selection}", tuple(params))[0]
 
-    records = rows(cur, f"""
-        SELECT s.moca_oid, s.moca_specid, mo.designation, s.median_snr_per_pix,
-               v.classification
-        {selection}
-        ORDER BY {order_oid} LIMIT %s
-    """, (*params, limit + 1))
+    records = rows(cur, f"{prefix}SELECT {projection} {selection} ORDER BY {order_oid} LIMIT %s",
+                   (*params, limit + 1))
+    next_after = None
+    if len(records) >= limit:
+        last = records[limit - 1]
+        next_after = ({"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
+                      if type_order else last["moca_oid"])
     return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
-            "next_after": records[limit - 1]["moca_oid"] if len(records) >= limit else None}
+            "next_after": next_after}
 
 
 def visibility(body):

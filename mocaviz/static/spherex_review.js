@@ -27,8 +27,13 @@
     $("load").disabled = closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "missing-vetting", "wiseview-score"])
+    for (const name of ["review-sample", "queue-order", "missing-vetting", "wiseview-score", "no-wiseview-score",
+      "sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
+    $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
+    const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
+    for (const name of ["sublime2-snr", "cnn-probability"]) $(name).disabled ||= !sublime2Cuts;
+    $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
     $("write-enabled").disabled = !context?.can_write || current?.read_only || closed;
@@ -98,6 +103,9 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return 0;
+    if (request.queue_order !== "oid_asc" || request.no_known || request.exclude_duplicates || request.no_wiseview_score ||
+        !["all", "public-ucd"].includes(request.review_sample) ||
+        ["min_sublime2_snr", "min_cnn_probability", "min_abs_galactic_latitude", "max_reduced_chi2", "min_snr"].some((name) => request[name] != null)) return 5;
     if (request.public_ucd_only) return 4;
     if (request.missing_vetting === "viable_elsewhere") return 2;
     return request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting) ? 1 : 0;
@@ -112,16 +120,19 @@
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
     }
   }
-  let otherSampleVetting = $("missing-vetting").value;
+  let otherSampleVetting = $("missing-vetting").value, previousSample = $("review-sample").value;
   $("review-sample").addEventListener("change", () => {
     const vetting = $("missing-vetting");
     if ($("review-sample").value === "public-ucd") {
       otherSampleVetting = vetting.value;
       vetting.value = "all";
-    } else {
+    } else if (previousSample === "public-ucd") {
       vetting.value = otherSampleVetting;
     }
+    previousSample = $("review-sample").value;
+    updateControls();
   });
+  $("no-wiseview-score").addEventListener("change", updateControls);
   async function loadQueue(more = false) {
     if (pendingCount() || loading || closed || busyUndo) return;
     error("");
@@ -130,8 +141,17 @@
         const specid = $("specid").value.trim();
         const request = specid ? {moca_specid: spectrumId(specid)} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
-            missing_vetting: $("missing-vetting").value, min_wiseview_score: $("wiseview-score").value || null,
+            missing_vetting: $("missing-vetting").value,
+            min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
+            no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
+            queue_order: $("queue-order").value,
+            min_sublime2_snr: ["all", "sublime2"].includes($("review-sample").value) ? $("sublime2-snr").value || null : null,
+            min_cnn_probability: ["all", "sublime2"].includes($("review-sample").value) ? $("cnn-probability").value || null : null,
+            min_abs_galactic_latitude: $("galactic-latitude").value || null,
+            max_reduced_chi2: $("max-chi2").value || null,
+            snr_wavelength_range: $("snr-wavelength-range").value,
             min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
+            exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: 100};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
@@ -424,6 +444,15 @@
     $("specid").value = params.get("specid") || params.get("moca_specid") || "";
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
+    for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
+      min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
+      max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range"})) {
+      if (params.has(param)) $(id).value = params.get(param);
+    }
+    $("no-wiseview-score").checked = ["1", "true"].includes(params.get("no_wiseview_score"));
+    if (params.has("exclude_duplicates")) $("exclude-duplicates").checked = !["0", "false"].includes(params.get("exclude_duplicates"));
+    if (params.get("review_sample") === "public-ucd") $("missing-vetting").value = "all";
+    previousSample = $("review-sample").value;
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
     if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");
     if (params.has("min_wiseview_score")) $("wiseview-score").value = params.get("min_wiseview_score");
