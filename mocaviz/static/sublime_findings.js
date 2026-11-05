@@ -22,6 +22,19 @@ const FindingClasses = (() => {
     if(score>=1 && score<=2) return 'still';
     return 'others';
   }
+  function isConfirmed(row,standard='good') {
+    const score=row.motion==null || row.motion==='' ? NaN : Number(row.motion);
+    return Number.isFinite(score) && score>=5 && ['spiffstacker','spiff','sublimeaperture'].some(lane=>{
+      const quality=String(row[lane+'_quality']??'').trim().toLowerCase();
+      return accepted.has(quality) && (standard==='good_candidate' || quality!=='good_candidate');
+    });
+  }
+  function markerSymbol(row,base='circle',standard='good') {
+    if(!isConfirmed(row,standard))return base;
+    const open=base.endsWith('-open'),shape=open?base.slice(0,-5):base;
+    const star={circle:'star',diamond:'star-diamond','triangle-up':'star-triangle-up'}[shape]||'star';
+    return star+(open?'-open':'');
+  }
   function annotate(row) {
     const key=classify(row), definition=definitions.find(d=>d.key===key);
     return {...row,plot_class:key,plot_class_label:definition.label};
@@ -34,7 +47,7 @@ const FindingClasses = (() => {
         meta:{...trace.meta,plot_class:def.key}};
     });
   }
-  return {definitions,classify,annotate,groups};
+  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol};
 })();
 if(typeof module!=='undefined' && module.exports) module.exports=FindingClasses;
 if(typeof document!=='undefined') (() => {
@@ -82,8 +95,8 @@ function purgePlots(root){for(const el of root.querySelectorAll('.js-plotly-plot
 async function load(){
  const f=readFilters();if(!f.sources.length){showError('Select at least one catalog.');return;}
  const seq=++dataGeneration;loadController?.abort();loadController=new AbortController();flipController?.abort();closeInspector();
- $('apply').disabled=true;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample…';
- const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. Previous plots remain labeled below until the new sample is ready.';},15000);
+ $('apply').disabled=false;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample… You can change cuts and Apply again while this loads.';
+ const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. You can change cuts and Apply again; previous plots stay labeled until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
   if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
@@ -103,7 +116,11 @@ function baseLayout(xlabel,ylabel){const axis={showgrid:true,gridcolor:'#e7ede8'
 const plotConfig={responsive:true,displaylogo:false,modeBarButtonsToRemove:['select2d','lasso2d'],toImageButtonOptions:{format:'png',scale:2}};
 function plot(id,traces,layout,clickable=true){const el=$(id);Plotly.react(el,traces,layout,plotConfig).then(()=>{el.removeAllListeners('plotly_click');if(clickable)el.on('plotly_click',event=>{const id=event.points?.[0]?.customdata?.[0];if(id&&byId.has(id))openInspector(byId.get(id));});});}
 function spectralAxis(layout){layout.xaxis.tickmode='array';layout.xaxis.tickvals=ticks;layout.xaxis.ticktext=ticktext;return layout;}
-function scatterTrace(data,x,y,name,color,extra={}){return {type:'scattergl',mode:'markers',x:data.map(x),y:data.map(y),name,marker:{size:7,color,opacity:.76,line:{color:'white',width:.5}},customdata:data.map(r=>[r.moca_oid,r.designation,spt(r.spt)]),text:data.map(r=>esc(r.designation)),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>x: %{x:.3f} · y: %{y:.3f}<extra>'+name+'</extra>',...extra};}
+function confirmationStandard(){return $('confirmation-standard').value;}
+function isConfirmed(row){return FindingClasses.isConfirmed(row,confirmationStandard());}
+function pointSymbol(row,base='circle'){return FindingClasses.markerSymbol(row,base,confirmationStandard());}
+function pointSize(row,base=7){return base+(isConfirmed(row)?3:0);}
+function scatterTrace(data,x,y,name,color,extra={}){return {type:'scattergl',mode:'markers',x:data.map(x),y:data.map(y),name,marker:{size:data.map(r=>pointSize(r)),color,opacity:.76,symbol:data.map(r=>pointSymbol(r)),line:{color:'white',width:.5}},customdata:data.map(r=>[r.moca_oid,r.designation,spt(r.spt)]),text:data.map(r=>esc(r.designation)),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>x: %{x:.3f} · y: %{y:.3f}<extra>'+name+'</extra>',...extra};}
 function jitteredSpectralType(row){
  const hash=Math.imul(row.moca_oid,0x9e3779b1)>>>0;
  return row.spt+(hash/0x100000000-.5)*.4;
@@ -137,10 +154,10 @@ function renderCharts(){
  emptyNote(l,skyRows.length);plot('sky',skyTraces,l);
  const measured=rows.filter(r=>finite(r.spt)&&finite(r.M_w2)),synthetic=rows.filter(r=>finite(r.spt)&&finite(r.M_synthetic_w2));
  const errors=(data,key)=>$('show-errors').checked?{type:'data',array:data.map(r=>r[key+'_unc']),visible:true,color:'#b5c4be',thickness:1,width:0}:{visible:false};
- const traces=groups(measured,(d,n,c)=>spectralScatterTrace(d,r=>r.M_w2,n,c,{marker:{size:7,color:c,opacity:.8,symbol:d.map(r=>r.distance_kind==='photometric'?'triangle-up':'circle')},error_y:errors(d,'M_w2')}));
- if($('show-synth').checked)traces.push(...groups(synthetic,(d,n,c)=>spectralScatterTrace(d,r=>r.M_synthetic_w2,n,c,{showlegend:d.length>0&&!measured.some(r=>r.plot_class_label===n),marker:{size:8,color:c,symbol:d.map(r=>r.distance_kind==='photometric'?'triangle-up-open':'diamond-open'),opacity:.85,line:{width:1.5}},error_y:errors(d,'M_synthetic_w2'),hovertemplate:'%{text}<br>SPHEREx synthetic W2<br>Object %{customdata[0]} · %{customdata[2]}<br>y: %{y:.3f}<extra>'+n+'</extra>'})));
+ const traces=groups(measured,(d,n,c)=>spectralScatterTrace(d,r=>r.M_w2,n,c,{marker:{size:d.map(r=>pointSize(r)),color:c,opacity:.8,symbol:d.map(r=>pointSymbol(r,r.distance_kind==='photometric'?'triangle-up':'circle'))},error_y:errors(d,'M_w2')}));
+ if($('show-synth').checked)traces.push(...groups(synthetic,(d,n,c)=>spectralScatterTrace(d,r=>r.M_synthetic_w2,n,c,{showlegend:d.length>0&&!measured.some(r=>r.plot_class_label===n),marker:{size:d.map(r=>pointSize(r,8)),color:c,symbol:d.map(r=>pointSymbol(r,r.distance_kind==='photometric'?'triangle-up-open':'diamond-open')),opacity:.85,line:{width:1.5}},error_y:errors(d,'M_synthetic_w2'),hovertemplate:'%{text}<br>SPHEREx synthetic W2<br>Object %{customdata[0]} · %{customdata[2]}<br>y: %{y:.3f}<extra>'+n+'</extra>'})));
  l=spectralAxis(baseLayout('Spectral type','Absolute W2 (mag)'));l.yaxis.autorange='reversed';emptyNote(l,measured.length+($('show-synth').checked?synthetic.length:0));plot('cmd',traces,l);
- $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangles) · error bars require magnitude and parallax uncertainties`;
+ $('cmd-note').textContent=`${num(measured.length)} measured and ${num(synthetic.length)} synthetic points · ${num(rows.length-measured.length)} lack measured absolute W2 · ${rows.filter(r=>r.distance_kind==='photometric').length} use photometric distances (triangle / star-triangle markers) · error bars require magnitude and parallax uncertainties`;
  const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>spectralScatterTrace(d,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
  const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>spectralScatterTrace(d,r=>r.motion,n,c)),l);
  const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
@@ -161,12 +178,12 @@ function renderCharts(){
  l.yaxis.type='log';
  emptyNote(l,distances.length,astrometryNote);
  plot('adopted-distance',groups(distances,(d,n,c)=>spectralScatterTrace(d,r=>r.adopted_distance_pc,n,c,{
-  marker:{size:8,color:c,opacity:.76,symbol:d.map(r=>distanceSymbols[r.adopted_distance_kind]),line:{color:'white',width:.5}},
+  marker:{size:d.map(r=>pointSize(r,8)),color:c,opacity:.76,symbol:d.map(r=>pointSymbol(r,distanceSymbols[r.adopted_distance_kind]||'circle')),line:{color:'white',width:.5}},
   text:d.map(r=>esc(r.designation)+'<br>'+r.adopted_distance_kind+' distance'),
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Adopted distance: %{y:.2f} pc<extra>'+n+'</extra>'
  })),l);
  const otherDistance=distances.some(r=>r.adopted_distance_kind==='nonphotometric')?' · ◆ Nonphotometric, no parallax link':'';
- $('adopted-distance-note').textContent=astrometryNote??`▲ Photometric · ● Trigonometric${otherDistance} · ${num(distances.length)} plotted on a log scale`;
+ $('adopted-distance-note').textContent=astrometryNote??`▲ Photometric · ● Trigonometric${otherDistance} · star-shaped variants pass the selected confirmation standard · ${num(distances.length)} plotted on a log scale`;
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
@@ -176,11 +193,24 @@ function spectrumLabel(r,lane){
  const id=r[lane+'_specid'];
  return id?'#'+id+(r[lane+'_ignored']?' · Ignored':''):'unavailable';
 }
-function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card spectrum-card"><div class="card-head"><div><h3>${inspect?esc(laneNames[lane]):esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div>${inspect?'':`<button data-inspect="${r.moca_oid}">Inspect ↗</button>`}</div><div class="spec-meta">${inspect?'':'OID '+r.moca_oid+' · '}${esc(laneNames[lane])} · spectrum ${spectrumLabel(r,lane)} · stored type ${esc(spt(r[lane+'_spt']))} · ${esc(r[lane+'_quality']||'unreviewed')}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">${r[lane+'_specid']?'Loading spectrum & best-fit template…':'No stored spectrum in this reduction.'}</div></div></article>`;}
+function reviewContext(r){
+ const provenance=(Array.isArray(r.samples)?r.samples:Object.keys(sourceNames).filter(key=>r[key])).map(key=>sourceNames[key]||key).join(', ')||'not available';
+ const claims=[['byw','BYW'],['byw_claim','BYW claimlist'],['yadu','Yadu claimlist'],['azul','Azul claimlist'],['smdet','SMDET designation']].filter(([key])=>r[key]).map(([,label])=>label);
+ const status=[r.known?'Known recovered':'',claims.length?'Claimed UCD ('+claims.join(', ')+')':'',isConfirmed(r)?'Motion + spectrum confirmed':'Candidate / other under selected confirmation standard'].filter(Boolean);
+ const score=r.motion!=null && r.motion!=='' && finite(Number(r.motion))?fmt(Number(r.motion),1):null;
+ const motion=[r.motion_class,score==null?'':'score '+score].filter(Boolean).join(' · ')||'unreviewed';
+ const classes=Array.isArray(r.cutout_classes)?r.cutout_classes:[],scores=Array.isArray(r.cutout_scores)?r.cutout_scores:[];
+ const cutouts=Array.from({length:Math.max(classes.length,scores.length)},(_,i)=>{
+  const value=scores[i],score=value!=null && value!=='' && finite(Number(value))?' [score '+fmt(Number(value),1)+']':'';
+  return `${i+1}: ${classes[i]||'classification unavailable'}${score}`;
+ }).join('; ')||'unreviewed';
+ return `<div class="review-context"><div class="catalog-provenance"><b>Provenance:</b> ${esc(provenance)}</div><div class="membership-status"><b>Status:</b> ${esc(status.join(' · ')||r.plot_class_label||'Candidate / other')}</div><div class="motion-review"><b>Motion check:</b> ${esc(motion)}</div><div class="cutout-reviews"><b>SUBLIME cutout checks:</b> ${esc(cutouts)}</div></div>`;
+}
+function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card spectrum-card"><div class="card-head"><div><h3>${inspect?esc(laneNames[lane]):esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div>${inspect?'':`<button data-inspect="${r.moca_oid}">Inspect ↗</button>`}</div><div class="spec-meta">${inspect?'':'OID '+r.moca_oid+' · '}${esc(laneNames[lane])} · spectrum ${spectrumLabel(r,lane)} · stored type ${esc(spt(r[lane+'_spt']))} · ${esc(r[lane+'_quality']||'unreviewed')}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">${r[lane+'_specid']?'Loading spectrum & best-fit template…':'No stored spectrum in this reduction.'}</div></div></article>`;}
 function renderFit(el,item,lane){if(!item){el.innerHTML='<div class="spec-empty">No stored spectrum in this reduction.</div>';return;}if(item.error){el.innerHTML='<div class="spec-empty">'+esc(item.error)+'</div>';return;}const best=item.fit?.overlays?.[0];const meta=el.previousElementSibling;let label=meta?.querySelector('.fit-label');if(meta&&!label){label=document.createElement('div');label.className='fit-label';meta.append(label);}if(label)label.textContent=best?'Best template: '+best.label+' · χ²r = '+fmt(best.display_reduced_chi2,2):'No valid template fit'+(item.warning?' · '+item.warning:'');const figure=SpherexReviewPlot.figure(item,String(item.object.moca_specid),el.clientWidth,1,SpherexReviewPlot.lanes.find(v=>v.key===lane)?.color);figure.layout.height=Math.round(Math.min(510,Math.max(290,el.clientWidth))*(el.closest('#flipbook')?0.75:1));el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);}
 function comparisonCard(r,plotId){
  const meta=SpherexReviewPlot.lanes.map(lane=>`<span style="color:${lane.color}">${esc(lane.label)}</span>: ${spectrumLabel(r,lane.key)} · ${esc(spt(r[lane.key+'_spt']))} · ${esc(r[lane.key+'_quality']||'unreviewed')}`).join('<br>');
- return `<article class="card spectrum-card comparison-card"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><button data-inspect="${r.moca_oid}">Inspect ↗</button></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
+ return `<article class="card spectrum-card comparison-card" data-oid="${r.moca_oid}" data-confirmed="${isConfirmed(r)}"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><button data-inspect="${r.moca_oid}">Inspect ↗</button></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
 }
 function renderComparison(el,r,items,errors){
  const available=Object.fromEntries(SpherexReviewPlot.lanes.filter(lane=>items[lane.key]&&!items[lane.key].error).map(lane=>[lane.key,items[lane.key]]));
@@ -193,7 +223,7 @@ async function renderFlipbook(){
  const generation=++flipGeneration;flipController?.abort();flipController=new AbortController();
  const signal=flipController.signal,pageSize=Math.min(50,Math.max(1,parseInt($('flip-page-size').value,10)||50));
  const lanes=SpherexReviewPlot.lanes.map(lane=>lane.key);
- const data=$('available-only').checked?rows.filter(r=>lanes.some(lane=>r[lane+'_specid'])):rows;
+ const data=rows.filter(r=>(!$('available-only').checked||lanes.some(lane=>r[lane+'_specid']))&&(!$('confirmed-only').checked||isConfirmed(r)));
  const pages=Math.ceil(data.length/pageSize);flipPage=Math.max(0,Math.min(flipPage,Math.max(0,pages-1)));
  const selected=data.slice(flipPage*pageSize,(flipPage+1)*pageSize);$('spectra-count').textContent=num(data.length);
  for(const suffix of ['','-bottom']){
@@ -202,7 +232,7 @@ async function renderFlipbook(){
   $('flip-prev'+suffix).disabled=flipPage===0;$('flip-next'+suffix).disabled=flipPage>=pages-1;
  }
  purgePlots($('flipbook'));$('flipbook').innerHTML=selected.map((r,i)=>comparisonCard(r,'flip-plot-'+i)).join('');
- if(!selected.length){$('flipbook').innerHTML='<p class="hint">No objects with available spectra under these cuts. Try disabling “Available spectra only”.</p>';return;}
+ if(!selected.length){$('flipbook').innerHTML='<p class="hint">No objects match the flipbook filters. Adjust the confirmation standard, disable “Confirmed only” or “Available spectra only”, or change the sample cuts.</p>';return;}
  // Three bounded ten-spectrum requests per batch; render progressively.
  for(let offset=0;offset<selected.length;offset+=10){
   const batch=selected.slice(offset,offset+10);
@@ -473,7 +503,8 @@ for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 for(const id of ['hist-bin','hist-ylog','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
-for(const id of ['available-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
+$('confirmation-standard').onchange=()=>{renderCharts();flipPage=0;if(tab==='spectra')renderFlipbook();};
+for(const id of ['available-only','confirmed-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};
 for(const suffix of ['','-bottom']){$('flip-prev'+suffix).onclick=()=>{flipPage--;renderFlipbook();};$('flip-next'+suffix).onclick=()=>{flipPage++;renderFlipbook();};}
 $('object-search').oninput=()=>{objectPage=0;renderObjects();};$('objects-prev').onclick=()=>{objectPage--;renderObjects();};$('objects-next').onclick=()=>{objectPage++;renderObjects();};
 document.addEventListener('click',e=>{const target=e.target.closest('[data-inspect]');if(target){const r=byId.get(Number(target.dataset.inspect));if(r)openInspector(r);}});

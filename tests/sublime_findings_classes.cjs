@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
-const {classify,annotate,groups,definitions}=require('../mocaviz/static/sublime_findings.js');
+const {classify,annotate,groups,definitions,isConfirmed,markerSymbol}=require('../mocaviz/static/sublime_findings.js');
 const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star'];
 test('every accepted review in any reduction qualifies at the requested motion boundaries',()=>{
   const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed'],[null,'others'],[undefined,'others'],[NaN,'others'],[Infinity,'others']];
@@ -37,5 +37,34 @@ test('each filtered object belongs to exactly one class and all plots use the cl
     assert.equal(trace.marker.color,definitions[i].color);
     assert.equal(trace.meta.plot_class,definitions[i].key);
     assert.equal(rows[i].plot_class_label,trace.name);
+  }
+});
+
+test('strict and inclusive confirmation remain independent of claim and publication colors',()=>{
+  for(const membership of [{},{known:true},{byw_claim:true},{known:true,smdet:true}]){
+    for(const lane of ['spiff','spiffstacker','sublimeaperture']){
+      for(const quality of accepted){
+        const row={...membership,[lane+'_quality']:quality,motion:5};
+        assert.equal(isConfirmed(row,'good'),quality!=='good_candidate');
+        assert.equal(isConfirmed(row,'good_candidate'),true);
+        const before=classify(row);
+        markerSymbol(row,'circle','good');markerSymbol(row,'circle','good_candidate');
+        assert.equal(classify(row),before);
+      }
+    }
+  }
+  for(const motion of [null,undefined,'',NaN,Infinity,0,4,4.99]){
+    assert.equal(isConfirmed({motion,spiff_quality:'good'},'good_candidate'),false);
+  }
+  assert.equal(isConfirmed({motion:6,spiff_quality:'bad'},'good_candidate'),false);
+  assert.equal(isConfirmed({motion:5,spiff_quality:' GOOD_CANDIDATE ',spiffstacker_quality:'good'},'good'),true);
+});
+test('confirmed symbols preserve synthetic and distance conventions under both standards',()=>{
+  const row={motion:6,spiff_quality:'good_candidate'};
+  for(const [base,star] of [['circle','star'],['diamond','star-diamond'],['triangle-up','star-triangle-up'],
+                           ['diamond-open','star-diamond-open'],['triangle-up-open','star-triangle-up-open']]){
+    assert.equal(markerSymbol(row,base,'good'),base);
+    assert.equal(markerSymbol(row,base,'good_candidate'),star);
+    assert.equal(markerSymbol({...row,spiff_quality:'good'},base,'good'),star);
   }
 });
