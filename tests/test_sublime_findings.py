@@ -135,7 +135,7 @@ class FindingsTests(unittest.TestCase):
         self.assertFalse(sf.passes(r,dict(f,min_snr=1)))
         self.assertFalse(sf.passes(r,dict(f,min_cutout=1)))
 
-    def test_known_recovered_bypasses_only_motion_quality(self):
+    def test_known_recovered_quality_exemptions_are_opt_in(self):
         f=sf.parse_filters({'min_motion':2,'max_motion':4,'motion_classes':'clear motion'})
         r=sf.demo_rows(sf.parse_filters({}))[1]
         for score, motion_class in ((None,None),(1,'clear motion'),(5,'clear motion'),(3,'still')):
@@ -144,7 +144,9 @@ class FindingsTests(unittest.TestCase):
                 known=dict(candidate,known=True)
                 self.assertFalse(sf.passes(candidate,f))
                 self.assertTrue(sf.passes(known,f))
-                self.assertFalse(sf.passes(known,dict(f,min_snr=1000)))
+                self.assertTrue(sf.passes(known,dict(f,min_snr=1000)))
+                self.assertFalse(sf.passes(known,dict(f,min_snr=1000,apply_known_snr=True)))
+                self.assertFalse(sf.passes(known,dict(f,apply_known_motion=True)))
 
     def test_cutout_any_all_and_missing_scores(self):
         f=sf.parse_filters({'known':'either','min_cutout':4})
@@ -251,6 +253,9 @@ class FindingsTests(unittest.TestCase):
                 CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
                 CREATE TABLE pcat_duplicated_vetting(moca_oid INT, potential_duplicated_moca_oid INT, classification TEXT);
             ''')
+            for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw','pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
+                db.execute('CREATE TABLE '+table+'(moca_oid INT)')
+            db.execute('CREATE TABLE mechanics_all_designations(moca_oid INT, designation TEXT)')
             db.executemany("INSERT INTO moca_objects VALUES (?, 'Fixture', 0, 0, 0, 1)", [(oid,) for oid in range(1, 10)])
             for cfg in sf.sr.LANES.values():
                 db.execute('CREATE TABLE ' + cfg['table'] + '(moca_oid INT, classification TEXT)')

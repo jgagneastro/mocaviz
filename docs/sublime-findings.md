@@ -33,7 +33,7 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
   immediately applies those settings with the other current cuts.
   **Reset to default filter** restores and applies the dashboard defaults.
 - Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
-  Known recovered objects bypass the WiseView score and motion class cuts.
+  Known UCDs, known UCD candidates, and claimed sources bypass quality cuts by default; each quality group has an opt-in checkbox.
 - The default sample includes L0+ objects outside the duplicate side of
   confirmed pairs, with good-family or `good_candidate` spectral quality in at least one lane.
   This last cut is visible and can be disabled. It keeps the initial catalog
@@ -48,7 +48,7 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
   an active spectrum. Missing reductions are skipped; available but unreviewed
   spectra fail. Existing any-good/candidate and reviewed/unreviewed modes remain.
 - **Recovered known** uses public nonphotometric spectral types, L0+, and
-  removes the global spectral-quality requirement. Publication status includes
+  selects the public-spectroscopic subset. Known-source quality opt-ins remain available. Publication status includes
   public-adopted M0+ types across confirmed duplicate links, as in the reviewer.
   M/L/T/Y type is a proxy for the requested population, not a mass confirmation.
 - Numeric cuts require a value when enabled; blank cuts retain missing values.
@@ -159,17 +159,18 @@ node scripts/chromium_probe.mjs --url 'http://127.0.0.1:8901/?mock=1' --wait-js 
 
 All overview plots use the same mutually exclusive categories, in this order:
 
-1. **Known recovered** (ochre): the existing published-spectroscopic status,
+1. **Known UCDs** (ochre): the existing published-spectroscopic status,
    including confirmed duplicate links, regardless of motion or spectral quality.
-2. **Claimed UCDs** (muted rose): BYW membership, a BYW, Yadu or Azul claim,
+2. **Known UCD candidates** (gold): a direct public-adopted photometric spectral-type join; spectroscopy takes precedence.
+3. **Claimed UCDs** (muted rose): BYW membership, a BYW, Yadu or Azul claim,
    or an SMDET designation. This class takes precedence over the motion categories.
-3. **New motion-confirmed** (teal): an accepted review in SPIFFStacker, SPIFF or
+4. **New motion-confirmed** (teal): an accepted review in SPIFFStacker, SPIFF or
    SUBLIMEaperture and a WiseView motion score ≥5.
-4. **New candidate** (blue): the same spectral-quality requirement and a motion
+5. **New candidate** (blue): the same spectral-quality requirement and a motion
    score ≥3 and <5.
-5. **Still candidates** (purple): the same quality requirement and a score in
+6. **Still candidates** (purple): the same quality requirement and a score in
    [1,2], including 1.5.
-6. **Others** (gray): every other object admitted by the current filters.
+7. **Others** (gray): every other object admitted by the current filters.
 
 Accepted reviews are exactly `good`, `good_candidate`, `contaminated_ucd`,
 `peculiar_ucd`, and `good_plus_star`. For the motion categories, missing or nonfinite scores, scores between
@@ -181,3 +182,97 @@ shows class counts and hover definitions. CSV exports include `plot_class` and
 `plot_class_label`; the object table and inspector show the same class labels.
 
 Each flipbook card now stacks SPIFFStacker, SPIFF and SUBLIMEaperture vertically. Each lane shows its own best template: red, blue and bright purple respectively, matching the WiseView reviewer. Missing lanes remain explicitly labelled. Requests are bounded to ten spectra per lane and cards render progressively.
+
+
+## Known-source quality switches (2026-11-06)
+
+SUBLIME1 and SUBLIME2 membership is joined by `moca_oid` to active
+`data_spectral_types` rows with `public_adopted=1`. `photometric_estimate=0`
+provides the known spectroscopic population; `photometric_estimate=1`
+provides **Known UCD candidates**. Existing published-status propagation
+across confirmed duplicate links remains for spectroscopy. Types are selected
+with the existing preferred-type ranking; published photometric types are a
+fallback when no ranked spectroscopic/autotype value is available. Latest
+adopted/public rows and catalog rows are selected once, and catalog unions
+are deduplicated by OID before enrichment.
+
+Each quality group has **Also apply filter to known sources**, default off.
+Here “known sources” includes both known classes and all claimed-source flags.
+The groups are detection/CNN, global spectral quality, spectrum S/N, motion,
+SUBLIME cutouts, each lane's visual classes, and SUBLIME2 fit chi-square.
+The same exemptions apply before SQL selection and during Python filtering.
+Catalog selection, type ranges, publication/claim selectors, duplicate
+selection, and apparent-photometry/parallax cuts remain explicit selections.
+Checkboxes round-trip through copied filter links. Defaults include both
+publication populations; the discoveries preset excludes known candidates too.
+
+## Volume completeness
+
+The tab immediately after Potential duplicates uses a separate census of the
+selected input catalogs. It retains applied **quality** settings and their
+known-source opt-ins, clears publication/claim selectors, and uses preferred
+L0+ types across all density bins without brightness cuts. This keeps known
+recoveries in the census even when a discoveries-only preset is active.
+Duplicates and inactive objects are excluded. Each input catalog is counted
+individually; the union counts an OID once. Memberships overlap, so individual
+catalog counts must not be added. Catalog records without a preferred type
+are not counted. Choosing no global quality cut admits more unvetted sources.
+
+Density calibration: [Best et al. 2024, ApJ 967, 115, Table 3](https://ui.adsabs.harvard.edu/abs/2024ApJ...967..115B/abstract),
+individual `[L0,L1)`, …, `[Y1,Y2)` bins and the Y2 point, with the published
+Poisson uncertainties. The numerical values in that table are multiplied by
+`1e-3` to obtain pc^-3. This is the latest directly usable spectral-type census
+found in a literature search on 2026-11-06. Kirkpatrick (2024) was also checked;
+its principal density table is in effective-temperature bins and is not
+remapped to spectral type here. Best's close binaries count once as unresolved
+sources; resolved components in MOCAdb can introduce a population mismatch.
+The sparse Y2 calibration is shown but no magnitude relation is extrapolated.
+
+`V_count = N/rho` and `r_count = (3 V_count / (4 pi fsky))^(1/3)` are
+**count-equivalent** quantities, not a demonstrated complete spatial boundary.
+The logarithmic distance axis is labeled **Volume-complete distance (pc)**;
+the number-of-sources plot also uses a logarithmic axis. Zero counts remain
+explicit in the table.
+Both the inclusive quality-selected count and a conservative subset (published
+spectroscopy or good-family spectral review plus motion >=5) are plotted.
+Claimed and photometric candidates are not assumed confirmed. Garwood 68.27%
+count intervals preserve nonzero upper limits for zero-count bins; combining
+their extrema with density errors gives an envelope, not a joint 68% interval.
+
+Magnitude sequences are read from MOCAdb `moca_sequences` and
+`data_astro_sequences`: `sptn_mj_field` (mixed-system J) and
+`sptn_mw2_aw_field` (AllWISE W2). Values and available scatter are interpolated
+only inside the stored validity range. For each of 40 integration points per
+type bin, `d_band=10^((m_3sigma-M_band+5)/5)`, and the OR rule takes
+`max(d_J,d_W2)` before averaging volume. Missing relation coverage is reported;
+when neither band covers part of a bin, its expected count is unavailable.
+Missing W2 scatter is not fabricated. Expected-count envelopes include density
+errors and available relation scatter, not uncertainty in the sky footprint.
+
+Current synthetic SPHEREx J/W2 errors supply an empirical default depth:
+`m_3sigma = m - 2.5 log10(3 sigma_m ln(10)/2.5)`. Only active objects/spectra,
+nonignored synthetic photometry linked to packs 55/62/76, and finite magnitude
+errors >0 are used. The newest valid measurement per object/band is selected;
+no quality or detection S/N cut is imposed. The cache reports median and
+16th/84th percentiles. On 2026-11-06 these medians were J=18.633 and W2=15.745
+Vega mag, based on 9271/9270 unique objects. Positive-flux selection, source
+noise and spatially varying coverage can bias these sample-conditioned depths.
+They are not a measured sky selection function. Limits and sky fraction are
+editable; sky fractions are remembered separately for each catalog and its
+union during the session, defaulting explicitly to 1.
+
+[Bock et al. 2026](https://ui.adsabs.harvard.edu/abs/2026ApJ...999..139B/abstract)
+provides flight-based per-channel sensitivity projected over four surveys;
+this is cited for context, not substituted for current synthetic-band depth.
+There is no automatic proof of missing late-T dwarfs: footprint, selection,
+contamination, unresolved multiplicity, extinction, relation scatter and local
+density gradients must be considered. A radial completeness claim needs a
+sky/depth selection function and distance-dependent recovery tests.
+
+Reference/depth cache: `~/Library/Caches/MOCAviz/sublime-completeness-v1.json`
+(or `MOCAVIZ_COMPLETENESS_CACHE`), versioned and refreshed after seven days or
+on request. It contains the density table, sequence values/provenance and
+aggregate depths only—no credentials or object records. Requests authenticate
+with MOCAdb even when the cache is warm; every census uses a read-only
+transaction. The tab has independent failure/retry state and exports the
+chosen catalog's bins, uncertainties, limits, sky fraction and references as CSV.

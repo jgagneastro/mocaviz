@@ -19,6 +19,7 @@ from . import spherex_review as sr
 from . import sublime_findings_inspector as inspector
 from . import sublime_findings_duplicates as duplicates
 from . import sublime_findings_diagnostics as diagnostics
+from . import sublime_findings_completeness as completeness
 
 STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
@@ -48,7 +49,8 @@ NUMERIC = {'min_spt', 'max_spt', 'min_detection_snr', 'max_detection_snr', 'min_
            'min_spiff_spt', 'max_spiff_spt', 'min_spiffstacker_spt', 'max_spiffstacker_spt',
            'min_sublimeaperture_spt', 'max_sublimeaperture_spt', 'min_parallax_snr',
            'min_w2', 'max_w2', 'min_chi2', 'max_chi2'}
-TRI = ('byw', 'byw_claim', 'yadu', 'azul', 'smdet', 'known')
+QUALITY_SWITCHES = {name: 'apply_known_'+name for name in ('detection', 'quality', 'snr', 'motion', 'cutout', 'chi2', *LANES)}
+TRI = ('known_candidate', 'byw', 'byw_claim', 'yadu', 'azul', 'smdet', 'known')
 TEXT = {'cnn_classes', 'motion_classes', 'cutout_classes'} | {
     prefix + lane for prefix in ('include_', 'exclude_') for lane in LANES}
 
@@ -56,10 +58,15 @@ TEXT = {'cnn_classes', 'motion_classes', 'cutout_classes'} | {
 def parse_filters(raw):
     if not isinstance(raw, dict):
         raise sr.ReviewError('Filters must be an object.')
-    allowed = NUMERIC | set(TRI) | TEXT | {'sources', 'spt_source', 'snr_lane', 'duplicates', 'cutout_policy', 'distance_mode', 'synthetic_lane', 'quality_any'}
+    allowed = NUMERIC | set(TRI) | TEXT | set(QUALITY_SWITCHES.values()) | {'sources', 'spt_source', 'snr_lane', 'duplicates', 'cutout_policy', 'distance_mode', 'synthetic_lane', 'quality_any'}
     if set(raw) - allowed:
         raise sr.ReviewError('Unknown dashboard filter.')
     out = dict(raw)
+    for key in QUALITY_SWITCHES.values():
+        value = out.get(key, False)
+        if not isinstance(value, bool):
+            raise sr.ReviewError('Known-source quality switches must be boolean.')
+        out[key] = value
     sources = out.get('sources', [*SOURCES, 'other'])
     if not isinstance(sources, list) or not sources or any(s not in {*SOURCES, 'other'} for s in sources):
         raise sr.ReviewError('Choose at least one valid sample.')
@@ -121,13 +128,33 @@ def fetch(cur, sql, params=()):
 def known_expression(alias):
     """Published late-type status follows both sides of confirmed duplicate links."""
     oid=alias+'.moca_oid'
-    published="d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>=0"
+    published="d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0 AND d.spectral_type_number>=0"
     return '('+(' OR '.join((
         'EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid='+oid+' AND '+published+')',
         "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.moca_oid WHERE dup.classification='y' AND dup.potential_duplicated_moca_oid="+oid+' AND '+published+')',
         "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.potential_duplicated_moca_oid WHERE dup.classification='y' AND dup.moca_oid="+oid+' AND '+published+')'
     )))+')'
 
+
+def protected_expression(alias='mo'):
+    """Same known/candidate/claim membership used by the browser's color classes."""
+    oid = alias+'.moca_oid'
+    terms = [known_expression(alias),
+             'EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid='+oid+
+             ' AND d.public_adopted=1 AND d.photometric_estimate=1 AND d.ignored=0 AND d.spectral_type_number>=0)']
+    for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw',
+                  'pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
+        terms.append('EXISTS (SELECT 1 FROM '+table+' c WHERE c.moca_oid='+oid+')')
+    terms.append("EXISTS (SELECT 1 FROM mechanics_all_designations c WHERE c.moca_oid="+oid+" AND c.designation LIKE 'SMDET%%')")
+    return '('+' OR '.join(terms)+')'
+
+
+def protected_source(row):
+    return any(row.get(key) for key in ('known','known_candidate','byw','byw_claim','yadu','azul','smdet'))
+
+
+def apply_quality(row, filters, group):
+    return not protected_source(row) or filters[QUALITY_SWITCHES[group]]
 
 
 def quality_condition(mode, oid='mo.moca_oid'):
@@ -154,7 +181,7 @@ def selected_sql(f):
     unions = ['SELECT moca_oid, 0 AS is_other FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
               for s in f['sources'] if s in SOURCES]
     if 'other' in f['sources']:
-        if f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed':
+        if f['apply_known_quality'] and (f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed'):
             classes=QUALITY_CLASSES.get(f['quality_any'])
             quality_where=' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
             seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in sr.LANES.values())
@@ -173,10 +200,11 @@ def selected_sql(f):
         methods = ','.join("'" + m + "'" for m in config['methods'])
         type_joins.append('LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM data_spectral_types WHERE ignored=0 AND calculation_method IN ('+methods+') GROUP BY moca_oid) latest_'+lane+' ON latest_'+lane+'.moca_oid=mo.moca_oid LEFT JOIN data_spectral_types t_'+lane+' ON t_'+lane+'.id=latest_'+lane+'.id')
         type_cols.append('t_' + lane + '.spectral_type_number AS ' + lane + '_spt')
-    type_joins.append('LEFT JOIN data_spectral_types ta ON ta.moca_oid=mo.moca_oid AND ta.adopted=1 AND ta.ignored=0')
+    type_joins.append('LEFT JOIN data_spectral_types ta ON ta.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.adopted=1 AND d.ignored=0)')
     expressions = {'sublime2':'p2.autotype_spectral_type_number', 'adopted':'ta.spectral_type_number','published':'tp.spectral_type_number'}
     expressions.update({lane:'t_' + lane + '.spectral_type_number' for lane in LANES})
-    type_joins.append('LEFT JOIN data_spectral_types tp ON tp.moca_oid=mo.moca_oid AND tp.public_adopted=1 AND tp.photometric_estimate=0 AND tp.ignored=0')
+    type_joins.append('LEFT JOIN data_spectral_types tp ON tp.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0)')
+    type_joins.append('LEFT JOIN data_spectral_types tc ON tc.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=1 AND d.ignored=0)')
     type_choices = [
         ('ta.spectral_type_number IS NOT NULL AND ta.photometric_estimate=0 AND ta.calculation_method IS NULL', 'ta.spectral_type_number', 'adopted'),
         ('tp.spectral_type_number IS NOT NULL AND tp.calculation_method IS NULL', 'tp.spectral_type_number', 'published'),
@@ -191,6 +219,8 @@ def selected_sql(f):
             type_choices.append((condition, value, lane))
     for lane in TYPE_LANE_ORDER:
         type_choices.append((expressions[lane]+' IS NOT NULL', expressions[lane], lane))
+    type_choices.append(('tp.spectral_type_number IS NOT NULL', 'tp.spectral_type_number', 'published'))
+    type_choices.append(('tc.spectral_type_number IS NOT NULL', 'tc.spectral_type_number', 'published_candidate'))
     expressions['best'] = 'CASE '+' '.join('WHEN '+condition+' THEN '+value for condition,value,_ in type_choices)+' ELSE NULL END'
     best_source = 'CASE '+' '.join("WHEN "+condition+" THEN '"+lane+"'" for condition,_,lane in type_choices)+' ELSE NULL END'
     spt = expressions[f['spt_source']]
@@ -211,20 +241,22 @@ def selected_sql(f):
         else:
             candidates='''SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0
                 AND d.spectral_type_number>='''+threshold+''' AND (
-                ((d.adopted=1 OR d.public_adopted=1) AND d.photometric_estimate=0)
+                ((d.adopted=1 AND d.photometric_estimate=0) OR d.public_adopted=1)
                 OR d.calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))'''
         preselect='JOIN ('+candidates+') typed ON typed.moca_oid=sample.moca_oid'
     where, params = ['mo.ignored=0'], []
     if 'other' in f['sources']:
         lane_types = ','.join(expressions[lane] for lane in LANES)
         where.append('(sample.is_other=0 OR COALESCE(' + lane_types + ') IS NOT NULL)')
-    def bound(expr, low, high=None):
+    def exempt(condition, group):
+        return condition if f[QUALITY_SWITCHES[group]] else '('+protected_expression()+' OR ('+condition+'))'
+    def bound(expr, low, high=None, group=None):
         if f.get(low) is not None:
-            where.append(expr + '>=%s'); params.append(f[low])
+            where.append(exempt(expr + '>=%s', group) if group else expr + '>=%s'); params.append(f[low])
         if high and f.get(high) is not None:
-            where.append(expr + '<=%s'); params.append(f[high])
+            where.append(exempt(expr + '<=%s', group) if group else expr + '<=%s'); params.append(f[high])
     if f['quality_any']!='any':
-        where.append('('+quality_condition(f['quality_any'])+')')
+        where.append(exempt('('+quality_condition(f['quality_any'])+')', 'quality'))
     if f['duplicates']!='either':
         where.append(('NOT ' if f['duplicates']=='exclude' else '')+"EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup WHERE dup.potential_duplicated_moca_oid=mo.moca_oid AND dup.classification='y')")
     for lane,cfg in sr.LANES.items():
@@ -237,19 +269,19 @@ def selected_sql(f):
                 conditions.append('EXISTS (SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid=mo.moca_oid AND LOWER(q.classification) IN ('+','.join(['%s']*len(values))+'))')
                 params.extend(values)
             if 'none' in classes:conditions.append('NOT EXISTS (SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid=mo.moca_oid)')
-            where.append(('NOT ' if negative else '')+'('+' OR '.join(conditions)+')')
+            where.append(exempt(('NOT ' if negative else '')+'('+' OR '.join(conditions)+')', lane))
     if f['min_motion'] is not None or f['max_motion'] is not None:
         motion=['w.moca_oid=mo.moca_oid']
         for key,op in (('min_motion','>='),('max_motion','<=')):
             if f[key] is not None:motion.append('w.classification_integer'+op+'%s');params.append(f[key])
         motion_review = 'EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting w WHERE ' + ' AND '.join(motion) + ')'
-        where.append('(' + known_expression('mo') + ' OR ' + motion_review + ')')
+        where.append(exempt(motion_review, 'motion'))
     bound(spt, 'min_spt', 'max_spt')
     for lane in LANES:
         bound(expressions[lane], 'min_' + lane + '_spt', 'max_' + lane + '_spt')
-    bound('COALESCE(p2.detection_snr,p1.detection_snr)', 'min_detection_snr', 'max_detection_snr')
-    bound('p2.visual_nn_good_probability','min_cnn','max_cnn')
-    bound('p2.autotype_reduced_chi2','min_chi2','max_chi2')
+    bound('COALESCE(p2.detection_snr,p1.detection_snr)', 'min_detection_snr', 'max_detection_snr', 'detection')
+    bound('p2.visual_nn_good_probability','min_cnn','max_cnn','detection')
+    bound('p2.autotype_reduced_chi2','min_chi2','max_chi2','chi2')
     if f['cnn_classes']:
         classes=[c for c in f['cnn_classes'] if c!='none']
         terms=[]
@@ -257,10 +289,10 @@ def selected_sql(f):
             terms.append('LOWER(p2.visual_nn_classification) IN ('+','.join(['%s']*len(classes))+')')
             params.extend(classes)
         if 'none' in f['cnn_classes']:terms.append('p2.visual_nn_classification IS NULL')
-        where.append('('+' OR '.join(terms)+')')
+        where.append(exempt('('+' OR '.join(terms)+')', 'detection'))
     return '''SELECT mo.moca_oid,mo.designation,mo.ra,mo.`dec`,mo.is_public,
         ''' + spt + ''' AS spt,''' + ','.join(type_cols) + ''',
-        p2.autotype_spectral_type_number AS sublime2_spt,ta.spectral_type_number AS adopted_spt,tp.spectral_type_number AS published_spt,
+        p2.autotype_spectral_type_number AS sublime2_spt,ta.spectral_type_number AS adopted_spt,tp.spectral_type_number AS published_spt,tc.spectral_type_number AS published_candidate_spt,
         ''' + best_source + ''' AS best_spt_source,
         p1.id IS NOT NULL AS sublime1,p2.id IS NOT NULL AS sublime2,
         COALESCE(p2.detection_snr,p1.detection_snr) AS detection_snr,
@@ -297,7 +329,7 @@ def enrich(cur, rows):
         ph = ','.join(['%s']*len(ids))
         for r in chunk:
             r.update(redmovers=False, byw=False, byw_claim=False, yadu=False, azul=False,
-                     smdet=False, duplicate=False, known=False, cutout_scores=[], cutout_classes=[],
+                     smdet=False, duplicate=False, known=False, known_candidate=False, cutout_scores=[], cutout_classes=[],
                      cutout_count=0, motion=None, motion_class=None, pmtot_masyr=None)
         tables = {'redmovers':'pcat_catwise2020_red_movers','byw':'pcat_byw_mar9_2026',
                   'yadu':'pcat_kirkpatrick_yadu_2026_claim','azul':'pcat_azul_byw_sample_jul16_2026'}
@@ -312,11 +344,13 @@ def enrich(cur, rows):
             by_oid[r['moca_oid']]['smdet'] = True
         for r in fetch(cur, "SELECT DISTINCT potential_duplicated_moca_oid AS moca_oid FROM pcat_duplicated_vetting WHERE potential_duplicated_moca_oid IN (" + ph + ") AND classification='y'", ids):
             by_oid[r['moca_oid']]['duplicate'] = True
-        known_sql = '''SELECT DISTINCT moca_oid FROM data_spectral_types WHERE moca_oid IN (''' + ph + ''') AND public_adopted=1 AND photometric_estimate=0 AND spectral_type_number>=0
-        UNION SELECT dup.potential_duplicated_moca_oid FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>=0 WHERE dup.classification='y' AND dup.potential_duplicated_moca_oid IN (''' + ph + ''')
-        UNION SELECT dup.moca_oid FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.potential_duplicated_moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>=0 WHERE dup.classification='y' AND dup.moca_oid IN (''' + ph + ')'
+        known_sql = '''SELECT DISTINCT moca_oid FROM data_spectral_types WHERE moca_oid IN (''' + ph + ''') AND public_adopted=1 AND photometric_estimate=0 AND ignored=0 AND spectral_type_number>=0
+        UNION SELECT dup.potential_duplicated_moca_oid FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0 AND d.spectral_type_number>=0 WHERE dup.classification='y' AND dup.potential_duplicated_moca_oid IN (''' + ph + ''')
+        UNION SELECT dup.moca_oid FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.potential_duplicated_moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0 AND d.spectral_type_number>=0 WHERE dup.classification='y' AND dup.moca_oid IN (''' + ph + ')'
         for r in fetch(cur, known_sql, ids*3):
             by_oid[r['moca_oid']]['known'] = True
+        for r in chunk:
+            r['known_candidate'] = not r['known'] and r.get('published_candidate_spt') is not None and r['published_candidate_spt'] >= 0
         for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_wiseview_visual_vetting WHERE moca_oid IN (' + ph + ')', ids):
             by_oid[r['moca_oid']].update(motion=r['classification_integer'],motion_class=r['classification'])
         for r in fetch(cur, 'SELECT id,moca_oid,pmtot_masyr FROM data_proper_motions WHERE moca_oid IN (' + ph + ')'
@@ -344,42 +378,43 @@ def enrich(cur, rows):
 
 
 def passes(r, f):
-    quality=[str(r.get(lane+'_quality') or '').lower() for lane in LANES]
-    mode=f['quality_any']
-    if mode in ALL_QUALITY:
-        available=[str(r.get(lane+'_quality') or '').lower() for lane in LANES
-                   if r.get(lane+'_specid') and not r.get(lane+'_ignored')]
-        if not available or not all(v in QUALITY_CLASSES[mode] for v in available):return False
-    elif mode in QUALITY_CLASSES and not any(v in QUALITY_CLASSES[mode] for v in quality):return False
-    if f['quality_any']=='reviewed' and not any(quality):return False
-    if f['quality_any']=='unreviewed' and any(quality):return False
+    if apply_quality(r, f, 'quality'):
+        quality=[str(r.get(lane+'_quality') or '').lower() for lane in LANES]
+        mode=f['quality_any']
+        if mode in ALL_QUALITY:
+            available=[str(r.get(lane+'_quality') or '').lower() for lane in LANES
+                       if r.get(lane+'_specid') and not r.get(lane+'_ignored')]
+            if not available or not all(v in QUALITY_CLASSES[mode] for v in available):return False
+        elif mode in QUALITY_CLASSES and not any(v in QUALITY_CLASSES[mode] for v in quality):return False
+        if mode=='reviewed' and not any(quality):return False
+        if mode=='unreviewed' and any(quality):return False
     for key in TRI:
-        if f[key] != 'either' and bool(r.get(key)) != (f[key]=='yes'):
-            return False
-    if f['duplicates'] != 'either' and bool(r['duplicate']) != (f['duplicates']=='only'):
-        return False
-    numeric_cuts = [(f['snr_lane']+'_snr','min_snr','max_snr')]
-    if not r.get('known'):
+        if f[key] != 'either' and bool(r.get(key)) != (f[key]=='yes'):return False
+    if f['duplicates'] != 'either' and bool(r['duplicate']) != (f['duplicates']=='only'):return False
+    numeric_cuts=[]
+    if apply_quality(r, f, 'snr'):
+        numeric_cuts.append((f['snr_lane']+'_snr','min_snr','max_snr'))
+    if apply_quality(r, f, 'motion'):
         numeric_cuts.append(('motion','min_motion','max_motion'))
-        if f['motion_classes'] and str(r.get('motion_class') or 'none').lower() not in f['motion_classes']:
-            return False
+        if f['motion_classes'] and str(r.get('motion_class') or 'none').lower() not in f['motion_classes']:return False
     for field,lo,hi in numeric_cuts:
         val=r.get(field)
-        if f[lo] is not None and (val is None or val < f[lo]): return False
-        if f[hi] is not None and (val is None or val > f[hi]): return False
+        if f[lo] is not None and (val is None or val < f[lo]):return False
+        if f[hi] is not None and (val is None or val > f[hi]):return False
     for lane in LANES:
+        if not apply_quality(r, f, lane):continue
         quality = str(r.get(lane+'_quality') or 'none').lower()
-        if f['include_'+lane] and quality not in f['include_'+lane]: return False
-        if quality in f['exclude_'+lane]: return False
-    scores=r['cutout_scores']
-    if f['min_cutout'] is not None:
-        checks=[s is not None and s>=f['min_cutout'] for s in scores]
-        if not checks or not (all(checks) if f['cutout_policy']=='all' else any(checks)): return False
-    if f['cutout_classes']:
-        checks=[str(s).lower() in f['cutout_classes'] for s in r['cutout_classes']]
-        if not checks:
-            checks=['none' in f['cutout_classes']]
-        if not (all(checks) if f['cutout_policy']=='all' else any(checks)): return False
+        if f['include_'+lane] and quality not in f['include_'+lane]:return False
+        if quality in f['exclude_'+lane]:return False
+    if apply_quality(r, f, 'cutout'):
+        scores=r['cutout_scores']
+        if f['min_cutout'] is not None:
+            checks=[s is not None and s>=f['min_cutout'] for s in scores]
+            if not checks or not (all(checks) if f['cutout_policy']=='all' else any(checks)):return False
+        if f['cutout_classes']:
+            checks=[str(s).lower() in f['cutout_classes'] for s in r['cutout_classes']]
+            if not checks:checks=['none' in f['cutout_classes']]
+            if not (all(checks) if f['cutout_policy']=='all' else any(checks)):return False
     return True
 
 
@@ -467,7 +502,7 @@ def photometry(cur, rows, f):
                 obj['synthetic_w2_pack']=p['moca_specpackid'];obj['synthetic_w2_specid']=p['moca_specid'];obj['synthetic_w2_method']=p['calculation_method'] or p['origin']
     result=[]
     for r in rows:
-        r['other']=not any(r.get(s) for s in SOURCES) and not r['known']
+        r['other']=not any(r.get(s) for s in SOURCES) and not r.get('known')
         r['samples']=[s for s in (*SOURCES,'other') if r.get(s)]
         r['spt_source']=r['best_spt_source'] if f['spt_source']=='best' else f['spt_source']
         p,pu=r.get('parallax'),r.get('parallax_unc')
@@ -494,6 +529,7 @@ def load(cur,f):
     rows=fetch(cur,sql,params)
     if len(rows)>MAX_OBJECTS:
         raise sr.ReviewError('More than 100,000 objects pass the initial sample/type cuts. Raise the minimum spectral type or select fewer samples; no partial dashboard was produced.',422)
+    rows=list({r['moca_oid']:r for r in rows}.values())
     preliminary=len(rows)
     rows=[r for r in enrich(cur,rows) if passes(r,f)]
     rows=photometry(cur,rows,f)
@@ -512,6 +548,10 @@ def demo_rows(f):
            'cutout_count':2,'chi2':1+i/20,'is_public':0,
            'pmtot_masyr':None if i%7==0 else 20+(i*53)%780}
         for j,k in enumerate(TRI):r[k]=False if k=='known' else i%(j+3)==0
+        r['known'] = i % 11 == 0
+        r['known_candidate'] = not r['known'] and i % 13 == 0
+        r['published_spt'] = r['spt'] if r['known'] else None
+        r['published_candidate_spt'] = r['spt'] if r['known_candidate'] else None
         r['duplicate']=i%17==0
         for lane in LANES:r.update({lane+'_quality':'good',lane+'_spt':r['spt'],lane+'_snr':8+i%15,lane+'_specid':11001+i})
         r.update(sublime2_spt=r['spt'],adopted_spt=r['spt'],parallax=40+i,parallax_unc=2,parallax_snr=(40+i)/2,
@@ -549,7 +589,7 @@ def page():
 
 @findings.get('/assets/<name>')
 def asset(name):
-    if name not in ('sublime_findings.js','sublime_findings.css','spherex_review_plot.js'):
+    if name not in ('sublime_findings.js','sublime_findings.css','sublime_findings_completeness.js','spherex_review_plot.js'):
         raise sr.ReviewError('Unknown asset.',404)
     return send_from_directory(STATIC,name)
 
@@ -563,13 +603,25 @@ def plotly_asset():
 @findings.post('/api/findings/<operation>')
 def api(operation):
     try:
-        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions','diagnostics'):raise sr.ReviewError('Unknown operation.',404)
+        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions','diagnostics','completeness'):raise sr.ReviewError('Unknown operation.',404)
         if request.content_length and request.content_length>32768:raise sr.ReviewError('Request too large.',413)
         if not request.is_json:raise sr.ReviewError('Provide JSON.',415)
         body=request.get_json()
         if not isinstance(body,dict):raise sr.ReviewError('Provide a JSON object.')
         mock=sr.boolean(body.get('mock',False))
         started=time.monotonic()
+        if operation=='completeness':
+            f=parse_filters(body.get('filters',{'sources':body.get('sources',list(SOURCES)), 'min_spt':10,'min_motion':1}))
+            refresh=sr.boolean(body.get('refresh',False))
+            if mock:
+                reference=completeness.demo_reference()
+                summaries=completeness.summarize(demo_rows(completeness.census_filters(f)), f['sources'])
+            else:
+                with sr.connection(sr.credentials()) as (_,cur):
+                    cur.execute('START TRANSACTION READ ONLY')
+                    reference=completeness.reference_data(cur,refresh)
+                    summaries=completeness.census(cur,f)
+            return jsonify(sr.clean({'ok':True,'reference':reference,'summaries':summaries,'elapsed':time.monotonic()-started}))
         if operation=='duplicate-matches':
             raw_ids=body.get('oids')
             if not isinstance(raw_ids,list) or len(raw_ids)>duplicates.BATCH_SIZE:
@@ -650,7 +702,7 @@ def api(operation):
                     cur.execute('START TRANSACTION READ ONLY')
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
-                                     'mock':mock,'loaded_at':time.time(),'complete':True,'quality_definition_version':2,
+                                     'mock':mock,'loaded_at':time.time(),'complete':True,'known_source_version':1,'quality_definition_version':2,
                                      'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1,'trigonometric_photometry_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')

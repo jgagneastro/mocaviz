@@ -4,7 +4,8 @@ const FindingClasses = (() => {
   const accepted = new Set(['good', 'good_candidate', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
   const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
   const definitions = [
-    {key:'known', label:'Known recovered', color:'#bc7a3d', detail:'Existing published spectroscopic status, including confirmed duplicate links; takes precedence over the other classes.'},
+    {key:'known', label:'Known UCDs', color:'#bc7a3d', detail:'Existing published spectroscopic status, including confirmed duplicate links; takes precedence over the other classes.'},
+    {key:'known_candidate', label:'Known UCD candidates', color:'#c5a142', detail:'Public-adopted photometric spectral type joined by MOCAdb object ID. Spectroscopic known sources take precedence.'},
     {key:'claimed', label:'Claimed UCDs', color:'#b14e5a', detail:'BYW membership, a BYW, Yadu or Azul claim, or an SMDET designation. Applies after Known recovered and before the motion categories.'},
     {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'. WiseView score ≥ 5. Excludes known and claimed objects.'},
     {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'. WiseView score ≥ 3 and < 5. Excludes known and claimed objects.'},
@@ -13,6 +14,7 @@ const FindingClasses = (() => {
   ];
   function classify(row) {
     if(row.known) return 'known';
+    if(row.known_candidate) return 'known_candidate';
     if(row.byw || row.byw_claim || row.yadu || row.azul || row.smdet) return 'claimed';
     const qualifies=['spiffstacker','spiff','sublimeaperture'].some(lane=>accepted.has(String(row[lane+'_quality']??'').trim().toLowerCase()));
     const score=row.motion===null || row.motion===undefined || row.motion==='' ? NaN : Number(row.motion);
@@ -108,27 +110,28 @@ let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
 let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
-const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'no',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
+const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
 function range(key,label){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum')}${input('max_'+key,'Maximum')}</div>`;}
+function knownSwitch(group){return `<label class="check known-switch"><input type="checkbox" name="apply_known_${group}">Also apply filter to known sources</label>`;}
 function fs(title,html){return `<fieldset><legend>${esc(title)}</legend>${html}</fieldset>`;}
 const laneOptions=Object.entries(laneNames).map(([k,v])=>[k,v]);
 const triOptions=[['either','Either'],['yes','Present / yes'],['no','Absent / no']];
 $('plot-classes').innerHTML=classDefinitions.map(d=>`<span class="plot-class" title="${esc(d.detail)}"><i style="background:${d.color}"></i>${esc(d.label)} <b id="class-count-${d.key}">—</b></span>`).join('');
 $('filter-fields').innerHTML=
-fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished'],['yes','Known recovered'],['either','Both populations']])+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
+fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished'],['yes','Known recovered'],['either','Both populations']])+select('known_candidate','Known photometric UCD candidates',triOptions)+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
 fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Preferred type (ranked)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
-fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text'))+
-fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>')+
-fs('Spectrum S/N',select('snr_lane','Reduction lane',laneOptions)+range('snr','Median S/N per pixel'))+
-fs('Motion quality',range('motion','WiseView motion score')+input('motion_classes','Include motion classes','none = no review','text')+'<p class="hint">5–6 clear motion · 3–4 potential · 1–2 still · 1.5 M-type · 0.5 undetected · 0 unclear · −1 bad</p><p class="hint">Known recovered objects bypass these cuts.</p>')+
-fs('SUBLIME cutout quality',input('min_cutout','Minimum cutout score','4 = centered & isolated')+select('cutout_policy','Combine reviewed cutouts',[['all','All reviewed cutouts must pass'],['any','At least one reviewed cutout passes']])+input('cutout_classes','Include cutout classes','none = no cutout review','text')+'<p class="hint">4 centered & isolated · 3 centered & crowded · 2 off-center & isolated · 1 off-center & crowded · −1 halo</p>')+
+fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text')+knownSwitch('detection'))+
+fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>'+knownSwitch('quality'))+
+fs('Spectrum S/N',select('snr_lane','Reduction lane',laneOptions)+range('snr','Median S/N per pixel')+knownSwitch('snr'))+
+fs('Motion quality',range('motion','WiseView motion score')+input('motion_classes','Include motion classes','none = no review','text')+'<p class="hint">5–6 clear motion · 3–4 potential · 1–2 still · 1.5 M-type · 0.5 undetected · 0 unclear · −1 bad</p>'+knownSwitch('motion'))+
+fs('SUBLIME cutout quality',input('min_cutout','Minimum cutout score','4 = centered & isolated')+select('cutout_policy','Combine reviewed cutouts',[['all','All reviewed cutouts must pass'],['any','At least one reviewed cutout passes']])+input('cutout_classes','Include cutout classes','none = no cutout review','text')+'<p class="hint">4 centered & isolated · 3 centered & crowded · 2 off-center & isolated · 1 off-center & crowded · −1 halo</p>'+knownSwitch('cutout'))+
 fs('Catalog & claim membership',select('byw','In BYW',triOptions)+select('byw_claim','In BYW claimlists',triOptions)+select('yadu',"In Yadu’s claimlist",triOptions)+select('azul',"In Azul’s July 16, 2026 table",triOptions)+select('smdet','Has an SMDET designation',triOptions))+
-'<details class="filters-more" open><summary>Typing & visual-quality cuts by reduction</summary>'+Object.entries(laneNames).map(([k,v])=>fs(v,range(k+'_spt','Stored autotype number')+input('include_'+k,'Include visual classes','good, good_candidate, none','text')+input('exclude_'+k,'Exclude visual classes','bad, snr, scatter','text'))).join('')+'</details>'+
-'<details class="filters-more"><summary>Photometry, distance & fit quality</summary>'+fs('Absolute W2',select('distance_mode','Distance selection',[['astrometric','Parallax / nonphotometric only'],['include_photometric','Allow photometric distances']])+input('min_parallax_snr','Minimum parallax S/N')+select('synthetic_lane','SPHEREx synthetic W2 reduction',[['any','Any available SPHEREx reduction'],...laneOptions])+range('w2','Measured apparent W2'))+fs('SUBLIME2 fit',range('chi2','Stored reduced χ²'))+'</details>';
-function setFilters(f){$('filters').reset();for(const el of $('filters').elements){if(!el.name)continue;if(el.name==='sources'){el.checked=(f.sources||defaults.sources).includes(el.value);}else if(f[el.name]!==undefined&&f[el.name]!==null)el.value=String(f[el.name]);} $('dirty').textContent='Cuts combine with AND; blank cuts are disabled.';}
-function readFilters(){const f={sources:[]};for(const el of $('filters').elements){if(!el.name)continue;if(el.name==='sources'){if(el.checked)f.sources.push(el.value);}else if(el.value!=='')f[el.name]=el.type==='number'?Number(el.value):el.value.trim();}return f;}
+'<details class="filters-more" open><summary>Typing & visual-quality cuts by reduction</summary>'+Object.entries(laneNames).map(([k,v])=>fs(v,range(k+'_spt','Stored autotype number')+input('include_'+k,'Include visual classes','good, good_candidate, none','text')+input('exclude_'+k,'Exclude visual classes','bad, snr, scatter','text')+knownSwitch(k))).join('')+'</details>'+
+'<details class="filters-more"><summary>Photometry, distance & fit quality</summary>'+fs('Absolute W2',select('distance_mode','Distance selection',[['astrometric','Parallax / nonphotometric only'],['include_photometric','Allow photometric distances']])+input('min_parallax_snr','Minimum parallax S/N')+select('synthetic_lane','SPHEREx synthetic W2 reduction',[['any','Any available SPHEREx reduction'],...laneOptions])+range('w2','Measured apparent W2'))+fs('SUBLIME2 fit',range('chi2','Stored reduced χ²')+knownSwitch('chi2'))+'</details>';
+function setFilters(f){$('filters').reset();for(const el of $('filters').elements){if(!el.name)continue;if(el.name==='sources'){el.checked=(f.sources||defaults.sources).includes(el.value);}else if(el.type==='checkbox'){el.checked=f[el.name]===true;}else if(f[el.name]!==undefined&&f[el.name]!==null)el.value=String(f[el.name]);} $('dirty').textContent='Cuts combine with AND; blank cuts are disabled.';}
+function readFilters(){const f={sources:[]};for(const el of $('filters').elements){if(!el.name)continue;if(el.name==='sources'){if(el.checked)f.sources.push(el.value);}else if(el.type==='checkbox')f[el.name]=el.checked;else if(el.value!=='')f[el.name]=el.type==='number'?Number(el.value):el.value.trim();}return f;}
 async function api(op,body,signal){const response=await fetch('api/findings/'+op,{method:'POST',headers:{'Content-Type':'application/json',...auth},body:JSON.stringify({...body,mock}),signal,cache:'no-store',referrerPolicy:'no-referrer'});let data;try{data=await response.json();}catch{throw Error('The server returned an unreadable response.');}if(!response.ok||!data.ok)throw Error(data.error||'Request failed.');return data;}
 function safeLink(f){const u=new URL(location.href);u.search='';u.hash='';u.searchParams.set('filters',JSON.stringify(f));if(mock)u.searchParams.set('mock','1');return u.href;}
 function showError(message){$('error').textContent=message;$('error').hidden=false;}
@@ -139,12 +142,13 @@ async function load(){
  $('apply').disabled=false;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample… You can change cuts and Apply again while this loads.';
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. You can change cuts and Apply again; previous plots stay labeled until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;
+  if(result.known_source_version!==1)throw Error('Restart the Findings Dashboard service to apply known-source joins and quality exemptions.');
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
   if((f.spt_source||'best')==='best' && result.type_priority_version!==1)throw Error('Restart the Findings Dashboard service to apply the adopted and review-ranked type priority.');
   if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
   hasAstrometryPlots=result.astrometry_plot_version===1;
   hasTrigonometricPhotometry=result.trigonometric_photometry_version===1;
-  rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();
+  rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();resetCompleteness();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
   for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
@@ -303,7 +307,7 @@ async function loadDiagnostics(seq){
  }};
  await Promise.all([worker(),worker()]);
 }
-function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates'])$('view-'+name).hidden=name!==value;if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
+function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates','completeness'])$('view-'+name).hidden=name!==value;if(value==='completeness')loadCompleteness();if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}
 async function getFits(data,lane,signal){const missing=data.filter(r=>r[lane+'_specid']&&!fitCache.has(fitKey(r,lane)));if(missing.length){const result=await api('spectra',{lane,items:missing.map(r=>({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid']}))},signal);for(const item of result.items){const r=byId.get(item.object.moca_oid)||data.find(r=>r.moca_oid===item.object.moca_oid);if(r){fitCache.set(fitKey(r,lane),item);while(fitCache.size>180)fitCache.delete(fitCache.keys().next().value);}}}return data.map(r=>fitCache.get(fitKey(r,lane)));}
 function spectrumLabel(r,lane){
@@ -374,8 +378,79 @@ async function renderFlipbook(){
   });
  }
 }
-function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt))}<small>${esc(r.plot_class_label)}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
+function renderObjects(){const q=$('object-search').value.toLowerCase();const data=rows.filter(r=>(r.designation+' '+r.moca_oid).toLowerCase().includes(q));const pages=Math.ceil(data.length/50);objectPage=Math.max(0,Math.min(objectPage,Math.max(0,pages-1)));$('object-rows').innerHTML=data.slice(objectPage*50,objectPage*50+50).map(r=>`<tr data-inspect="${r.moca_oid}" tabindex="0" role="button" aria-label="Inspect ${esc(r.designation)}"><td>${esc(r.designation)}<small>OID ${r.moca_oid}</small></td><td>${esc(spt(r.spt))}<small>${esc(r.spt_source)}</small></td><td>${esc(spt(r.published_spt??r.published_candidate_spt))}<small>${esc(r.plot_class_label)}</small></td><td>${r.samples.map(s=>esc(sourceNames[s])).join('<br>')}</td><td>${fmt(r.motion,1)}</td><td>${fmt(r.cnn)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.M_w2)}</td><td>${r.byw?'BYW':'—'}<small>${[r.byw_claim?'BYW claim':'',r.yadu?'Yadu':'',r.azul?'Azul':'',r.smdet?'SMDET':''].filter(Boolean).join(' · ')||'no listed claims'}</small></td></tr>`).join('');$('objects-position').textContent=`${num(data.length)} objects · page ${pages?objectPage+1:0} / ${pages}`;$('objects-prev').disabled=objectPage===0;$('objects-next').disabled=objectPage>=pages-1;}
 const DUPLICATE_BATCH_SIZE=1500;
+let completenessData=null,completenessController=null,completenessRows=[],completenessKey='',completenessOptions=null;
+const completenessSky={};
+function resetCompleteness(){
+ const key=JSON.stringify(filters);
+ if(key===completenessKey)return;
+ completenessController?.abort();completenessController=null;completenessData=null;completenessKey=key;
+ purgePlots($('view-completeness'));$('completeness-rows').innerHTML='';
+ $('completeness-status').textContent='Open this tab to load the selected catalog census.';
+}
+async function loadCompleteness(refresh=false){
+ if(completenessData&&!refresh){renderCompleteness();return;}
+ if(completenessController||!filters.sources?.length)return;
+ const controller=new AbortController();completenessController=controller;
+ $('completeness-error').hidden=true;
+ $('completeness-status').textContent='Loading the catalog census with the applied quality settings, known recoveries, and cached references…';
+ $('completeness-reload').disabled=true;
+ try {
+  const data=await api('completeness',{filters,refresh},controller.signal);
+  if(controller!==completenessController)return;
+  completenessData=data;
+  $('completeness-source').innerHTML=[['union','Selected catalog union'],...filters.sources.map(k=>[k,sourceNames[k]])].map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('');
+  $('completeness-sky').value=completenessSky.union??1;
+  resetDepths();
+  const reference=data.reference;
+  $('completeness-depth-note').textContent=['j','w2'].map(b=>{const d=reference.depths[b];return `${b.toUpperCase()}: ${num(d.n)} unique objects; median ${fmt(d.median,2)}, 16–84% spread ${fmt(d.p16,2)}–${fmt(d.p84,2)} Vega mag`;}).join(' · ');
+  $('completeness-references').innerHTML='<p>'+reference.references.map(r=>`<a href="${esc(r.url)}" target="_blank" rel="noreferrer">${esc(r.label)}</a>: ${esc(r.role)}`).join('<br>')+'</p><p>'+Object.entries(reference.sequences).map(([b,r])=>`${b.toUpperCase()}: ${esc(r.moca_seqid)} · ${esc(r.moca_pid)} · valid ${spt(r.valid_xrange_min)}–${spt(r.valid_xrange_max)}`).join('<br>')+'</p><p>Literature checked '+esc(reference.literature_checked)+' · Reference/depth cache '+new Date(reference.cached_at*1000).toLocaleString()+' · refreshes after 7 days or on request. '+esc(reference.depth_method)+'</p>';
+  renderCompleteness();
+ }catch(e){if(e.name!=='AbortError'&&controller===completenessController){$('completeness-error').textContent=e.message;$('completeness-error').hidden=false;$('completeness-status').textContent='Census could not be loaded. Refresh to retry.';}}
+ finally{if(completenessController===controller){completenessController=null;$('completeness-reload').disabled=false;}}
+}
+function resetDepths(){if(!completenessData)return;for(const b of ['j','w2'])$('completeness-'+b).value=completenessData.reference.depths[b].median?.toFixed(3)??'';}
+function renderCompleteness(){
+ if(!completenessData)return;
+ const source=$('completeness-source').value,reference=completenessData.reference,summary=completenessData.summaries[source];
+ const options={sky:Number($('completeness-sky').value),j:Number($('completeness-j').value),w2:Number($('completeness-w2').value)};
+ try{
+  if(['j','w2','sky'].some(k=>$('completeness-'+k).value===''))throw Error('Provide both synthetic-band limits and the sky fraction.');
+  completenessRows=FindingCompleteness.evaluate(reference,summary,options);completenessOptions=options;
+ }catch(e){$('completeness-error').textContent=e.message;$('completeness-error').hidden=false;return;}
+ $('completeness-error').hidden=true;completenessSky[source]=options.sky;
+ const data=completenessRows,late=data.filter(r=>r.lo>=26&&r.lo<30),total=key=>data.reduce((a,r)=>a+(r[key]??0),0),sum=(a,key)=>a.reduce((n,r)=>n+(r[key]??0),0);
+ $('completeness-total').textContent=num(total('n'));$('completeness-secure').textContent=num(total('secure'));
+ $('completeness-late').textContent=num(sum(late,'n'));$('completeness-expected').textContent=fmt(sum(late,'expected'),1);
+ $('completeness-late-note').textContent=`${num(sum(late,'known'))} known · ${num(sum(late,'known_candidate'))} known candidates · ${num(sum(late,'secure'))} known/confirmed`;
+ $('completeness-status').textContent=`${source==='union'?'Unique union':sourceNames[source]} · ${num(summary.total)} catalog sources · ${num(summary.outside_density_bins)} outside published density bins · ${mock?'synthetic demonstration':'applied quality settings; publication/claim selectors cleared'} · fsky = ${options.sky}`;
+ const x=data.map(r=>r.center),line=(key,name,color,dash)=>({type:'scatter',mode:'lines+markers',x,y:data.map(r=>r[key]),name,connectgaps:false,line:{color,dash},marker:{size:6},hovertemplate:'%{y:.2f}<extra>'+name+'</extra>'});
+ const axis=(ylabel)=>{const l=baseLayout('Spectral type',ylabel);l.xaxis.tickmode='array';l.xaxis.tickvals=reference.bins.map(r=>r.center);l.xaxis.ticktext=reference.bins.map(r=>r.label);l.xaxis.tickangle=-45;l.margin.t=75;l.legend={...l.legend,y:1.22,font:{size:10}};return l;};
+ const radius=line('r_count','All catalog sources','#257d76');
+ radius.error_y={type:'data',symmetric:false,array:data.map(r=>r.r_high-r.r_count),arrayminus:data.map(r=>r.r_count-r.r_low),thickness:1};
+ plot('completeness-radius',[radius,line('r_secure','Known / confirmed','#bc7a3d'),line('d_j','J ≥ 3σ','#397ac1','dot'),line('d_w2','W2 ≥ 3σ','#b14e5a','dot'),line('d_union','J or W2 ≥ 3σ','#28473e','dash')],{...axis('Volume-complete distance (pc)'),yaxis:{...axis('Volume-complete distance (pc)').yaxis,type:'log'}},false);
+ const ratio=line('ratio','All / expected','#257d76');
+ ratio.error_y={type:'data',symmetric:false,array:data.map(r=>r.ratio_high==null?null:r.ratio_high-r.ratio),arrayminus:data.map(r=>r.ratio_low==null?null:r.ratio-r.ratio_low),thickness:1};
+ const l=axis('Recovered / expected');l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:1,y1:1,line:{dash:'dash',color:'#79867e'}}];
+ plot('completeness-ratio',[ratio,line('ratio_secure','Known / confirmed','#bc7a3d')],l,false);
+ const expected=line('expected','Expected at 3σ (either band)','#28473e','dash');
+ expected.error_y={type:'data',symmetric:false,array:data.map(r=>r.expected_high==null?null:r.expected_high-r.expected),arrayminus:data.map(r=>r.expected_low==null?null:r.expected-r.expected_low),thickness:1};
+ plot('completeness-counts',[line('n','All catalog sources','#257d76'),line('secure','Known / confirmed','#bc7a3d'),expected],{...axis('Number of sources'),yaxis:{...axis('Number of sources').yaxis,type:'log'}},false);
+ $('completeness-rows').innerHTML=data.map(r=>`<tr><td>${r.label}${r.sparse?' †':''}</td><td>${fmt(r.rho*1000,2)}<small>−${fmt(r.rho_minus*1000,2)} / +${fmt(r.rho_plus*1000,2)}</small></td><td>${r.n}</td><td>${r.known}</td><td>${r.known_candidate}</td><td>${r.claimed}</td><td>${r.secure}</td><td>${fmt(r.v_count,0)}</td><td>${fmt(r.r_count,1)}<small>${fmt(r.r_low,1)}–${fmt(r.r_high,1)}</small></td><td>${fmt(r.d_j,1)} / ${fmt(r.d_w2,1)} / ${fmt(r.d_union,1)}</td><td>${fmt(r.expected,1)}</td><td>${fmt(r.ratio,2)}</td><td>${esc(r.comparison)}${r.sparse?'<small>† Sparse density calibration</small>':''}${r.partialJ||r.partialW2?'<small>Band relation coverage limited</small>':''}</td></tr>`).join('');
+}
+$('completeness-reload').onclick=()=>loadCompleteness(true);
+$('completeness-source').onchange=()=>{$('completeness-sky').value=completenessSky[$('completeness-source').value]??1;renderCompleteness();};
+for(const id of ['sky','j','w2'])$('completeness-'+id).onchange=renderCompleteness;
+$('completeness-depth-reset').onclick=()=>{resetDepths();renderCompleteness();};
+$('completeness-export').onclick=()=>{
+ if(!completenessData||!completenessOptions)return;
+ const source=$('completeness-source').value;
+ const records=completenessRows.map(r=>({...r,catalog:source,sky_fraction:completenessOptions.sky,j_limit_3sigma_vega:completenessOptions.j,w2_limit_3sigma_vega:completenessOptions.w2,density_reference:'2024ApJ...967..115B Table 3',cached_at:completenessData.reference.cached_at}));
+ const keys=Object.keys(records[0]),content='\ufeff'+[keys.map(csvCell).join(','),...records.map(r=>keys.map(k=>csvCell(r[k])).join(','))].join('\r\n');
+ const href=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=href;a.download='sublime-completeness-'+source+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+};
+
 let duplicateRows=null,duplicatePage=0,duplicateScan=null,duplicateCanWrite=false,duplicateSaving=false;
 
 function resetDuplicates(){
@@ -621,7 +696,7 @@ function csvCell(v){let s=Array.isArray(v)?v.join('; '):v==null?'':String(v);if(
 function exportCSV(){const keys=[...new Set(rows.flatMap(Object.keys))];const content='\ufeff'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(r[k])).join(','))].join('\r\n');const blob=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=blob;a.download='sublime-findings-'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(blob),1000);}
 $('filters').onsubmit=e=>{e.preventDefault();load();};$('filters').oninput=()=>{$('dirty').textContent='Filters changed — apply to update the sample.';};$('reset').onclick=()=>{setFilters(defaults);load();};
 for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-confirmations',true]])$(id).onclick=()=>{
- const cuts={...readFilters(),sources:['sublime2'],known:'no',
+ const cuts={...readFilters(),sources:['sublime2'],known:'no',known_candidate:'no',
   byw:'no',byw_claim:'no',yadu:'no',azul:'no',smdet:'no'};
  if(confirmations){
   cuts.quality_any='one_good';cuts.min_motion=5;
@@ -630,7 +705,7 @@ for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-con
  setFilters(cuts);load();
 };
 $('refresh').onclick=load;$('download').onclick=exportCSV;
-for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
+for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;f.known_candidate=known==='no'?'no':'either';if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 for(const id of ['snr-statistic','snr-band','chi2-lane','cnn-lane'])$(id).onchange=renderDiagnostics;
