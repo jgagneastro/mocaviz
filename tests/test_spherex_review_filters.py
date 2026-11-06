@@ -224,6 +224,63 @@ class FilterSelectionTests(unittest.TestCase):
                 with self.assertRaises(sr.ReviewError):sr.queue(cur,{'queue_order':'cnn_spt_snr','after':after})
                 cur.execute.assert_not_called()
 
+    def galactic_priority_fixture(self):
+        self.priority_fixture()
+        self.db.execute('DELETE FROM calc_galactic_coordinates')
+        self.db.executemany('INSERT INTO calc_galactic_coordinates VALUES(?,1,?)',
+                            [(1,15.0001),(2,-15),(3,10.0001),(4,-10),(5,None),(6,20),(7,-9)])
+        self.db.executemany('INSERT INTO calc_galactic_coordinates VALUES(?,0,80)',[(4,),(5,)])
+        return [1,6,2,3,4,7,5]
+
+    def test_latitude_bands_precede_all_existing_priority_keys(self):
+        expected=self.galactic_priority_fixture()
+        result=self.queue(queue_order='gal_cnn_spt_snr')
+        self.assertEqual([r['moca_oid'] for r in result['items']],expected)
+        self.assertEqual([r['sort_galactic_bin'] for r in result['items']],[0,0,1,1,2,2,3])
+        self.assertEqual([r['sort_cnn_bin'] for r in result['items']],[0,1,0,1,0,1,0])
+        self.assertEqual(self.oids(queue_order='gal_cnn_spt_snr',min_abs_galactic_latitude=15),[1,6,2])
+
+    def test_galactic_bands_have_strict_symmetric_boundaries(self):
+        self.galactic_priority_fixture()
+        for latitude,rank in [(15,1),(-15,1),(10,2),(-10,2),(15.000001,0),(-15.000001,0),
+                              (10.000001,1),(-10.000001,1),(0,2),(90,0),(-90,0),(None,3),(91,3)]:
+            with self.subTest(latitude=latitude):
+                self.db.execute('UPDATE calc_galactic_coordinates SET gb=? WHERE moca_oid=1 AND adopt_as_reference=1',(latitude,))
+                result=self.queue(queue_order='gal_cnn_spt_snr',moca_oids=[1])
+                self.assertEqual(result['items'][0]['sort_galactic_bin'],rank)
+
+    def test_latitude_priority_pagination_and_count_cross_all_bands(self):
+        expected=self.galactic_priority_fixture()
+        for limit in (1,2,3):
+            after=0;actual=[]
+            while True:
+                page=self.queue(queue_order='gal_cnn_spt_snr',after=after,limit=limit)
+                actual.extend(r['moca_oid'] for r in page['items'])
+                if not page['has_more']:break
+                after=page['next_after']
+                self.assertEqual(set(after),{'moca_oid','galactic_bin','cnn_bin','spectral_subtype','snr_1_2'})
+            self.assertEqual(actual,expected)
+        first=self.queue(queue_order='gal_cnn_spt_snr',limit=2)
+        self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,'good')",[(1,),(6,)])
+        self.assertEqual(self.oids(queue_order='gal_cnn_spt_snr',after=first['next_after']),[2,3,4,7,5])
+        self.assertEqual(sr.queue(self.cur,{'queue_order':'gal_cnn_spt_snr','after':first['next_after']},count_only=True),{'total':5})
+        cur=MagicMock();cur.fetchall.return_value=[{'total':5}]
+        sr.queue(cur,{'queue_order':'gal_cnn_spt_snr'},count_only=True)
+        sql,params=cur.execute.call_args.args
+        self.assertNotIn('sort_galactic_bin',sql)
+        self.assertNotIn('data_spectra d',sql)
+
+    def test_latitude_cursor_validation_and_previous_order_compatibility(self):
+        valid={'moca_oid':1,'galactic_bin':0,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
+        for value in (True,-1,4,'nan','1 OR 1=1'):
+            cur=MagicMock()
+            with self.subTest(value=value):
+                with self.assertRaises(sr.ReviewError):sr.queue(cur,{'queue_order':'gal_cnn_spt_snr','after':{**valid,'galactic_bin':value}})
+                cur.execute.assert_not_called()
+        previous={k:v for k,v in valid.items() if k!='galactic_bin'}
+        with self.assertRaises(sr.ReviewError):self.queue(queue_order='gal_cnn_spt_snr',after=previous)
+        self.assertIsInstance(self.queue(queue_order='cnn_spt_snr',after=previous)['items'],list)
+
     def test_invalid_inputs_rejected_before_database_execution(self):
         invalid=[{'review_sample':[]},{'review_sample':'unsafe'},{'snr_wavelength_range':[]},
                  {'snr_wavelength_range':'0-100'},{'queue_order':'spt; DROP'},

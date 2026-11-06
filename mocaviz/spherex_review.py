@@ -68,7 +68,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 6
+QUEUE_FILTER_VERSION = 7
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
     "sublime1": "pcat_sublime_candidates",
@@ -343,11 +343,16 @@ def stored_chi2_sql(column):
     return "COALESCE(" + ",".join(expressions) + ")"
 
 
-def priority_queue_cursor(after):
+def priority_queue_cursor(after, *, galactic_order=False):
     keys = {"moca_oid", "cnn_bin", "spectral_subtype", "snr_1_2"}
+    if galactic_order:
+        keys.add("galactic_bin")
     if not isinstance(after, dict) or set(after) != keys:
-        raise ReviewError("Invalid CNN/subtype/S/N queue cursor. Reload the queue.")
+        raise ReviewError("Invalid priority queue cursor. Reload the queue.")
+    galactic = ({"galactic_bin": integer(after["galactic_bin"], "Queue cursor Galactic latitude bin", 0, 3)}
+                if galactic_order else {})
     return {
+        **galactic,
         "moca_oid": integer(after["moca_oid"], "Queue cursor object ID"),
         "cnn_bin": integer(after["cnn_bin"], "Queue cursor CNN bin", 0, 1),
         "spectral_subtype": None if after["spectral_subtype"] is None else
@@ -358,7 +363,7 @@ def priority_queue_cursor(after):
 
 
 def priority_after_sql(cursor):
-    """Lexicographic keyset: CNN bin ASC, rounded subtype/SNR DESC NULLS LAST."""
+    """Lexicographic keyset: optional latitude bin, CNN, subtype, SNR, object ID."""
     sql, values = "s.moca_oid>%s", [cursor["moca_oid"]]
     for column, value in (("s.sort_snr_1_2", cursor["snr_1_2"]),
                           ("s.sort_subtype", cursor["spectral_subtype"])):
@@ -368,7 +373,11 @@ def priority_after_sql(cursor):
             sql = f"({column} IS NULL OR {column}<%s OR ({column}=%s AND {sql}))"
             values = [value, value, *values]
     sql = f"(s.sort_cnn_bin>%s OR (s.sort_cnn_bin=%s AND {sql}))"
-    return sql, [cursor["cnn_bin"], cursor["cnn_bin"], *values]
+    values = [cursor["cnn_bin"], cursor["cnn_bin"], *values]
+    if "galactic_bin" in cursor:
+        sql = f"(s.sort_galactic_bin>%s OR (s.sort_galactic_bin=%s AND {sql}))"
+        values = [cursor["galactic_bin"], cursor["galactic_bin"], *values]
+    return sql, values
 
 
 def queue(cur, body, *, count_only=False):
@@ -381,9 +390,10 @@ def queue(cur, body, *, count_only=False):
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
     order = body.get("queue_order", "oid_asc")
-    if not isinstance(order, str) or order not in {"cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
+    if not isinstance(order, str) or order not in {"gal_cnn_spt_snr", "cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
         raise ReviewError("Choose a valid queue order.")
-    priority_order = order == "cnn_spt_snr"
+    galactic_order = order == "gal_cnn_spt_snr"
+    priority_order = galactic_order or order == "cnn_spt_snr"
     rank_pixels = priority_order and not count_only
     type_order = order.startswith("spt_") or priority_order
     after = None if count_only else body.get("after")
@@ -392,7 +402,7 @@ def queue(cur, body, *, count_only=False):
     priority_cursor = None
     if after not in (None, 0):
         if priority_order:
-            priority_cursor = priority_queue_cursor(after)
+            priority_cursor = priority_queue_cursor(after, galactic_order=galactic_order)
         elif type_order:
             if not isinstance(after, dict) or set(after) != {"moca_oid", "spectral_type_number"}:
                 raise ReviewError("Invalid spectral-type queue cursor. Reload the queue.")
@@ -421,6 +431,13 @@ def queue(cur, body, *, count_only=False):
                 CASE WHEN (SELECT MAX(p2.visual_nn_good_probability)
                     FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
                     AND p2.visual_nn_good_probability BETWEEN 0 AND 1)>=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin"""
+            if galactic_order:
+                # Match the latitude filter's private-reference coordinates.
+                # MIN rank is deterministic if multiple reference rows exist.
+                type_projection += """,COALESCE((SELECT MIN(CASE WHEN ABS(g.gb)>15 THEN 0
+                    WHEN ABS(g.gb)>10 THEN 1 ELSE 2 END) FROM calc_galactic_coordinates g
+                    WHERE g.moca_oid=s.moca_oid AND g.adopt_as_reference=1
+                    AND g.gb BETWEEN -90 AND 90),3) AS sort_galactic_bin"""
         if cursor_oid:
             if cursor_spt is None:
                 conditions.append("adopted.spectral_type_number IS NULL AND s.moca_oid>%s")
@@ -594,7 +611,7 @@ def queue(cur, body, *, count_only=False):
     else:
         projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
     if priority_order and not count_only:
-        order_oid = "s.sort_cnn_bin ASC,s.sort_subtype IS NULL,s.sort_subtype DESC,s.sort_snr_1_2 IS NULL,s.sort_snr_1_2 DESC,s.moca_oid ASC"
+        order_oid = ("s.sort_galactic_bin ASC," if galactic_order else "") + "s.sort_cnn_bin ASC,s.sort_subtype IS NULL,s.sort_subtype DESC,s.sort_snr_1_2 IS NULL,s.sort_snr_1_2 DESC,s.moca_oid ASC"
         if priority_cursor is not None:
             after_sql, after_params = priority_after_sql(priority_cursor)
             selection += " WHERE " + after_sql
@@ -614,6 +631,8 @@ def queue(cur, body, *, count_only=False):
         if priority_order:
             next_after = {"moca_oid": last["moca_oid"], "cnn_bin": last["sort_cnn_bin"],
                           "spectral_subtype": last["sort_subtype"], "snr_1_2": last["sort_snr_1_2"]}
+            if galactic_order:
+                next_after["galactic_bin"] = last["sort_galactic_bin"]
         else:
             next_after = ({"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
                           if type_order else last["moca_oid"])

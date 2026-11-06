@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261106-upload-status">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-upload-status"></script>
+  <script defer src="static/spherex_review.js?v=20261106-latitude-order"></script>
 </head>
 <body>
   <header>
@@ -46,8 +46,8 @@
         <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
         <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
-        <label>Queue order<select id="queue-order"><option value="cnn_spt_snr" selected>CNN bin → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
-        <small>CNN P(good) ≥80% first, then &lt;80% or unavailable. Within each bin: adopted type rounded to one subtype, latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups.</small>
+        <label>Queue order<select id="queue-order"><option value="gal_cnn_spt_snr" selected>Latitude → CNN → type ↓ → S/N ↓</option><option value="cnn_spt_snr">CNN → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
+        <small>First |gb| &gt;15°, then 10° &lt; |gb| ≤15°, then |gb| ≤10°; unavailable latitude last. Within each band: CNN P(good) ≥80% first, then &lt;80% or unavailable; rounded adopted subtype latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups. The minimum-latitude filter still applies.</small>
         <small id="sample-hint" hidden>Public candidates have a public-adopted photometric type of M7 or later.</small>
         <label>Batch size <small>1–500 objects; applies to Load and Next batch</small><input id="batch-size" type="number" min="1" max="500" step="1" value="300"></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>

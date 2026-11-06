@@ -31,7 +31,7 @@ await page.route('**/api/spherex-review/*',async route=>{
     const available=all.filter(row=>row.moca_oid>after);
     payload.items=available.slice(0,body.limit);payload.has_more=available.length>body.limit;
     const last=payload.items.at(-1);
-    payload.next_after=last?{moca_oid:last.moca_oid,cnn_bin:0,spectral_subtype:20,snr_1_2:3}:null;
+    payload.next_after=last?{moca_oid:last.moca_oid,galactic_bin:0,cnn_bin:0,spectral_subtype:20,snr_1_2:3}:null;
   }
   if(op==='queue-count')payload.total=empty?0:3;
   return fulfill(payload);

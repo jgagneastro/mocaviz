@@ -281,12 +281,17 @@ still eligible for review.
 
 Queue and total COUNT use identical cuts. Next batch retains the cuts at load;
 loading an exact spectrum ID continues to bypass all queue cuts. Queue filter
-version 6 prevents new pages from silently loading unfiltered results from old
+version 7 prevents new pages from silently loading unfiltered results from old
 workers; restart the local service after deploying the Python update.
 
 
-Queue ordering defaults to `cnn_spt_snr`: first the SUBLIME2 CNN P(good)>=0.8
-bin, then the below-0.8/unavailable bin. Within each bin, current adopted types
+Queue ordering defaults to `gal_cnn_spt_snr`: latitude bands take precedence
+in the order |gb|>15, 10<|gb|<=15, |gb|<=10, then unavailable latitude. This
+uses calc_galactic_coordinates.adopt_as_reference=1; 15 degrees belongs to the
+middle band and 10 degrees to the low band. The minimum-latitude filter remains
+15 degrees by default; lower bands appear when it is lowered or cleared.
+Within each latitude band, first the SUBLIME2 CNN P(good)>=0.8 bin, then the
+below-0.8/unavailable bin. Within each CNN bin, current adopted types
 (adopted=1, ignored=0) are rounded to the nearest integer subtype and sorted
 latest-to-earliest; half subtypes round away from zero. Within each rounded
 subtype, sort by decreasing median signed flux/uncertainty over valid,
@@ -295,9 +300,10 @@ This fixed sorting band is independent of the spectrum S/N filter's chosen band.
 Untyped objects sort last in each CNN bin; missing 1–2 micron S/N sorts last
 within a subtype. Object ID breaks remaining ties. CNN P uses the same highest
 valid catalog probability as the header; it is not used as a continuous rank
-inside either bin. Existing exact-type and object-ID ordering choices remain.
+inside either bin. The former `cnn_spt_snr` order, exact-type and object-ID
+ordering choices remain available.
 
-The cursor carries the CNN bin, rounded subtype, median 1–2 micron S/N and
+The cursor carries the latitude bin, CNN bin, rounded subtype, median 1–2 micron S/N and
 object ID, rather than an offset, so classifying objects between batches does
 not skip the next pending objects. Total COUNT ignores this cursor and avoids
 sort-only pixel calculations. Other queue filters continue to select the sample;

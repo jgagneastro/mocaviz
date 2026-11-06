@@ -121,6 +121,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return 0;
+    if (request.queue_order === "gal_cnn_spt_snr") return 7;
     if (request.queue_order === "cnn_spt_snr") return 6;
     if (request.queue_order !== "oid_asc" || request.no_known || request.exclude_duplicates || request.no_wiseview_score ||
         !["all", "public-ucd"].includes(request.review_sample) ||
