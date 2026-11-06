@@ -68,7 +68,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 5
+QUEUE_FILTER_VERSION = 6
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
     "sublime1": "pcat_sublime_candidates",
@@ -343,6 +343,34 @@ def stored_chi2_sql(column):
     return "COALESCE(" + ",".join(expressions) + ")"
 
 
+def priority_queue_cursor(after):
+    keys = {"moca_oid", "cnn_bin", "spectral_subtype", "snr_1_2"}
+    if not isinstance(after, dict) or set(after) != keys:
+        raise ReviewError("Invalid CNN/subtype/S/N queue cursor. Reload the queue.")
+    return {
+        "moca_oid": integer(after["moca_oid"], "Queue cursor object ID"),
+        "cnn_bin": integer(after["cnn_bin"], "Queue cursor CNN bin", 0, 1),
+        "spectral_subtype": None if after["spectral_subtype"] is None else
+            integer(after["spectral_subtype"], "Queue cursor rounded subtype", -100, 100),
+        "snr_1_2": None if after["snr_1_2"] is None else
+            bounded_float(after["snr_1_2"], "Queue cursor S/N", -sys.float_info.max, sys.float_info.max),
+    }
+
+
+def priority_after_sql(cursor):
+    """Lexicographic keyset: CNN bin ASC, rounded subtype/SNR DESC NULLS LAST."""
+    sql, values = "s.moca_oid>%s", [cursor["moca_oid"]]
+    for column, value in (("s.sort_snr_1_2", cursor["snr_1_2"]),
+                          ("s.sort_subtype", cursor["spectral_subtype"])):
+        if value is None:
+            sql = f"({column} IS NULL AND {sql})"
+        else:
+            sql = f"({column} IS NULL OR {column}<%s OR ({column}=%s AND {sql}))"
+            values = [value, value, *values]
+    sql = f"(s.sort_cnn_bin>%s OR (s.sort_cnn_bin=%s AND {sql}))"
+    return sql, [cursor["cnn_bin"], cursor["cnn_bin"], *values]
+
+
 def queue(cur, body, *, count_only=False):
     if body.get("moca_specid") not in (None, ""):
         meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"))
@@ -353,14 +381,19 @@ def queue(cur, body, *, count_only=False):
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
     order = body.get("queue_order", "oid_asc")
-    if not isinstance(order, str) or order not in {"spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
+    if not isinstance(order, str) or order not in {"cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
         raise ReviewError("Choose a valid queue order.")
-    type_order = order.startswith("spt_")
+    priority_order = order == "cnn_spt_snr"
+    rank_pixels = priority_order and not count_only
+    type_order = order.startswith("spt_") or priority_order
     after = None if count_only else body.get("after")
     cursor_oid = 0
     cursor_spt = None
+    priority_cursor = None
     if after not in (None, 0):
-        if type_order:
+        if priority_order:
+            priority_cursor = priority_queue_cursor(after)
+        elif type_order:
             if not isinstance(after, dict) or set(after) != {"moca_oid", "spectral_type_number"}:
                 raise ReviewError("Invalid spectral-type queue cursor. Reload the queue.")
             cursor_oid = integer(after["moca_oid"], "Queue cursor object ID")
@@ -383,6 +416,11 @@ def queue(cur, body, *, count_only=False):
             SELECT MAX(a.id) FROM data_spectral_types a WHERE a.moca_oid=s.moca_oid
               AND a.adopted=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
         type_projection = ",adopted.spectral_type_number AS sort_spt"
+        if rank_pixels:
+            type_projection += """,ROUND(adopted.spectral_type_number,0) AS sort_subtype,
+                CASE WHEN (SELECT MAX(p2.visual_nn_good_probability)
+                    FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
+                    AND p2.visual_nn_good_probability BETWEEN 0 AND 1)>=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin"""
         if cursor_oid:
             if cursor_spt is None:
                 conditions.append("adopted.spectral_type_number IS NULL AND s.moca_oid>%s")
@@ -510,35 +548,58 @@ def queue(cur, body, *, count_only=False):
     """
     params = [*source_params, *params]
     prefix = ""
-    if min_snr is not None:
-        # Apply catalog, review and fit cuts first. The pixel window visits only
-        # candidate spectra through data_spectra's moca_specid index.
+    if min_snr is not None or rank_pixels:
+        # Compute the selected filter median and the fixed 1-2um sort median
+        # from candidate spectra only, using separate window partitions/bands.
         pixel_conditions = ["d.ignored=0", "d.wavelength_angstrom>0",
                             "d.flux_flambda IS NOT NULL", "d.flux_flambda_unc>0"]
-        if SNR_WAVELENGTH_RANGES[band] is not None:
-            low, high = SNR_WAVELENGTH_RANGES[band]
-            pixel_conditions.append("d.wavelength_angstrom BETWEEN %s AND %s")
-            params.extend((low * 10000, high * 10000))
+        bands, band_conditions = [], []
+        if min_snr is not None:
+            bands.append("SELECT 0 AS band")
+            predicate = "1=1"
+            if SNR_WAVELENGTH_RANGES[band] is not None:
+                low, high = SNR_WAVELENGTH_RANGES[band]
+                predicate = "d.wavelength_angstrom BETWEEN %s AND %s"
+                params.extend((low * 10000, high * 10000))
+            band_conditions.append(f"(bands.band=0 AND {predicate})")
+        if rank_pixels:
+            bands.append("SELECT 1 AS band")
+            band_conditions.append("(bands.band=1 AND d.wavelength_angstrom BETWEEN 10000 AND 20000)")
+        where_median = ""
+        if min_snr is not None:
+            where_median = "WHERE med.filter_snr>=%s"
+            params.append(min_snr)
         prefix = f"""WITH candidates AS (
             SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification{type_projection} {selection}
         ), snr_samples AS (
-            SELECT c.moca_specid,d.flux_flambda/d.flux_flambda_unc AS snr,
-              ROW_NUMBER() OVER (PARTITION BY c.moca_specid ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
-              COUNT(*) OVER (PARTITION BY c.moca_specid) AS sample_count
+            SELECT c.moca_specid,bands.band,d.flux_flambda/d.flux_flambda_unc AS snr,
+              ROW_NUMBER() OVER (PARTITION BY c.moca_specid,bands.band ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
+              COUNT(*) OVER (PARTITION BY c.moca_specid,bands.band) AS sample_count
             FROM candidates c JOIN data_spectra d ON d.moca_specid=c.moca_specid
-            WHERE {' AND '.join(pixel_conditions)}
+            CROSS JOIN ({' UNION ALL '.join(bands)}) bands
+            WHERE {' AND '.join(pixel_conditions)} AND ({' OR '.join(band_conditions)})
         ), snr_medians AS (
-            SELECT moca_specid,AVG(snr) AS median_snr FROM snr_samples
+            SELECT moca_specid,band,AVG(snr) AS median_snr FROM snr_samples
             WHERE sample_rank IN (FLOOR((sample_count+1)/2.0),FLOOR((sample_count+2)/2.0))
-            GROUP BY moca_specid
+            GROUP BY moca_specid,band
+        ), medians AS (
+            SELECT moca_specid,MAX(CASE WHEN band=0 THEN median_snr END) AS filter_snr,
+              MAX(CASE WHEN band=1 THEN median_snr END) AS sort_snr_1_2
+            FROM snr_medians GROUP BY moca_specid
+        ), eligible AS (
+            SELECT c.*,med.sort_snr_1_2 FROM candidates c
+            LEFT JOIN medians med ON med.moca_specid=c.moca_specid {where_median}
         ) """
-        selection = "FROM candidates s JOIN snr_medians sm ON sm.moca_specid=s.moca_specid WHERE sm.median_snr>=%s"
-        params.append(min_snr)
-        order_oid = "s.moca_oid"
-        projection = "s.*"
+        selection, projection, order_oid = "FROM eligible s", "s.*", "s.moca_oid"
     else:
         projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
-    if type_order:
+    if priority_order and not count_only:
+        order_oid = "s.sort_cnn_bin ASC,s.sort_subtype IS NULL,s.sort_subtype DESC,s.sort_snr_1_2 IS NULL,s.sort_snr_1_2 DESC,s.moca_oid ASC"
+        if priority_cursor is not None:
+            after_sql, after_params = priority_after_sql(priority_cursor)
+            selection += " WHERE " + after_sql
+            params.extend(after_params)
+    elif type_order:
         order_oid = "sort_spt IS NULL,sort_spt " + ("DESC" if order == "spt_desc" else "ASC") + ",s.moca_oid ASC"
     elif order == "oid_desc":
         order_oid += " DESC"
@@ -550,8 +611,12 @@ def queue(cur, body, *, count_only=False):
     next_after = None
     if len(records) >= limit:
         last = records[limit - 1]
-        next_after = ({"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
-                      if type_order else last["moca_oid"])
+        if priority_order:
+            next_after = {"moca_oid": last["moca_oid"], "cnn_bin": last["sort_cnn_bin"],
+                          "spectral_subtype": last["sort_subtype"], "snr_1_2": last["sort_snr_1_2"]}
+        else:
+            next_after = ({"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
+                          if type_order else last["moca_oid"])
     return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
             "next_after": next_after}
 

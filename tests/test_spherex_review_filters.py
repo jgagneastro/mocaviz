@@ -151,6 +151,79 @@ class FilterSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids(**cuts),[1])
         self.assertEqual(sr.queue(self.cur,cuts,count_only=True),{'total':1})
 
+    def priority_fixture(self):
+        self.db.execute('DELETE FROM pcat_sublime_candidates_v2')
+        self.db.executemany('INSERT INTO pcat_sublime_candidates_v2 VALUES(?,10,?)',
+                            [(1,.9),(2,.8),(3,.79999),(4,.8),(5,.9),(6,1.2),(7,.1)])
+        for oid,spt in [(1,10.1),(2,10.4),(3,25.4),(4,12.5),(5,10.49),(6,None),(7,12.49)]:
+            self.db.execute('UPDATE data_spectral_types SET spectral_type_number=? WHERE moca_oid=?',(spt,oid))
+        self.db.execute('DELETE FROM data_spectra')
+        for oid,values in [(1,[1,3]),(2,[1,19]),(3,[1,1]),(4,[3,3]),(5,[4,6]),(7,[2,2])]:
+            for wave,snr in zip([10000,20000],values):
+                self.db.execute('INSERT INTO data_spectra VALUES(?,?,?,1,0)',(100+oid,wave,snr))
+        self.db.executemany('INSERT INTO data_spectra VALUES(?,?,?,1,0)',[(101,35000,10000),(106,35000,50)])
+        return [4,2,5,1,3,7,6]
+
+    def test_cnn_bins_take_precedence_over_rounded_type_then_true_1_2um_median(self):
+        expected=self.priority_fixture()
+        result=self.queue(queue_order='cnn_spt_snr')
+        self.assertEqual([r['moca_oid'] for r in result['items']],expected)
+        self.assertEqual([r['sort_subtype'] for r in result['items']],[13,10,10,10,25,12,None])
+        self.assertEqual([r['sort_cnn_bin'] for r in result['items']],[0,0,0,0,1,1,1])
+        self.assertEqual([r['sort_snr_1_2'] for r in result['items']],[3,10,5,2,1,2,None])
+
+    def test_priority_pagination_crosses_every_bin_type_and_null_boundary(self):
+        expected=self.priority_fixture()
+        for limit in (1,2,3):
+            after=0;actual=[]
+            while True:
+                result=self.queue(queue_order='cnn_spt_snr',limit=limit,after=after)
+                actual.extend(r['moca_oid'] for r in result['items'])
+                if not result['has_more']:break
+                after=result['next_after']
+                self.assertEqual(set(after),{'moca_oid','cnn_bin','spectral_subtype','snr_1_2'})
+            self.assertEqual(actual,expected)
+        first=self.queue(queue_order='cnn_spt_snr',limit=2)
+        self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,'good')",[(4,),(2,)])
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',after=first['next_after']),[5,1,3,7,6])
+        self.assertEqual(sr.queue(self.cur,{'queue_order':'cnn_spt_snr','after':first['next_after']},count_only=True),{'total':5})
+
+    def test_sort_band_is_independent_of_filter_band_and_missing_snr_stays_eligible(self):
+        self.priority_fixture()
+        self.db.executemany('INSERT INTO data_spectra VALUES(?,?,?,1,0)',[(101,45000,100),(102,45000,2),(105,45000,10)])
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',moca_oids=[1,2,5],min_snr=2,snr_wavelength_range='4-5'),[2,5,1])
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',moca_oids=[1,2,5],min_snr=3,snr_wavelength_range='4-5'),[5,1])
+        self.db.execute('DELETE FROM data_spectra WHERE moca_specid=105 AND wavelength_angstrom<=20000')
+        self.db.execute('UPDATE data_spectra SET flux_flambda=0 WHERE moca_specid=101 AND wavelength_angstrom<=20000')
+        self.db.execute('UPDATE data_spectra SET flux_flambda=-1 WHERE moca_specid=102 AND wavelength_angstrom<=20000')
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',moca_oids=[1,2,5],min_snr=2,snr_wavelength_range='4-5'),[1,2,5])
+        last=self.queue(queue_order='cnn_spt_snr',moca_oids=[1,2,5],limit=2)
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',moca_oids=[1,2,5],after=last['next_after']),[5])
+
+    def test_priority_count_avoids_sort_only_pixel_and_probability_work(self):
+        cur=MagicMock();cur.fetchall.return_value=[{'total':3}]
+        self.assertEqual(sr.queue(cur,{'queue_order':'cnn_spt_snr'},count_only=True),{'total':3})
+        sql,params=cur.execute.call_args.args
+        self.assertNotIn('data_spectra d',sql)
+        self.assertNotIn('sort_cnn_bin',sql)
+        self.assertNotIn('sort_snr_1_2',sql)
+        sr.queue(cur,{'queue_order':'cnn_spt_snr','min_snr':2,'snr_wavelength_range':'4-5'},count_only=True)
+        sql,params=cur.execute.call_args.args
+        self.assertNotIn('bands.band=1',sql)
+        self.assertNotIn('BETWEEN 10000 AND 20000',sql)
+
+    def test_invalid_priority_cursors_never_execute_sql(self):
+        valid={'moca_oid':1,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
+        invalid=[{}, {'moca_oid':1,'spectral_type_number':20},
+                 *[{**valid,'cnn_bin':v} for v in (True,2,-1,'0 OR 1=1')],
+                 *[{**valid,'snr_1_2':v} for v in (True,'nan','inf','1 OR 1=1')],
+                 {**valid,'spectral_subtype':10.5},{**valid,'moca_oid':0}]
+        for after in invalid:
+            cur=MagicMock()
+            with self.subTest(after=after):
+                with self.assertRaises(sr.ReviewError):sr.queue(cur,{'queue_order':'cnn_spt_snr','after':after})
+                cur.execute.assert_not_called()
+
     def test_invalid_inputs_rejected_before_database_execution(self):
         invalid=[{'review_sample':[]},{'review_sample':'unsafe'},{'snr_wavelength_range':[]},
                  {'snr_wavelength_range':'0-100'},{'queue_order':'spt; DROP'},

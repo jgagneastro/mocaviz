@@ -45,4 +45,4 @@ try{
   await values('87.7%','0.80');
   assert.deepEqual(errors,[]);
   console.log('Passed: header percentages, zero/missing values, chi-squared fallback, navigation and refit.');
-}finally{await page.unrouteAll({behavior:"wait"});await browser.close();}
+}finally{await page.waitForLoadState('networkidle');await page.unrouteAll({behavior:"wait"});await browser.close();}

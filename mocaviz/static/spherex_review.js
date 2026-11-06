@@ -103,6 +103,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return 0;
+    if (request.queue_order === "cnn_spt_snr") return 6;
     if (request.queue_order !== "oid_asc" || request.no_known || request.exclude_duplicates || request.no_wiseview_score ||
         !["all", "public-ucd"].includes(request.review_sample) ||
         ["min_sublime2_snr", "min_cnn_probability", "min_abs_galactic_latitude", "max_reduced_chi2", "min_snr"].some((name) => request[name] != null)) return 5;

@@ -5,7 +5,7 @@ const origin=process.argv[2] || 'http://127.0.0.1:8079';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const requests=[],errors=[];
-let contextVersion=5,queueVersion=5;
+let contextVersion=6,queueVersion=6;
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
@@ -19,7 +19,7 @@ await page.route('**/api/spherex-review/*',async route=>{
     if(!body.moca_specid){
       payload.items=payload.items.slice(body.after ? 3 : 0,body.after ? 6 : 3);
       payload.has_more=!body.after;
-      payload.next_after=body.after ? null : {moca_oid:1003,spectral_type_number:20};
+      payload.next_after=body.after ? null : {moca_oid:1003,cnn_bin:0,spectral_subtype:20,snr_1_2:3.5};
     }
   }
   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(payload)});
@@ -30,14 +30,14 @@ async function load(){await page.locator('#load').click();await ready();}
 const last=op=>requests.filter(r=>r.op===op).at(-1).body;
 try{
   await page.goto(url);await ready();
-  for(const [id,value] of Object.entries({'sublime2-snr':'7','cnn-probability':'0.8','galactic-latitude':'15',snr:'2','snr-wavelength-range':'all','max-chi2':'1.5','queue-order':'spt_desc'}))
+  for(const [id,value] of Object.entries({'sublime2-snr':'7','cnn-probability':'0.8','galactic-latitude':'15',snr:'2','snr-wavelength-range':'all','max-chi2':'1.5','queue-order':'cnn_spt_snr'}))
     assert.equal(await page.locator('#'+id).inputValue(),value,id);
   assert(await page.locator('#exclude-duplicates').isChecked());
   const initial=last('queue');
   assert.equal(initial.exclude_duplicates,true);assert.equal(initial.min_sublime2_snr,'7');
   assert.equal(initial.min_cnn_probability,'0.8');assert.equal(initial.min_abs_galactic_latitude,'15');
   assert.equal(initial.min_snr,'2');assert.equal(initial.max_reduced_chi2,'1.5');
-  assert.equal(initial.queue_order,'spt_desc');
+  assert.equal(initial.queue_order,'cnn_spt_snr');
   await page.waitForFunction(()=>document.querySelector('#queue-total').textContent==='6 total matches at load');
   const {after,...cuts}=initial;assert.deepEqual(last('queue-count'),cuts);
   for(const sample of ['sublime2','catwiseredmovers','sublime1','public-ucd','all']){
@@ -65,7 +65,7 @@ try{
   await page.locator('#snr-wavelength-range').selectOption('4-5');
   await page.locator('#more').click();
   await page.waitForFunction(()=>document.querySelector('#more').disabled&&!document.querySelector('#load').disabled);
-  assert.deepEqual(last('queue'),{...loaded,after:{moca_oid:1003,spectral_type_number:20}});
+  assert.deepEqual(last('queue'),{...loaded,after:{moca_oid:1003,cnn_bin:0,spectral_subtype:20,snr_1_2:3.5}});
   await page.locator('#no-wiseview-score').uncheck();assert(await page.locator('#wiseview-score').isEnabled());
   assert.equal(await page.locator('#wiseview-score').inputValue(),'4');
   // Fresh loads honor each explicit ordering and blank numeric cuts.
@@ -78,7 +78,7 @@ try{
   assert.equal(last('queue').exclude_duplicates,false);
   // Old workers must never silently ignore new default cuts or sorting.
   for(const stale of ['context','queue']){
-    contextVersion=stale==='context'?4:5;queueVersion=stale==='queue'?4:5;
+    contextVersion=stale==='context'?5:6;queueVersion=stale==='queue'?5:6;
     const before=requests.length;await page.goto(url);
     await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));
     assert(!requests.slice(before).some(r=>r.op==='analyze'));
@@ -88,4 +88,4 @@ try{
   assert.deepEqual(last('queue'),{moca_specid:2860761,after:0,mock:true});
   assert.deepEqual(errors,[]);
   console.log('SPHEREx queue filter browser checks passed.');
-}finally{await browser.close();}
+}finally{await page.waitForLoadState('networkidle');await page.unrouteAll({behavior:'wait'});await browser.close();}
