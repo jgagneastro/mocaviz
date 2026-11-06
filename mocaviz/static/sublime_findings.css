@@ -58,3 +58,26 @@
 .completeness-controls{padding:18px;margin-bottom:18px}.completeness-controls .inline{flex-wrap:wrap;align-items:end;gap:14px}.completeness-controls input[type=number]{width:120px}.completeness-controls label{display:flex;flex-direction:column;gap:6px}.completeness-controls label.check{flex-direction:row;align-items:center}.known-switch{margin-top:12px;padding-top:10px;border-top:1px solid #dce5dd;font-size:12px}#view-completeness .table-wrap{margin:20px 0}#view-completeness td{white-space:nowrap}
 
 #view-completeness .card-head{flex-wrap:wrap;gap:12px}#view-completeness .card-head h2{flex:1 1 240px}
+
+/* Persistent feedback for catalog and progressive spectral refreshes. */
+.refresh-state[hidden]{display:none}
+.refresh-state{position:sticky;top:12px;z-index:25;display:flex;align-items:center;gap:14px;padding:16px 18px;margin:14px 0;border:1px solid #acd4c8;border-radius:12px;background:#eef8f4;box-shadow:0 5px 18px #143d3020;color:#164f46}
+.refresh-state-icon{flex:0 0 34px;width:34px;height:34px;border:2px solid currentColor;border-radius:50%;display:grid;place-items:center;font-size:23px;font-weight:700;line-height:1}
+.refresh-state[data-state=loading] .refresh-state-icon{border:4px solid #c5e2d8;border-top-color:#0d6961;animation:findings-refresh-spin .8s linear infinite}
+.refresh-state-copy{display:flex;flex:1;flex-direction:column;gap:5px;min-width:0}
+.refresh-state-copy strong{font-size:16px;line-height:1.3}
+.refresh-state-copy>span{font-size:12px;line-height:1.5}
+#refresh-state-elapsed{font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
+#refresh-state-progress{width:100%;height:5px;accent-color:#0d6961;margin-top:3px}
+#refresh-state-progress[hidden]{display:none}
+.refresh-state[data-state=error]{background:#fff0ed;border-color:#edb6a9;color:#9c3326}
+.refresh-state[data-state=partial]{background:#fff7e6;border-color:#e2c584;color:#80581a}
+#refresh[aria-busy=true]{opacity:1;background:#e1f2eb;border-color:#87bdae;color:#164f46;cursor:progress}
+.refresh-button-icon{display:inline-block}
+#refresh[aria-busy=true] .refresh-button-icon{animation:findings-refresh-spin 1s linear infinite}
+@keyframes findings-refresh-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.refresh-state[data-state=loading] .refresh-state-icon,#refresh[aria-busy=true] .refresh-button-icon{animation:none}}
+@media(max-width:600px){.refresh-state{top:6px;gap:10px;padding:12px}.refresh-state-icon{flex-basis:28px;width:28px;height:28px;font-size:19px}.refresh-state-copy strong{font-size:14px}.refresh-state-copy>span{font-size:11px}#refresh-state-elapsed{font-size:10px}}
+
+/* Keep the wrapping spectral-census legend above the bars. */
+#histogram{height:395px}

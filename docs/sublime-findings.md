@@ -316,3 +316,21 @@ spectrum ID, valid-pixel count, selected-lane review and fit provenance.
 Colors retain the atlas population classes; clicking a point opens the object
 inspector. Independent logarithmic-axis toggles allow signed/nonpositive values
 to be displayed on linear axes (both axes default logarithmic).
+
+
+## Refresh feedback
+
+**Refresh data** displays a sticky status banner with a spinning indicator and
+elapsed time. It first shows **Refreshing data…** for the catalog/review/photometry
+query, then **Refreshing spectra…** with actual diagnostic progress. The button
+is disabled and reads **Refreshing…** until both phases finish. A persistent
+checkmark and **Refresh complete** identify success; failures show **Refresh
+failed**, and unsuccessful diagnostic batches produce **Refresh completed with
+gaps** with a retry message. All outcomes re-enable the refresh button.
+
+Applying another filter set cancels the previous refresh and starts a new one;
+responses from earlier requests cannot stop or overwrite the current indicator.
+The feedback has accessible status text and honors reduced-motion preferences.
+
+The spectral-type histogram reserves space above the axes for its wrapping
+legend, keeping every legend entry clear of the bars on narrower cards.
