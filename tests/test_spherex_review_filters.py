@@ -58,6 +58,84 @@ class FilterSelectionTests(unittest.TestCase):
     def queue(self, **cuts): return sr.queue(self.cur, {'lane':'spiffstacker',**cuts})
     def oids(self, **cuts): return [r['moca_oid'] for r in self.queue(**cuts)['items']]
 
+    def dual_adopted_fixture(self):
+        # Regression: the private T8 must rank/filter/display as public M7.
+        for oid, specid in [(526890,600001),(526891,600002),(526892,600003)]:
+            self.db.execute('INSERT INTO moca_objects VALUES(?,0,?)',(oid,'Object '+str(oid)))
+            self.db.execute('INSERT INTO moca_spectra VALUES(?,?,62,0,3)',(specid,oid))
+            self.db.execute('INSERT INTO data_spectra VALUES(?,15000,3,1,0)',(specid,))
+            self.db.execute('INSERT INTO pcat_sublime_candidates_v2 VALUES(?,10,.9)',(oid,))
+            self.db.execute('INSERT INTO calc_galactic_coordinates VALUES(?,1,30)',(oid,))
+        self.db.execute('ALTER TABLE data_spectral_types ADD COLUMN moca_pid TEXT')
+        self.db.executemany('''INSERT INTO data_spectral_types
+            (id,moca_oid,ignored,adopted,public_adopted,photometric_estimate,spectral_type_number,moca_pid)
+            VALUES(?,?,0,?,?,1,?,?)''',[
+                (100,526890,1,0,28,'PrivateT8'),(101,526890,0,1,7,'PubM7'),
+                (102,526891,1,0,20,'PrivateT0'),(103,526891,0,1,15,'PubL5'),
+                (104,526892,1,0,25,'PrivateT5'),(105,526890,0,0,30,'Other2020')])
+
+    def test_selected_adopted_source_controls_all_type_orders_and_pagination(self):
+        self.dual_adopted_fixture()
+        for order in ('spt_desc','spt_asc','cnn_spt_snr','gal_cnn_spt_snr'):
+            for source in ('private','public'):
+                with self.subTest(order=order,source=source):
+                    expected=[526890,526891] if source=='private' else [526891,526890]
+                    if order=='spt_asc':expected.reverse()
+                    cuts=dict(queue_order=order,review_sample='public-ucd',adopted_spt_source=source,
+                              moca_oids=[526890,526891])
+                    first=self.queue(**cuts,limit=1)
+                    actual=[r['moca_oid'] for r in first['items']]
+                    actual.extend(self.oids(**cuts,after=first['next_after']))
+                    self.assertEqual(actual,expected)
+        self.assertEqual(self.oids(moca_oids=[526890,526891],queue_order='spt_desc'),[526890,526891])
+        self.assertEqual(self.oids(moca_oids=[526890,526891,526892],queue_order='spt_asc',
+                                  adopted_spt_source='public'),[526890,526891,526892])
+
+    def test_adopted_bounds_and_publication_list_use_same_selected_row_and_count(self):
+        self.dual_adopted_fixture()
+        ids=[526890,526891,526892]
+        self.assertEqual(self.oids(moca_oids=ids,min_sptn=20),ids)
+        self.assertEqual(self.oids(moca_oids=ids,min_sptn=10,adopted_spt_source='public'),[526891])
+        cuts=dict(moca_oids=ids,adopted_spt_source='public',adopted_spt_moca_pids=[' PubM7 ','PubL5','PubM7'])
+        self.assertEqual(self.oids(**cuts),[526890,526891])
+        self.assertEqual(sr.queue(self.cur,cuts,count_only=True),{'total':2})
+        self.assertEqual(self.oids(**{**cuts,'min_sptn':10}),[526891])
+        self.assertEqual(sr.queue(self.cur,{**cuts,'min_sptn':10},count_only=True),{'total':1})
+        for pid in ('PrivateT8','Other2020',"PubM7') OR 1=1 --"):
+            self.assertEqual(self.oids(**{**cuts,'adopted_spt_moca_pids':[pid]}),[])
+        self.assertEqual(self.oids(moca_oids=ids,adopted_spt_moca_pids=['PrivateT8','PrivateT0']),[526890,526891])
+        self.db.execute('UPDATE data_spectral_types SET ignored=1 WHERE id=101')
+        self.assertEqual(self.oids(**cuts),[526891])
+        self.assertEqual(self.oids(moca_oids=[526890],min_sptn=0,adopted_spt_source='public'),[])
+
+    def test_metadata_selects_public_type_and_reference_without_private_fallback(self):
+        self.dual_adopted_fixture()
+        for column in ('ra REAL','dec REAL','origin TEXT'):
+            self.db.execute('ALTER TABLE moca_objects ADD COLUMN '+column)
+        for column in ('spectral_type TEXT','complete_spectral_type TEXT','origin TEXT'):
+            self.db.execute('ALTER TABLE data_spectral_types ADD COLUMN '+column)
+        self.db.execute("UPDATE data_spectral_types SET spectral_type='T8' WHERE id=100")
+        self.db.execute("UPDATE data_spectral_types SET spectral_type='M7' WHERE id=101")
+        for source,label,reference in [('private','T8','PrivateT8'),('public','M7','PubM7')]:
+            meta=sr.spectrum_metadata(self.cur,600001,adopted_spt_source=source)
+            self.assertEqual(meta['adopted_spectral_type'],label)
+            self.assertEqual(meta['adopted_spectral_type_reference'],reference)
+            self.assertEqual(meta['adopted_spt_source'],source)
+        meta=sr.spectrum_metadata(self.cur,600003,adopted_spt_source='public')
+        self.assertIsNone(meta['adopted_spectral_type'])
+        exact=self.queue(moca_specid=600001,adopted_spt_source='public',min_sptn=30,
+                         adopted_spt_moca_pids=['NoMatch'])
+        self.assertEqual(exact['items'][0]['adopted_spectral_type'],'M7')
+
+    def test_adopted_source_and_publication_validation_precedes_database_reads(self):
+        invalid=[{'adopted_spt_source':value} for value in ('unsafe',None,True,[],{})]
+        invalid += [{'adopted_spt_moca_pids':value} for value in ('PubM7',None,True,[''],[1],['x'*256],['p']*501)]
+        for cuts in invalid:
+            with self.subTest(cuts=cuts):
+                cur=MagicMock()
+                with self.assertRaises(sr.ReviewError):sr.queue(cur,cuts)
+                cur.execute.assert_not_called()
+
     def test_samples_use_membership_without_duplicate_rows(self):
         self.assertEqual(self.oids(review_sample='sublime2'),[1,2,3,4,5])
         self.assertEqual(self.oids(review_sample='sublime1'),[2,3,6])

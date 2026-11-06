@@ -68,7 +68,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 7
+QUEUE_FILTER_VERSION = 9
+ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
     "sublime1": "pcat_sublime_candidates",
@@ -258,7 +259,14 @@ def snapshot(cur, lane, oid, *, lock=False):
     return clean({"vet": vet, "spt": spt, "spectra": spectra})
 
 
-def spectrum_metadata(cur, specid, oid=None, lane=None):
+def adopted_spt_column(source):
+    if not isinstance(source, str) or source not in ADOPTED_SPT_COLUMNS:
+        raise ReviewError("Choose private-adopted or public-adopted spectral types.")
+    return ADOPTED_SPT_COLUMNS[source]
+
+
+def spectrum_metadata(cur, specid, oid=None, lane=None, *, adopted_spt_source="private"):
+    column = adopted_spt_column(adopted_spt_source)
     conditions, params = ["s.moca_specid=%s", "mo.ignored=0"], [specid]
     if oid is not None:
         conditions.append("s.moca_oid=%s")
@@ -271,10 +279,12 @@ def spectrum_metadata(cur, specid, oid=None, lane=None):
                mo.designation, mo.ra, mo.\x60dec\x60, mo.origin AS object_origin,
                COALESCE(NULLIF(TRIM(st.spectral_type), ''), NULLIF(TRIM(st.complete_spectral_type), '')) AS adopted_spectral_type,
                COALESCE(NULLIF(TRIM(st.moca_pid), ''), NULLIF(TRIM(st.origin), '')) AS adopted_spectral_type_reference,
+               '{adopted_spt_source}' AS adopted_spt_source,
                (SELECT MAX(p2.visual_nn_good_probability) FROM pcat_sublime_candidates_v2 p2
                 WHERE p2.moca_oid=s.moca_oid AND p2.visual_nn_good_probability BETWEEN 0 AND 1) AS sublime2_cnn_probability
         FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-        LEFT JOIN data_spectral_types st ON st.moca_oid=mo.moca_oid AND st.adopted=1 AND st.ignored=0
+        LEFT JOIN data_spectral_types st ON st.id=(SELECT MAX(a.id) FROM data_spectral_types a
+            WHERE a.moca_oid=mo.moca_oid AND a.{column}=1 AND a.ignored=0)
         WHERE {' AND '.join(conditions)}
     """, tuple(params))
     if not meta:
@@ -287,8 +297,8 @@ def spectrum_lane(meta):
     return next((key for key, lane in LANES.items() if lane["pack"] == meta["moca_specpackid"]), None)
 
 
-def dataset(cur, lane, oid, specid):
-    meta = spectrum_metadata(cur, specid, oid, lane)
+def dataset(cur, lane, oid, specid, *, adopted_spt_source="private"):
+    meta = spectrum_metadata(cur, specid, oid, lane, adopted_spt_source=adopted_spt_source)
     spectrum = rows(cur, """
         SELECT id AS data_spectra_id, wavelength_angstrom, flux_flambda, flux_flambda_unc, ignored
         FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom, id LIMIT 10001
@@ -312,7 +322,9 @@ def analyze(cur, body):
     _, lane = lane_for(body) if body.get("lane") is not None else (None, None)
     oid = integer(body["moca_oid"], "moca_oid") if body.get("moca_oid") is not None else None
     specid = integer(body.get("moca_specid"), "moca_specid")
-    meta, spectrum, templates = dataset(cur, lane, oid, specid)
+    source = body.get("adopted_spt_source", "private")
+    adopted_spt_column(source)
+    meta, spectrum, templates = dataset(cur, lane, oid, specid, adopted_spt_source=source)
     key = spectrum_lane(meta)
     state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
     options = fit_options(body)
@@ -381,8 +393,10 @@ def priority_after_sql(cursor):
 
 
 def queue(cur, body, *, count_only=False):
+    source = body.get("adopted_spt_source", "private")
+    adopted_column = adopted_spt_column(source)
     if body.get("moca_specid") not in (None, ""):
-        meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"))
+        meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"), adopted_spt_source=source)
         if count_only:
             return {"total": 1}
         key = spectrum_lane(meta)
@@ -422,9 +436,9 @@ def queue(cur, body, *, count_only=False):
     adopted_join = ""
     type_projection = ""
     if type_order and not count_only:
-        adopted_join = """LEFT JOIN data_spectral_types adopted ON adopted.id=(
+        adopted_join = f"""LEFT JOIN data_spectral_types adopted ON adopted.id=(
             SELECT MAX(a.id) FROM data_spectral_types a WHERE a.moca_oid=s.moca_oid
-              AND a.adopted=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
+              AND a.{adopted_column}=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
         type_projection = ",adopted.spectral_type_number AS sort_spt"
         if rank_pixels:
             type_projection += """,ROUND(adopted.spectral_type_number,0) AS sort_subtype,
@@ -543,10 +557,22 @@ def queue(cur, body, *, count_only=False):
     min_snr = None
     if body.get("min_snr") not in (None, ""):
         min_snr = bounded_float(body["min_snr"], "Minimum spectrum median S/N", 0, 1e9)
+    adopted_conditions = []
     if body.get("min_sptn") not in (None, ""):
-        conditions.append("EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid=s.moca_oid AND d.calculation_method IN (" + ",".join(["%s"] * len(lane["methods"])) + ") AND d.spectral_type_number>=%s)")
-        params.extend(lane["methods"])
+        adopted_conditions.append("d.spectral_type_number>=%s")
         params.append(bounded_float(body["min_sptn"], "Minimum spectral-type number", -60, 40))
+    pids = body.get("adopted_spt_moca_pids", [])
+    if not isinstance(pids, list) or len(pids) > 500 or any(
+        not isinstance(pid, str) or not pid.strip() or len(pid) > 255 for pid in pids
+    ):
+        raise ReviewError("Provide at most 500 adopted-type moca_pid values, each 1–255 characters.")
+    if pids:
+        pids = list(dict.fromkeys(pid.strip() for pid in pids))
+        adopted_conditions.append("d.moca_pid IN (" + ",".join(["%s"] * len(pids)) + ")")
+        params.extend(pids)
+    if adopted_conditions:
+        conditions.append(f"EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid=s.moca_oid"
+                          f" AND d.{adopted_column}=1 AND d.ignored=0 AND " + " AND ".join(adopted_conditions) + ")")
     if boolean(body.get("exclude_duplicates")):
         conditions.append("NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting duplicate WHERE duplicate.potential_duplicated_moca_oid=s.moca_oid AND duplicate.classification='y')")
     if boolean(body.get("no_known")):
@@ -819,6 +845,8 @@ def undo(conn, cur, auth, body):
 
 
 def demo_item(body):
+    source = body.get("adopted_spt_source", "private")
+    adopted_spt_column(source)
     oid = integer(body.get("moca_oid", 1001), "moca_oid")
     lane, config = lane_for(body) if body.get("lane", "spiffstacker") is not None else (None, None)
     specid = integer(body.get("moca_specid", oid + 10000), "moca_specid")
@@ -838,6 +866,7 @@ def demo_item(body):
     return clean({
         "lane": lane, "read_only": lane is None, "object": {"moca_oid": oid, "moca_specid": specid,
             "moca_specpackid": config["pack"] if config else None,
+            "adopted_spt_source": source,
             "designation": f"Demonstration {oid}", "ra": 93.4382457, "dec": -64.9139227,
             "median_snr_per_pix": 12.5, "sublime2_cnn_probability": 0.93, "ignored": 0},
         "state": {"vet": [], "spt": [], "spectra": []}, "revision": "demo", "data_revision": "demo",

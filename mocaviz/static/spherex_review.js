@@ -31,7 +31,8 @@
         const job = analysisQueue.shift();
         job.state = "running";
         try {
-          const data = await api("analyze", {...job.item, lane: job.lane, options: job.options});
+          const data = await api("analyze", {...job.item, lane: job.lane, options: job.options,
+            adopted_spt_source: job.adoptedSptSource});
           if (Number(data.object?.moca_specid) !== Number(job.item.moca_specid) ||
               Number(data.object?.moca_oid) !== Number(job.item.moca_oid) ||
               typeof data.read_only !== "boolean") {
@@ -82,7 +83,7 @@
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "queue-order", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
+    for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
       "sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
@@ -161,7 +162,8 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
-    if (request.moca_specid) return 0;
+    if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.adopted_spt_source || request.adopted_spt_moca_pids?.length) return 9;
     if (request.queue_order === "gal_cnn_spt_snr") return 7;
     if (request.queue_order === "cnn_spt_snr") return 6;
     if (request.queue_order !== "oid_asc" || request.no_known || request.exclude_duplicates || request.no_wiseview_score ||
@@ -182,13 +184,17 @@
     }
   }
   let otherSampleVetting = $("missing-vetting").value, previousSample = $("review-sample").value;
+  let otherSampleSptSource = $("adopted-spt-source").value;
   $("review-sample").addEventListener("change", () => {
     const vetting = $("missing-vetting");
-    if ($("review-sample").value === "public-ucd") {
+    if ($("review-sample").value === "public-ucd" && previousSample !== "public-ucd") {
       otherSampleVetting = vetting.value;
+      otherSampleSptSource = $("adopted-spt-source").value;
       vetting.value = "all";
-    } else if (previousSample === "public-ucd") {
+      $("adopted-spt-source").value = "public";
+    } else if ($("review-sample").value !== "public-ucd" && previousSample === "public-ucd") {
       vetting.value = otherSampleVetting;
+      $("adopted-spt-source").value = otherSampleSptSource;
     }
     previousSample = $("review-sample").value;
     updateControls();
@@ -200,12 +206,14 @@
     try {
       if (!more) {
         const specid = $("specid").value.trim();
-        const request = specid ? {moca_specid: spectrumId(specid)} :
+        const request = specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
             queue_order: $("queue-order").value,
+            adopted_spt_source: $("adopted-spt-source").value,
+            adopted_spt_moca_pids: [...new Set($("adopted-spt-moca-pids").value.trim().split(/[\s,;]+/).filter(Boolean))],
             min_sublime2_snr: ["all", "sublime2"].includes($("review-sample").value) ? $("sublime2-snr").value || null : null,
             min_cnn_probability: ["all", "sublime2"].includes($("review-sample").value) ? $("cnn-probability").value || null : null,
             min_abs_galactic_latitude: $("galactic-latitude").value || null,
@@ -256,11 +264,12 @@
   }
   function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
   function analysis(item, lane = queueLane, fitOptions = options(), refresh = false, background = false) {
-    const k = key(item, lane) + ":" + JSON.stringify(fitOptions);
+    const adoptedSptSource = queueRequest.adopted_spt_source || "private";
+    const k = key(item, lane) + ":" + adoptedSptSource + ":" + JSON.stringify(fitOptions);
     if (refresh) cache.delete(k);
     let job = cache.get(k);
     if (!job) {
-      job = {key: k, item, lane, options: fitOptions, state: "queued"};
+      job = {key: k, item, lane, options: fitOptions, adoptedSptSource, state: "queued"};
       job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
       job.promise.catch(() => { if (cache.get(k) === job) cache.delete(k); });
       if (background) analysisQueue.push(job);
@@ -341,7 +350,8 @@
     const obj = data.object, fit = data.fit;
     const name = obj.designation || "Object " + obj.moca_oid;
     const type = obj.adopted_spectral_type, reference = obj.adopted_spectral_type_reference;
-    $("object-title").textContent = name + (type ? ` · Adopted ${type}${reference ? ` (${reference})` : ""}` : "");
+    const typeLabel = obj.adopted_spt_source === "public" ? "Public-adopted" : "Adopted";
+    $("object-title").textContent = name + (type ? ` · ${typeLabel} ${type}${reference ? ` (${reference})` : ""}` : "");
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
@@ -535,12 +545,18 @@
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
     for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
       min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
-      max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range"})) {
+      max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range",
+      adopted_spt_moca_pids: "adopted-spt-moca-pids"})) {
       if (params.has(param)) $(id).value = params.get(param);
     }
     $("no-wiseview-score").checked = ["1", "true"].includes(params.get("no_wiseview_score"));
     if (params.has("exclude_duplicates")) $("exclude-duplicates").checked = !["0", "false"].includes(params.get("exclude_duplicates"));
-    if (params.get("review_sample") === "public-ucd") $("missing-vetting").value = "all";
+    if (params.get("review_sample") === "public-ucd") {
+      $("missing-vetting").value = "all";
+      $("adopted-spt-source").value = "public";
+    }
+    if (["private", "public"].includes(params.get("adopted_spt_source")))
+      $("adopted-spt-source").value = params.get("adopted_spt_source");
     previousSample = $("review-sample").value;
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
     if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");

@@ -71,7 +71,7 @@ these spectra and continues to verify package membership on submission and undo.
 
 Existing legacy spherex_sublimeap_autotype rows remain supported. The queue selects
 the newest spectrum in the chosen lane for each active object. It supports
-explicit object IDs, minimum S/N, minimum **stored** autotype number, missing
+explicit object IDs, minimum S/N, minimum **adopted** spectral-type number, adopted-type publication IDs, missing
 spectral-vetting scope, a minimum WiseView motion score, and exclusion of already
 known nonphotometric M/L/T/Y spectral types.
 
@@ -113,7 +113,7 @@ this loaded queue are fitted sequentially in the background. Advancing reuses
 those fits and replenishes the ten-object look-ahead. Navigation takes priority
 over queued background work; a fit already running finishes before the newly
 selected target starts. Cached fits include the reduction lane, exact spectrum
-ID and fitting options. Reload, Refit, Undo and Quit discard queued work and
+ID, adopted SPT source and fitting options. Reload, Refit, Undo and Quit discard queued work and
 stale results. Up to 24 fits stay in this tab's memory for forward/back navigation;
 background fitting never submits classifications or spectral types.
 
@@ -289,7 +289,7 @@ still eligible for review.
 
 Queue and total COUNT use identical cuts. Next batch retains the cuts at load;
 loading an exact spectrum ID continues to bypass all queue cuts. Queue filter
-version 7 prevents new pages from silently loading unfiltered results from old
+version 9 prevents new pages from silently loading unfiltered results from old
 workers; restart the local service after deploying the Python update.
 
 
@@ -299,8 +299,8 @@ uses calc_galactic_coordinates.adopt_as_reference=1; 15 degrees belongs to the
 middle band and 10 degrees to the low band. The minimum-latitude filter remains
 15 degrees by default; lower bands appear when it is lowered or cleared.
 Within each latitude band, first the SUBLIME2 CNN P(good)>=0.8 bin, then the
-below-0.8/unavailable bin. Within each CNN bin, current adopted types
-(adopted=1, ignored=0) are rounded to the nearest integer subtype and sorted
+below-0.8/unavailable bin. Within each CNN bin, the selected adopted types
+(private: adopted=1; public: public_adopted=1; both require ignored=0) are rounded to the nearest integer subtype and sorted
 latest-to-earliest; half subtypes round away from zero. Within each rounded
 subtype, sort by decreasing median signed flux/uncertainty over valid,
 non-ignored pixels at 1–2 microns (inclusive) in the selected reduction lane.
@@ -317,6 +317,23 @@ not skip the next pending objects. Total COUNT ignores this cursor and avoids
 sort-only pixel calculations. Other queue filters continue to select the sample;
 a minimum CNN probability of 0.8 excludes the lower-priority bin until cleared.
 Legacy API requests omitting queue_order retain object-ID order.
+
+**Adopted SPT source** defaults to **Private-adopted**. Choosing **Public UCD
+candidates** switches it to **Public-adopted**; leaving that sample restores
+the previous source. Either source can be selected manually in any sample.
+The selected source controls **Adopted type ≥**, exact and rounded type ordering,
+and the adopted SPT and publication/origin beside the object name. Missing public
+types never fall back to private types. Public UCD sample membership still requires
+a public-adopted photometric M7+ type, even when the source is manually changed.
+
+**Adopted-type moca_pid(s)** accepts publication IDs separated by commas, spaces,
+semicolons or new lines. Any listed ID may match, but it must belong to the
+selected, non-ignored adopted type; an unrelated measurement does not qualify.
+Blank disables this filter. The API accepts `adopted_spt_source=private|public`
+and `adopted_spt_moca_pids` as a list of up to 500 IDs. The page also accepts
+these query parameters (publication IDs as separated text). Source and publication
+filters stay fixed for **Next batch** until a new queue is loaded. Exact spectrum
+ID mode bypasses queue filters and retains the selected source for its header.
 
 The optional user-run [SUBLIME2 object-ID index](sql/sublime2_oid_index.sql)
 improves direct object lookups. The queue does not require this schema change.
