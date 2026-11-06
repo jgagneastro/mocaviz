@@ -56,3 +56,5 @@
 
 /* Completeness controls share the atlas card and field styles. */
 .completeness-controls{padding:18px;margin-bottom:18px}.completeness-controls .inline{flex-wrap:wrap;align-items:end;gap:14px}.completeness-controls input[type=number]{width:120px}.completeness-controls label{display:flex;flex-direction:column;gap:6px}.completeness-controls label.check{flex-direction:row;align-items:center}.known-switch{margin-top:12px;padding-top:10px;border-top:1px solid #dce5dd;font-size:12px}#view-completeness .table-wrap{margin:20px 0}#view-completeness td{white-space:nowrap}
+
+#view-completeness .card-head{flex-wrap:wrap;gap:12px}#view-completeness .card-head h2{flex:1 1 240px}

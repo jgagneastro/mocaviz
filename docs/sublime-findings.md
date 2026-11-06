@@ -230,9 +230,10 @@ The sparse Y2 calibration is shown but no magnitude relation is extrapolated.
 
 `V_count = N/rho` and `r_count = (3 V_count / (4 pi fsky))^(1/3)` are
 **count-equivalent** quantities, not a demonstrated complete spatial boundary.
-The logarithmic distance axis is labeled **Volume-complete distance (pc)**;
-the number-of-sources plot also uses a logarithmic axis. Zero counts remain
-explicit in the table.
+The distance axis is labeled **Volume-complete distance (pc)**. All three
+completeness plots have independent **Log y-axis** checkboxes, on by default;
+unchecking one switches only that plot to a linear axis. Zero counts remain
+explicit in the table when logarithmic axes omit them.
 Both the inclusive quality-selected count and a conservative subset (published
 spectroscopy or good-family spectral review plus motion >=5) are plotted.
 Claimed and photometric candidates are not assumed confirmed. Garwood 68.27%

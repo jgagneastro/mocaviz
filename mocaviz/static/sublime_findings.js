@@ -432,10 +432,10 @@ function renderCompleteness(){
  radius.y=data.map(r=>r.r_count*factor);secureRadius.y=data.map(r=>r.r_secure*factor);
  radius.error_y={type:'data',symmetric:false,array:data.map(r=>(r.r_high-r.r_count)*factor),arrayminus:data.map(r=>(r.r_count-r.r_low)*factor),thickness:1};
  $('completeness-scale-note').textContent=scaled?(normalization.available?`Observed curves and their error bars × ${fmt(factor,3)}: median [J-or-W2 horizon / All catalog sources distance] in ${normalization.bins} nonzero L1–L5 bins. Sensitivity curves, table and volumes are unchanged; the counts plot has its own scaling checkbox.`:'No usable nonzero L1–L5 bins: curves remain unscaled.'):'Unscaled distances. Enable L1–L5 scaling to compare the relative shape of the recovered and sensitivity curves.';
- plot('completeness-radius',[radius,secureRadius,line('d_j','J ≥ 3σ','#397ac1','dot'),line('d_w2','W2 ≥ 3σ','#b14e5a','dot'),line('d_union','J or W2 ≥ 3σ','#28473e','dash')],{...axis('Volume-complete distance (pc)'),yaxis:{...axis('Volume-complete distance (pc)').yaxis,type:'log'}},false);
+ plot('completeness-radius',[radius,secureRadius,line('d_j','J ≥ 3σ','#397ac1','dot'),line('d_w2','W2 ≥ 3σ','#b14e5a','dot'),line('d_union','J or W2 ≥ 3σ','#28473e','dash')],{...axis('Volume-complete distance (pc)'),yaxis:{...axis('Volume-complete distance (pc)').yaxis,type:$('completeness-radius-log').checked?'log':'linear'}},false);
  const ratio=line('ratio','All / expected','#257d76');
  ratio.error_y={type:'data',symmetric:false,array:data.map(r=>r.ratio_high==null?null:r.ratio_high-r.ratio),arrayminus:data.map(r=>r.ratio_low==null?null:r.ratio-r.ratio_low),thickness:1};
- const l=axis('Recovered / expected');l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:1,y1:1,line:{dash:'dash',color:'#79867e'}}];
+ const l=axis('Recovered / expected');l.yaxis.type=$('completeness-ratio-log').checked?'log':'linear';l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:1,y1:1,line:{dash:'dash',color:'#79867e'}}];
  plot('completeness-ratio',[ratio,line('ratio_secure','Known / confirmed','#bc7a3d')],l,false);
  const expected=line('expected','Expected at 3σ (either band)','#28473e','dash');
  expected.error_y={type:'data',symmetric:false,array:data.map(r=>r.expected_high==null?null:r.expected_high-r.expected),arrayminus:data.map(r=>r.expected_low==null?null:r.expected-r.expected_low),thickness:1};
@@ -443,9 +443,10 @@ function renderCompleteness(){
  const observedCounts=line('n','All catalog sources','#257d76'),secureCounts=line('secure','Known / confirmed','#bc7a3d');
  observedCounts.y=data.map(r=>r.n*countNormalization.factor);secureCounts.y=data.map(r=>r.secure*countNormalization.factor);
  $('completeness-scale-counts-note').textContent=scaleCounts?(countNormalization.available?`Observed count curves × ${fmt(countNormalization.factor,3)}: median [expected / All catalog sources] in ${countNormalization.bins} nonzero L1–L5 bins. Expected counts, table and other plots are unchanged.`:'No usable nonzero L1–L5 bins: count curves remain unscaled.'):'Unscaled counts. L1–L5 scaling compares the distribution shape independently of distance scaling.';
- plot('completeness-counts',[observedCounts,secureCounts,expected],{...axis('Number of sources'),yaxis:{...axis('Number of sources').yaxis,type:'log'}},false);
+ plot('completeness-counts',[observedCounts,secureCounts,expected],{...axis('Number of sources'),yaxis:{...axis('Number of sources').yaxis,type:$('completeness-counts-log').checked?'log':'linear'}},false);
  $('completeness-rows').innerHTML=data.map(r=>`<tr><td>${r.label}${r.sparse?' †':''}</td><td>${fmt(r.rho*1000,2)}<small>−${fmt(r.rho_minus*1000,2)} / +${fmt(r.rho_plus*1000,2)}</small></td><td>${r.n}</td><td>${r.known}</td><td>${r.known_candidate}</td><td>${r.claimed}</td><td>${r.secure}</td><td>${fmt(r.v_count,0)}</td><td>${fmt(r.r_count,1)}<small>${fmt(r.r_low,1)}–${fmt(r.r_high,1)}</small></td><td>${fmt(r.d_j,1)} / ${fmt(r.d_w2,1)} / ${fmt(r.d_union,1)}</td><td>${fmt(r.expected,1)}</td><td>${fmt(r.ratio,2)}</td><td>${esc(r.comparison)}${r.sparse?'<small>† Sparse density calibration</small>':''}${r.partialJ||r.partialW2?'<small>Band relation coverage limited</small>':''}</td></tr>`).join('');
 }
+for(const key of ['radius','ratio','counts'])$('completeness-'+key+'-log').onchange=renderCompleteness;
 $('completeness-scale').onchange=renderCompleteness;
 $('completeness-scale-counts').onchange=renderCompleteness;
 $('completeness-reload').onclick=()=>loadCompleteness(true);
