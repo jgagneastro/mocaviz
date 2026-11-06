@@ -210,6 +210,14 @@ from .association_audit import routes as association_audit_routes
 app.register_blueprint(association_audit_routes.review)
 app.register_blueprint(association_audit_routes.review, url_prefix="/js", name="association_audit_compat")
 
+from .wiseview_review.routes import review as wiseview_review_blueprint
+from .sublime_findings import findings as sublime_findings_blueprint
+
+app.register_blueprint(wiseview_review_blueprint)
+app.register_blueprint(wiseview_review_blueprint, url_prefix="/js", name="wiseview_review_compat")
+app.register_blueprint(sublime_findings_blueprint, url_prefix="/sublime-findings", name="sublime_findings_hosted")
+app.register_blueprint(sublime_findings_blueprint, url_prefix="/js/sublime-findings", name="sublime_findings_hosted_compat")
+
 
 @app.before_request
 def _reuse_encoded_api_response() -> Response | None:
@@ -33408,6 +33416,13 @@ def _retrieval_solar_references() -> list[dict[str, Any]]:
 def index():
     private_card = association_audit_routes.private_home_card()
     if private_card:
+        private_card += '''<li>
+          <a data-js-page href="/wiseview-review/">WiseView x SUBLIME</a>
+          <p class="js-tool-description">Review motion, survey images and SPHEREx spectra with keyboard classifications and Undo.</p>
+        </li><li>
+          <a data-js-page href="/sublime-findings/">SUBLIME Findings Dashboard</a>
+          <p class="js-tool-description">Explore SUBLIME discoveries and recoveries, spectral diagnostics and the spectrum flipbook.</p>
+        </li>'''
         html = (STATIC_DIR / "js_index.html").read_text(encoding="utf-8")
         return Response(html.replace("<!-- authenticated-tools -->", private_card), mimetype="text/html",
                         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})

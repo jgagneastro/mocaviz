@@ -585,6 +585,19 @@ def private_response(response):
 @findings.get('/')
 @findings.get('/sublime-findings')
 def page():
+    if request.blueprint != 'sublime_findings':
+        from flask import Response
+        try:
+            auth=sr.credentials()
+            with sr.connection(auth):pass
+        except (sr.ReviewError,pymysql.MySQLError):
+            return Response('Not found.',status=404,mimetype='text/plain')
+        html=(STATIC/'sublime_findings.html').read_text()
+        base=request.path if request.path.endswith('/') else request.path+'/'
+        html=html.replace('<head>','<head><base href="'+base+'">',1)
+        html=html.replace('href="/" aria-label="SUBLIME findings home"','href="'+base+'" aria-label="SUBLIME findings home"')
+        html=html.replace('href="http://127.0.0.1:8799/"','href="/js/"').replace('Web Tools ↗','MOCAviz ↗')
+        return Response(html,mimetype='text/html')
     return send_from_directory(STATIC,'sublime_findings.html')
 
 
@@ -620,7 +633,7 @@ def api(operation):
             else:
                 with sr.connection(sr.credentials()) as (_,cur):
                     cur.execute('START TRANSACTION READ ONLY')
-                    reference=completeness.reference_data(cur,refresh)
+                    reference=completeness.reference_data(cur,refresh,persist=request.blueprint=='sublime_findings')
                     summaries=completeness.census(cur,f)
             return jsonify(sr.clean({'ok':True,'reference':reference,'summaries':summaries,'elapsed':time.monotonic()-started}))
         if operation=='duplicate-matches':

@@ -19,6 +19,7 @@ CACHE = Path(os.environ.get('MOCAVIZ_COMPLETENESS_CACHE',
     str(Path.home()/'Library/Caches/MOCAviz/sublime-completeness-v1.json')))
 TTL = 7*86400
 LOCK = threading.Lock()
+MEMORY_REFERENCE = None
 # rho, negative error, positive error, all in 10^-3 pc^-3 per listed bin.
 DENSITIES = [
     (.36,.10,.10),(.63,.13,.15),(.48,.11,.12),(.60,.21,.29),(.50,.11,.13),
@@ -79,9 +80,12 @@ def depth_summary(rows):
             for band,data in values.items()}
 
 
-def reference_data(cur, refresh=False):
+def reference_data(cur, refresh=False, *, persist=True):
+    global MEMORY_REFERENCE
     with LOCK:
-        if not refresh:
+        if not persist and not refresh and MEMORY_REFERENCE and time.time()-MEMORY_REFERENCE['cached_at']<TTL:
+            return MEMORY_REFERENCE
+        if persist and not refresh:
             try:
                 data=json.loads(CACHE.read_text())
                 if data['version']==VERSION and time.time()-data['cached_at']<TTL:return data
@@ -109,6 +113,9 @@ def reference_data(cur, refresh=False):
         # Cache only references and aggregate depths, never credentials or object records.
         from .spherex_review import clean
         data=clean(data)
+        if not persist:
+            MEMORY_REFERENCE=data
+            return data
         try:
             CACHE.parent.mkdir(parents=True,exist_ok=True)
             temp=CACHE.with_suffix('.tmp')
