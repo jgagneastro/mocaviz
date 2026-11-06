@@ -5,12 +5,13 @@ const origin=process.argv[2] || 'http://127.0.0.1:8079';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const requests=[],errors=[];
-let contextVersion=7,queueVersion=7;
+let contextVersion=7,queueVersion=7,contextGate=null;
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
   const body=route.request().postDataJSON();requests.push({op,body});
   assert(['context','queue','queue-count','analyze'].includes(op),'Unexpected write request');
+  if(op==='context'&&contextGate)await contextGate;
   const response=await route.fetch({postData:JSON.stringify({...body,mock:true})});
   const payload=await response.json();
   if(op==='context')payload.queue_filter_version=contextVersion;
@@ -29,7 +30,32 @@ async function ready(){await page.waitForFunction(()=>document.querySelector('#o
 async function load(){await page.locator('#load').click();await ready();}
 const last=op=>requests.filter(r=>r.op===op).at(-1).body;
 try{
-  await page.goto(url);await ready();
+  // A slow authentication response must not lock filter editing or start a queue.
+  let releaseContext;contextGate=new Promise(resolve=>{releaseContext=resolve;});
+  await page.goto(url,{waitUntil:'domcontentloaded'});
+  await page.locator('#review-sample').selectOption('catwiseredmovers');
+  assert(await page.locator('#sublime2-cuts').isHidden());
+  assert.match(await page.locator('#sublime2-cuts-hint').innerText(),/not applied/);
+  assert(await page.locator('#load').isDisabled());
+  await page.locator('#snr').fill('3');
+  assert.equal(await page.locator('#snr').inputValue(),'3');
+  assert(requests.every(r=>r.op==='context'));
+  releaseContext();contextGate=null;
+  await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+  assert(requests.every(r=>r.op==='context'),'Opening the reviewer must not load a queue');
+  await page.locator('#review-sample').selectOption('sublime2');
+  assert(await page.locator('#sublime2-cuts').isVisible());
+  await page.locator('#sublime2-snr').fill('9');
+  await page.locator('#review-sample').selectOption('catwiseredmovers');
+  assert(await page.locator('#sublime2-cuts').isHidden());
+  await page.locator('#review-sample').selectOption('sublime2');
+  assert.equal(await page.locator('#sublime2-snr').inputValue(),'9');
+  await page.locator('#sublime2-snr').fill('');
+  assert.equal(await page.locator('#sublime2-snr').inputValue(),'');
+  assert(requests.every(r=>r.op==='context'),'Editing sample cuts must not request spectra');
+  await page.locator('#sublime2-snr').fill('7');await page.locator('#snr').fill('2');
+  await page.locator('#review-sample').selectOption('all');
+  await load();
   for(const [id,value] of Object.entries({'sublime2-snr':'7','cnn-probability':'0.8','galactic-latitude':'15',snr:'2','snr-wavelength-range':'all','max-chi2':'1.5','queue-order':'gal_cnn_spt_snr'}))
     assert.equal(await page.locator('#'+id).inputValue(),value,id);
   assert(await page.locator('#exclude-duplicates').isChecked());
@@ -47,6 +73,7 @@ try{
     assert.equal(body.min_sublime2_snr,s2?'7':null);assert.equal(body.min_cnn_probability,s2?'0.8':null);
     assert.equal(await page.locator('#sublime2-snr').isDisabled(),!s2);
     assert.equal(await page.locator('#cnn-probability').isDisabled(),!s2);
+    assert.equal(await page.locator('#sublime2-cuts').isVisible(),s2);
     assert.equal(body.public_ucd_only,sample==='public-ucd');
   }
   // Ordinary sample switches retain the chosen missing-vetting scope.
@@ -79,12 +106,12 @@ try{
   // Old workers must never silently ignore new default cuts or sorting.
   for(const stale of ['context','queue']){
     contextVersion=stale==='context'?6:7;queueVersion=stale==='queue'?6:7;
-    const before=requests.length;await page.goto(url);
+    const before=requests.length;await page.goto(url);await page.locator('#load').click();
     await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));
     assert(!requests.slice(before).some(r=>r.op==='analyze'));
   }
   // Exact-spectrum requests continue to bypass every queue filter.
-  await page.goto(url+'&specid=2860761');await ready();
+  await page.goto(url+'&specid=2860761');await load();
   assert.deepEqual(last('queue'),{moca_specid:2860761,after:0,mock:true});
   assert.deepEqual(errors,[]);
   console.log('SPHEREx queue filter browser checks passed.');

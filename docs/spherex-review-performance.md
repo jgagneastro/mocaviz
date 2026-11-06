@@ -46,3 +46,12 @@ MOCAVIZ_TEST_BASE=http://127.0.0.1:8089 node tests/spherex_review_live_queue_bro
 It reads the existing private collaborator profile locally, blocks all review
 submission routes, loads the CatWISE queue and count, and checks a rendered
 spectrum. Credentials and retrieved science data are not written by the test.
+
+## Initial page and sample controls
+
+Opening the reviewer performs only its authentication/context check. Opening
+the page or changing filters does not load a queue, count objects, or fit spectra.
+Applicable filters remain editable while that check is pending; Load becomes
+available once it completes. CatWISE, SUBLIME1 and public-candidate samples hide
+the SUBLIME2-only detection/CNN controls and explicitly say those cuts are not
+applied. Returning to All objects or SUBLIME2 restores the previous values.

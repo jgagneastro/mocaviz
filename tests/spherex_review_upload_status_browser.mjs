@@ -45,11 +45,20 @@ async function release(index,outcome='ok'){
   assert(gates[index],'Synthetic submit request never arrived');gates[index](outcome);
 }
 const lastQueue=()=>requests.filter(r=>r.op==='queue').at(-1).body;
+async function openPage(suffix=''){
+  const before=requests.length;
+  await page.goto(url+suffix);await page.waitForLoadState('networkidle');
+  assert.deepEqual(requests.slice(before).map(r=>r.op),['context'],'Opening the page must not load or analyze a sample');
+  assert.equal(await page.locator('#object-title').textContent(),'No sample loaded');
+  assert.equal(await page.locator('#batch-size').inputValue(),suffix?'7':'300');
+  assert(await page.locator('#more').isDisabled());
+  await page.locator('#load').click();
+}
 try{
-  empty=true;await page.goto(url);
+  empty=true;await openPage();
   await page.waitForFunction(()=>document.querySelector('#object-title').textContent==='No matching spectra');
   assert(await page.locator('#upload-draining').isHidden());
-  empty=false;await page.goto(url);await target(1001);
+  empty=false;await openPage();await target(1001);
   assert.equal(await page.locator('#batch-size').inputValue(),'300');assert.equal(lastQueue().limit,300);
   assert(await page.locator('#upload-draining').isHidden());
   await page.locator('#batch-size').fill('2');await page.locator('#load').click();await target(1001);
@@ -89,7 +98,7 @@ try{
   assert.equal(await page.locator('#upload-remaining').textContent(),'1 result remaining');
   await release(3);await count(0);await page.waitForSelector('#upload-draining',{state:'hidden'});
   assert(await page.locator('#load').isEnabled());assert(await page.locator('#batch-size').isEnabled());
-  await page.goto(url+'&batch_size=7');await target(1001);assert.equal(lastQueue().limit,7);
+  await openPage('&batch_size=7');await target(1001);assert.equal(lastQueue().limit,7);
   await page.locator('#write-enabled').check();
   for(const oid of [1001,1002,1003]){await target(oid);await page.locator('[data-classification="good"]').click();}
   await page.waitForSelector('#upload-draining',{state:'visible'});

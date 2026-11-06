@@ -63,6 +63,15 @@ await page.route("**/api/spherex-review/*", async (route) => {
     } catch { /* Quit may have aborted this intercepted request. */ }
   }
 });
+async function loadInitialPage() {
+  await page.waitForFunction(() => document.querySelector("#status").textContent.startsWith("Ready."));
+  assert.equal(await page.locator("#object-title").textContent(), "No sample loaded");
+  assert.equal(await page.locator("#queue-total").textContent(), "");
+  assert.equal(await page.locator("#plot").evaluate(el => el.data?.length || 0), 0);
+  assert.equal(await page.locator("#batch-size").inputValue(), "300");
+  assert(await page.locator("#more").isDisabled());
+  await page.locator("#load").click();
+}
 async function title(value) {
   await page.waitForFunction((text) => document.querySelector("#object-title").textContent.includes(text) &&
     !document.querySelector("#report").disabled, value);
@@ -79,16 +88,16 @@ try {
     "/spherex-autotype?user=ignored&pwd=wrong&dbase=mocadb#user=management&pwd=test-placeholder&dbase=mocadb_private_tables",
   ]) {
     const suppliedURL = origin + suffix;
-    await page.goto(suppliedURL); await title("1001");
+    await page.goto(suppliedURL); await loadInitialPage(); await title("1001");
     assert.equal(page.url(), suppliedURL);
-    await page.reload(); await title("1001");
+    await page.reload(); await loadInitialPage(); await title("1001");
     assert.equal(page.url(), suppliedURL);
     assert(await page.locator("#write-enabled").isEnabled());
     assert(!await page.locator("#write-enabled").isChecked());
   }
   const reviewURL = origin + "/spherex-review?user=management&pwd=test-placeholder&dbase=mocadb_private_tables";
   // Queue controls travel together and Next batch retains the loaded filters.
-  await page.goto(reviewURL + "&missing_vetting=either&min_wiseview_score=6");
+  await page.goto(reviewURL + "&missing_vetting=either&min_wiseview_score=6"); await loadInitialPage();
   await title("1001");
   assert.equal(await page.locator("#missing-vetting").inputValue(), "either");
   assert.equal(await page.locator("#wiseview-score").inputValue(), "6");
@@ -117,7 +126,7 @@ try {
   assert.equal(await page.locator("#queue-total").textContent(), "6 total matches at load");
   staleMode = "filter-version";
   const beforeFilters = apiRequests.length;
-  await page.goto(reviewURL + "&missing_vetting=both&min_wiseview_score=6");
+  await page.goto(reviewURL + "&missing_vetting=both&min_wiseview_score=6"); await loadInitialPage();
   await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted"));
   assert(!apiRequests.slice(beforeFilters).some((r) => r.op === "analyze"));
   assert.equal(await page.locator("#plot").evaluate((el) => el.data?.length || 0), 0);
@@ -125,7 +134,7 @@ try {
   for (const mode of ["filter-version-1-context", "filter-version-1-queue"]) {
     staleMode = mode;
     const before = apiRequests.length;
-    await page.goto(reviewURL + "&missing_vetting=viable_elsewhere");
+    await page.goto(reviewURL + "&missing_vetting=viable_elsewhere"); await loadInitialPage();
     await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted"));
     const requests = apiRequests.slice(before);
     assert(!requests.some((r) => r.op === "analyze"));
@@ -136,7 +145,7 @@ try {
   for (const mode of ["queue", "queue-metadata", "analyze-specid", "analyze-oid", "analyze-metadata"]) {
     staleMode = mode;
     const before = apiRequests.length;
-    await page.goto(reviewURL + "&specid=2860761");
+    await page.goto(reviewURL + "&specid=2860761"); await loadInitialPage();
     await page.waitForFunction(() => document.querySelector("#errors").textContent.includes("restarted after deployment"));
     assert.equal(await page.locator("#specid").evaluate((el) => el.closest("label").textContent), "Spectrum ID");
     assert(await page.locator("#report").isDisabled());
@@ -149,7 +158,7 @@ try {
   const pastedURL = "https://dataviz.mocadb.ca/js/spectral-typing?specid=2860761&user=collaborators&pwd=ignored-nested-password";
   for (const suffix of ["&specid=2860761", "&moca_specid=2860761",
     "&specid=" + encodeURIComponent(pastedURL), "&specid=" + pastedURL]) {
-    await page.goto(reviewURL + suffix); await title("1001");
+    await page.goto(reviewURL + suffix); await loadInitialPage(); await title("1001");
     await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
     assert((await page.locator("#object-meta").textContent()).includes("spectrum=2860761"));
     assert((await page.locator("#write-hint").textContent()).includes("Read-only spectrum"));
@@ -163,7 +172,7 @@ try {
     await page.locator("#refit").click(); await title("1001");
     assert.equal(apiRequests.filter((r) => ["preview", "submit", "undo"].includes(r.op)).length, writesBefore);
     assert.equal(apiRequests.filter((r) => r.op === "analyze").at(-1).body.moca_specid, 2860761);
-    await page.reload(); await title("1001");
+    await page.reload(); await loadInitialPage(); await title("1001");
     assert((await page.locator("#object-meta").textContent()).includes("spectrum=2860761"));
   }
   // Exact ID wins over queue filters; supported packages select their own lane.
@@ -200,7 +209,7 @@ try {
   await page.locator("#load").click(); await title("1001");
   assert(await page.locator("#write-enabled").isEnabled());
   assert(!await page.locator("#write-enabled").isChecked());
-  await page.goto(reviewURL);
+  await page.goto(reviewURL); await loadInitialPage();
   await title("1001");
   await page.waitForFunction(() => document.querySelector("#plot").data?.length >= 9);
   const plotStyle = await page.evaluate(() => {

@@ -34,7 +34,7 @@ async function values(cnn,chi2){
   assert.equal(await page.locator('#header-chi2').textContent(),'χ²ᵣ='+chi2);
 }
 try{
-  await page.goto(origin+'/spherex-review?mock=1');await target(1001);await values('87.7%','1.23');
+  await page.goto(origin+'/spherex-review?mock=1');await page.locator('#load').click();await target(1001);await values('87.7%','1.23');
   assert((await page.locator('#header-cnn').getAttribute('title')).includes('SUBLIME2'));
   await page.locator('#next').click();await target(1002);await values('0.0%','2.75');
   await page.locator('#next').click();await target(1003);await values('—','—');

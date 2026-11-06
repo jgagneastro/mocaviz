@@ -17,3 +17,5 @@
 .upload-spinner{width:44px;height:44px;border:4px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:upload-spin 1s linear infinite}
 @keyframes upload-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.upload-spinner{animation:none}}
+
+#sublime2-cuts[hidden]{display:none}

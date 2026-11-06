@@ -42,7 +42,7 @@
     const pending = pendingCount();
     updateUploadStatus();
     $("submitting").textContent = pending + " results currently submitting to mocadb";
-    $("load").disabled = closed || busyUndo || loading || pending > 0;
+    $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
     for (const name of ["review-sample", "queue-order", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
@@ -50,6 +50,10 @@
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
+    $("sublime2-cuts").hidden = !sublime2Cuts;
+    $("sublime2-cuts-hint").textContent = sublime2Cuts ?
+      "SUBLIME2 cuts apply to All objects and SUBLIME2." :
+      "SUBLIME2 detection and CNN cuts are not applied to this sample.";
     for (const name of ["sublime2-snr", "cnn-probability"]) $(name).disabled ||= !sublime2Cuts;
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
@@ -496,6 +500,7 @@
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
     if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");
     if (params.has("min_wiseview_score")) $("wiseview-score").value = params.get("min_wiseview_score");
+    updateControls();
     try {
       if (auth.host !== "mocadb.ca" || auth.port !== "3306") throw new Error("These tools connect only to mocadb.ca:3306.");
       context = await api("context");
@@ -508,7 +513,8 @@
         button.dataset.classification = label; button.className = usable.has(label) ? "usable" : "reject";
         button.onclick = () => enqueue("classify", label); $("classifications").append(button);
       }
-      updateControls(); await loadQueue();
+      status("Ready. Choose a sample, then select Load spectrum / queue [Alt+L].");
+      updateControls();
     } catch (e) {
       $("access").textContent = "Credentials required"; status("Open the original credential-bearing URL to begin.");
       error(e.message); updateControls();
