@@ -16,6 +16,7 @@
   const LOOKAHEAD = 10, FIT_CACHE_LIMIT = 24;
   let analyzing = false;
   const analysisQueue = [];
+  let autoNextTimer = null, autoNextAttempt = null;
 
   function cancelQueuedAnalysis() {
     // An in-flight fit finishes once; obsolete queued work never reaches the server.
@@ -49,7 +50,7 @@
         // Let navigation/rendering reprioritize the queue before starting another fit.
         await Promise.resolve();
       }
-    } finally { analyzing = false; }
+    } finally { analyzing = false; scheduleAutoNextBatch(); }
   }
 
   function status(text) { $("status").textContent = text; }
@@ -88,6 +89,24 @@
     const counts = uploading + " uploading · " + (pending - uploading) + " waiting";
     if ($("upload-remaining").textContent !== remaining) $("upload-remaining").textContent = remaining;
     if ($("upload-counts").textContent !== counts) $("upload-counts").textContent = counts;
+  }
+  function canAutoNextBatch() {
+    return hasMore && nextAfter != null && nextAfter !== 0 && items.length > 0 &&
+      !queueRequest.moca_specid && !closed && !loading && !busyUndo && !draining &&
+      !analyzing && analysisQueue.length === 0 && controllers.size === 0 &&
+      pendingCount() === 0 && !plotShown && visibleIndices().length === 0;
+  }
+  function scheduleAutoNextBatch() {
+    if (autoNextTimer !== null || !canAutoNextBatch()) return;
+    const request = queueRequest, cursor = JSON.stringify(nextAfter);
+    if (autoNextAttempt?.request === request && autoNextAttempt.cursor === cursor) return;
+    autoNextTimer = setTimeout(() => {
+      autoNextTimer = null;
+      if (queueRequest !== request || JSON.stringify(nextAfter) !== cursor || !canAutoNextBatch()) return;
+      // One automatic attempt per cursor. A failed request needs manual retry.
+      autoNextAttempt = {request, cursor};
+      void loadQueue(true, true);
+    }, 0);
   }
   function batchSize() {
     const value = $("batch-size").valueAsNumber;
@@ -145,6 +164,7 @@
       writable() ? "Choose a quality label to submit and advance immediately. Undo restores the last decision." :
       context?.can_write ? "Enable submissions to classify. Preview is available without enabling writes." :
       "Read-only access. Management URL credentials are required to submit.";
+    scheduleAutoNextBatch();
   }
   async function api(operation, body = {}, suppliedController = null) {
     const controller = suppliedController || new AbortController();
@@ -168,7 +188,7 @@
         throw failure;
       }
       return payload;
-    } finally { clearTimeout(timeout); controllers.delete(controller); }
+    } finally { clearTimeout(timeout); controllers.delete(controller); scheduleAutoNextBatch(); }
   }
   function ids() {
     const text = $("oids").value.trim();
@@ -233,8 +253,9 @@
     updateControls();
   });
   $("no-wiseview-score").addEventListener("change", updateControls);
-  async function loadQueue(more = false) {
+  async function loadQueue(more = false, automatic = false) {
     if (pendingCount() || loading || closed || busyUndo) return;
+    if (more) autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
     error("");
     try {
       if (!more) {
@@ -259,7 +280,7 @@
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;
-        queueRequest = request;
+        queueRequest = request; autoNextAttempt = null;
         hidden.clear(); resetAnalysis(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
@@ -269,7 +290,8 @@
       }
       const requestBody = {...queueRequest, after: more ? nextAfter : 0};
       if (!queueRequest.moca_specid) requestBody.limit = batchSize();
-      loading = true; updateControls(); status("Loading spectra from MOCAdb…");
+      loading = true; updateControls();
+      status(automatic ? "Loading next batch automatically…" : "Loading spectra from MOCAdb…");
       const data = await api("queue", requestBody);
       if (closed) return;
       if ((data.queue_filter_version ?? 0) < requiredQueueFilterVersion(queueRequest))
@@ -286,6 +308,8 @@
       }
       const start = items.length;
       items.push(...data.items); hasMore = data.has_more; nextAfter = data.next_after;
+      if (more && data.items.length === 0)
+        autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
       $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
         (data.read_only ? " · read only" : " · " + queueLane) :
         items.length + " objects loaded" + (hasMore ? " · more available" : " · end of queue");
@@ -293,7 +317,12 @@
         void showQueueTotal(queueRequest);
       }
       await show(start < items.length ? start : Math.max(0, items.length - 1));
-    } catch (e) { if (!closed) { error(e.message); status("Spectra could not be loaded."); } }
+      if (more && data.items.length === 0 && hasMore)
+        $("object-meta").textContent = "No spectra returned. Use Next batch to retry.";
+    } catch (e) { if (!closed) {
+      error(e.message); status("Spectra could not be loaded.");
+      if (automatic) $("object-meta").textContent = "Automatic next-batch loading stopped. Use Next batch to retry.";
+    } }
     finally { loading = false; if (!closed) updateControls(); }
   }
   function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
@@ -343,7 +372,9 @@
       index = -1;
       clearTarget();
       $("object-title").textContent = items.length ? "Queue complete" : "No matching spectra";
-      $("object-meta").textContent = hasMore ? "Load the next batch to continue." : "";
+      $("object-meta").textContent = hasMore ? (items.length ?
+        "The next batch will load when pending requests finish. Next batch is also available manually." :
+        "Use Next batch to continue.") : "";
       status(pendingCount() ? "All loaded objects are queued for submission." : "");
       updateControls(); return;
     }
@@ -518,7 +549,7 @@
   function quit() {
     const count = pendingCount();
     if (count && !confirm("Quit and discard " + count + " pending submissions? Requests already sent may still commit; check MOCAdb before reviewing them again.")) return;
-    closed = true;
+    closed = true; clearTimeout(autoNextTimer); autoNextTimer = null;
     for (const job of jobs) if (job.state === "queued") job.state = "cancelled";
     for (const controller of controllers) controller.abort();
     for (const name of Object.keys(auth)) auth[name] = "";

@@ -374,6 +374,15 @@ returns (including a failed submission restored for review), or the session
 closes. It does not cover a displayed spectrum. Reduced-motion preferences
 retain the loading ring without animation.
 
+When the loaded review queue is exhausted and more results exist, the next
+batch loads automatically after pending submissions, fits, and data requests
+finish. It keeps the loaded filters, order, and cursor, uses the current batch
+size, and preserves Undo history across batches. Failed submissions return to
+review before advancing. A failed or empty next-batch response stops automatic
+attempts at that cursor; use **Next batch** to retry. Initial page opening,
+empty initial results, exact-spectrum mode, and a closed session do not trigger
+automatic loading.
+
 Batch size defaults to 300 and accepts integers from 1 through 500. The current
 value applies to both Load and Next batch, so changing it need not reset the
 loaded queue. Next batch retains the loaded sample filters and sorting cursor.
