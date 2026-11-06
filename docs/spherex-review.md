@@ -108,7 +108,14 @@ rather than silently loading an unfiltered queue.
 It pages in configurable batches (default 300; range 1–500), using the selected queue order’s cursor.
 Loading a new queue also counts all objects matching its filters. The total
 is shown separately from the objects loaded into the tab.
-The next two fits are prefetched into a bounded browser-memory cache.
+After the displayed spectrum finishes fitting, the next ten visible objects in
+this loaded queue are fitted sequentially in the background. Advancing reuses
+those fits and replenishes the ten-object look-ahead. Navigation takes priority
+over queued background work; a fit already running finishes before the newly
+selected target starts. Cached fits include the reduction lane, exact spectrum
+ID and fitting options. Reload, Refit, Undo and Quit discard queued work and
+stale results. Up to 24 fits stay in this tab's memory for forward/back navigation;
+background fitting never submits classifications or spectral types.
 
 Fits use database moca_spherex_templates/data_spherex_templates and
 moca_spectra/data_spectra. The numerical functions were ported from
@@ -235,6 +242,7 @@ With a local mocaviz server:
 
     node scripts/chromium_probe.mjs --url 'http://127.0.0.1:8050/spherex-review?mock=1' --wait-js "document.querySelector('#plot')?.data?.length > 0" --expect-count '#classifications button==19'
     node tests/spherex_review_browser.mjs http://127.0.0.1:8050
+    node tests/spherex_review_prefetch_browser.mjs http://127.0.0.1:8050
 
 The browser regression test intercepts every API call and uses only synthetic
 reads or simulated writes. It checks query/fragment URL retention and reload,

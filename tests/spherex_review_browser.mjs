@@ -124,6 +124,7 @@ try {
   assert.equal(nextRequest.min_wiseview_score, "4");
   assert.equal(apiRequests.filter((r) => r.op === "queue-count").length, countRequests.length);
   assert.equal(await page.locator("#queue-total").textContent(), "6 total matches at load");
+  await page.waitForLoadState("networkidle");
   staleMode = "filter-version";
   const beforeFilters = apiRequests.length;
   await page.goto(reviewURL + "&missing_vetting=both&min_wiseview_score=6"); await loadInitialPage();
@@ -220,6 +221,7 @@ try {
       square: Math.abs(plot.clientWidth - plot.clientHeight) <= 1};
   });
   assert.deepEqual(plotStyle, {curves: 3, hidden: false, baselines: 3, boxed: true, square: true});
+  await page.waitForLoadState("networkidle");
   const readsBeforeCount = apiRequests.length;
   for (const count of [1, 10, 3]) {
     await page.locator("#match-count").selectOption(String(count));

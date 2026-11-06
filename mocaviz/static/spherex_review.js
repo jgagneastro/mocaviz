@@ -11,6 +11,43 @@
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
   let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
   let plotShown = false;
+  const LOOKAHEAD = 10, FIT_CACHE_LIMIT = 24;
+  let analyzing = false;
+  const analysisQueue = [];
+
+  function cancelQueuedAnalysis() {
+    // An in-flight fit finishes once; obsolete queued work never reaches the server.
+    for (const job of analysisQueue.splice(0)) {
+      if (cache.get(job.key) === job) cache.delete(job.key);
+      job.reject(new Error("Queued fit superseded."));
+    }
+  }
+  function resetAnalysis() { cancelQueuedAnalysis(); cache.clear(); }
+  async function drainAnalysis() {
+    if (analyzing || closed) return;
+    analyzing = true;
+    try {
+      while (analysisQueue.length && !closed) {
+        const job = analysisQueue.shift();
+        job.state = "running";
+        try {
+          const data = await api("analyze", {...job.item, lane: job.lane, options: job.options});
+          if (Number(data.object?.moca_specid) !== Number(job.item.moca_specid) ||
+              Number(data.object?.moca_oid) !== Number(job.item.moca_oid) ||
+              typeof data.read_only !== "boolean") {
+            throw new Error("The server returned a different spectrum or an outdated response. " +
+              "The review service may need to be restarted after deployment. No fit was loaded.");
+          }
+          job.state = "ready"; job.resolve(data);
+        } catch (e) {
+          if (cache.get(job.key) === job) cache.delete(job.key);
+          job.reject(e);
+        }
+        // Let navigation/rendering reprioritize the queue before starting another fit.
+        await Promise.resolve();
+      }
+    } finally { analyzing = false; }
+  }
 
   function status(text) { $("status").textContent = text; }
   function error(text) { $("errors").hidden = !text; $("errors").textContent = text || ""; }
@@ -181,7 +218,7 @@
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;
         queueRequest = request;
-        hidden.clear(); cache.clear(); items = []; current = null; index = -1; generation++;
+        hidden.clear(); resetAnalysis(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
         $("queue-total").textContent = "";
@@ -218,23 +255,29 @@
     finally { loading = false; if (!closed) updateControls(); }
   }
   function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
-  function analysis(item, lane = queueLane, fitOptions = options(), refresh = false) {
+  function analysis(item, lane = queueLane, fitOptions = options(), refresh = false, background = false) {
     const k = key(item, lane) + ":" + JSON.stringify(fitOptions);
     if (refresh) cache.delete(k);
-    if (!cache.has(k)) {
-      const promise = api("analyze", {...item, lane, options: fitOptions}).then((data) => {
-        if (Number(data.object?.moca_specid) !== Number(item.moca_specid) ||
-            Number(data.object?.moca_oid) !== Number(item.moca_oid) ||
-            typeof data.read_only !== "boolean") {
-          throw new Error("The server returned a different spectrum or an outdated response. " +
-            "The review service may need to be restarted after deployment. No fit was loaded.");
-        }
-        return data;
-      });
-      cache.set(k, promise); promise.catch(() => cache.delete(k));
-      while (cache.size > 6) cache.delete(cache.keys().next().value);
+    let job = cache.get(k);
+    if (!job) {
+      job = {key: k, item, lane, options: fitOptions, state: "queued"};
+      job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
+      job.promise.catch(() => { if (cache.get(k) === job) cache.delete(k); });
+      if (background) analysisQueue.push(job);
+      else analysisQueue.unshift(job);
+    } else if (!background && job.state === "queued") {
+      analysisQueue.splice(analysisQueue.indexOf(job), 1);
+      analysisQueue.unshift(job);
     }
-    return cache.get(k);
+    // Keep the current fit and all ten upcoming fits, plus recent back-navigation.
+    cache.delete(k); cache.set(k, job);
+    while (cache.size > FIT_CACHE_LIMIT) {
+      const oldest = [...cache].find(([, entry]) => entry.state === "ready");
+      if (!oldest) break;
+      cache.delete(oldest[0]);
+    }
+    void drainAnalysis();
+    return job.promise;
   }
   function clearFit() {
     $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
@@ -249,6 +292,8 @@
   async function show(nextIndex, refresh = false) {
     if (closed) return;
     const gen = ++generation;
+    cancelQueuedAnalysis();
+    const fitOptions = options();
     current = null;
     const visible = visibleIndices();
     if (!visible.length) {
@@ -266,11 +311,11 @@
     $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining in loaded queue";
     status("Fitting spectrum…"); updateControls();
     try {
-      const data = await analysis(item, queueLane, options(), refresh);
+      const data = await analysis(item, queueLane, fitOptions, refresh);
       if (gen !== generation || closed) return;
       current = data; render(data); status(data.warning || "Ready to review."); updateControls();
-      for (const i of visible.slice(visible.indexOf(index) + 1, visible.indexOf(index) + 3))
-        analysis(items[i]).catch(() => {});
+      for (const i of visible.slice(visible.indexOf(index) + 1, visible.indexOf(index) + 1 + LOOKAHEAD))
+        analysis(items[i], queueLane, fitOptions, false, true).catch(() => {});
     } catch (e) {
       if (gen !== generation || closed) return;
       if (e.status === 404) {
@@ -401,7 +446,7 @@
       history.pop(); job.state = "undone"; job.undoReceipt = null; hidden.delete(key(job.item, job.lane));
       if (queueLane !== job.lane) { queueLane = job.lane; $("lane").value = job.lane; items = [job.item]; hasMore = false; }
       else if (!items.some((i) => key(i) === key(job.item))) items.push(job.item);
-      cache.clear(); await show(items.findIndex((i) => key(i) === key(job.item)), true); status("Last decision undone.");
+      resetAnalysis(); await show(items.findIndex((i) => key(i) === key(job.item)), true); status("Last decision undone.");
     } catch (e) { if (!closed) error(e.message); }
     finally { busyUndo = false; if (!closed) updateControls(); }
   }
@@ -424,7 +469,7 @@
     for (const job of jobs) if (job.state === "queued") job.state = "cancelled";
     for (const controller of controllers) controller.abort();
     for (const name of Object.keys(auth)) auth[name] = "";
-    cache.clear(); history.length = 0; jobs.length = 0; items = []; current = null;
+    resetAnalysis(); history.length = 0; jobs.length = 0; items = []; current = null;
     generation++; hidden.clear(); Plotly.purge($("plot"));
     $("matches").replaceChildren(); $("stored").textContent = ""; $("preview-output").textContent = "";
     $("object-title").textContent = "Review session closed"; $("object-meta").textContent = "";
@@ -450,7 +495,7 @@
   $("specid").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
   });
-  $("refit").onclick = () => { cache.clear(); show(index, true); };
+  $("refit").onclick = () => { resetAnalysis(); show(index, true); };
   $("match-count").onchange = () => { if (current) render(current); };
   for (const name of ["first", "previous", "next", "last"]) $(name).onclick = () => navigate(name);
   $("undo").onclick = undoLast; $("report").onclick = openReport; $("wiseview").onclick = openWiseView;
