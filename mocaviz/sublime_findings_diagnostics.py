@@ -12,7 +12,7 @@ from pathlib import Path
 from . import spherex_review as sr
 
 MAX_ITEMS = 96
-BANDS = ('all', 'nir', 'mid', 'red')
+BANDS = ('all', 'one_five', 'nir', 'mid', 'red')
 ROOT = Path(os.environ.get('FINDINGS_AUTOTYPE_ROOT', '/Volumes/TData2/Documents/Science_Products/autotype_plots'))
 _DIRECTORIES = {}
 
@@ -39,6 +39,8 @@ def summarize(points):
             continue
         bands['all'].append(snr)
         wave /= 10000
+        if 1 <= wave <= 5:
+            bands['one_five'].append(snr)
         key = 'nir' if 1 <= wave < 2.5 else 'mid' if 2.5 <= wave < 4 else 'red' if 4 <= wave <= 5 else None
         if key:
             bands[key].append(snr)

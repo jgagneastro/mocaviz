@@ -554,6 +554,7 @@ def demo_rows(f):
         r['published_candidate_spt'] = r['spt'] if r['known_candidate'] else None
         r['duplicate']=i%17==0
         for lane in LANES:r.update({lane+'_quality':'good',lane+'_spt':r['spt'],lane+'_snr':8+i%15,lane+'_specid':11001+i})
+        if i%19==0:r['spiffstacker_quality']='peculiar_ucd'
         r.update(sublime2_spt=r['spt'],adopted_spt=r['spt'],parallax=40+i,parallax_unc=2,parallax_snr=(40+i)/2,
                  distance_pc=1000/(40+i),distance_kind='parallax',spt_source='spiffstacker',
                  w2=14+i/40,synthetic_w2=14.1+i/40,w2_difference=.1,

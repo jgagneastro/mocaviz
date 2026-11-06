@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
-const {classify,annotate,groups,definitions,isConfirmed,markerSymbol,diagnosticLane}=require('../mocaviz/static/sublime_findings.js');
+const {classify,annotate,groups,definitions,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point}=require('../mocaviz/static/sublime_findings.js');
 const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star'];
 test('every accepted review in any reduction qualifies at the requested motion boundaries',()=>{
   const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed'],[null,'others'],[undefined,'others'],[NaN,'others'],[Infinity,'others']];
@@ -85,4 +85,21 @@ test('published photometric candidates follow spectroscopy and precede claims',(
  assert.equal(classify({known_candidate:true}),'known_candidate');
  assert.equal(classify({known_candidate:true,smdet:true}),'known_candidate');
  assert.equal(classify({known:true,known_candidate:true}),'known');
+});
+
+test('SNR/chi2 pairing uses the selected spectrum and the fixed 1–5 micron median',()=>{
+ const row={moca_oid:1,spiffstacker_specid:20,spiff_specid:21,spiffstacker_quality:'good',spiff_quality:'PECULIAR_UCD',
+  diagnostics:{spiffstacker:{chi2:2,snr:{one_five:{median:3},all:{median:99}}},spiff:{chi2:7,snr:{one_five:{median:4}}}}};
+ const point=snrChi2Point(row);assert.equal(point.median_snr_1_5,3);assert.equal(point.fit_chi2,2);
+ assert.deepEqual(point.peculiar_lanes,['spiff']);
+ const forced=snrChi2Point(row,'spiff');assert.equal(forced.median_snr_1_5,4);assert.equal(forced.fit_chi2,7);
+ assert.equal(snrChi2Point({...row,spiff_ignored:true},'spiff'),null);
+ assert.equal(snrChi2Point({...row,diagnostics:{spiffstacker:{chi2:2,snr:{all:{median:99}}}}}),null);
+ assert.equal(snrChi2Point({...row,diagnostics:{spiffstacker:{chi2:null,snr:{one_five:{median:3}}}}}),null);
+});
+test('SNR/chi2 accepts aperture and preserves signed SNR and zero chi2 for linear axes',()=>{
+ const row={sublimeaperture_specid:30,sublimeaperture_quality:'peculiar_ucd',diagnostics:{sublimeaperture:{chi2:0,snr:{one_five:{median:-1}}}}};
+ const point=snrChi2Point(row,'sublimeaperture');assert.equal(point.median_snr_1_5,-1);assert.equal(point.fit_chi2,0);
+ assert.deepEqual(point.peculiar_lanes,['sublimeaperture']);
+ assert.equal(diagnosticLane(row),null);
 });

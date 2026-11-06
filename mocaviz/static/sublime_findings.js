@@ -37,12 +37,19 @@ const FindingClasses = (() => {
     const star={circle:'star',diamond:'star-diamond','triangle-up':'star-triangle-up'}[shape]||'star';
     return star+(open?'-open':'');
   }
-  function diagnosticLane(row,choice='auto') {
-    const lanes=['spiffstacker','spiff'].filter(lane=>row[lane+'_specid']&&!row[lane+'_ignored']);
+  function diagnosticLane(row,choice='auto',includeAperture=false) {
+    const lanes=['spiffstacker','spiff',...(includeAperture?['sublimeaperture']:[])].filter(lane=>row[lane+'_specid']&&!row[lane+'_ignored']);
     if(choice!=='auto')return lanes.includes(choice)?choice:null;
     const ranks=[['good','peculiar_ucd','late_m'],['contaminated_ucd','good_plus_star'],['good_candidate'],['incomplete_but_promising']];
     const rank=lane=>{const label=String(row[lane+'_quality']||'').trim().toLowerCase(),i=ranks.findIndex(group=>group.includes(label));return i<0?ranks.length:i;};
     return lanes.sort((a,b)=>rank(a)-rank(b))[0]||null;
+  }
+  function snrChi2Point(row,choice='auto') {
+    const lane=diagnosticLane(row,choice,true),diagnostic=row.diagnostics?.[lane];
+    const snr=diagnostic?.snr?.one_five?.median,chi2=diagnostic?.chi2;
+    if(!Number.isFinite(snr)||!Number.isFinite(chi2)||chi2<0)return null;
+    const peculiarLanes=['spiffstacker','spiff','sublimeaperture'].filter(key=>String(row[key+'_quality']??'').trim().toLowerCase()==='peculiar_ucd');
+    return {...row,diagnostic_lane:lane,median_snr_1_5:snr,fit_chi2:chi2,peculiar_lanes:peculiarLanes};
   }
   function annotate(row) {
     const key=classify(row), definition=definitions.find(d=>d.key===key);
@@ -56,7 +63,7 @@ const FindingClasses = (() => {
         meta:{...trace.meta,plot_class:def.key}};
     });
   }
-  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol,diagnosticLane};
+  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point};
 })();
 const FindingProbability = {
   epsilon:1e-6,
@@ -287,6 +294,25 @@ function renderDiagnostics(){
   })),layout);
   $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(rows.filter(r=>finite(r.spt)).length-data.length)} missing for the selected lane · `+(choice==='auto'?'automatic classification ranking; SPIFFStacker wins ties':laneNames[choice])+(metric==='cnn'?' · log-odds scale stretches both probability tails; values ≤0.000001 or ≥0.999999 share the edges (including exact 0 and 1). Hover shows the stored probability.':'');
  }
+ const laneChoice=$('snr-chi2-lane').value,xlog=$('snr-chi2-xlog').checked,ylog=$('snr-chi2-ylog').checked;
+ const snrChi2=rows.map(r=>FindingClasses.snrChi2Point(r,laneChoice)).filter(Boolean);
+ const snrChi2Visible=snrChi2.filter(r=>(!xlog||r.median_snr_1_5>0)&&(!ylog||r.fit_chi2>0));
+ const snrChi2Layout=baseLayout('Median S/N per pixel (1–5 µm)','Stored reduced χ²');
+ snrChi2Layout.xaxis.type=xlog?'log':'linear';snrChi2Layout.yaxis.type=ylog?'log':'linear';
+ emptyNote(snrChi2Layout,snrChi2Visible.length,diagnosticDone<diagnosticTotal?'Loading matching spectrum diagnostics…':'No matching 1–5 µm median S/N and stored fit χ²');
+ plot('snr-chi2',groups(snrChi2Visible,(d,n,c)=>scatterTrace(d,r=>r.median_snr_1_5,r=>r.fit_chi2,n,c,{
+  type:'scatter',
+  marker:{size:d.map(r=>r.peculiar_lanes.length?12:pointSize(r,7)),color:c,opacity:.8,
+   symbol:d.map(r=>r.peculiar_lanes.length?'diamond-open':pointSymbol(r)),line:{color:c,width:1.5}},
+  text:d.map(r=>esc(r.designation)+'<br>'+laneNames[r.diagnostic_lane]+' #'+r.diagnostics[r.diagnostic_lane].moca_specid+
+   '<br>'+r.diagnostics[r.diagnostic_lane].snr.one_five.count+' valid 1–5 µm pixels'+
+   '<br>Selected lane review: '+esc(r[r.diagnostic_lane+'_quality']||'unreviewed')+
+   (r.peculiar_lanes.length?'<br>peculiar_ucd: '+r.peculiar_lanes.map(lane=>laneNames[lane]).join(', '):'')+
+   '<br>'+esc(r.diagnostics[r.diagnostic_lane].fit_source||'')),
+  hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Median S/N (1–5 µm): %{x:.3f}<br>Stored reduced χ²: %{y:.4g}<extra>'+n+'</extra>'
+ })),snrChi2Layout);
+ const nonpositive=snrChi2.length-snrChi2Visible.length,peculiarCount=snrChi2Visible.filter(r=>r.peculiar_lanes.length).length;
+ $('snr-chi2-note').textContent=`${num(snrChi2Visible.length)} plotted · ${num(rows.length-snrChi2.length)} missing paired diagnostics${nonpositive?' · '+num(nonpositive)+' nonpositive values omitted on log axes':''} · ${num(peculiarCount)} open diamonds mark peculiar_ucd in any reduction. S/N and χ² come from the same active spectrum; 1–5 µm median is fixed independently of the S/N panel controls. `+(laneChoice==='auto'?'Automatic review ranking across all three reductions; SPIFFStacker wins ties.':laneNames[laneChoice]+'.');
  $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed; Apply filters to retry':''}. Values update progressively. Missing measurements are omitted.`;
 }
 function queueDiagnosticRender(){if(diagnosticRenderTimer)return;diagnosticRenderTimer=setTimeout(()=>{diagnosticRenderTimer=null;if(tab==='overview')renderDiagnostics();},300);}
@@ -718,7 +744,7 @@ $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;f.known_candidate=known==='no'?'no':'either';if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-for(const id of ['snr-statistic','snr-band','chi2-lane','cnn-lane'])$(id).onchange=renderDiagnostics;
+for(const id of ['snr-statistic','snr-band','chi2-lane','cnn-lane','snr-chi2-lane','snr-chi2-xlog','snr-chi2-ylog'])$(id).onchange=renderDiagnostics;
 for(const id of ['hist-bin','hist-ylog','sky-projection','show-synth','show-errors'])$(id).onchange=renderCharts;
 $('confirmation-standard').onchange=()=>{renderCharts();flipPage=0;if(tab==='spectra')renderFlipbook();};
 for(const id of ['available-only','confirmed-only','preferred-lane-only','flip-page-size'])$(id).onchange=()=>{flipPage=0;renderFlipbook();};

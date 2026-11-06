@@ -296,3 +296,23 @@ curves by the median `N_expected / N_all` in usable L1–L5 bins. The expected
 curve/error envelope, underlying counts, table, export and distance plot are
 unaffected. The count and distance factors are computed separately in their
 respective units and displayed beside their checkboxes.
+
+
+## Median S/N versus fit chi-square
+
+The overview's **Median S/N vs. fit χ²** plot pairs the median signed Fλ/σ
+from valid, nonignored pixels in **1 ≤ wavelength ≤ 5 µm** with stored reduced
+chi-square from the **same active spectrum**. This fixed range is independent
+of the other S/N panels' statistic/wavelength selectors; it excludes 0.75–1 µm.
+The existing exact-spectrum fit provenance rules apply (autotype JSON first,
+then matching stored autotype comments), with no new template fit performed.
+Automatic lane selection ranks reviews across SPIFFStacker, SPIFF and
+SUBLIMEaperture, with SPIFFStacker winning ties; forced selections never fall
+back to another lane. Missing paired values are omitted and counted.
+
+Open diamonds identify objects marked **peculiar_ucd in any reduction**; hover
+lists which reductions carry that label, alongside the plotted reduction,
+spectrum ID, valid-pixel count, selected-lane review and fit provenance.
+Colors retain the atlas population classes; clicking a point opens the object
+inspector. Independent logarithmic-axis toggles allow signed/nonpositive values
+to be displayed on linear axes (x defaults linear, y defaults logarithmic).

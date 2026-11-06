@@ -18,6 +18,7 @@ class DiagnosticsTests(unittest.TestCase):
             points.append({**points[1],**extra})
         result=diag.summarize(points)
         self.assertEqual(result['all'],{'mean':17.2,'median':9.5,'count':10})
+        self.assertEqual(result['one_five'],{'mean':18.375,'median':9,'count':8})
         self.assertEqual(result['nir'],{'mean':25.75,'median':3,'count':4})
         self.assertEqual(result['mid'],{'mean':9,'median':9,'count':2})
         self.assertEqual(result['red'],{'mean':13,'median':13,'count':2})
