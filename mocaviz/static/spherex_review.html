@@ -22,10 +22,10 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=20261105-queue-cuts">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261106-upload-status">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-priority-order"></script>
+  <script defer src="static/spherex_review.js?v=20261106-upload-status"></script>
 </head>
 <body>
   <header>
@@ -39,7 +39,7 @@
         <div id="queue-actions">
         <button id="load">Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
-        <small id="queue-info">Up to 100 objects per batch.</small>
+        <small id="queue-info">Up to 300 objects per batch by default.</small>
         <div role="status"><small id="queue-total"></small></div>
         </div>
         <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
@@ -49,6 +49,7 @@
         <label>Queue order<select id="queue-order"><option value="cnn_spt_snr" selected>CNN bin → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
         <small>CNN P(good) ≥80% first, then &lt;80% or unavailable. Within each bin: adopted type rounded to one subtype, latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups.</small>
         <small id="sample-hint" hidden>Public candidates have a public-adopted photometric type of M7 or later.</small>
+        <label>Batch size <small>1–500 objects; applies to Load and Next batch</small><input id="batch-size" type="number" min="1" max="500" step="1" value="300"></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
         <div class="pair"><label>SUBLIME2 detection S/N/pix ≥<input id="sublime2-snr" type="number" min="0" step="any" value="7" placeholder="Any"></label><label>SUBLIME2 CNN probability ≥<input id="cnn-probability" type="number" min="0" max="1" step="0.01" value="0.8" placeholder="Any"></label></div>
         <small>SUBLIME2 cuts apply to All objects and SUBLIME2.</small>
@@ -100,7 +101,12 @@
         <button id="retry" disabled>Retry failed [Alt+R]</button><button id="quit">Quit [Q]</button>
       </div>
       <div class="review-layout">
-        <div class="review-spectrum"><div id="plot" aria-label="Spectrum and best matching templates"></div>
+        <div class="review-spectrum"><div class="spectrum-stage"><div id="plot" aria-label="Spectrum and best matching templates"></div>
+          <div id="upload-draining" class="upload-draining" role="status" aria-live="polite" aria-atomic="true" hidden>
+            <span class="upload-spinner" aria-hidden="true"></span>
+            <strong>Upload queue emptying...</strong>
+            <span id="upload-remaining"></span><span id="upload-counts"></span>
+          </div></div>
         <div class="result-strip"><strong id="best-type">No fit loaded</strong><span id="fit-detail"></span></div></div>
         <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
       </div>

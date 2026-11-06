@@ -105,7 +105,7 @@ and `min_wiseview_score=4` can preset these controls. Exact spectrum-ID mode
 continues to bypass every queue filter. No classification or spectral-type
 write behavior changes. New filters fail visibly against outdated API workers
 rather than silently loading an unfiltered queue.
-It pages in batches of 100 (API maximum 500), using an object-ID cursor.
+It pages in configurable batches (default 300; range 1–500), using the selected queue order’s cursor.
 Loading a new queue also counts all objects matching its filters. The total
 is shown separately from the objects loaded into the tab.
 The next two fits are prefetched into a bounded browser-memory cache.
@@ -312,3 +312,18 @@ The object header includes SUBLIME2 CNN P as a percentage (the highest valid
 catalog good probability for the object, across its apertures) and the best
 current fit's reduced chi-squared, matching its plotted annotation. Moving
 between targets and refitting refresh these values; unavailable values show —.
+
+
+When every loaded spectrum has been classified and the plot is cleared while
+submissions remain, the spectrum area displays a large centered “Upload queue
+emptying...” message, a spinner, the remaining count, and uploading/waiting
+counts. It updates as jobs finish and disappears when uploads finish, a plot
+returns (including a failed submission restored for review), or the session
+closes. It does not cover a displayed spectrum. Reduced-motion preferences
+retain the loading ring without animation.
+
+Batch size defaults to 300 and accepts integers from 1 through 500. The current
+value applies to both Load and Next batch, so changing it need not reset the
+loaded queue. Next batch retains the loaded sample filters and sorting cursor.
+`batch_size=...` in the page URL can override the default. Exact spectrum IDs
+continue to bypass queue filters and batch-size validation.

@@ -10,11 +10,28 @@
   let items = [], index = -1, current = null, context = null, generation = 0;
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
   let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
+  let plotShown = false;
 
   function status(text) { $("status").textContent = text; }
   function error(text) { $("errors").hidden = !text; $("errors").textContent = text || ""; }
   function key(item, lane = queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
+  function updateUploadStatus() {
+    const pending = pendingCount();
+    const uploading = jobs.filter((job) => job.state === "submitting").length;
+    const panel = $("upload-draining");
+    panel.hidden = closed || plotShown || pending === 0;
+    const remaining = pending + (pending === 1 ? " result remaining" : " results remaining");
+    const counts = uploading + " uploading · " + (pending - uploading) + " waiting";
+    if ($("upload-remaining").textContent !== remaining) $("upload-remaining").textContent = remaining;
+    if ($("upload-counts").textContent !== counts) $("upload-counts").textContent = counts;
+  }
+  function batchSize() {
+    const value = $("batch-size").valueAsNumber;
+    if (!Number.isInteger(value) || value < 1 || value > 500)
+      throw new Error("Batch size must be a whole number between 1 and 500.");
+    return value;
+  }
   function options() {
     return {drop_worst_n: Number($("drop").value), chi2_sigma_cap: Number($("cap").value),
       nonfield_odds_k: Number($("odds").value), nonfield_extreme_odds_k: Number($("extreme").value)};
@@ -23,11 +40,12 @@
   function canReview() { return Boolean(current && !current.read_only); }
   function updateControls() {
     const pending = pendingCount();
+    updateUploadStatus();
     $("submitting").textContent = pending + " results currently submitting to mocadb";
     $("load").disabled = closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "queue-order", "missing-vetting", "wiseview-score", "no-wiseview-score",
+    for (const name of ["review-sample", "queue-order", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
       "sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
@@ -153,7 +171,7 @@
             snr_wavelength_range: $("snr-wavelength-range").value,
             min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
-            no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: 100};
+            no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;
@@ -165,8 +183,10 @@
         $("preview-output").textContent = ""; $("preview-panel").open = false;
         clearTarget();
       }
+      const requestBody = {...queueRequest, after: more ? nextAfter : 0};
+      if (!queueRequest.moca_specid) requestBody.limit = batchSize();
       loading = true; updateControls(); status("Loading spectra from MOCAdb…");
-      const data = await api("queue", {...queueRequest, after: more ? nextAfter : 0});
+      const data = await api("queue", requestBody);
       if (closed) return;
       if ((data.queue_filter_version ?? 0) < requiredQueueFilterVersion(queueRequest))
         throw new Error("The review service needs to be restarted to apply these queue filters. No queue was loaded.");
@@ -215,6 +235,7 @@
     $("best-type").textContent = "No fit loaded"; $("fit-detail").textContent = "";
     $("matches").replaceChildren(); $("stored").textContent = "";
     Plotly.purge($("plot"));
+    plotShown = false; updateUploadStatus();
   }
   function clearTarget() {
     $("object-title").textContent = ""; $("object-meta").textContent = ""; $("position").textContent = "";
@@ -308,6 +329,8 @@
     const figure = SpherexReviewPlot.figure(data, key(obj) + ":" + count, $("plot").clientWidth, count);
     Plotly.react($("plot"), figure.traces, figure.layout,
       {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
+    plotShown = figure.traces.some((trace) => trace.x?.length && trace.y?.length);
+    updateUploadStatus();
   }
   function decisionBody(item, action, classification) {
     return {lane: item.lane, moca_oid: item.object.moca_oid, moca_specid: item.object.moca_specid,
@@ -404,6 +427,7 @@
     error(""); status("Review data and in-memory credentials cleared. Credentials remain in the address bar; close the tab to hide them.");
     document.querySelectorAll("button,input,select,textarea").forEach((el) => el.disabled = true);
     $("submitting").textContent = "Session closed";
+    plotShown = false; updateUploadStatus();
   }
   function openReport() {
     if (current) window.open("https://mocadb.ca/search/results?search-query=" +
@@ -456,6 +480,7 @@
     if (!$("lane").value) $("lane").value = "spiffstacker";
     if (params.has("moca_oid")) $("oids").value = params.get("moca_oid");
     $("specid").value = params.get("specid") || params.get("moca_specid") || "";
+    if (params.has("batch_size")) $("batch-size").value = params.get("batch_size");
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
     for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
