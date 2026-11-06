@@ -60,3 +60,17 @@ does not print or persist its credentials, and blocks classification submissions
 Set `MOCAVIZ_TEST_PROFILE=management` to check the management interface. Its
 Findings data check uses the synthetic demo; scientific selections are covered
 by the existing Findings regression tests.
+
+Survey finders appear as soon as their images finish loading. Successful finders
+show PS1 first, immediately below WiseView and SUBLIME cutouts, then the other
+surveys in their usual order, including DES last. Below the images, pending
+finders are compact, single-spaced loading lines; unavailable or empty results
+follow as compact status lines. A later success moves back into the image grid
+in survey order. Metadata refreshes cannot restore an older finder layout.
+
+Drag the **Resize spectrum** handle to change the SPHEREx panel's height and its
+share of the two-column layout. Focus the handle and use arrow keys for keyboard
+resizing. The chosen size remains in this tab when moving between objects.
+**Hide WiseView controls [V]** hides the embedded RA/Dec/settings sidebar and
+reclaims its space; the same button restores it. The choice applies to prefetched
+frames as well as the current one.

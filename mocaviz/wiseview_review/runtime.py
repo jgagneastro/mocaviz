@@ -234,19 +234,20 @@ def web_survey_js(script, *, final=False):
         key='source' if name.startswith('buildSurvey') else json.dumps(name)
         script=script.replace(name+'.catch',
             'window.SurveyImages.card(JSON.stringify([payload.moca_oid,'+key+']), () => '+name+').catch')
+    script=script.replace('  function makeErrorCard(titleText, error) {\n    const card = makeCard(titleText);',
+                          '  function makeErrorCard(titleText, error) {\n    const card = makeCard(titleText);\n'
+                          '    card.dataset.surveyState = "unavailable";')
     old="""      const cards = await Promise.all(cardPromises);
       panel.replaceChildren();
       for (const card of cards) {
         panel.appendChild(card);
       }
       state.done = true;"""
-    new="""      panel.replaceChildren();
-      for (const promise of cardPromises) {
-        const placeholder = makeInfoCard("Survey", "Loading…");
-        panel.appendChild(placeholder);
-        promise.then(card => { if (placeholder.isConnected) placeholder.replaceWith(card); });
-      }
-      state.done = true;"""
+    new="""      const surveyLabel = source => source.label || source.survey;
+      const labels = [...(payload.unwise_row || []).map(surveyLabel), payload.irg.label, payload.yzi.label,
+        ...(payload.ps1_row || []).map(surveyLabel), ...(payload.survey_rows || []).flat().map(surveyLabel)];
+      window.SurveyImages.render(panel, cardPromises, {labels, final: __FINAL__});
+      state.done = true;""".replace('__FINAL__','true' if final else 'false')
     script=script.replace(old,new)
     if final:
         script=script.replace('`${source.label || source.survey} resolving`','`${source.label || source.survey} unavailable`')
@@ -285,7 +286,7 @@ def wiseview_frame(key):
     marker_data=json.dumps(neighbors, allow_nan=False).replace('<', '\\u003c')
     marker_script=(ROOT/'nearby_markers.js').read_text()
     crosshair_script=(ROOT/'target_crosshair.js').read_text()
-    cutout_layout_script=(ROOT/'cutout_layout.js').read_text()
+    cutout_layout_script=(ROOT/'cutout_layout.js').read_text()+'\n'+(ROOT/'wiseview_controls.js').read_text()
     target_data=json.dumps({'ra_deg':ra,'dec_deg':dec,'motion':motion},allow_nan=False)
     script = '<script>' + marker_script + '\nwindow.NearbyMarkers.install(' + marker_data + ');\n' + crosshair_script + '\nwindow.TargetCrosshair.install(' + target_data + ');</script>' + '<script>window.addEventListener("load",()=>{function install(){' + initial + '} setTimeout(install,600);setTimeout(install,2000);});window.addEventListener("message",e=>{if(e.source!==parent||!e.data||e.data.kind!=="resolved-surveys")return;const run=()=>{(new Function(e.data.script))()};setTimeout(run,100);setTimeout(run,6500);});</script>'
     html=WISEVIEW_HTML['text'].replace('<head>','<head><base href="./">',1)

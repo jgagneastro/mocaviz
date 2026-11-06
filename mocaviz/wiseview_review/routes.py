@@ -26,7 +26,7 @@ MODES = {'sublime', 'redmovers', 'public_ucd'}
 WRITES = {'classify', 'duplicate', 'undo'}
 OPERATIONS = {'spectral-options', 'cutout-options', 'queue', 'gaia-cache-status',
               'stats', 'object', 'spectra', 'spectrum', 'frame', 'surveys', 'cutouts', *WRITES}
-STATIC = {'app.js':'text/javascript', 'style.css':'text/css', 'favicon.png':'image/png'}
+STATIC = {'app.js':'text/javascript', 'review_layout.js':'text/javascript', 'style.css':'text/css', 'favicon.png':'image/png'}
 
 
 @review.after_request
