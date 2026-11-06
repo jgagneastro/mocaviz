@@ -62,7 +62,10 @@ VIABLE_OTHER_LANE = (
     "good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
     "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M",
 )
-USABLE = {*VIABLE_OTHER_LANE, "risky_andromeda", "giant"}
+USABLE = set(VIABLE_OTHER_LANE)
+NONPHOTOMETRIC_CLASSES = {"good", "peculiar_ucd", "contaminated_ucd", "good_reddened", "good_plus_star"}
+PHOTOMETRIC_CLASSES = {"good_candidate", "incomplete_but_promising", "weird"}
+WRITE_POLICY_VERSION = 1
 SPT_FIELDS = (
     "moca_oid", "moca_specid", "moca_instid", "spectral_type", "complete_spectral_type",
     "spectral_type_number", "spectral_type_unc", "spectral_class", "quality_flag",
@@ -701,7 +704,17 @@ def visibility(body):
     return public, rls
 
 
-def make_spt(item, lane, ignored, public, rls):
+def classification_flags(classification):
+    """The user-validated spectral-type policy; unspecified photometric flags stay unchanged."""
+    flags = {"ignored": int(classification not in USABLE)}
+    if classification in NONPHOTOMETRIC_CLASSES:
+        flags["photometric_estimate"] = 0
+    elif classification in PHOTOMETRIC_CLASSES:
+        flags["photometric_estimate"] = 1
+    return flags
+
+
+def make_spt(item, lane, ignored, public, rls, *, classification=None):
     if not item["fit"]:
         raise ReviewError("A valid autotype fit is required to write a spectral type.")
     existing_methods = {row["calculation_method"] for row in item["state"]["spt"]}
@@ -714,6 +727,15 @@ def make_spt(item, lane, ignored, public, rls):
     )
     row = dict(zip(SPT_FIELDS, values))
     row.update(is_public=public, rls=rls)
+    flags = classification_flags(classification)
+    if "photometric_estimate" in flags:
+        row["photometric_estimate"] = flags["photometric_estimate"]
+    else:
+        # Replacing a rejected/legacy fit does not change its photometric status.
+        previous = next((value for value in reversed(item["state"]["spt"])
+                         if value.get("calculation_method") == method), {})
+        if "photometric_estimate" in previous:
+            row["photometric_estimate"] = previous["photometric_estimate"]
     return clean(row)
 
 
@@ -742,24 +764,25 @@ def prepare(cur, body, auth):
         operations.append({"table": lane["table"], "operation": "upsert", "rows": [
             {"moca_oid": item["object"]["moca_oid"], "classification": classification, "sources": sources},
         ]})
-        ignored = int(classification not in USABLE)
+        flags = classification_flags(classification)
+        ignored = flags["ignored"]
         if item["state"]["spt"]:
-            operations.append({"table": "data_spectral_types", "operation": "update", "rows": [
-                {"id": row["id"], "ignored": ignored} for row in item["state"]["spt"]
-            ]})
+            updates = []
+            for row in item["state"]["spt"]:
+                changed = {field: value for field, value in flags.items() if row.get(field) != value}
+                if changed:
+                    updates.append({"id": row["id"], **changed})
+            if updates:
+                operations.append({"table": "data_spectral_types", "operation": "update", "rows": updates})
         elif item["fit"]:
             operations.append({"table": "data_spectral_types", "operation": "insert", "rows": [
-                make_spt(item, lane, ignored, public, rls),
-            ]})
-        if ignored:
-            operations.append({"table": "moca_spectra", "operation": "update", "rows": [
-                {"moca_specid": row["moca_specid"], "ignored": 1}
-                for row in item["state"]["spectra"] if row["ignored"] != 1
+                make_spt(item, lane, ignored, public, rls, classification=classification),
             ]})
     elif action == "upsert_spt":
         classification = item["state"]["vet"][0]["classification"] if item["state"]["vet"] else None
         operations.append({"table": "data_spectral_types", "operation": "upsert", "rows": [
-            make_spt(item, lane, int(classification not in USABLE), public, rls),
+            make_spt(item, lane, classification_flags(classification)["ignored"], public, rls,
+                     classification=classification),
         ]})
     else:
         if not item["fit"] or not item["fit"]["bad_pixel_ids"]:
@@ -767,7 +790,14 @@ def prepare(cur, body, auth):
         operations.append({"table": "data_spectra", "operation": "update", "rows": [
             {"id": row_id, "ignored": 1} for row_id in item["fit"]["bad_pixel_ids"]
         ]})
+    if action in {"classify", "upsert_spt"}:
+        ignored = classification_flags(classification)["ignored"]
+        updates = [{"moca_specid": row["moca_specid"], "ignored": ignored}
+                   for row in item["state"]["spectra"] if row["ignored"] != ignored]
+        if updates:
+            operations.append({"table": "moca_spectra", "operation": "update", "rows": updates})
     plan = {
+        "write_policy_version": WRITE_POLICY_VERSION,
         "lane": key, "moca_oid": item["object"]["moca_oid"],
         "moca_specid": item["object"]["moca_specid"], "revision": item["revision"],
         "data_revision": item["data_revision"], "operations": operations,
@@ -812,6 +842,8 @@ def lock_source_pixels(cur, specid):
 
 def submit(conn, cur, auth, body):
     plan = unseal(auth, body.get("receipt"), "plan")
+    if plan.get("write_policy_version") != WRITE_POLICY_VERSION:
+        raise ReviewError("The classification flag policy changed. Reload this object and preview it again.", 409)
     _, lane = lane_for(plan)
     oid, specid = plan["moca_oid"], plan["moca_specid"]
     lock_object(cur, oid)
@@ -828,13 +860,18 @@ def submit(conn, cur, auth, body):
                 upsert(cur, table, row, ("classification", "sources"))
             elif table == "data_spectral_types":
                 if op["operation"] == "update":
-                    cur.execute("UPDATE data_spectral_types SET ignored=%s WHERE id=%s AND moca_oid=%s",
-                                (row["ignored"], row["id"], oid))
+                    fields = [field for field in ("ignored", "photometric_estimate") if field in row]
+                    if not fields or set(row) - {"id", *fields}:
+                        raise ReviewError("Invalid spectral-type flag update.")
+                    placeholders = ",".join(["%s"] * len(lane["methods"]))
+                    cur.execute("UPDATE data_spectral_types SET " + ",".join(f"`{field}`=%s" for field in fields) +
+                                " WHERE id=%s AND moca_oid=%s AND calculation_method IN (" + placeholders + ")",
+                                (*[row[field] for field in fields], row["id"], oid, *lane["methods"]))
                 else:
                     upsert(cur, table, row, [k for k in row if k not in {"moca_oid", "calculation_method"}])
             elif table == "moca_spectra":
-                cur.execute("UPDATE moca_spectra SET ignored=1 WHERE moca_specid=%s AND moca_oid=%s AND moca_specpackid=%s",
-                            (row["moca_specid"], oid, lane["pack"]))
+                cur.execute("UPDATE moca_spectra SET ignored=%s WHERE moca_specid=%s AND moca_oid=%s AND moca_specpackid=%s",
+                            (row["ignored"], row["moca_specid"], oid, lane["pack"]))
             elif table == "data_spectra":
                 existing = next((v for v in spectrum if v["data_spectra_id"] == row["id"]), None)
                 if existing is None:
@@ -998,6 +1035,8 @@ def api(operation):
                     result = undo(conn, cur, auth, body)
         if operation in {"context", "queue"}:
             result["queue_filter_version"] = QUEUE_FILTER_VERSION
+        if operation == "context":
+            result["write_policy_version"] = WRITE_POLICY_VERSION
         return jsonify({"ok": True, **clean(result)})
     except ReviewError as exc:
         return jsonify(ok=False, error=str(exc)), exc.status

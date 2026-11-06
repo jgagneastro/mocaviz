@@ -118,7 +118,8 @@
     return {drop_worst_n: Number($("drop").value), chi2_sigma_cap: Number($("cap").value),
       nonfield_odds_k: Number($("odds").value), nonfield_extreme_odds_k: Number($("extreme").value)};
   }
-  function writable() { return Boolean(context?.can_write && $("write-enabled").checked && !closed && !busyUndo); }
+  function policyReady() { return (context?.write_policy_version ?? 0) >= 1; }
+  function writable() { return Boolean(policyReady() && context?.can_write && $("write-enabled").checked && !closed && !busyUndo); }
   function canReview() { return Boolean(current && !current.read_only); }
   function updateControls() {
     const pending = pendingCount();
@@ -146,8 +147,8 @@
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
-    $("write-enabled").disabled = !context?.can_write || current?.read_only || closed;
-    $("preview").disabled = !context?.can_write || !canReview() || closed;
+    $("write-enabled").disabled = !context?.can_write || !policyReady() || current?.read_only || closed;
+    $("preview").disabled = !context?.can_write || !policyReady() || !canReview() || closed;
     $("save-type").disabled = !writable() || !canReview() || !current?.fit;
     $("bad-pixels").disabled = !writable() || !canReview() || !current?.fit?.bad_pixel_ids?.length;
     $("undo").disabled = !history.length || busyUndo || loading || closed;
@@ -160,6 +161,7 @@
       b.disabled = !writable() || !canReview() || hidden.has(key(current.object));
     });
     $("write-hint").textContent = demo ? "Demonstration only — database writes are disabled." :
+      context?.can_write && !policyReady() ? "Restart the review service and reload to enable automatic photometric/ignored flags." :
       current?.read_only ? "Read-only spectrum: outside SPIFF, SPIFFStacker and SUBLIMEaperture. Template fitting is available; database writes are disabled." :
       writable() ? "Choose a quality label to submit and advance immediately. Undo restores the last decision." :
       context?.can_write ? "Enable submissions to classify. Preview is available without enabling writes." :
@@ -470,7 +472,7 @@
       sources: $("sources").value, allow_replace: $("replace").checked};
   }
   async function preview(action = "upsert_spt") {
-    if (!canReview() || !context?.can_write) return;
+    if (!canReview() || !context?.can_write || !policyReady()) return;
     try {
       const result = await api("preview", decisionBody(current, action, lastClass));
       $("preview-output").textContent = JSON.stringify({row_counts: result.row_counts,
@@ -586,7 +588,7 @@
   $("quit").onclick = quit; $("retry").onclick = retryFailed; $("preview").onclick = () => preview();
   $("save-type").onclick = () => enqueue("upsert_spt"); $("bad-pixels").onclick = () => enqueue("bad_pixels");
   $("write-enabled").onchange = () => {
-    if ($("write-enabled").checked && !confirm("Enable database submissions? Quality labels update visual vetting and autotype ignored state; rejected classes also ignore this lane's spectra. New spectral types use the selected visibility and RLS. Undo is available within this tab."))
+    if ($("write-enabled").checked && !confirm("Enable database submissions? Quality labels update visual vetting and photometric/ignored flags. Good and candidate classes reactivate this lane's autotypes and spectra; rejected classes ignore both. New spectral types use the selected visibility and RLS. Undo is available within this tab."))
       $("write-enabled").checked = false;
     updateControls();
   };
@@ -641,7 +643,7 @@
       context = await api("context");
       $("access").textContent = demo ? "Demo · read only" : context.can_write ? "Management · writes disabled until enabled" : "Collaborator · read only";
       const usable = new Set(["good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
-        "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "giant", "late_M"]);
+        "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M"]);
       for (const [label, shortcut] of context.classifications) {
         const button = document.createElement("button");
         button.textContent = label.replaceAll("_", " ") + " [" + shortcut.toUpperCase() + "]";

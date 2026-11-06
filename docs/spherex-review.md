@@ -155,12 +155,21 @@ measurements have an explicit visibility selector and private RLS input
 (defaults match the desktop workflow: private, gagne). Replacing a stored review
 or explicitly replacing an autotype fit requires the replacement checkbox.
 
-- Quality classification upserts the lane's vetting table. Existing autotype
-  values are preserved; their ignored state is updated. If there is no existing
-  autotype and fitting succeeds, the fitted spectral type is inserted.
-- Rejected classes also set ignored=1 on spectra in this lane, matching the
-  desktop review policy. Usable classes do not automatically unignore spectra.
-- Save type explicitly upserts the current best-fit autotype spectral type.
+- Quality classification upserts the lane's vetting table and updates only
+  differing photometric/ignored flags on its existing autotypes, preserving fit
+  values and visibility. If there is no autotype and fitting succeeds, it inserts
+  the fitted type with the same classification flags.
+- `good`, `peculiar_ucd`, `contaminated_ucd`, `good_reddened` and `good_plus_star`
+  set `photometric_estimate=0, ignored=0`. `good_candidate`,
+  `incomplete_but_promising` and `weird` set `photometric_estimate=1, ignored=0`.
+  Other classes are rejected and set `ignored=1`, including `giant` and legacy
+  `risky_andromeda`; their photometric flag is preserved. The existing `late_M`
+  category remains usable and retains its photometric flag.
+- Good and candidate decisions explicitly reactivate ignored spectra in the
+  selected lane; rejected decisions ignore that lane's spectra. Other lanes,
+  literature spectral types and ignored spectral pixels are unaffected.
+- Save type explicitly upserts the current best-fit autotype and applies the
+  stored classification's photometric/ignored policy to it and the lane's spectra.
   An unvetted/non-usable spectrum's new type remains ignored.
 - Flag bad pixels updates only the newly flagged points in the selected spectrum.
 - Every successful action and undo adds a moca_changelog entry in the same
@@ -168,7 +177,8 @@ or explicitly replacing an autotype fit requires the replacement checkbox.
   are never assigned.
 
 Preview is a dry run: it returns row counts and the complete prepared rows, with
-no writes or commit. Queue submissions obtain that same server-computed preview
+no writes or commit. The browser requires the current write-policy capability;
+old prepared receipts are rejected after a policy change. Queue submissions obtain that same server-computed preview
 before committing. The browser cannot invent a best-fit row, pixel list or SQL
 table: it must submit a signed, expiring preview receipt.
 

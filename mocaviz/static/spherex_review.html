@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261106-spectral-cnn">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-auto-next"></script>
+  <script defer src="static/spherex_review.js?v=20261106-auto-flags"></script>
 </head>
 <body>
   <header>
@@ -92,7 +92,7 @@
         <label>Private RLS<input id="rls" value="gagne" maxlength="20"></label>
         <label>Vetting source<input id="sources" value="mocaviz" maxlength="255"></label>
         <label class="check"><input id="replace" type="checkbox">Allow replacing stored results</label>
-        <p class="hint">Quality decisions preserve existing autotype values and update their usable/ignored state. Rejected classes also ignore spectra in this lane. The explicit “Save type” action replaces the autotype fit.</p>
+        <p class="hint">Quality decisions preserve existing fits and apply photometric/ignored flags automatically. Good and candidate classes reactivate autotypes and spectra in this lane; rejected classes ignore both. The explicit “Save type” action replaces the autotype fit.</p>
         <button id="preview">Preview write [Alt+P]</button>
         <button id="save-type" disabled>Save type [Alt+S]</button>
         <button id="bad-pixels" disabled>Flag bad pixels [Alt+B]</button>
