@@ -276,3 +276,22 @@ aggregate depths only—no credentials or object records. Requests authenticate
 with MOCAdb even when the cache is warm; every census uses a read-only
 transaction. The tab has independent failure/retry state and exports the
 chosen catalog's bins, uncertainties, limits, sky fraction and references as CSV.
+
+
+**Scale curves to L1-L5** (off by default) normalizes the two observed distance
+curves and the all-source distance error bars by the same factor: the median
+of `d_(J or W2) / r_count` over finite, positive L1 through L5 bins (inclusive).
+The selected catalog and current depth/sky inputs determine the factor, which
+is shown with the number of usable bins. Empty/zero-count bins and unavailable
+predictions are skipped; if no bin is usable, the curves remain unscaled with
+an explicit message. This is a shape comparison only: sensitivity curves,
+counts, tabulated volumes/distances, other plots and CSV values remain physical
+and unscaled.
+
+
+The **Observed and expected counts** plot has its own independent **Scale curves
+to L1-L5** checkbox, also off by default. It multiplies both observed count
+curves by the median `N_expected / N_all` in usable L1–L5 bins. The expected
+curve/error envelope, underlying counts, table, export and distance plot are
+unaffected. The count and distance factors are computed separately in their
+respective units and displayed beside their checkboxes.

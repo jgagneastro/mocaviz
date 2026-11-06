@@ -25,3 +25,25 @@ test('no extrapolation and no silent partial-bin predictions',()=>{
  const p=C.expectation({...bin,lo:31,hi:32},r,{j:15,w2:16,sky:1});assert.equal(p.d_j,null);assert.ok(Math.abs(p.d_union-10)<1e-10);
 });
 test('invalid footprint rejected',()=>{for(const sky of [0,-1,2,NaN])assert.throws(()=>C.evaluate(ref,{bins:[]},{j:15,w2:15,sky}));});
+
+test('L1-L5 scaling is the median multiplicative horizon-to-count ratio',()=>{
+ const rows=[2,4,8,16,32,64].map((factor,i)=>({lo:10+i,r_count:10,d_union:10*factor}));
+ rows.push({lo:16,r_count:1,d_union:99999},{lo:9,r_count:1,d_union:99999});
+ assert.deepEqual(C.normalization(rows,true),{factor:16,bins:5,available:true});
+ assert.equal(C.normalization(rows,false).factor,1);
+ assert.equal(rows[0].r_count,10);
+});
+test('L1-L5 normalization excludes zero counts and missing predictions',()=>{
+ assert.deepEqual(C.normalization([{lo:11,r_count:0,d_union:100},{lo:12,r_count:10,d_union:null}],true),{factor:1,bins:0,available:false});
+ assert.equal(C.normalization([{lo:11,r_count:5,d_union:10},{lo:12,r_count:5,d_union:15},{lo:13,r_count:5,d_union:100}],true).factor,3);
+});
+
+test('count normalization uses count ratios independently of distance normalization',()=>{
+ const rows=[2,4,8,16,32].map((factor,i)=>({lo:11+i,n:10,expected:10*factor,r_count:10,d_union:20}));
+ rows.push({lo:10,n:1,expected:1e9},{lo:16,n:1,expected:1e9});
+ assert.equal(C.normalization(rows,true,'counts').factor,8);
+ assert.equal(C.normalization(rows,true).factor,2);
+ assert.equal(C.normalization(rows,false,'counts').factor,1);
+ assert.equal(C.normalization([{lo:11,n:0,expected:10}],true,'counts').available,false);
+ assert.equal(rows[0].n,10);
+});

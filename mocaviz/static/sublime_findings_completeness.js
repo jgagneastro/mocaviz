@@ -55,6 +55,14 @@ const FindingCompleteness = (() => {
           counts.interval[0]>prediction.expected_high?'Above prediction':'Within uncertainty envelope'};
     });
   }
-  return {interpolate,expectation,evaluate};
+  function normalization(data,enabled=false,quantity='distance') {
+    const observed=quantity==='counts'?'n':'r_count',target=quantity==='counts'?'expected':'d_union';
+    const ratios=data.filter(r=>r.lo>=11&&r.lo<16&&Number.isFinite(r[observed])&&r[observed]>0&&Number.isFinite(r[target])&&r[target]>0)
+      .map(r=>r[target]/r[observed]).sort((a,b)=>a-b);
+    const middle=Math.floor(ratios.length/2);
+    const median=ratios.length?(ratios.length%2?ratios[middle]:(ratios[middle-1]+ratios[middle])/2):null;
+    return {factor:enabled&&median!==null?median:1,bins:ratios.length,available:median!==null};
+  }
+  return {interpolate,expectation,evaluate,normalization};
 })();
 if(typeof module!=='undefined'&&module.exports)module.exports=FindingCompleteness;
