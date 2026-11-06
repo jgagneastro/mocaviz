@@ -53,7 +53,30 @@
   }
 
   function status(text) { $("status").textContent = text; }
-  function error(text) { $("errors").hidden = !text; $("errors").textContent = text || ""; }
+  let submissionErrorTimer = null, submissionErrorJob = null;
+  function error(text, failedJob = null) {
+    clearTimeout(submissionErrorTimer); submissionErrorTimer = null;
+    submissionErrorJob = failedJob;
+    $("errors").hidden = !text; $("errors").textContent = text || "";
+    if (text && failedJob) submissionErrorTimer = setTimeout(() => {
+      if (submissionErrorJob === failedJob) error("");
+    }, Math.max(0, failedJob.errorExpiresAt - Date.now()));
+  }
+  function resolveSubmissionErrors(job) {
+    const sameTarget = previous => previous.lane === job.lane && previous.item.moca_oid === job.item.moca_oid;
+    const displayed = submissionErrorJob && sameTarget(submissionErrorJob);
+    for (const previous of jobs.filter(sameTarget)) {
+      if (previous !== job && previous.body.action === job.body.action && previous.errorMessage &&
+        ["failed", "queued"].includes(previous.state)) previous.state = "superseded";
+      previous.errorMessage = null; previous.errorExpiresAt = 0;
+    }
+    if (displayed) {
+      const other = [...jobs].reverse().find(previous => previous.state === "failed" &&
+        previous.errorMessage && previous.errorExpiresAt > Date.now());
+      error(other?.errorMessage || "", other || null);
+      if (!other) status("Submission for moca_oid=" + job.item.moca_oid + " saved.");
+    }
+  }
   function key(item, lane = queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
   function updateUploadStatus() {
@@ -446,10 +469,13 @@
             if (closed || job.state === "cancelled") return;
             const result = await api("submit", {receipt: prepared.receipt}, job.controller);
             job.undoReceipt = result.undo_receipt; job.state = "submitted";
+            resolveSubmissionErrors(job);
           } catch (e) {
             if (closed || job.state === "cancelled") return;
             job.state = "failed"; hidden.delete(key(job.item, job.lane));
-            error("Submission for moca_oid=" + job.item.moca_oid + " failed. It is back in the review queue.\n" + e.message);
+            job.errorMessage = "Submission for moca_oid=" + job.item.moca_oid + " failed. It is back in the review queue.\n" + e.message;
+            job.errorExpiresAt = Date.now() + 20000;
+            error(job.errorMessage, job);
           } finally {
             if (!closed) {
               updateControls();
