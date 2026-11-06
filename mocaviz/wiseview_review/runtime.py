@@ -165,7 +165,7 @@ def redmover_stats(lane):
                 cur.execute('SELECT moca_oid,classification_integer FROM pcat_wiseview_visual_vetting')
                 motion_rows=list(cur.fetchall())
                 by_oid={}
-                # The selected spectrum takes precedence if both have reviews.
+                # The selected lane supplies the type; qualifying reviews are combined.
                 for spectral_lane in (lane, 'spiff' if lane=='spiffstacker' else 'spiffstacker'):
                     table=SPECTRAL_VETTING[spectral_lane]
                     cur.execute(f'''SELECT v.moca_oid,v.classification AS spectral_class,
@@ -189,7 +189,8 @@ def redmover_stats(lane):
         spectral_rows=[row for row in spectral_rows if row['moca_oid'] is not None and int(row['moca_oid']) in oids]
         aut=review._autotype_review()
         discovery_oids={int(row['moca_oid']) for row in spectral_rows
-                        if row.get('spectral_class') in ('good','good_candidate')
+                        if any(row.get(key) in ('good','good_candidate','peculiar_ucd','contaminated_ucd','good_reddened')
+                               for key in ('spectral_class','spiff_class','spiffstacker_class'))
                         and row.get('autotype_spectral_type_number') is not None
                         and float(row['autotype_spectral_type_number']) >= 10}
         discovery_oids.update(int(row['moca_oid']) for row in pending)

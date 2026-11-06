@@ -128,6 +128,22 @@ class HostedTests(unittest.TestCase):
             result=self.post('undo',dict(filters={},undo_token=receipt))
         self.assertEqual(result.json,dict(oid=7,index=5))
 
+    def test_new_good_classes_receive_known_object_exclusions_in_catwise(self):
+        row=dict(moca_oid=7,autotype_spectral_type_number=12,motion=6,spectral_class='peculiar_ucd')
+        conn=MagicMock();cur=conn.cursor.return_value.__enter__.return_value
+        cur.fetchall.side_effect=[[],[row],[]]
+        aut=MagicMock();aut.fetch_known_nonphotometric_late_type_oids.return_value={7};aut.fetch_claimed_oids.return_value=set()
+        with patch.object(routes.rt.review,'_connect_db',return_value=conn), \
+             patch.object(routes.rt.review,'_autotype_review',return_value=aut), \
+             patch.object(routes.rt,'pending_spectral_rows',return_value=[]), \
+             patch.object(routes.rt,'redmover_oids',return_value={7}), \
+             patch.object(routes.rt,'fetch_duplicate_oids',return_value=set()), \
+             patch.dict(routes.rt.RED_SAMPLE_CACHE,{},clear=True), \
+             patch.dict(routes.rt.STATS_CACHE,{'entries':{},'generation':0},clear=True):
+            result=routes.rt.redmover_stats('spiffstacker')
+        aut.fetch_known_nonphotometric_late_type_oids.assert_called_once_with(source_oids={7})
+        self.assertEqual(result['confirmed_l0'],0)
+
     def test_readonly_context_is_request_scoped(self):
         with patch.object(routes.rt,'sublime_stats',side_effect=lambda:dict(role=AUTH.get()['user'])):
             self.assertEqual(self.post('stats',role='collaborators').json,dict(role='collaborators'))
