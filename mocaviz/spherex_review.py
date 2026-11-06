@@ -421,7 +421,7 @@ def queue(cur, body, *, count_only=False):
     params = [lane["pack"]]
     adopted_join = ""
     type_projection = ""
-    if type_order:
+    if type_order and not count_only:
         adopted_join = """LEFT JOIN data_spectral_types adopted ON adopted.id=(
             SELECT MAX(a.id) FROM data_spectral_types a WHERE a.moca_oid=s.moca_oid
               AND a.adopted=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
@@ -564,67 +564,39 @@ def queue(cur, body, *, count_only=False):
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
     """
     params = [*source_params, *params]
-    prefix = ""
+    projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
     if min_snr is not None or rank_pixels:
-        # Compute the selected filter median and the fixed 1-2um sort median
-        # from candidate spectra only, using separate window partitions/bands.
-        pixel_conditions = ["d.ignored=0", "d.wavelength_angstrom>0",
-                            "d.flux_flambda IS NOT NULL", "d.flux_flambda_unc>0"]
-        bands, band_conditions = [], []
-        if min_snr is not None:
-            bands.append("SELECT 0 AS band")
-            predicate = "1=1"
-            if SNR_WAVELENGTH_RANGES[band] is not None:
-                low, high = SNR_WAVELENGTH_RANGES[band]
-                predicate = "d.wavelength_angstrom BETWEEN %s AND %s"
-                params.extend((low * 10000, high * 10000))
-            band_conditions.append(f"(bands.band=0 AND {predicate})")
-        if rank_pixels:
-            bands.append("SELECT 1 AS band")
-            band_conditions.append("(bands.band=1 AND d.wavelength_angstrom BETWEEN 10000 AND 20000)")
-        where_median = ""
-        if min_snr is not None:
-            where_median = "WHERE med.filter_snr>=%s"
-            params.append(min_snr)
-        prefix = f"""WITH candidates AS (
-            SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification{type_projection} {selection}
-        ), snr_samples AS (
-            SELECT c.moca_specid,bands.band,d.flux_flambda/d.flux_flambda_unc AS snr,
-              ROW_NUMBER() OVER (PARTITION BY c.moca_specid,bands.band ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
-              COUNT(*) OVER (PARTITION BY c.moca_specid,bands.band) AS sample_count
-            FROM candidates c JOIN data_spectra d ON d.moca_specid=c.moca_specid
-            CROSS JOIN ({' UNION ALL '.join(bands)}) bands
-            WHERE {' AND '.join(pixel_conditions)} AND ({' OR '.join(band_conditions)})
-        ), snr_medians AS (
-            SELECT moca_specid,band,AVG(snr) AS median_snr FROM snr_samples
-            WHERE sample_rank IN (FLOOR((sample_count+1)/2.0),FLOOR((sample_count+2)/2.0))
-            GROUP BY moca_specid,band
-        ), medians AS (
-            SELECT moca_specid,MAX(CASE WHEN band=0 THEN median_snr END) AS filter_snr,
-              MAX(CASE WHEN band=1 THEN median_snr END) AS sort_snr_1_2
-            FROM snr_medians GROUP BY moca_specid
-        ), eligible AS (
-            SELECT c.*,med.sort_snr_1_2 FROM candidates c
-            LEFT JOIN medians med ON med.moca_specid=c.moca_specid {where_median}
-        ) """
-        selection, projection, order_oid = "FROM eligible s", "s.*", "s.moca_oid"
+        from . import spherex_queue_metrics as metrics
+        # Finish catalog/quality selection before touching pixels. Keeping these
+        # as separate read-only statements prevents derived-CTE expansion and
+        # repeated selection inside MariaDB's window-ranking query.
+        metadata = "s.moca_specid" if count_only else "s.moca_oid,s.moca_specid" + type_projection
+        candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
+        wavelength_range = SNR_WAVELENGTH_RANGES[band]
+        if count_only:
+            eligible = metrics.passing_snr(cur, [row['moca_specid'] for row in candidates],
+                min_snr, wavelength_range, rows)
+            return {"total": len(eligible)}
+        records = metrics.page(cur, candidates, minimum=min_snr, wavelength_range=wavelength_range,
+            order=order, cursor=priority_cursor, limit=limit, read=rows)
+        if records:
+            ids = [row['moca_specid'] for row in records]
+            details = rows(cur, f"""SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification
+                FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
+                LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
+                WHERE s.moca_specid IN ({','.join(['%s']*len(ids))})""", tuple(ids))
+            by_id = {row['moca_specid']:row for row in details}
+            for row in records:row.update(by_id[row['moca_specid']])
     else:
-        projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
-    if priority_order and not count_only:
-        order_oid = ("s.sort_galactic_bin ASC," if galactic_order else "") + "s.sort_cnn_bin ASC,s.sort_subtype IS NULL,s.sort_subtype DESC,s.sort_snr_1_2 IS NULL,s.sort_snr_1_2 DESC,s.moca_oid ASC"
-        if priority_cursor is not None:
-            after_sql, after_params = priority_after_sql(priority_cursor)
-            selection += " WHERE " + after_sql
-            params.extend(after_params)
-    elif type_order:
-        order_oid = "sort_spt IS NULL,sort_spt " + ("DESC" if order == "spt_desc" else "ASC") + ",s.moca_oid ASC"
-    elif order == "oid_desc":
-        order_oid += " DESC"
-    if count_only:
-        return rows(cur, f"{prefix}SELECT COUNT(*) AS total {selection}", tuple(params))[0]
+        if type_order:
+            order_oid = "sort_spt IS NULL,sort_spt " + ("DESC" if order == "spt_desc" else "ASC") + ",s.moca_oid ASC"
+        elif order == "oid_desc":
+            order_oid += " DESC"
+        if count_only:
+            return rows(cur, f"SELECT COUNT(*) AS total {selection}", tuple(params))[0]
 
-    records = rows(cur, f"{prefix}SELECT {projection} {selection} ORDER BY {order_oid} LIMIT %s",
-                   (*params, limit + 1))
+        records = rows(cur, f"SELECT {projection} {selection} ORDER BY {order_oid} LIMIT %s",
+                       (*params, limit + 1))
     next_after = None
     if len(records) >= limit:
         last = records[limit - 1]

@@ -207,10 +207,14 @@ class FilterSelectionTests(unittest.TestCase):
         self.assertNotIn('data_spectra d',sql)
         self.assertNotIn('sort_cnn_bin',sql)
         self.assertNotIn('sort_snr_1_2',sql)
-        sr.queue(cur,{'queue_order':'cnn_spt_snr','min_snr':2,'snr_wavelength_range':'4-5'},count_only=True)
-        sql,params=cur.execute.call_args.args
-        self.assertNotIn('bands.band=1',sql)
-        self.assertNotIn('BETWEEN 10000 AND 20000',sql)
+        cur.reset_mock()
+        cur.fetchall.side_effect=[[{'moca_specid':101}],[{'moca_specid':101}]]
+        self.assertEqual(sr.queue(cur,{'queue_order':'cnn_spt_snr','min_snr':2,'snr_wavelength_range':'4-5'},count_only=True),{'total':1})
+        for call in cur.execute.call_args_list:
+            sql,params=call.args
+            self.assertNotIn('sort_spt',sql)
+            self.assertNotIn('ROW_NUMBER',sql)
+            self.assertNotIn('BETWEEN 10000 AND 20000',sql)
 
     def test_invalid_priority_cursors_never_execute_sql(self):
         valid={'moca_oid':1,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
