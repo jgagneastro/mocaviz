@@ -315,4 +315,4 @@ lists which reductions carry that label, alongside the plotted reduction,
 spectrum ID, valid-pixel count, selected-lane review and fit provenance.
 Colors retain the atlas population classes; clicking a point opens the object
 inspector. Independent logarithmic-axis toggles allow signed/nonpositive values
-to be displayed on linear axes (x defaults linear, y defaults logarithmic).
+to be displayed on linear axes (both axes default logarithmic).
