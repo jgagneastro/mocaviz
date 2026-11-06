@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const pool=document.getElementById('wise-pool'),button=document.getElementById('toggle-wise-controls');
-  let hidden=false;
+  let hidden=true;
   function send(frame){frame.contentWindow?.postMessage({kind:'wise-controls',hidden},'*');}
   function watch(frame){if(frame.tagName==='IFRAME'){frame.addEventListener('load',()=>send(frame));send(frame);}}
   for(const frame of pool.children)watch(frame);

@@ -71,6 +71,7 @@ in survey order. Metadata refreshes cannot restore an older finder layout.
 Drag the **Resize spectrum** handle to change the SPHEREx panel's height and its
 share of the two-column layout. Focus the handle and use arrow keys for keyboard
 resizing. The chosen size remains in this tab when moving between objects.
-**Hide WiseView controls [V]** hides the embedded RA/Dec/settings sidebar and
-reclaims its space; the same button restores it. The choice applies to prefetched
-frames as well as the current one.
+WiseView controls start hidden to give the image more space.
+**Show WiseView controls [V]** restores the embedded RA/Dec/settings sidebar;
+the same button or V key hides it again. The choice applies to prefetched frames
+as well as the current one.
