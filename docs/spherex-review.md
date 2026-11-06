@@ -294,3 +294,9 @@ ignores that cursor. Legacy API requests omitting queue_order retain object-ID o
 
 The optional user-run [SUBLIME2 object-ID index](sql/sublime2_oid_index.sql)
 improves direct object lookups. The queue does not require this schema change.
+
+
+The object header includes SUBLIME2 CNN P as a percentage (the highest valid
+catalog good probability for the object, across its apertures) and the best
+current fit's reduced chi-squared, matching its plotted annotation. Moving
+between targets and refitting refresh these values; unavailable values show —.

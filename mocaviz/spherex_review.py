@@ -270,7 +270,9 @@ def spectrum_metadata(cur, specid, oid=None, lane=None):
         SELECT s.moca_specid, s.moca_oid, s.moca_specpackid, s.ignored, s.median_snr_per_pix,
                mo.designation, mo.ra, mo.\x60dec\x60, mo.origin AS object_origin,
                COALESCE(NULLIF(TRIM(st.spectral_type), ''), NULLIF(TRIM(st.complete_spectral_type), '')) AS adopted_spectral_type,
-               COALESCE(NULLIF(TRIM(st.moca_pid), ''), NULLIF(TRIM(st.origin), '')) AS adopted_spectral_type_reference
+               COALESCE(NULLIF(TRIM(st.moca_pid), ''), NULLIF(TRIM(st.origin), '')) AS adopted_spectral_type_reference,
+               (SELECT MAX(p2.visual_nn_good_probability) FROM pcat_sublime_candidates_v2 p2
+                WHERE p2.moca_oid=s.moca_oid AND p2.visual_nn_good_probability BETWEEN 0 AND 1) AS sublime2_cnn_probability
         FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN data_spectral_types st ON st.moca_oid=mo.moca_oid AND st.adopted=1 AND st.ignored=0
         WHERE {' AND '.join(conditions)}
@@ -781,7 +783,7 @@ def demo_item(body):
         "lane": lane, "read_only": lane is None, "object": {"moca_oid": oid, "moca_specid": specid,
             "moca_specpackid": config["pack"] if config else None,
             "designation": f"Demonstration {oid}", "ra": 93.4382457, "dec": -64.9139227,
-            "median_snr_per_pix": 12.5, "ignored": 0},
+            "median_snr_per_pix": 12.5, "sublime2_cnn_probability": 0.93, "ignored": 0},
         "state": {"vet": [], "spt": [], "spectra": []}, "revision": "demo", "data_revision": "demo",
         "fit": fit_spectrum(spectrum, templates, fit_options(body)),
         "raw_spectrum": spectrum, "warning": "Synthetic demo data. Database writes are disabled.",

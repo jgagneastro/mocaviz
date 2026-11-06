@@ -273,6 +273,19 @@
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
+    const finite = (value) => typeof value === "number" && Number.isFinite(value);
+    const probability = obj.sublime2_cnn_probability;
+    const chi2 = [fit?.overlays?.[0]?.display_reduced_chi2, fit?.best?.robust_reduced_chi2_10pct_cap,
+      fit?.best?.reduced_chi2_10pct_cap, fit?.best?.reduced_chi2].find(finite);
+    const cnn = document.createElement("span"), fitQuality = document.createElement("span");
+    cnn.id = "header-cnn";
+    cnn.title = "Highest SUBLIME2 catalog CNN good probability for this object.";
+    cnn.textContent = "SUBLIME2 CNN P=" + (finite(probability) && probability >= 0 && probability <= 1 ?
+      (100 * probability).toFixed(1) + "%" : "—");
+    fitQuality.id = "header-chi2";
+    fitQuality.title = "Best displayed fit reduced chi squared; prefers robust 10% capped, then capped, then raw.";
+    fitQuality.textContent = "χ²ᵣ=" + (finite(chi2) ? chi2.toFixed(2) : "—");
+    $("object-meta").append(" · ", cnn, " · ", fitQuality);
     const origin = document.createElement("div");
     origin.textContent = "Object origin: " + (obj.object_origin?.trim() || "—");
     $("object-meta").append(origin);

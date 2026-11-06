@@ -335,7 +335,9 @@ class DirectSpectrumTests(unittest.TestCase):
             self.assertEqual(params, (2860761,))
             self.assertIn("mo.ignored=0", sql)
             self.assertNotIn("s.ignored=0", sql)
-            self.assertNotIn("pcat_", sql)
+            self.assertNotIn("visual_vetting", sql)
+            self.assertIn("MAX(p2.visual_nn_good_probability)", sql)
+            self.assertIn("p2.moca_oid=s.moca_oid", sql)
 
     def test_invalid_and_missing_specid_fail_without_falling_back_to_queue(self):
         cur = MagicMock()
