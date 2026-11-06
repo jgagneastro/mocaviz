@@ -5,7 +5,7 @@ const origin=process.argv[2] || 'http://127.0.0.1:8079';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const requests=[],errors=[];
-let contextVersion=10,queueVersion=10,contextGate=null;
+let contextVersion=11,queueVersion=11,contextGate=null;
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
@@ -60,7 +60,7 @@ try{
   assert(requests.every(r=>r.op==='context'),'Editing sample cuts must not request spectra');
   await page.locator('#sublime2-snr').fill('7');await page.locator('#snr').fill('2');
   await page.locator('#spectral-cnn-probability').fill('0.85');
-  await page.locator('#cnn-priority-source').selectOption('spectral');
+  assert.equal(await page.locator('#cnn-priority-source').inputValue(),'combined');
   await page.locator('#review-sample').selectOption('all');
   await load();
   assert.equal(await page.locator('#adopted-spt-source').inputValue(),'private');
@@ -69,7 +69,7 @@ try{
     assert.equal(await page.locator('#'+id).inputValue(),value,id);
   assert(await page.locator('#exclude-duplicates').isChecked());
   const initial=last('queue');
-  assert.equal(initial.cnn_priority_source,'spectral');assert.equal(initial.min_spectral_cnn_probability,'0.85');
+  assert.equal(initial.cnn_priority_source,'combined');assert.equal(initial.min_spectral_cnn_probability,'0.85');
   assert.equal(initial.exclude_duplicates,true);assert.equal(initial.min_sublime2_snr,'7');
   assert.equal(initial.min_cnn_probability,'0.8');assert.equal(initial.min_abs_galactic_latitude,'15');
   assert.equal(initial.min_snr,'2');assert.equal(initial.max_reduced_chi2,'1.5');
@@ -147,7 +147,7 @@ try{
   assert.equal(last('queue').exclude_duplicates,false);
   // Old workers must never silently ignore new default cuts or sorting.
   for(const stale of ['context','queue']){
-    contextVersion=stale==='context'?9:10;queueVersion=stale==='queue'?9:10;
+    contextVersion=stale==='context'?10:11;queueVersion=stale==='queue'?10:11;
     await page.goto(url);await page.waitForFunction(()=>!document.querySelector('#load').disabled);
     const before=requests.length;await page.locator('#load').click();
     await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));

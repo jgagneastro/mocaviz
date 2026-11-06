@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261106-spectral-cnn">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-spectral-cnn"></script>
+  <script defer src="static/spherex_review.js?v=20261106-mean-cnn"></script>
 </head>
 <body>
   <header>
@@ -49,7 +49,8 @@
         <label>Adopted SPT source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option></select></label>
         <small>Used for type filtering, queue order and the SPT beside the object name. Public UCD candidates automatically selects public. Load a queue to apply changes.</small>
         <label>Queue order<select id="queue-order"><option value="gal_cnn_spt_snr" selected>Latitude → CNN → type ↓ → S/N ↓</option><option value="cnn_spt_snr">CNN → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
-        <label>CNN priority source<select id="cnn-priority-source"><option value="spectral" selected>Spectral autotype CNN</option><option value="sublime2">SUBLIME2 catalog CNN</option></select></label>
+        <label>CNN priority source<select id="cnn-priority-source"><option value="combined" selected>Mean of available CNN probabilities</option><option value="spectral">Spectral autotype CNN</option><option value="sublime2">SUBLIME2 catalog CNN</option></select></label>
+        <small>Default CNN priority averages the spectral and SUBLIME2 catalog probabilities when both exist, otherwise uses the available one. Both missing stays in the lower-priority bin.</small>
         <small>First |gb| &gt;15°, then 10° &lt; |gb| ≤15°, then |gb| ≤10°; unavailable latitude last. Within each band: selected CNN P(good) ≥80% first, then &lt;80% or unavailable; rounded adopted subtype latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups. The minimum-latitude filter still applies.</small>
         <small id="sample-hint" hidden>Public candidates have a public-adopted photometric type of M7 or later.</small>
         <label>Batch size <small>1–500 objects; applies to Load and Next batch</small><input id="batch-size" type="number" min="1" max="500" step="1" value="300"></label>

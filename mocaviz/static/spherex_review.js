@@ -171,6 +171,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.cnn_priority_source === "combined" && ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 11;
     if (request.min_spectral_cnn_probability != null || ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 10;
     if (request.adopted_spt_source || request.adopted_spt_moca_pids?.length) return 9;
     if (request.queue_order === "gal_cnn_spt_snr") return 7;

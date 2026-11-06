@@ -311,8 +311,11 @@ non-ignored pixels at 1–2 microns (inclusive) in the selected reduction lane.
 This fixed sorting band is independent of the spectrum S/N filter's chosen band.
 Untyped objects sort last in each CNN bin; missing 1–2 micron S/N sorts last
 within a subtype. Object ID breaks remaining ties. CNN priority source defaults
-to the stored spectral autotype CNN, or can use the highest valid SUBLIME2
-catalog probability instead. Neither is used as a continuous rank inside a bin.
+to the mean of the spectral autotype and highest valid SUBLIME2 catalog
+probabilities when both are available, otherwise the single available value.
+Zero is an available probability; when both are missing, use the lower-priority
+bin. The source can still be set to either CNN individually. The selected value
+is not used as a continuous rank inside a bin.
 The former `cnn_spt_snr` order, exact-type and object-ID
 ordering choices remain available.
 
@@ -358,7 +361,9 @@ web SPT upsert carries its probabilities and provenance forward. An unrelated
 spectrum, adopted literature type or SUBLIME2 catalog probability never supplies
 a missing spectral CNN value. `min_spectral_cnn_probability` and the existing
 `min_cnn_probability` (catalog) API cuts are independent; `cnn_priority_source`
-selects `spectral` (default) or `sublime2`.
+selects `combined` (default), `spectral`, or `sublime2`. The combined source
+averages available values before the existing 80% priority-bin split; it does
+not change either independent minimum filter.
 
 
 When every loaded spectrum has been classified and the plot is cleared while

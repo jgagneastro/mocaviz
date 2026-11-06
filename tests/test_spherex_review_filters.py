@@ -381,18 +381,46 @@ class FilterSelectionTests(unittest.TestCase):
         self.db.execute("INSERT INTO data_spectral_types(id,moca_oid,moca_specid,calculation_method,comments,ignored) VALUES(102,4,104,'spiff_stacker_autotype','New fit without CNN',0)")
         self.assertEqual(self.oids(min_spectral_cnn_probability=.8),[7])
 
-    def test_spectral_cnn_priority_is_default_and_catalog_priority_is_selectable(self):
+    def test_spectral_cnn_priority_and_catalog_priority_remain_selectable(self):
         legacy=self.priority_fixture()
         self.spectral_cnn(3,.95);self.spectral_cnn(7,.81,calculation_method='spiff_stacker_autotype')
         expected=[3,7,4,2,5,1,6]
         after=0;actual=[]
         while True:
-            result=sr.queue(self.cur,{'lane':'spiffstacker','queue_order':'cnn_spt_snr','limit':2,'after':after})
+            result=sr.queue(self.cur,{'lane':'spiffstacker','queue_order':'cnn_spt_snr','cnn_priority_source':'spectral','limit':2,'after':after})
             actual.extend(row['moca_oid'] for row in result['items'])
             if not result['has_more']:break
             after=result['next_after']
         self.assertEqual(actual,expected)
         self.assertEqual(self.oids(queue_order='cnn_spt_snr',cnn_priority_source='sublime2'),legacy)
+
+    def test_default_cnn_mean_fallback_and_priority_pagination(self):
+        self.priority_fixture()
+        self.db.execute('DELETE FROM pcat_sublime_candidates_v2')
+        self.db.executemany('INSERT INTO pcat_sublime_candidates_v2 VALUES(?,10,?)',
+                            [(1,.5),(2,.8),(3,None),(4,.8),(5,None),(6,1.2),(7,.9)])
+        for oid,value in [(1,.9),(2,.8),(3,.85),(6,.9),(7,.5)]:
+            self.spectral_cnn(oid,value,calculation_method='spiff_stacker_autotype')
+        expected=[3,4,2,6,7,5,1]
+        result=sr.queue(self.cur,{'lane':'spiffstacker','queue_order':'cnn_spt_snr'})
+        self.assertEqual([row['moca_oid'] for row in result['items']],expected)
+        actual={row['moca_oid']:row for row in result['items']}
+        for oid,value in [(1,.7),(2,.8),(3,.85),(4,.8),(6,.9),(7,.7)]:
+            self.assertAlmostEqual(actual[oid]['sort_cnn_probability'],value)
+        self.assertIsNone(actual[5]['sort_cnn_probability'])
+        for limit in (1,2,3):
+            after=0;ordered=[]
+            while True:
+                page=sr.queue(self.cur,{'lane':'spiffstacker','queue_order':'cnn_spt_snr','limit':limit,'after':after})
+                ordered.extend(row['moca_oid'] for row in page['items'])
+                if not page['has_more']:break
+                after=page['next_after']
+            self.assertEqual(ordered,expected)
+
+    def test_combined_cnn_zero_missing_and_invalid_inputs(self):
+        for spectral,catalog,expected in [(0,1,.5),(0,None,0),(None,0,0),(.9,None,.9),
+                (None,.9,.9),(None,None,None),(float('nan'),.9,.9),(.9,1.1,.9),(True,.9,.9)]:
+            self.assertEqual(sr.combined_cnn_probability(spectral,catalog),expected)
 
     def test_missing_zero_and_invalid_spectral_probabilities(self):
         for probability in ('nan','-0.1','1.01','NULL','bad'):

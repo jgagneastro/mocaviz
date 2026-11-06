@@ -26,7 +26,7 @@ import pymysql
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from .spherex_cnn_metadata import parse_comments
+from .spherex_cnn_metadata import parse_comments, probability
 
 from .spherex_autotype_core import (
     DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
@@ -70,7 +70,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 10
+QUEUE_FILTER_VERSION = 11
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
@@ -344,6 +344,12 @@ def spectral_cnn_sql(lane):
             f"AND cnn_fit.calculation_method IN ({methods}) ORDER BY cnn_fit.id DESC LIMIT 1)")
 
 
+def combined_cnn_probability(spectral, catalog):
+    """Mean of the available valid probabilities; zero counts as available."""
+    available = [value for value in (probability(spectral), probability(catalog)) if value is not None]
+    return sum(available) / len(available) if available else None
+
+
 def analyze(cur, body):
     _, lane = lane_for(body) if body.get("lane") is not None else (None, None)
     oid = integer(body["moca_oid"], "moca_oid") if body.get("moca_oid") is not None else None
@@ -433,9 +439,9 @@ def queue(cur, body, *, count_only=False):
     order = body.get("queue_order", "oid_asc")
     if not isinstance(order, str) or order not in {"gal_cnn_spt_snr", "cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
         raise ReviewError("Choose a valid queue order.")
-    cnn_source = body.get("cnn_priority_source", "spectral")
-    if cnn_source not in ("spectral", "sublime2"):
-        raise ReviewError("Choose spectral or SUBLIME2 CNN priority.")
+    cnn_source = body.get("cnn_priority_source", "combined")
+    if cnn_source not in ("combined", "spectral", "sublime2"):
+        raise ReviewError("Choose combined, spectral or SUBLIME2 CNN priority.")
     galactic_order = order == "gal_cnn_spt_snr"
     priority_order = galactic_order or order == "cnn_spt_snr"
     rank_pixels = priority_order and not count_only
@@ -471,11 +477,18 @@ def queue(cur, body, *, count_only=False):
               AND a.{adopted_column}=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
         type_projection = ",adopted.spectral_type_number AS sort_spt"
         if rank_pixels:
-            cnn_probability = spectral_cnn_sql(lane) if cnn_source == "spectral" else """(SELECT MAX(p2.visual_nn_good_probability)
+            catalog_cnn = """(SELECT MAX(p2.visual_nn_good_probability)
                 FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
                 AND p2.visual_nn_good_probability BETWEEN 0 AND 1)"""
-            type_projection += (",ROUND(adopted.spectral_type_number,0) AS sort_subtype,CASE WHEN " +
-                                cnn_probability + ">=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin")
+            type_projection += ",ROUND(adopted.spectral_type_number,0) AS sort_subtype"
+            if cnn_source == "combined":
+                # Fetch each probability once; combine before coarse grouping and
+                # pagination. Repeated SQL expressions would repeat both lookups.
+                type_projection += ("," + spectral_cnn_sql(lane) + " AS sort_spectral_cnn_probability," +
+                                    catalog_cnn + " AS sort_catalog_cnn_probability")
+            else:
+                cnn_probability = spectral_cnn_sql(lane) if cnn_source == "spectral" else catalog_cnn
+                type_projection += ",CASE WHEN " + cnn_probability + ">=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin"
             if galactic_order:
                 # Match the latitude filter's private-reference coordinates.
                 # MIN rank is deterministic if multiple reference rows exist.
@@ -632,6 +645,12 @@ def queue(cur, body, *, count_only=False):
         # repeated selection inside MariaDB's window-ranking query.
         metadata = "s.moca_specid" if count_only else "s.moca_oid,s.moca_specid" + type_projection
         candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
+        if rank_pixels and cnn_source == "combined":
+            for row in candidates:
+                combined = combined_cnn_probability(row.pop("sort_spectral_cnn_probability"),
+                                                    row.pop("sort_catalog_cnn_probability"))
+                row["sort_cnn_probability"] = combined
+                row["sort_cnn_bin"] = 0 if combined is not None and combined >= 0.8 else 1
         wavelength_range = SNR_WAVELENGTH_RANGES[band]
         if count_only:
             eligible = metrics.passing_snr(cur, [row['moca_specid'] for row in candidates],
