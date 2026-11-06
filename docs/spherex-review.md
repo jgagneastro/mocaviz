@@ -261,8 +261,12 @@ cannot duplicate a queue item or trigger repeated scans of unindexed catalogs.
 The page defaults are SUBLIME2 detection S/N/pix >= 7, SUBLIME2 CNN good
 probability >= 0.8, absolute Galactic latitude >= 15 degrees, spectrum median
 S/N/pix >= 2 across all wavelengths, and stored autotype reduced chi-squared <= 1.5.
-The two SUBLIME2 catalog cuts apply to All objects/SUBLIME2; choosing another
-sample disables those controls and omits the two cuts without discarding their values.
+The SUBLIME2 detection cut applies to All objects/SUBLIME2 and is hidden for
+other samples. The spectral autotype CNN minimum is independent and defaults
+to blank. The separately labelled SUBLIME2 catalog CNN minimum defaults to 0.8
+for All objects/SUBLIME2 and blank for other samples. Both CNN controls remain
+available for every sample, preserve per-sample catalog choices, and can be
+enabled together. A catalog CNN cut requires a SUBLIME2 counterpart.
 Numeric blanks disable individual cuts. Missing values fail enabled cuts.
 
 Spectrum S/N is the median of signed flux/positive uncertainty in non-ignored
@@ -298,7 +302,7 @@ in the order |gb|>15, 10<|gb|<=15, |gb|<=10, then unavailable latitude. This
 uses calc_galactic_coordinates.adopt_as_reference=1; 15 degrees belongs to the
 middle band and 10 degrees to the low band. The minimum-latitude filter remains
 15 degrees by default; lower bands appear when it is lowered or cleared.
-Within each latitude band, first the SUBLIME2 CNN P(good)>=0.8 bin, then the
+Within each latitude band, first the selected CNN P(good)>=0.8 bin, then the
 below-0.8/unavailable bin. Within each CNN bin, the selected adopted types
 (private: adopted=1; public: public_adopted=1; both require ignored=0) are rounded to the nearest integer subtype and sorted
 latest-to-earliest; half subtypes round away from zero. Within each rounded
@@ -306,9 +310,10 @@ subtype, sort by decreasing median signed flux/uncertainty over valid,
 non-ignored pixels at 1–2 microns (inclusive) in the selected reduction lane.
 This fixed sorting band is independent of the spectrum S/N filter's chosen band.
 Untyped objects sort last in each CNN bin; missing 1–2 micron S/N sorts last
-within a subtype. Object ID breaks remaining ties. CNN P uses the same highest
-valid catalog probability as the header; it is not used as a continuous rank
-inside either bin. The former `cnn_spt_snr` order, exact-type and object-ID
+within a subtype. Object ID breaks remaining ties. CNN priority source defaults
+to the stored spectral autotype CNN, or can use the highest valid SUBLIME2
+catalog probability instead. Neither is used as a continuous rank inside a bin.
+The former `cnn_spt_snr` order, exact-type and object-ID
 ordering choices remain available.
 
 The cursor carries the latitude bin, CNN bin, rounded subtype, median 1–2 micron S/N and
@@ -339,10 +344,21 @@ The optional user-run [SUBLIME2 object-ID index](sql/sublime2_oid_index.sql)
 improves direct object lookups. The queue does not require this schema change.
 
 
-The object header includes SUBLIME2 CNN P as a percentage (the highest valid
-catalog good probability for the object, across its apertures) and the best
-current fit's reduced chi-squared, matching its plotted annotation. Moving
-between targets and refitting refresh these values; unavailable values show —.
+The object header separately shows stored spectral CNN P(good), SUBLIME2
+catalog CNN P (highest valid probability across the object's catalog apertures),
+and the current fit's reduced chi-squared. Spectral CNN metadata comes from
+versioned `spectral_cnn_*` fields in the latest stored autotype comments for the
+exact object, spectrum, and reduction method. An ignored autotype can still
+provide its CNN before visual review. No local JSON or model is needed by the
+web server. Missing/malformed values show — and fail an enabled minimum.
+
+Live template refits update chi-squared but do not recompute the CNN. Its model
+and source remain available in the header tooltip/API metadata, and an explicit
+web SPT upsert carries its probabilities and provenance forward. An unrelated
+spectrum, adopted literature type or SUBLIME2 catalog probability never supplies
+a missing spectral CNN value. `min_spectral_cnn_probability` and the existing
+`min_cnn_probability` (catalog) API cuts are independent; `cnn_priority_source`
+selects `spectral` (default) or `sublime2`.
 
 
 When every loaded spectrum has been classified and the plot is cleared while

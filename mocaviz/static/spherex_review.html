@@ -22,10 +22,10 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=20261106-sample-controls">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261106-spectral-cnn">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-adopted-spt-source"></script>
+  <script defer src="static/spherex_review.js?v=20261106-spectral-cnn"></script>
 </head>
 <body>
   <header>
@@ -49,12 +49,16 @@
         <label>Adopted SPT source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option></select></label>
         <small>Used for type filtering, queue order and the SPT beside the object name. Public UCD candidates automatically selects public. Load a queue to apply changes.</small>
         <label>Queue order<select id="queue-order"><option value="gal_cnn_spt_snr" selected>Latitude → CNN → type ↓ → S/N ↓</option><option value="cnn_spt_snr">CNN → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
-        <small>First |gb| &gt;15°, then 10° &lt; |gb| ≤15°, then |gb| ≤10°; unavailable latitude last. Within each band: CNN P(good) ≥80% first, then &lt;80% or unavailable; rounded adopted subtype latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups. The minimum-latitude filter still applies.</small>
+        <label>CNN priority source<select id="cnn-priority-source"><option value="spectral" selected>Spectral autotype CNN</option><option value="sublime2">SUBLIME2 catalog CNN</option></select></label>
+        <small>First |gb| &gt;15°, then 10° &lt; |gb| ≤15°, then |gb| ≤10°; unavailable latitude last. Within each band: selected CNN P(good) ≥80% first, then &lt;80% or unavailable; rounded adopted subtype latest first; then decreasing median spectrum S/N/pix at 1–2 µm. Untyped objects and missing S/N sort last within their groups. The minimum-latitude filter still applies.</small>
         <small id="sample-hint" hidden>Public candidates have a public-adopted photometric type of M7 or later.</small>
         <label>Batch size <small>1–500 objects; applies to Load and Next batch</small><input id="batch-size" type="number" min="1" max="500" step="1" value="300"></label>
         <label>Object IDs <small>Optional; separated by commas or spaces</small><textarea id="oids" rows="2" placeholder="1378657, 1561178"></textarea></label>
-        <div id="sublime2-cuts" class="pair"><label>SUBLIME2 detection S/N/pix ≥<input id="sublime2-snr" type="number" min="0" step="any" value="7" placeholder="Any"></label><label>SUBLIME2 CNN probability ≥<input id="cnn-probability" type="number" min="0" max="1" step="0.01" value="0.8" placeholder="Any"></label></div>
-        <small id="sublime2-cuts-hint">SUBLIME2 cuts apply to All objects and SUBLIME2.</small>
+        <div id="sublime2-cuts"><label>SUBLIME2 detection S/N/pix ≥<input id="sublime2-snr" type="number" min="0" step="any" value="7" placeholder="Any"></label></div>
+        <small id="sublime2-cuts-hint">SUBLIME2 detection cut applies to All objects and SUBLIME2.</small>
+        <label>SUBLIME2 catalog CNN P(good) ≥<input id="cnn-probability" title="Catalog/image classifier. An enabled cut requires a SUBLIME2 catalog match, regardless of the selected sample." type="number" min="0" max="1" step="0.01" value="0.8" placeholder="Any"></label>
+        <label>Spectral autotype CNN P(good) ≥<input id="spectral-cnn-probability" title="Latest stored autotype CNN for this exact spectrum and lane, recovered from spectral-type comments. Independent of the SUBLIME2 catalog classifier." type="number" min="0" max="1" step="0.01" placeholder="Any"></label>
+        <small>The two CNN filters are independent. Blank = no cut; an enabled cut requires an available probability.</small>
         <label>Absolute Galactic latitude ≥ (°)<input id="galactic-latitude" type="number" min="0" max="90" step="any" value="15" placeholder="Any"></label>
         <label>Spectrum S/N wavelengths<select id="snr-wavelength-range"><option value="all">All wavelengths</option><option value="1-5">1–5 µm</option><option value="1-2.5">1–2.5 µm</option><option value="2.5-4">2.5–4 µm</option><option value="4-5">4–5 µm</option></select></label>
         <div class="pair"><label>Spectrum median S/N/pix ≥<input id="snr" type="number" min="0" step="any" value="2" placeholder="Any"></label><label>Stored autotype reduced χ² ≤<input id="max-chi2" title="Latest stored fit for this spectrum; prefers robust 10% capped reduced chi squared, then capped, then raw." type="number" min="0" step="any" value="1.5" placeholder="Any"></label></div>

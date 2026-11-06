@@ -6,7 +6,7 @@ const origin = process.argv[2] || 'http://127.0.0.1:8061';
 const browser = await chromium.launch({headless: true});
 const page = await browser.newPage();
 const fits = [], errors = [];
-let queueSize = 30, active = 0, maxActive = 0, closing = false;
+let queueSize = 30, active = 0, maxActive = 0, closing = false, queueFilterVersion = 0;
 page.on('pageerror', e => errors.push(e.message));
 await page.route('**/api/spherex-review/*', async route => {
   const body = route.request().postDataJSON();
@@ -14,7 +14,7 @@ await page.route('**/api/spherex-review/*', async route => {
   assert(['context', 'queue', 'queue-count', 'analyze'].includes(op), 'Unexpected database write');
   const fulfill = (payload, status = 200) => route.fulfill({status, contentType: 'application/json',
     body: JSON.stringify({ok: status === 200, ...payload})});
-  if (op === 'queue') return fulfill({queue_filter_version: 7,
+  if (op === 'queue') return fulfill({queue_filter_version: queueFilterVersion,
     items: Array.from({length: queueSize}, (_, i) => ({moca_oid: 1001 + i,
       moca_specid: 11001 + i, designation: 'Synthetic ' + (1001 + i)})),
     has_more: false, next_after: null});
@@ -34,6 +34,7 @@ await page.route('**/api/spherex-review/*', async route => {
   try {
     const response = await route.fetch({postData: JSON.stringify({...body, mock: true})});
     const payload = await response.json();
+    if (op === 'context') queueFilterVersion = payload.queue_filter_version;
     if (fit) { active--; fit.done = true; }
     return await fulfill(payload);
   } catch (e) { if (!closing) throw e; }

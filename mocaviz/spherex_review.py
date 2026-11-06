@@ -26,6 +26,8 @@ import pymysql
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+from .spherex_cnn_metadata import parse_comments
+
 from .spherex_autotype_core import (
     DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
 )
@@ -68,7 +70,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 9
+QUEUE_FILTER_VERSION = 10
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
@@ -318,6 +320,30 @@ def dataset(cur, lane, oid, specid, *, adopted_spt_source="private"):
     return meta, spectrum, templates
 
 
+def stored_spectral_cnn(state, specid):
+    candidates = [row for row in state["spt"] if row.get("moca_specid") == specid]
+    latest = max(candidates, key=lambda row: row["id"]) if candidates else None
+    cnn = parse_comments(latest.get("comments")) if latest else None
+    return {"spectral_cnn_probability": cnn["probabilities"]["good"] if cnn else None,
+            "spectral_cnn": cnn, "spectral_cnn_spt_id": latest["id"] if cnn else None}
+
+
+def spectral_cnn_sql(lane):
+    # Method names are trusted server constants, never request values. The latest
+    # exact-spectrum autotype may be ignored pending its first visual review.
+    methods = ",".join("'" + method + "'" for method in lane["methods"])
+    key = "spectral_cnn_good_probability"
+    pattern = ("(^|;)[[:space:]]*" + key + "=[[:space:]]*[+]?"
+               "([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*(;|$)")
+    value = ("CAST(NULLIF(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX("
+             f"REGEXP_SUBSTR(cnn_fit.comments, '{pattern}'), '=', -1), ';', 1)), '') AS DECIMAL(30,17))")
+    version = "(^|;)[[:space:]]*spectral_cnn_metadata_version=1[[:space:]]*(;|$)"
+    return (f"(SELECT CASE WHEN REGEXP_SUBSTR(cnn_fit.comments, '{version}')<>'' AND "
+            f"{value} BETWEEN 0 AND 1 THEN {value} END FROM data_spectral_types cnn_fit "
+            "WHERE cnn_fit.moca_oid=s.moca_oid AND cnn_fit.moca_specid=s.moca_specid "
+            f"AND cnn_fit.calculation_method IN ({methods}) ORDER BY cnn_fit.id DESC LIMIT 1)")
+
+
 def analyze(cur, body):
     _, lane = lane_for(body) if body.get("lane") is not None else (None, None)
     oid = integer(body["moca_oid"], "moca_oid") if body.get("moca_oid") is not None else None
@@ -327,6 +353,7 @@ def analyze(cur, body):
     meta, spectrum, templates = dataset(cur, lane, oid, specid, adopted_spt_source=source)
     key = spectrum_lane(meta)
     state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
+    meta.update(stored_spectral_cnn(state, specid))
     options = fit_options(body)
     fit, warning = None, None
     try:
@@ -406,6 +433,9 @@ def queue(cur, body, *, count_only=False):
     order = body.get("queue_order", "oid_asc")
     if not isinstance(order, str) or order not in {"gal_cnn_spt_snr", "cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
         raise ReviewError("Choose a valid queue order.")
+    cnn_source = body.get("cnn_priority_source", "spectral")
+    if cnn_source not in ("spectral", "sublime2"):
+        raise ReviewError("Choose spectral or SUBLIME2 CNN priority.")
     galactic_order = order == "gal_cnn_spt_snr"
     priority_order = galactic_order or order == "cnn_spt_snr"
     rank_pixels = priority_order and not count_only
@@ -441,10 +471,11 @@ def queue(cur, body, *, count_only=False):
               AND a.{adopted_column}=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
         type_projection = ",adopted.spectral_type_number AS sort_spt"
         if rank_pixels:
-            type_projection += """,ROUND(adopted.spectral_type_number,0) AS sort_subtype,
-                CASE WHEN (SELECT MAX(p2.visual_nn_good_probability)
-                    FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
-                    AND p2.visual_nn_good_probability BETWEEN 0 AND 1)>=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin"""
+            cnn_probability = spectral_cnn_sql(lane) if cnn_source == "spectral" else """(SELECT MAX(p2.visual_nn_good_probability)
+                FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
+                AND p2.visual_nn_good_probability BETWEEN 0 AND 1)"""
+            type_projection += (",ROUND(adopted.spectral_type_number,0) AS sort_subtype,CASE WHEN " +
+                                cnn_probability + ">=0.8 THEN 0 ELSE 1 END AS sort_cnn_bin")
             if galactic_order:
                 # Match the latitude filter's private-reference coordinates.
                 # MIN rank is deterministic if multiple reference rows exist.
@@ -542,6 +573,9 @@ def queue(cur, body, *, count_only=False):
     if body.get("min_abs_galactic_latitude") not in (None, ""):
         conditions.append("EXISTS (SELECT 1 FROM calc_galactic_coordinates gal WHERE gal.moca_oid=s.moca_oid AND gal.adopt_as_reference=1 AND ABS(gal.gb)>=%s)")
         params.append(bounded_float(body["min_abs_galactic_latitude"], "Minimum absolute Galactic latitude", 0, 90))
+    if body.get("min_spectral_cnn_probability") not in (None, ""):
+        conditions.append(spectral_cnn_sql(lane) + ">=%s")
+        params.append(bounded_float(body["min_spectral_cnn_probability"], "Minimum spectral CNN probability", 0, 1))
     if body.get("max_reduced_chi2") not in (None, ""):
         # Use the latest non-ignored stored fit of this exact spectrum/lane.
         # Unrelated reductions or older successful fits cannot admit an object.
@@ -657,6 +691,7 @@ def make_spt(item, lane, ignored, public, rls):
         moca_oid=item["object"]["moca_oid"], moca_specid=item["object"]["moca_specid"],
         best_row=pd.Series(item["fit"]["best"]), code_name="mocaviz/spherex_review.py",
         calculation_method=method, ignored_value=ignored,
+        cnn_result=item["object"].get("spectral_cnn"),
     )
     row = dict(zip(SPT_FIELDS, values))
     row.update(is_public=public, rls=rls)
@@ -868,7 +903,8 @@ def demo_item(body):
             "moca_specpackid": config["pack"] if config else None,
             "adopted_spt_source": source,
             "designation": f"Demonstration {oid}", "ra": 93.4382457, "dec": -64.9139227,
-            "median_snr_per_pix": 12.5, "sublime2_cnn_probability": 0.93, "ignored": 0},
+            "median_snr_per_pix": 12.5, "sublime2_cnn_probability": 0.93,
+            "spectral_cnn_probability": 0.87, "spectral_cnn": None, "ignored": 0},
         "state": {"vet": [], "spt": [], "spectra": []}, "revision": "demo", "data_revision": "demo",
         "fit": fit_spectrum(spectrum, templates, fit_options(body)),
         "raw_spectrum": spectrum, "warning": "Synthetic demo data. Database writes are disabled.",

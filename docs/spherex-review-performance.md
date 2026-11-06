@@ -53,5 +53,6 @@ Opening the reviewer performs only its authentication/context check. Opening
 the page or changing filters does not load a queue, count objects, or fit spectra.
 Applicable filters remain editable while that check is pending; Load becomes
 available once it completes. CatWISE, SUBLIME1 and public-candidate samples hide
-the SUBLIME2-only detection/CNN controls and explicitly say those cuts are not
-applied. Returning to All objects or SUBLIME2 restores the previous values.
+the SUBLIME2-only detection control. Spectral and catalog CNN minima are
+independent controls available for all samples; the catalog minimum defaults
+to blank outside All objects/SUBLIME2 and retains each sample's chosen value.

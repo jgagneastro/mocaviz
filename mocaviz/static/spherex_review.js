@@ -11,6 +11,8 @@
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
   let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
   let plotShown = false;
+  let cnnFilterSample = "all";
+  const catalogCnnBySample = new Map();
   const LOOKAHEAD = 10, FIT_CACHE_LIMIT = 24;
   let analyzing = false;
   const analysisQueue = [];
@@ -35,7 +37,7 @@
             adopted_spt_source: job.adoptedSptSource});
           if (Number(data.object?.moca_specid) !== Number(job.item.moca_specid) ||
               Number(data.object?.moca_oid) !== Number(job.item.moca_oid) ||
-              typeof data.read_only !== "boolean") {
+              typeof data.read_only !== "boolean" || !Object.hasOwn(data.object, "spectral_cnn_probability")) {
             throw new Error("The server returned a different spectrum or an outdated response. " +
               "The review service may need to be restarted after deployment. No fit was loaded.");
           }
@@ -83,16 +85,22 @@
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
+    for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
       "sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
+    const sample = $("review-sample").value;
+    if (sample !== cnnFilterSample) {
+      catalogCnnBySample.set(cnnFilterSample, $("cnn-probability").value);
+      $("cnn-probability").value = catalogCnnBySample.get(sample) ?? (["all", "sublime2"].includes(sample) ? "0.8" : "");
+      cnnFilterSample = sample;
+    }
     const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
     $("sublime2-cuts").hidden = !sublime2Cuts;
     $("sublime2-cuts-hint").textContent = sublime2Cuts ?
-      "SUBLIME2 cuts apply to All objects and SUBLIME2." :
-      "SUBLIME2 detection and CNN cuts are not applied to this sample.";
-    for (const name of ["sublime2-snr", "cnn-probability"]) $(name).disabled ||= !sublime2Cuts;
+      "SUBLIME2 detection cut applies to All objects and SUBLIME2." :
+      "SUBLIME2 detection cut is not applied to this sample.";
+    $("sublime2-snr").disabled ||= !sublime2Cuts;
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
@@ -163,6 +171,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.min_spectral_cnn_probability != null || ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 10;
     if (request.adopted_spt_source || request.adopted_spt_moca_pids?.length) return 9;
     if (request.queue_order === "gal_cnn_spt_snr") return 7;
     if (request.queue_order === "cnn_spt_snr") return 6;
@@ -211,11 +220,12 @@
             missing_vetting: $("missing-vetting").value,
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
-            queue_order: $("queue-order").value,
+            queue_order: $("queue-order").value, cnn_priority_source: $("cnn-priority-source").value,
+            min_spectral_cnn_probability: $("spectral-cnn-probability").value || null,
             adopted_spt_source: $("adopted-spt-source").value,
             adopted_spt_moca_pids: [...new Set($("adopted-spt-moca-pids").value.trim().split(/[\s,;]+/).filter(Boolean))],
             min_sublime2_snr: ["all", "sublime2"].includes($("review-sample").value) ? $("sublime2-snr").value || null : null,
-            min_cnn_probability: ["all", "sublime2"].includes($("review-sample").value) ? $("cnn-probability").value || null : null,
+            min_cnn_probability: $("cnn-probability").value || null,
             min_abs_galactic_latitude: $("galactic-latitude").value || null,
             max_reduced_chi2: $("max-chi2").value || null,
             snr_wavelength_range: $("snr-wavelength-range").value,
@@ -356,18 +366,24 @@
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
     const finite = (value) => typeof value === "number" && Number.isFinite(value);
-    const probability = obj.sublime2_cnn_probability;
+    const probability = obj.spectral_cnn_probability;
     const chi2 = [fit?.overlays?.[0]?.display_reduced_chi2, fit?.best?.robust_reduced_chi2_10pct_cap,
       fit?.best?.reduced_chi2_10pct_cap, fit?.best?.reduced_chi2].find(finite);
     const cnn = document.createElement("span"), fitQuality = document.createElement("span");
     cnn.id = "header-cnn";
-    cnn.title = "Highest SUBLIME2 catalog CNN good probability for this object.";
-    cnn.textContent = "SUBLIME2 CNN P=" + (finite(probability) && probability >= 0 && probability <= 1 ?
+    cnn.title = "Stored spectral autotype CNN P(good) for this exact spectrum and lane" +
+      (obj.spectral_cnn?.model ? " · " + obj.spectral_cnn.model : "") + ". Not recomputed by live template refits.";
+    cnn.textContent = "Spectral CNN P(good)=" + (finite(probability) && probability >= 0 && probability <= 1 ?
       (100 * probability).toFixed(1) + "%" : "—");
     fitQuality.id = "header-chi2";
     fitQuality.title = "Best displayed fit reduced chi squared; prefers robust 10% capped, then capped, then raw.";
     fitQuality.textContent = "χ²ᵣ=" + (finite(chi2) ? chi2.toFixed(2) : "—");
-    $("object-meta").append(" · ", cnn, " · ", fitQuality);
+    const catalogCNN = document.createElement("span");
+    catalogCNN.id = "header-sublime2-cnn";
+    catalogCNN.title = "Highest SUBLIME2 catalog CNN good probability for this object; independent of spectral autotype CNN.";
+    catalogCNN.textContent = "SUBLIME2 CNN P=" + (finite(obj.sublime2_cnn_probability) && obj.sublime2_cnn_probability >= 0 && obj.sublime2_cnn_probability <= 1 ?
+      (100 * obj.sublime2_cnn_probability).toFixed(1) + "%" : "—");
+    $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
     const origin = document.createElement("div");
     origin.textContent = "Object origin: " + (obj.object_origin?.trim() || "—");
     $("object-meta").append(origin);

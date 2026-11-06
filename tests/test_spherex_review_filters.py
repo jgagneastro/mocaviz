@@ -55,7 +55,7 @@ class FilterSelectionTests(unittest.TestCase):
         self.cur=Cursor()
 
     def tearDown(self): self.db.close()
-    def queue(self, **cuts): return sr.queue(self.cur, {'lane':'spiffstacker',**cuts})
+    def queue(self, **cuts): return sr.queue(self.cur, {'lane':'spiffstacker','cnn_priority_source':'sublime2',**cuts})
     def oids(self, **cuts): return [r['moca_oid'] for r in self.queue(**cuts)['items']]
 
     def dual_adopted_fixture(self):
@@ -363,12 +363,50 @@ class FilterSelectionTests(unittest.TestCase):
         with self.assertRaises(sr.ReviewError):self.queue(queue_order='gal_cnn_spt_snr',after=previous)
         self.assertIsInstance(self.queue(queue_order='cnn_spt_snr',after=previous)['items'],list)
 
+    def spectral_cnn(self, oid, probability, **changes):
+        comments = f'spectral_cnn_metadata_version=1; spectral_cnn_good_probability={probability}'
+        self.db.execute('UPDATE data_spectral_types SET comments=? WHERE moca_oid=?',(comments,oid))
+        for key,value in changes.items():
+            self.db.execute('UPDATE data_spectral_types SET '+key+'=? WHERE moca_oid=?',(value,oid))
+
+    def test_spectral_and_catalog_cnn_filters_are_independent_for_catwise(self):
+        self.spectral_cnn(1,.1);self.spectral_cnn(4,.95,ignored=1)
+        self.spectral_cnn(7,.9,calculation_method='spiff_stacker_autotype')
+        self.assertEqual(self.oids(review_sample='catwiseredmovers',min_spectral_cnn_probability=.8),[4,7])
+        self.assertEqual(self.oids(review_sample='catwiseredmovers',min_cnn_probability=.8),[1,4])
+        self.assertEqual(self.oids(review_sample='catwiseredmovers',min_spectral_cnn_probability=.8,min_cnn_probability=.8),[4])
+        self.assertEqual(sr.queue(self.cur,{'lane':'spiffstacker','min_spectral_cnn_probability':.8},count_only=True),{'total':2})
+        self.db.execute("INSERT INTO data_spectral_types(id,moca_oid,moca_specid,calculation_method,comments,ignored) VALUES(101,4,999,'spiff_stacker_autotype','spectral_cnn_metadata_version=1; spectral_cnn_good_probability=1',0)")
+        self.assertEqual(self.oids(min_spectral_cnn_probability=.99),[])
+        self.db.execute("INSERT INTO data_spectral_types(id,moca_oid,moca_specid,calculation_method,comments,ignored) VALUES(102,4,104,'spiff_stacker_autotype','New fit without CNN',0)")
+        self.assertEqual(self.oids(min_spectral_cnn_probability=.8),[7])
+
+    def test_spectral_cnn_priority_is_default_and_catalog_priority_is_selectable(self):
+        legacy=self.priority_fixture()
+        self.spectral_cnn(3,.95);self.spectral_cnn(7,.81,calculation_method='spiff_stacker_autotype')
+        expected=[3,7,4,2,5,1,6]
+        after=0;actual=[]
+        while True:
+            result=sr.queue(self.cur,{'lane':'spiffstacker','queue_order':'cnn_spt_snr','limit':2,'after':after})
+            actual.extend(row['moca_oid'] for row in result['items'])
+            if not result['has_more']:break
+            after=result['next_after']
+        self.assertEqual(actual,expected)
+        self.assertEqual(self.oids(queue_order='cnn_spt_snr',cnn_priority_source='sublime2'),legacy)
+
+    def test_missing_zero_and_invalid_spectral_probabilities(self):
+        for probability in ('nan','-0.1','1.01','NULL','bad'):
+            self.spectral_cnn(1,probability)
+            self.assertEqual(self.oids(min_spectral_cnn_probability=0),[])
+        self.spectral_cnn(1,0)
+        self.assertEqual(self.oids(min_spectral_cnn_probability=0),[1])
+
     def test_invalid_inputs_rejected_before_database_execution(self):
         invalid=[{'review_sample':[]},{'review_sample':'unsafe'},{'snr_wavelength_range':[]},
                  {'snr_wavelength_range':'0-100'},{'queue_order':'spt; DROP'},
                  {'queue_order':'spt_desc','after':123},{'no_wiseview_score':'yes'},
-                 {'exclude_duplicates':[]},{'min_cnn_probability':1.01},{'min_abs_galactic_latitude':91}]
-        invalid += [{key:value} for key in ('min_snr','min_sublime2_snr','min_cnn_probability','min_abs_galactic_latitude','max_reduced_chi2')
+                 {'exclude_duplicates':[]},{'min_cnn_probability':1.01},{'min_spectral_cnn_probability':1.01},{'cnn_priority_source':'bad'},{'min_abs_galactic_latitude':91}]
+        invalid += [{key:value} for key in ('min_snr','min_sublime2_snr','min_cnn_probability','min_spectral_cnn_probability','min_abs_galactic_latitude','max_reduced_chi2')
                     for value in (True,'nan','1 OR 1=1',-1)]
         for cuts in invalid:
             with self.subTest(cuts=cuts):

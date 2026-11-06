@@ -9,6 +9,8 @@ import math
 import re
 from typing import Optional
 
+from .spherex_cnn_metadata import append_comments
+
 import numpy as np
 import pandas as pd
 from scipy.interpolate import UnivariateSpline
@@ -432,6 +434,7 @@ def _build_autotype_spectral_type_db_values(
     calculation_method: str,
     ignored_value: int,
     provenance_note: Optional[str] = None,
+    cnn_result: Optional[dict[str, object]] = None,
 ) -> tuple[object, ...]:
     """Build the canonical private autotype SPT row used by all upsert paths."""
     def _fmt2(x: Optional[float]) -> str:
@@ -493,6 +496,10 @@ def _build_autotype_spectral_type_db_values(
     )
     if provenance_note:
         comments = f"{comments}; {str(provenance_note).strip()}"
+    cnn_provenance = cnn_result if isinstance(cnn_result, dict) else {}
+    comments = append_comments(comments, cnn_result, source=cnn_provenance.get("source") or code_name,
+                               generated_at=cnn_provenance.get("generated_at_utc"),
+                               sha256=cnn_provenance.get("json_sha256"))
 
     return (
         int(moca_oid),
