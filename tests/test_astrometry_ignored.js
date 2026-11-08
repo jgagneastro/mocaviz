@@ -40,6 +40,28 @@ function fixture() {
   return {context, plots, rows, run: code => vm.runInContext(code, context)};
 }
 
+test('mission-band filters separate releases and exclude rows from fits and exports', () => {
+  const f = fixture();
+  f.rows[1].moca_psid = 'H';
+  f.rows[2].mission = 'Survey DR2';
+  f.rows[3].moca_psid = null;
+  f.rows[4].moca_psid = 'J, wide';
+  f.context.bandFilter = JSON.stringify([['Survey DR1', 'J'], ['Survey DR1', null], ['invalid', {}]]);
+  f.run(`
+    atmState.selectedMissions.add('Survey DR2');
+    atmState.excludedMissionBands = parseAstrometryMissionBands(bandFilter);
+  `);
+  const expectedIds = [2, 3, 5];
+  assert.deepEqual(plain(f.run('prepareAstrometryRows().rows.map(row => row.id)')), expectedIds);
+  assert.deepEqual(plain(f.run('buildAstrometryFitRequest("pm", prepareAstrometryRows()).rows.map(row => row.id)')), expectedIds);
+  let exported;
+  f.context.MocaExport = {saveTable(format, options) { exported = plain(options.rows.map(row => row.id)); }};
+  f.run('atmState.processedRows = prepareAstrometryRows().rows; exportAstrometry("csv")');
+  assert.deepEqual(exported, expectedIds);
+  f.run(`atmState.excludedMissionBands = parseAstrometryMissionBands('not JSON')`);
+  assert.equal(f.run('prepareAstrometryRows().rows.length'), 5);
+});
+
 test('ignored extremes do not affect reference, binning, or ranges in any display mode', () => {
   for (const phase of [false, true]) for (const absolute of [false, true]) {
     const f = fixture();

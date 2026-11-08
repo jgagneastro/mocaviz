@@ -1822,6 +1822,10 @@ body.is-mocadb-team tbody tr:nth-child(odd) {
   white-space: nowrap;
 }
 
+.astrometry-mission-bands {
+  margin-inline-start: 1.4rem;
+}
+
 .calibration-method-list {
   max-height: 180px;
 }

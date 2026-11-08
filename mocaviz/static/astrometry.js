@@ -23,6 +23,7 @@ const atmState = {
   selectedTargetLabel: "",
   payload: null,
   selectedMissions: new Set(),
+  excludedMissionBands: new Set(),
   selectedCalibrationMethods: new Set(),
   selectedIds: new Set(),
   manualRejectedIds: new Set(),
@@ -150,6 +151,7 @@ function readAstrometryUrlState() {
   const params = new URLSearchParams(window.location.search);
   atmState.selectedOid = parseInteger(params.get("moca_oid") || params.get("oid"));
   atmState.initialMissions = (params.get("missions") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  atmState.excludedMissionBands = parseAstrometryMissionBands(params.get("excluded_mission_bands"));
   atmState.initialCalibrationMethods = (params.get("calibration_methods") || params.get("calib_methods") || "")
     .split(",")
     .map((item) => item.trim())
@@ -209,6 +211,8 @@ function bindAstrometryControls() {
     clearAstrometryFit({ render: false });
     atmEl["atm-target-search"].value = "";
     updateSelectedTargetDisplay();
+    atmState.excludedMissionBands.clear();
+    renderMissionList();
     updateAstrometryUrl();
     renderEmptyAstrometry("Select a target");
     atmEl["atm-target-search"].focus();
@@ -218,6 +222,7 @@ function bindAstrometryControls() {
   });
   atmEl["atm-missions-all"].addEventListener("click", () => {
     atmState.selectedMissions = new Set((atmState.payload?.missions || []).map((row) => row.value));
+    atmState.excludedMissionBands.clear();
     atmState.hasUserMissionChoice = true;
     clearAstrometryFit({ render: false });
     renderMissionList();
@@ -758,6 +763,7 @@ function selectAstrometryTarget(option, options = {}) {
     atmState.selectedMissions.clear();
     atmState.initialMissions = [];
     atmState.hasUserMissionChoice = false;
+    atmState.excludedMissionBands.clear();
     atmState.selectedCalibrationMethods.clear();
     atmState.initialCalibrationMethods = [];
     atmState.hasUserCalibrationChoice = false;
@@ -818,26 +824,73 @@ function initializeMissionSelection() {
   }
 }
 
+function astrometryMissionBand(row) {
+  return [String(row.mission || "No mission"), String(row.moca_psid ?? "").trim() || null];
+}
+
+function parseAstrometryMissionBands(value) {
+  try {
+    const pairs = JSON.parse(value || "[]");
+    if (Array.isArray(pairs)) {
+      return new Set(pairs.filter((pair) => Array.isArray(pair) && pair.length === 2 &&
+        typeof pair[0] === "string" && (pair[1] === null || typeof pair[1] === "string"))
+        .map(([mission, band]) => JSON.stringify([mission, band?.trim() || null])));
+    }
+  } catch {
+    // Ignore invalid URL parameters and start with all bands enabled.
+  }
+  return new Set();
+}
+
 function renderMissionList() {
   const missions = atmState.payload?.missions || [];
+  const list = atmEl["atm-mission-list"];
   if (!missions.length) {
-    atmEl["atm-mission-list"].innerHTML = `<div class="plot-hint">No missions loaded</div>`;
+    list.innerHTML = `<div class="plot-hint">No missions loaded</div>`;
     return;
   }
-  atmEl["atm-mission-list"].innerHTML = missions.map((mission) => (
-    `<label class="checkline mission-check">
-      <input type="checkbox" value="${escapeHtml(mission.value)}" ${atmState.selectedMissions.has(mission.value) ? "checked" : ""}>
-      <span>${escapeHtml(mission.label || mission.value)}</span>
-    </label>`
-  )).join("");
-  atmEl["atm-mission-list"].querySelectorAll("input").forEach((input) => {
+  const bandsByMission = new Map();
+  for (const row of atmState.payload.rows || []) {
+    const [mission, band] = astrometryMissionBand(row);
+    if (!bandsByMission.has(mission)) bandsByMission.set(mission, new Set());
+    bandsByMission.get(mission).add(band);
+  }
+  list.innerHTML = missions.map((mission) => {
+    const enabled = atmState.selectedMissions.has(mission.value);
+    const bands = [...(bandsByMission.get(mission.value) || [])];
+    bands.sort((a, b) => (a === null) - (b === null) || (a || "").localeCompare(b || ""));
+    const controls = bands.map((band) => {
+      const key = JSON.stringify([mission.value, band]);
+      const label = escapeHtml(band ?? "No band recorded");
+      return `<label class="checkline mission-check" title="${label}">
+        <input type="checkbox" data-mission-band value="${escapeHtml(key)}"
+          ${atmState.excludedMissionBands.has(key) ? "" : "checked"} ${enabled ? "" : "disabled"}>
+        <span>${label}</span>
+      </label>`;
+    }).join("");
+    return `<div class="astrometry-mission-group">
+      <label class="checkline mission-check">
+        <input type="checkbox" value="${escapeHtml(mission.value)}" ${enabled ? "checked" : ""}>
+        <span>${escapeHtml(mission.label || mission.value)}</span>
+      </label>
+      <div class="astrometry-mission-bands" role="group" aria-label="${escapeHtml(mission.value)} photometric bands">${controls}</div>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("input").forEach((input) => {
     input.addEventListener("change", () => {
-      if (input.checked) atmState.selectedMissions.add(input.value);
-      else atmState.selectedMissions.delete(input.value);
-      atmState.hasUserMissionChoice = true;
+      if (input.hasAttribute("data-mission-band")) {
+        if (input.checked) atmState.excludedMissionBands.delete(input.value);
+        else atmState.excludedMissionBands.add(input.value);
+      } else {
+        if (input.checked) atmState.selectedMissions.add(input.value);
+        else atmState.selectedMissions.delete(input.value);
+        atmState.hasUserMissionChoice = true;
+        for (const band of input.closest(".astrometry-mission-group").querySelectorAll("[data-mission-band]")) {
+          band.disabled = !input.checked;
+        }
+      }
       clearAstrometryFit({ render: false });
       renderAstrometryWithDelayedRanges();
-      updateAstrometryUrl();
     });
   });
 }
@@ -988,7 +1041,10 @@ function prepareAstrometryRows() {
   const calibrationRows = selectedCalibrationMethods.size
     ? baseRows.filter((row) => selectedCalibrationMethods.has(astrometryCalibrationMethodKey(row)))
     : [];
-  const missionRows = calibrationRows.filter((row) => atmState.selectedMissions.has(String(row.mission || "No mission")));
+  const missionRows = calibrationRows.filter((row) => {
+    const pair = astrometryMissionBand(row);
+    return atmState.selectedMissions.has(pair[0]) && !atmState.excludedMissionBands.has(JSON.stringify(pair));
+  });
   const useRaw = atmEl["atm-revert-raw"].checked;
   const rows = markDuplicatedAstrometryRows(missionRows.filter((row) => finite(row.measurement_epoch_yr)), useRaw);
   const referenceRows = rows.filter((row) => !isExcludedAstrometryRow(row));
@@ -3285,6 +3341,12 @@ function updateAstrometryUrl() {
   }
   if (atmState.hasUserMissionChoice && atmState.selectedMissions.size) params.set("missions", [...atmState.selectedMissions].join(","));
   else params.delete("missions");
+  if (atmState.excludedMissionBands.size) {
+    const pairs = [...atmState.excludedMissionBands].map((key) => JSON.parse(key));
+    params.set("excluded_mission_bands", JSON.stringify(pairs));
+  } else {
+    params.delete("excluded_mission_bands");
+  }
   if ((atmState.hasUserCalibrationChoice || atmState.initialCalibrationMethods.length) && atmState.selectedCalibrationMethods.size) {
     params.set("calibration_methods", [...atmState.selectedCalibrationMethods].join(","));
   } else {
