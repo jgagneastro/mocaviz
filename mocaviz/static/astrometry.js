@@ -2027,6 +2027,9 @@ async function executeAstrometryFitTask(task) {
       throw new Error("The selected measurements changed. Old fit discarded; start a new fit.");
     }
     if (!payload?.fit) throw new Error(payload?.error || "Fit failed");
+    if (task.body.fitSurveyOffsets && !payload.fit.surveyOffsets) {
+      throw new Error("Restart local MOCAviz to activate the mission-offset fitter.");
+    }
     atmState.fitCapabilities = payload.capabilities || atmState.fitCapabilities;
     atmState.fitResult = payload.fit;
     task.active = false;
