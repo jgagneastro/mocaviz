@@ -62,6 +62,56 @@ test('mission-band filters separate releases and exclude rows from fits and expo
   assert.equal(f.run('prepareAstrometryRows().rows.length'), 5);
 });
 
+test('mission defaults prefer usable unWISEMotion and the highest numbered release of the exact mission', () => {
+  const f = fixture();
+  const dataset = (id, name, release, fields = {}) => ({
+    ...f.rows[0], id, mission: name + ' ' + release, mission_name: name, data_release: release, ...fields,
+  });
+  f.context.payload.rows = [
+    dataset(1, 'WISE', 'unTimely'),
+    dataset(2, 'WISE', 'unWISEMotion W1'),
+    dataset(3, 'WISE', 'unWISEMotion W2'),
+    dataset(4, 'VHS', 'DR6'),
+    dataset(5, 'VHS', 'DR7'),
+    dataset(6, 'VHS', 'DR10'),
+    dataset(7, 'VHS', 'DR11', {ignored:1}),
+    dataset(8, 'VHS', 'DR12', {measurement_epoch_yr:null}),
+    dataset(9, 'VHS Deep', 'DR1'),
+    dataset(10, 'vhs', 'DR3'),
+    dataset(11, 'VHS', 'DR2PLUS'),
+  ];
+  f.run('normalizeAstrometryMissions(payload); initializeMissionSelection()');
+  const selected = () => plain(f.run('[...atmState.selectedMissions].sort()'));
+  assert.deepEqual(selected(), ['VHS DR10', 'VHS DR11', 'VHS DR12', 'VHS DR2PLUS', 'VHS Deep DR1',
+    'WISE unWISEMotion W1', 'WISE unWISEMotion W2', 'vhs DR3'].sort());
+
+  f.context.payload.rows[1].ignored = 1;
+  f.context.payload.rows[2].ignored = 1;
+  f.run('initializeMissionSelection()');
+  assert.ok(selected().includes('WISE unTimely'));
+
+  f.run(`atmState.initialMissions = ['VHS DR6', 'WISE unTimely']; initializeMissionSelection();`);
+  f.context.payload.rows[1].ignored = 0;
+  f.run('initializeMissionSelection()');
+  assert.deepEqual(selected(), ['VHS DR6', 'WISE unTimely']);
+});
+
+test('SMSS and SkyMapper share a mission and only matching measurements are duplicates', () => {
+  const f = fixture();
+  const original = {...f.rows[0], mission: 'SMSS DR4', mission_name: 'SMSS', data_release: 'DR4'};
+  const copy = {...original, id:2, mission: 'SKymapper DR4', mission_name: 'SKymapper'};
+  const other = {...copy, id:3, measurement_epoch_yr:original.measurement_epoch_yr + 0.1};
+  f.context.payload.rows = [original, copy, other];
+  f.run('normalizeAstrometryMissions(payload); initializeMissionSelection()');
+  assert.deepEqual(plain(f.context.payload.missions), [{value:'SkyMapper DR4', label:'SkyMapper DR4 (3)', count:3}]);
+  assert.ok(f.context.payload.rows.every(row => row.mission_name === 'SkyMapper'));
+  const rows = f.run('prepareAstrometryRows().rows');
+  assert.deepEqual(plain(rows.filter(row => row.auto_duplicate).map(row => [row.id, row.duplicate_of_id])), [[2, 1]]);
+  f.context.bandFilter = JSON.stringify([['SMSS DR4', 'J']]);
+  f.run('atmState.excludedMissionBands = parseAstrometryMissionBands(bandFilter)');
+  assert.equal(f.run('prepareAstrometryRows().rows.length'), 0);
+});
+
 test('ignored extremes do not affect reference, binning, or ranges in any display mode', () => {
   for (const phase of [false, true]) for (const absolute of [false, true]) {
     const f = fixture();

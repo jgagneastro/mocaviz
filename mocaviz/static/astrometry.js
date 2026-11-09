@@ -150,7 +150,8 @@ function collectAstrometryElements() {
 function readAstrometryUrlState() {
   const params = new URLSearchParams(window.location.search);
   atmState.selectedOid = parseInteger(params.get("moca_oid") || params.get("oid"));
-  atmState.initialMissions = (params.get("missions") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  atmState.initialMissions = (params.get("missions") || "").split(",").map((item) => item.trim())
+    .filter(Boolean).map(canonicalAstrometryMission);
   atmState.excludedMissionBands = parseAstrometryMissionBands(params.get("excluded_mission_bands"));
   atmState.initialCalibrationMethods = (params.get("calibration_methods") || params.get("calib_methods") || "")
     .split(",")
@@ -273,12 +274,11 @@ function bindAstrometryControls() {
     const availableCalibrationMethods = astrometryCalibrationMethodOptions().map((row) => row.value);
     const hadAllCalibrationMethodsSelected = availableCalibrationMethods.length > 0
       && availableCalibrationMethods.every((method) => atmState.selectedCalibrationMethods.has(method));
-    if (hadAllMissionsSelected) atmState.hasUserMissionChoice = false;
     if (hadAllCalibrationMethodsSelected) atmState.hasUserCalibrationChoice = false;
     atmState.selectedIds.clear();
     clearAstrometryFit({ render: false });
     updateAstrometryUrl();
-    await loadAstrometryObject();
+    await loadAstrometryObject({ keepAllMissions: hadAllMissionsSelected && atmState.hasUserMissionChoice });
   });
   for (const id of ["atm-fit-method", "atm-fit-outlier-mixture", "atm-fit-error-floor"]) {
     if (!atmEl[id]) continue;
@@ -774,7 +774,7 @@ function selectAstrometryTarget(option, options = {}) {
   if (!options.deferLoad) updateAstrometryUrl();
 }
 
-async function loadAstrometryObject() {
+async function loadAstrometryObject({ keepAllMissions = false } = {}) {
   updateAstrometryUrl();
   if (atmState.selectedOid === null) {
     renderEmptyAstrometry("Select a target");
@@ -797,13 +797,13 @@ async function loadAstrometryObject() {
     renderEmptyAstrometry(payload.error || "Could not load astrometry");
     return;
   }
-  atmState.payload = payload;
+  atmState.payload = normalizeAstrometryMissions(payload);
   atmState.selectedIds.clear();
   pruneManualAstrometryRejections();
   atmState.selectedTargetLabel = targetLabel(payload.target);
   atmEl["atm-target-search"].value = atmState.selectedTargetLabel;
   updateSelectedTargetDisplay();
-  initializeMissionSelection();
+  initializeMissionSelection(keepAllMissions);
   initializeCalibrationMethodSelection();
   renderMissionList();
   renderCalibrationMethodList();
@@ -811,17 +811,65 @@ async function loadAstrometryObject() {
   setAstrometryStatus(`${payload.meta?.row_count || 0} astrometric measurements loaded${payload.cache?.hit ? " from cache" : ""}`, "");
 }
 
-function initializeMissionSelection() {
+function canonicalAstrometryMission(value) {
+  return value.replace(/^(?:SMSS|SkyMapper)(?= |$)/i, "SkyMapper");
+}
+
+function normalizeAstrometryMissions(payload) {
+  const counts = new Map();
+  for (const row of payload.rows || []) {
+    if (/^(?:SMSS|SkyMapper)$/i.test(row.mission_name?.trim())) {
+      row.mission_name = "SkyMapper";
+      row.mission = ["SkyMapper", row.data_release?.trim()].filter(Boolean).join(" ");
+    }
+    const mission = row.mission || "No mission";
+    counts.set(mission, (counts.get(mission) || 0) + 1);
+  }
+  payload.missions = [...counts].sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .map(([value, count]) => ({ value, label: `${value} (${count})`, count }));
+  return payload;
+}
+
+function initializeMissionSelection(keepAllMissions = false) {
   const available = new Set((atmState.payload?.missions || []).map((row) => row.value));
-  if (atmState.hasUserMissionChoice) {
-    atmState.selectedMissions = new Set([...atmState.selectedMissions].filter((mission) => available.has(mission)));
-    return;
-  }
-  if (atmState.initialMissions.length) {
+  if (keepAllMissions) {
+    atmState.selectedMissions = available;
+  } else if (atmState.initialMissions.length) {
     atmState.selectedMissions = new Set(atmState.initialMissions.filter((mission) => available.has(mission)));
+    atmState.initialMissions = [];
+    atmState.hasUserMissionChoice = true;
+  } else if (atmState.hasUserMissionChoice) {
+    atmState.selectedMissions = new Set([...atmState.selectedMissions].filter((mission) => available.has(mission)));
   } else {
-    atmState.selectedMissions = new Set(available);
+    atmState.selectedMissions = defaultAstrometryMissions(available);
   }
+}
+
+function defaultAstrometryMissions(available) {
+  const releases = new Map();
+  const latestRelease = new Map();
+  const unTimelyMissions = new Set();
+  let hasUnwiseMotion = false;
+  for (const row of atmState.payload?.rows || []) {
+    const name = row.mission_name?.trim();
+    const release = row.data_release?.trim();
+    const usable = !isIgnoredAstrometryRow(row) && [row.ra, row.dec, row.measurement_epoch_yr]
+      .every((value) => value != null && value !== "" && finite(value));
+    const dr = release?.match(/^DR\s*(\d+)$/i);
+    if (name && dr) {
+      const number = Number(dr[1]);
+      releases.set(row.mission, { name, number });
+      if (usable) latestRelease.set(name, Math.max(number, latestRelease.get(name) ?? -Infinity));
+    }
+    if (name === "WISE") {
+      if (/^untimely$/i.test(release)) unTimelyMissions.add(row.mission);
+      if (usable && /^unwisemotion(?: W[12])?$/i.test(release)) hasUnwiseMotion = true;
+    }
+  }
+  return new Set([...available].filter((mission) => {
+    const dr = releases.get(mission);
+    return !(dr && dr.number < latestRelease.get(dr.name)) && !(hasUnwiseMotion && unTimelyMissions.has(mission));
+  }));
 }
 
 function astrometryMissionBand(row) {
@@ -834,7 +882,7 @@ function parseAstrometryMissionBands(value) {
     if (Array.isArray(pairs)) {
       return new Set(pairs.filter((pair) => Array.isArray(pair) && pair.length === 2 &&
         typeof pair[0] === "string" && (pair[1] === null || typeof pair[1] === "string"))
-        .map(([mission, band]) => JSON.stringify([mission, band?.trim() || null])));
+        .map(([mission, band]) => JSON.stringify([canonicalAstrometryMission(mission), band?.trim() || null])));
     }
   } catch {
     // Ignore invalid URL parameters and start with all bands enabled.
@@ -3339,7 +3387,8 @@ function updateAstrometryUrl() {
     params.delete("moca_oid");
     params.delete("oid");
   }
-  if (atmState.hasUserMissionChoice && atmState.selectedMissions.size) params.set("missions", [...atmState.selectedMissions].join(","));
+  const explicitMissions = atmState.hasUserMissionChoice ? [...atmState.selectedMissions] : atmState.initialMissions;
+  if (explicitMissions.length) params.set("missions", explicitMissions.join(","));
   else params.delete("missions");
   if (atmState.excludedMissionBands.size) {
     const pairs = [...atmState.excludedMissionBands].map((key) => JSON.parse(key));
