@@ -6,9 +6,9 @@
 <meta name="referrer" content="no-referrer">
 <title>MOSAIC Proper Motion Review</title>
 <link rel="icon" href="/static/mosaic_review.svg">
-<link rel="stylesheet" href="/static/mosaic_review.css?v=2">
+<link rel="stylesheet" href="/static/mosaic_review.css?v=3">
 <script defer src="/plotly.min.js"></script>
-<script defer src="/static/mosaic_review.js?v=7"></script>
+<script defer src="/static/mosaic_review.js?v=9"></script>
 </head>
 <body>
 <header class="top">
@@ -41,6 +41,8 @@
       <button id="toggle-pm" type="button" aria-pressed="false">Subtract PM <kbd>P</kbd></button>
       <label>Solution <select id="mode"><option value="pm">PM</option><option value="pm_plx">PM + PLX</option></select></label>
       <label>Residuals <select id="residual"><option value="fit">MOSAIC fit</option><option value="sigma">In σ</option><option value="none">Hide</option></select></label>
+      <button id="toggle-filters" type="button" aria-expanded="true" aria-controls="filters-column">Hide filters</button>
+      <button id="toggle-comparison" type="button" aria-expanded="true" aria-controls="comparison-column">Hide comparisons</button>
       <div class="actions review-actions">
         <button class="adopt" id="adopt">Adopt <kbd>A / 1</kbd></button>
         <button class="reject" id="reject">Reject <kbd>R / 0</kbd></button>
@@ -48,8 +50,8 @@
       </div>
     </div>
 
-    <div class="review-layout">
-      <aside class="plot-card review-sidebar" aria-label="Astrometry controls">
+    <div id="review-layout" class="review-layout">
+      <aside id="filters-column" class="plot-card review-sidebar" aria-label="Astrometry controls">
         <section>
           <h2>Target</h2>
           <label for="target-search">Find in sample</label>
@@ -102,21 +104,35 @@
           <div id="selection-status" class="small-note">0 selected</div>
         </section>
       </aside>
+      <div id="resize-filters" class="column-divider" role="separator" aria-orientation="vertical"
+        aria-label="Resize filters column" aria-controls="filters-column" tabindex="0" title="Drag to resize filters"></div>
       <div class="review-main">
         <div id="status" class="status" aria-live="polite"></div>
         <div id="inspector" class="inspector" hidden>
-          <div class="plot-card">
-            <div class="card-heading"><h2>Astrometry over time</h2><span>ICRS · R.A.* and Decl.</span></div>
-            <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
+          <div class="trajectory-column">
+            <section class="plot-card">
+              <div class="card-heading"><h2>Astrometry over time</h2><span>MOSAIC ±1σ dashed · Adopted ±1σ shaded</span></div>
+              <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
+            </section>
+            <section class="plot-card residual-card">
+              <div class="card-heading"><h2>Fit residual distributions</h2><span id="histogram-count"></span></div>
+              <div class="residual-histograms">
+                <div id="histogram-ra" aria-label="Histogram of R.A. star residuals"></div>
+                <div id="histogram-dec" aria-label="Histogram of declination residuals"></div>
+                <div id="histogram-combined" aria-label="Histogram of combined residual magnitudes"></div>
+              </div>
+            </section>
           </div>
-          <aside class="plot-card">
+          <div id="resize-comparison" class="column-divider" role="separator" aria-orientation="vertical"
+            aria-label="Resize comparison graphs column" aria-controls="comparison-column" tabindex="0" title="Drag to resize comparisons"></div>
+          <aside id="comparison-column" class="plot-card">
             <div class="card-heading"><h2>Literature comparison</h2><span>★ Adopted ±1σ band · MOSAIC dashed ±1σ limits</span></div>
             <div id="motion" aria-label="Proper motion measurements with uncertainties"></div>
             <div id="parallax" aria-label="Parallax measurements with uncertainties" hidden></div>
             <section id="precision-panel" class="precision-panel" hidden>
               <div class="card-heading"><h2>Uncertainty comparison</h2></div>
               <div id="precision" aria-label="MOSAIC uncertainty divided by adopted uncertainty"></div>
-              <p class="small-note">Below 1 means a smaller reported uncertainty.</p>
+              <p class="small-note">Below 1 means a smaller MOSAIC uncertainty or a longer MOSAIC baseline. Baselines are shown when documented.</p>
             </section>
           </aside>
         </div>
@@ -135,9 +151,26 @@
   </section>
   <section class="plot-card comparison">
     <div class="card-heading"><h2>MOSAIC − adopted proper motion</h2><span id="comparison-count"></span>
-      <button id="jump-review" disabled>Review selected target <kbd>J</kbd></button></div>
+      <button id="jump-review" type="button" data-jump-review disabled>Review selected target <kbd>J</kbd></button></div>
     <div id="population" aria-label="Signed logarithmic scatterplot of proper-motion differences"></div>
     <p class="plot-note">Unreviewed previews are sampled across the selected catalog. Rejected fits are excluded from the automatic range. Double-click to reset zoom.</p>
+  </section>
+  <section class="plot-card comparison">
+    <div class="card-heading"><h2>Total proper-motion difference vs MOSAIC baseline</h2>
+      <button type="button" data-jump-review disabled>Review selected target <kbd>J</kbd></button></div>
+    <div id="delta-baseline" class="diagnostic-scatter" aria-label="Total proper-motion difference versus MOSAIC time span"></div>
+  </section>
+  <section class="plot-card comparison">
+    <div class="card-heading"><h2>MOSAIC vs adopted literature baseline</h2>
+      <button type="button" data-jump-review disabled>Review selected target <kbd>J</kbd></button></div>
+    <div id="baseline-comparison" class="diagnostic-scatter" aria-label="MOSAIC versus literature time span"></div>
+    <p class="plot-note">Includes targets with a reported literature baseline or a documented Gaia release span.</p>
+  </section>
+  <section class="plot-card comparison">
+    <div class="card-heading"><h2>MOSAIC vs adopted literature PM uncertainty</h2>
+      <button type="button" data-jump-review disabled>Review selected target <kbd>J</kbd></button></div>
+    <div id="error-comparison" class="diagnostic-scatter" aria-label="MOSAIC versus literature proper-motion uncertainties"></div>
+    <p class="plot-note">R.A.* and Decl. uncertainties are combined in quadrature.</p>
   </section>
   <details class="plot-card calibration-panel" open>
     <summary>Recommended MOSAIC calibrations and exclusions</summary>

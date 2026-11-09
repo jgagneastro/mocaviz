@@ -1,7 +1,7 @@
 "use strict";
 const el = id => document.getElementById(id);
 const colors = ["#11756d","#5369a1","#b04a6a","#a85a19","#00779b","#715097","#64712c","#1a819e"];
-const trajectoryHeight = 565;
+const trajectoryHeight = 825;
 const plotConfig = {responsive:true,displaylogo:false,modeBarButtonsToRemove:["autoScale2d","lasso2d","select2d"]};
 const state = {oids:[], reviews:new Map(), points:new Map(), skipped:new Set(), detail:null,
   index:0, writesReady:false, generation:0, targetRequest:0, busy:false, done:false, undo:[],
@@ -30,6 +30,125 @@ const visibleMeasurements = () => {
 };
 let refitTimer, searchTimer;
 state.filters = newFilters();
+
+function installReviewColumns() {
+  const workspace = el("review-layout");
+  const storageKey = "mosaic-review-columns-v1";
+  const minCenter = 430;
+  const dividerWidth = 12;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(storageKey)); } catch {}
+  const columns = {
+    filters: {min:155, max:500, preferred:205, label:"filters", inline:matchMedia("(min-width:651px)")},
+    comparison: {min:275, max:850, preferred:380, label:"comparisons", inline:matchMedia("(min-width:1101px)")},
+  };
+  const entries = Object.entries(columns);
+  for (const [name, column] of entries) {
+    const preference = saved?.[name];
+    if (finite(preference?.width)) column.preferred = preference.width;
+    column.collapsed = preference?.collapsed === true;
+  }
+  const persist = () => {
+    const preferences = Object.fromEntries(entries.map(([name, column]) => [
+      name,{width:column.preferred,collapsed:column.collapsed}
+    ]));
+    try { localStorage.setItem(storageKey,JSON.stringify(preferences)); } catch {}
+  };
+  const inline = column => !column.collapsed && column.inline.matches;
+  const clamp = (value, min, max) => Math.min(Math.max(value,min),max);
+  const available = () => workspace.clientWidth - minCenter
+    - dividerWidth*entries.filter(([,column])=>inline(column)).length;
+  const maximum = (column, otherWidth) => Math.max(column.min,Math.min(column.max,available()-otherWidth));
+
+  function applyWidths() {
+    const left = columns.filters, right = columns.comparison;
+    left.width = inline(left) ? clamp(left.preferred,left.min,maximum(left,inline(right)?right.min:0)) : 0;
+    right.width = inline(right) ? clamp(right.preferred,right.min,maximum(right,left.width)) : 0;
+    for (const [name,column] of entries) {
+      const other = name === "filters" ? right : left;
+      workspace.style.setProperty("--"+name+"-width",column.width+"px");
+      const handle = el("resize-"+name);
+      handle.setAttribute("aria-valuemin",column.min);
+      handle.setAttribute("aria-valuemax",maximum(column,other.width));
+      handle.setAttribute("aria-valuenow",column.width);
+    }
+  }
+
+  function showColumn(name, column) {
+    workspace.toggleAttribute("data-"+name+"-collapsed",column.collapsed);
+    el(name+"-column").hidden = column.collapsed;
+    el("resize-"+name).hidden = column.collapsed;
+    const button = el("toggle-"+name);
+    button.setAttribute("aria-expanded",String(!column.collapsed));
+    button.textContent = (column.collapsed?"Show ":"Hide ")+column.label;
+  }
+
+  for (const [name,column] of entries) {
+    showColumn(name,column);
+    const handle = el("resize-"+name);
+    const direction = name === "filters" ? 1 : -1;
+    const other = columns[name === "filters"?"comparison":"filters"];
+    const setWidth = width => {
+      column.preferred = Math.round(clamp(width,column.min,maximum(column,other.width)));
+      applyWidths();
+    };
+    let drag;
+    handle.addEventListener("pointerdown",event=>{
+      if (event.button !== 0 || !inline(column)) return;
+      event.preventDefault();
+      handle.focus({preventScroll:true});
+      handle.setPointerCapture(event.pointerId);
+      drag = {id:event.pointerId,x:event.clientX,width:column.width};
+      handle.classList.add("dragging");
+      document.body.classList.add("resizing-columns");
+    });
+    handle.addEventListener("pointermove",event=>{
+      if (drag?.id === event.pointerId) setWidth(drag.width+(event.clientX-drag.x)*direction);
+    });
+    const endDrag = event => {
+      if (drag?.id !== event.pointerId) return;
+      drag = null;
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing-columns");
+      persist();
+    };
+    handle.addEventListener("pointerup",endDrag);
+    handle.addEventListener("pointercancel",endDrag);
+    handle.addEventListener("lostpointercapture",endDrag);
+    handle.addEventListener("keydown",event=>{
+      if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = (event.key==="ArrowLeft"?-1:1)*direction*(event.shiftKey?40:12);
+      setWidth(event.key==="Home"?column.min:event.key==="End"?column.max:column.width+delta);
+      persist();
+    });
+    el("toggle-"+name).addEventListener("click",()=>{
+      column.collapsed = !column.collapsed;
+      showColumn(name,column);
+      applyWidths();
+      persist();
+      const fit = focusedFit();
+      if (name === "comparison" && !column.collapsed && fit) renderComparisonPlots(state.detail,fit);
+    });
+  }
+  applyWidths();
+  window.addEventListener("resize",applyWidths);
+
+  // Plotly's responsive option observes the window, so resize it on divider moves too.
+  const widths = new WeakMap();
+  const observer = new ResizeObserver(entries=>{
+    for (const {target,contentRect} of entries) {
+      const width = Math.round(contentRect.width);
+      if (widths.get(target) === width) continue;
+      widths.set(target,width);
+      if (width && target._fullLayout) Plotly.Plots.resize(target).catch(()=>{});
+    }
+  });
+  for (const id of ["trajectory","motion","parallax","precision","histogram-ra","histogram-dec","histogram-combined"]) {
+    observer.observe(el(id));
+  }
+}
 
 function fitControls() {
   return {onlyRecalibrated:checked("only-recalibrated"),ignoreDuplicates:checked("ignore-duplicates"),
@@ -83,7 +202,10 @@ function controls() {
   el("reset-exclusions").disabled = state.busy || !state.filters.excluded.size;
   for (const input of document.querySelectorAll(".review-sidebar input")) input.disabled = state.busy
     || input.dataset.parentOff === "true";
-  el("jump-review").disabled = state.busy || !state.selectedComparison;
+  for (const button of document.querySelectorAll("[data-jump-review]")) {
+    button.disabled = state.busy || !state.selectedComparison;
+    button.firstChild.textContent = state.selectedComparison ? "Review OID "+state.selectedComparison+" " : "Review selected target ";
+  }
 }
 
 function renderInputChoices() {
@@ -269,7 +391,6 @@ async function loadSample() {
   clearTimeout(refitTimer);
   state.fitPending = false;
   state.selectedComparison = null;
-  el("jump-review").firstChild.textContent = "Review selected target ";
   state.selected.clear();
   state.inputChoices = null;
   state.filters = newFilters();
@@ -370,7 +491,7 @@ async function navigate(index, {refit=false, refresh=false} = {}) {
       renderTarget();
       const fit = focusedFit();
       if (!detail.review && finite(detail.comparison?.pmra_masyr) && finite(detail.comparison?.pmdec_masyr)) {
-        state.points.set(oid, {oid, dx:fit.pmra-detail.comparison.pmra_masyr, dy:fit.pmdec-detail.comparison.pmdec_masyr});
+        state.points.set(oid, activeComparisonPoint(detail,fit));
       }
     }
     showCounts();
@@ -468,16 +589,21 @@ function renderTarget() {
   const shifts = shiftCount ? " · " + shiftCount + " mission shifts (anchor " + fit.surveyOffsets.anchor + ")" :
     el("offsets").checked ? " · no second dataset with " + fit.surveyOffsets.minimumGroups + " independent groups" : "";
   const decision = detail.review ? " · " + (detail.review.state === "adopt" ? "Adopted in review" : "Rejected in review") : "";
-  status(detail.nRows + " measurements · " + detail.nGroups + " independent groups · χ²ᵣ " + number(fit.reducedChi2,2)
+  status(detail.nRows + " measurements · " + detail.nGroups + " independent groups · "+number(fit.baselineYears,2)+" yr · χ²ᵣ " + number(fit.reducedChi2,2)
     + shifts + decision + (detail.inputChoices?.recalibratedFallback ? " · using available unrecalibrated astrometry" : "")
     + (detail.parallaxReason ? " · " + detail.parallaxReason : ""));
   renderTrajectory(detail, fit);
+  renderResidualHistograms(detail, fit);
+  if (!el("comparison-column").hidden) renderComparisonPlots(detail,fit);
+  controls();
+}
+
+function renderComparisonPlots(detail, fit) {
   const parallaxFit = detail.fits.pm_plx;
   el("parallax").hidden = !parallaxFit;
   renderLiterature(el("motion"), detail.literature.pm, fit, false, parallaxFit ? 0 : trajectoryHeight);
   if (parallaxFit) renderLiterature(el("parallax"), detail.literature.parallax, parallaxFit, true);
-  renderPrecision(detail.literature, fit, parallaxFit);
-  controls();
+  renderPrecision(detail.literature, fit, parallaxFit, detail.comparison);
 }
 
 function trajectoryX(epoch) {
@@ -501,16 +627,19 @@ function trajectoryFrame(detail, fit, coordinate, axisIndex) {
   return {y,catalog,sigma: value => checked("absolute") ? value/masPerDegree : value};
 }
 
-function fittedCurve(fit, coordinate, frame) {
+function trajectorySeries(series, fitCurve, coordinate, frame, sigmaOffset=0) {
   const x = [], y = [];
-  fit.curve.year.forEach((year,i) => {
+  const ra = coordinate === "ra";
+  const sigma = series[ra?"sigmaRa":"sigmaDec"];
+  series.year.forEach((year,i) => {
     const phase = trajectoryX(year);
     if (checked("phase") && x.length && phase < x.at(-1)) {
       x.push(null);
       y.push(null);
     }
     x.push(phase);
-    y.push(frame.y(fit.curve[coordinate][i], year, fit.curve[coordinate === "ra" ? "parallaxRa" : "parallaxDec"]?.[i]));
+    y.push(frame.y(series[coordinate][i] + sigmaOffset*(sigma?.[i] ?? 0),
+      year,fitCurve[ra?"parallaxRa":"parallaxDec"]?.[i]));
   });
   return {x,y};
 }
@@ -532,10 +661,71 @@ function displayBins(detail, fit, axisIndex, frame) {
   return [...bins.values()].map(bin=>({x:trajectoryX(bin.year/bin.weight),y:bin.value/bin.weight,sigma:Math.sqrt(1/bin.weight)}));
 }
 
+function median(values) {
+  const ordered = values.filter(finite).sort((a,b)=>a-b);
+  if (!ordered.length) return 0;
+  const middle = Math.floor(ordered.length/2);
+  return ordered.length%2 ? ordered[middle] : (ordered[middle-1]+ordered[middle])/2;
+}
+
+function paddedPlotRange(values, minimumPadding) {
+  let low = Infinity, high = -Infinity;
+  for (const value of values) {
+    if (!finite(value)) continue;
+    low = Math.min(low,value);
+    high = Math.max(high,value);
+  }
+  if (low === Infinity) return undefined;
+  const padding = Math.max((high-low)*.075,minimumPadding);
+  return [low-padding,high+padding];
+}
+
+function fitResiduals(detail, fit, coordinate, axisIndex) {
+  return detail.measurements.map((row,i)=>row[coordinate]-fit.model[axisIndex][i]);
+}
+
+function trajectoryRanges(detail,fit,coordinate,axisIndex,frame,curve,adopted,residualMode) {
+  const residuals = fitResiduals(detail,fit,coordinate,axisIndex);
+  const uncertainties = fit.effectiveUncertainties[axisIndex];
+  const center = median(residuals);
+  const typicalError = Math.max(1,median(uncertainties));
+  const cutoff = 6*Math.max(typicalError,1.4826*median(residuals.map(value=>Math.abs(value-center))));
+  const position = [...curve.y,...(adopted?.y || [])], residual = [0];
+  detail.measurements.forEach((row,i)=>{
+    if (fit.weights[i] < .5 || Math.abs(residuals[i]-center) > cutoff) return;
+    const shift = fit.surveyOffsets.values[row.mission]?.[axisIndex===0?"raMas":"decMas"] ?? 0;
+    position.push(frame.y(row[coordinate]-shift,row.year,fit.parallaxMotion?.[axisIndex][i]));
+    residual.push(residualMode==="sigma" ? residuals[i]/uncertainties[i] : residuals[i]);
+  });
+  return {
+    position:paddedPlotRange(position,frame.sigma(typicalError*.5)),
+    residual:paddedPlotRange(residual,residualMode==="sigma"?.5:typicalError*.5)
+  };
+}
+
+function renderResidualHistograms(detail,fit) {
+  const ra = fitResiduals(detail,fit,"ra",0);
+  const dec = fitResiduals(detail,fit,"dec",1);
+  const combined = ra.map((value,i)=>Math.hypot(value,dec[i]));
+  el("histogram-count").textContent = combined.filter(finite).length.toLocaleString()+" fit measurements";
+  const panels = [
+    ["histogram-ra","R.A.* residual (mas)",ra,"#14776c"],
+    ["histogram-dec","Decl. residual (mas)",dec,"#5369a1"],
+    ["histogram-combined","Combined residual magnitude (mas)",combined,"#9c5e28"]
+  ];
+  for (const [id,title,values,color] of panels) {
+    const trace = {type:"histogram",x:values.filter(finite),nbinsx:35,marker:{color},
+      hovertemplate:"%{x:.3g} mas<br>%{y} measurements<extra></extra>"};
+    Plotly.react(el(id),[trace],layout({height:240,margin:{l:47,r:12,t:18,b:55},bargap:.08,
+      xaxis:{...axis(title),title:{text:title,font:{size:12},standoff:7}},yaxis:{...axis("Count"),rangemode:"tozero"},
+      uirevision:detail.token+"-"+fit.mode}),plotConfig);
+  }
+}
+
 function renderTrajectory(detail, fit) {
   const residual = el("residual").value, showResidual = residual !== "none";
-  const axes = ["ra","dec"], groups = new Map(), data = [];
-  const symbolScale = Number(el("symbol-size").value)/100;
+  const axes = ["ra","dec"], groups = new Map(), data = [], ranges = [];
+  const symbolScale = 1.3*Number(el("symbol-size").value)/100;
   detail.measurements.forEach((row,i) => {
     if (!groups.has(row.mission)) groups.set(row.mission, []);
     groups.get(row.mission).push({row,i});
@@ -544,8 +734,28 @@ function renderTrajectory(detail, fit) {
   axes.forEach((coordinate, axisIndex) => {
     const ref = axisIndex === 0 ? "y" : "y2", residualRef = axisIndex === 0 ? "y3" : "y4";
     const frame = trajectoryFrame(detail,fit,coordinate,axisIndex);
-    data.push({type:"scatter",mode:"lines",name:"MOSAIC trajectory",legendgroup:"model",showlegend:axisIndex===0,
-      ...fittedCurve(fit,coordinate,frame),yaxis:ref,line:{color:"#192d45",width:2.5},hoverinfo:"skip"});
+    const curve = trajectorySeries(fit.curve,fit.curve,coordinate,frame);
+    const adopted = detail.adoptedTrajectory;
+    const adoptedCurve = adopted ? trajectorySeries(adopted,fit.curve,coordinate,frame) : null;
+    ranges.push(trajectoryRanges(detail,fit,coordinate,axisIndex,frame,curve,adoptedCurve,residual));
+    const sigmaKey = axisIndex === 0 ? "sigmaRa" : "sigmaDec";
+    const modelLine = {type:"scatter",mode:"lines",yaxis:ref,hoverinfo:"skip"};
+    if (adoptedCurve) {
+      if (adopted[sigmaKey]) {
+        data.push({...modelLine,...trajectorySeries(adopted,fit.curve,coordinate,frame,-1),
+          legendgroup:"adopted-track",showlegend:false,line:{width:0}});
+        data.push({...modelLine,...trajectorySeries(adopted,fit.curve,coordinate,frame,1),
+          legendgroup:"adopted-track",showlegend:false,line:{width:0},fill:"tonexty",fillcolor:"rgba(188,62,75,.14)"});
+      }
+      data.push({...modelLine,...adoptedCurve,name:"Adopted MOCAdb trajectory",legendgroup:"adopted-track",
+        showlegend:axisIndex===0,line:{color:"rgba(172,45,61,.64)",width:2.3}});
+    }
+    if (fit.curve[sigmaKey]) {
+      for (const sign of [-1,1]) data.push({...modelLine,...trajectorySeries(fit.curve,fit.curve,coordinate,frame,sign),
+        legendgroup:"model",showlegend:false,line:{color:"rgba(25,45,69,.64)",width:1.4,dash:"dash"}});
+    }
+    data.push({...modelLine,...curve,name:"MOSAIC trajectory",legendgroup:"model",
+      showlegend:axisIndex===0,line:{color:"#192d45",width:2.5}});
     let index = 0;
     for (const [mission, points] of groups) {
       const color = colors[index++ % colors.length];
@@ -597,19 +807,19 @@ function renderTrajectory(detail, fit) {
   const plotLayout = layout({height:trajectoryHeight,margin:{l:73,r:18,t:56,b:51},
     legend:{orientation:"h",y:1.13,x:0,font:{size:12}},dragmode:state.lasso?"lasso":"zoom",
     xaxis:{...axis(checked("phase")?"Yearly phase":"Epoch (year)"),anchor:showResidual?"y4":"y2"},
-    yaxis:{...axis(absolute?"R.A. (°)":"Δ R.A.* (mas)"),domain:domains[0]},
-    yaxis2:{...axis(absolute?"Decl. (°)":"Δ Decl. (mas)"),domain:domains[1]},
-    uirevision:[detail.target.moca_oid,fit.mode,residual,checked("subtract-pm"),checked("subtract-plx"),checked("phase"),absolute].join("-")});
+    yaxis:{...axis(absolute?"R.A. (°)":"Δ R.A.* (mas)"),domain:domains[0],range:ranges[0].position},
+    yaxis2:{...axis(absolute?"Decl. (°)":"Δ Decl. (mas)"),domain:domains[1],range:ranges[1].position},
+    uirevision:[detail.token,fit.mode,residual,checked("subtract-pm"),checked("subtract-plx"),checked("phase"),absolute].join("-")});
   if (showResidual) {
-    plotLayout.yaxis3 = {...axis(""),domain:domains[2],nticks:4};
-    plotLayout.yaxis4 = {...axis(""),domain:domains[3],nticks:4};
+    plotLayout.yaxis3 = {...axis(""),domain:domains[2],range:ranges[0].residual,nticks:4};
+    plotLayout.yaxis4 = {...axis(""),domain:domains[3],range:ranges[1].residual,nticks:4};
     plotLayout.annotations = ["R.A.* residual","Decl. residual"].map((name,i) => ({
       x:1,y:domains[i+2][1],xref:"paper",yref:"paper",xanchor:"right",yanchor:"bottom",
       text:name + (residual === "sigma" ? " / σ" : " (mas)"),showarrow:false,font:{size:12,color:"#516376"}
     }));
   }
   const node = el("trajectory");
-  Plotly.react(node,data,plotLayout,{...plotConfig,modeBarButtonsToRemove:["autoScale2d"]}).then(() => {
+  Plotly.react(node,data,plotLayout,{...plotConfig,doubleClick:"reset",modeBarButtonsToRemove:["autoScale2d"]}).then(() => {
     if (node.mosaicSelectionBound) return;
     node.mosaicSelectionBound = true;
     node.on("plotly_click", event => {
@@ -685,28 +895,37 @@ function renderLiterature(node, literature, fit, parallax, minimumHeight=0) {
   Plotly.react(node,traces,plotLayout,plotConfig);
 }
 
-function renderPrecision(literature, fit, parallaxFit) {
+function renderPrecision(literature, fit, parallaxFit, baselineComparison) {
   const pm = literature.pm.find(row=>row.adopted) || {};
   const plx = literature.parallax.find(row=>row.adopted) || {};
   const comparisons = [
     {label:"PM R.A.*",mosaic:fit.pmraUnc,adopted:pm.pmra_masyr_unc,unit:"mas/yr"},
     {label:"PM Decl.",mosaic:fit.pmdecUnc,adopted:pm.pmdec_masyr_unc,unit:"mas/yr"},
     {label:"Parallax",mosaic:parallaxFit?.plxUnc,adopted:plx.parallax_mas_unc,unit:"mas"},
+    {label:"Baseline",mosaic:fit.baselineYears,adopted:baselineComparison?.baselineYears,unit:"yr",inverse:true},
   ].filter(item=>finite(item.mosaic)&&item.mosaic>0&&finite(item.adopted)&&item.adopted>0);
   el("precision-panel").hidden = !comparisons.length;
   if (!comparisons.length) return;
-  const ratio = comparisons.map(item=>item.mosaic/item.adopted);
+  const ratio = comparisons.map(item=>item.inverse ? item.adopted/item.mosaic : item.mosaic/item.adopted);
   const index = comparisons.map((_,i)=>-i);
   const segments = {type:"scatter",mode:"lines",hoverinfo:"skip",showlegend:false,
     x:ratio.flatMap(value=>[1,value,null]),y:index.flatMap(i=>[i,i,null]),line:{color:"#aac6c0",width:2.5}};
   const points = {type:"scatter",mode:"markers",x:ratio,y:index,showlegend:false,
     marker:{symbol:"diamond",size:10,color:ratio.map(value=>value<1?"#11756d":"#b2533f")},
-    text:comparisons.map((item,i)=>item.label+" · "+number(ratio[i],2)+"×<br>MOSAIC σ "+number(item.mosaic,3)
-      +" "+item.unit+"<br>Adopted σ "+number(item.adopted,3)+" "+item.unit),
+    text:comparisons.map((item,i)=>item.label+" · "+number(ratio[i],2)+"×"
+      +"<br>MOSAIC "+(item.inverse?"baseline ":"σ ")+number(item.mosaic,3)+" "+item.unit
+      +"<br>Adopted "+(item.inverse?"baseline ":"σ ")+number(item.adopted,3)+" "+item.unit
+      +(item.inverse?"<br>"+escapeHtml(baselineComparison.baselineSource || ""):"")),
     hovertemplate:"%{text}<extra></extra>"};
   const limit = Math.max(.3,...ratio.map(value=>Math.abs(Math.log10(value)))) * 1.18;
   Plotly.react(el("precision"),[segments,points],layout({height:115+25*comparisons.length,
-    margin:{l:74,r:16,t:12,b:53},xaxis:{...axis("MOSAIC σ / adopted σ"),type:"log",range:[-limit,limit]},
+    margin:{l:74,r:16,t:33,b:53},xaxis:{...axis("Uncertainty ratio or inverse baseline ratio"),type:"log",range:[-limit,limit]},
+    annotations:[
+      {xref:"paper",yref:"paper",x:0,y:1.04,xanchor:"left",yanchor:"bottom",showarrow:false,
+        text:"<b>MOSAIC better</b>",font:{size:12,color:"#11756d"}},
+      {xref:"paper",yref:"paper",x:1,y:1.04,xanchor:"right",yanchor:"bottom",showarrow:false,
+        text:"<b>Literature better</b>",font:{size:12,color:"#994d3e"}}
+    ],
     yaxis:{...axis(""),tickmode:"array",tickvals:index,ticktext:comparisons.map(item=>item.label),
       range:[-comparisons.length+.55,.45],zeroline:false},
     shapes:[{type:"line",xref:"x",x0:1,x1:1,yref:"paper",y0:0,y1:1,line:{color:"#62758a",width:1.5,dash:"dash"}}]
@@ -714,59 +933,113 @@ function renderPrecision(literature, fit, parallaxFit) {
 }
 
 const signedLog = value => Math.sign(value) * Math.log10(1 + Math.abs(value));
-function renderPopulation() {
-  const currentFit = focusedFit(), detail = state.detail;
-  const active = [];
-  if (currentFit && finite(detail.comparison?.pmra_masyr) && finite(detail.comparison.pmdec_masyr)) {
-    active.push({oid:detail.target.moca_oid,dx:currentFit.pmra-detail.comparison.pmra_masyr,
-      dy:currentFit.pmdec-detail.comparison.pmdec_masyr});
-  }
-  const groups = [
-    {label:"Unreviewed",color:"#8797a8",symbol:"circle",size:8,opacity:.63,
-      points:[...state.points.values()].filter(point => !state.reviews.has(point.oid))},
-    {label:"Adopted",color:"#087c64",symbol:"diamond",size:8,opacity:.9,
-      points:[...state.reviews.values()].filter(point => point.state === "adopt")},
-    {label:"Rejected",color:"#b53e53",symbol:"x",size:9,opacity:.85,
-      points:[...state.reviews.values()].filter(point => point.state === "reject")},
-    {label:"Current fit",color:"#125faa",symbol:"circle-open",size:12,opacity:1,points:active}
-  ];
-  const visible = groups.map(group => group.points.filter(point => finite(point.dx) && finite(point.dy)));
-  el("comparison-count").textContent = visible[0].length + " unreviewed previews · "
-    + visible[1].length + " adopted · " + visible[2].length + " rejected";
-  const forRange = [...visible[0], ...visible[1], ...visible[3].filter(point => state.reviews.get(point.oid)?.state !== "reject")];
-  const scale = key => {
-    const extent = forRange.reduce((max, point) => Math.max(max, Math.abs(signedLog(point[key]))), .45);
-    return [-1.08*extent,1.08*extent];
+const positive = value => finite(value) && value > 0;
+
+function pmError(ra,dec) {
+  return positive(ra) && positive(dec) ? Math.hypot(ra,dec) : null;
+}
+
+function activeComparisonPoint(detail,fit) {
+  if (!fit || !finite(detail.comparison?.pmra_masyr) || !finite(detail.comparison.pmdec_masyr)) return null;
+  const adopted = detail.comparison;
+  return {
+    oid:detail.target.moca_oid,dx:fit.pmra-adopted.pmra_masyr,dy:fit.pmdec-adopted.pmdec_masyr,
+    mosaicBaseline:fit.baselineYears,literatureBaseline:adopted.baselineYears,baselineSource:adopted.baselineSource,
+    mosaicError:pmError(fit.pmraUnc,fit.pmdecUnc),
+    literatureError:pmError(adopted.pmra_masyr_unc,adopted.pmdec_masyr_unc)
   };
-  const rawTicks = [-1e5,-1e4,-1e3,-100,-10,-1,0,1,10,100,1e3,1e4,1e5];
-  const graphAxis = (name,key) => ({...axis(name),range:scale(key),tickmode:"array",
-    tickvals:rawTicks.map(signedLog),ticktext:rawTicks.map(String)});
-  const traces = groups.map(({label,color,symbol,size,opacity}, i) => ({
-    type:"scatter",mode:"markers",name:label,customdata:visible[i].map(point => point.oid),
-    x:visible[i].map(point => signedLog(point.dx)),y:visible[i].map(point => signedLog(point.dy)),
-    text:visible[i].map(point => "OID " + point.oid + "<br>Δμα* " + number(point.dx,3) + "<br>Δμδ " + number(point.dy,3)),
+}
+
+function populationGroups() {
+  const active = activeComparisonPoint(state.detail,focusedFit());
+  return [
+    {label:"Unreviewed",color:"#8797a8",symbol:"circle",size:8,opacity:.63,
+      points:[...state.points.values()].filter(point=>!state.reviews.has(point.oid))},
+    {label:"Adopted",color:"#087c64",symbol:"diamond",size:8,opacity:.9,
+      points:[...state.reviews.values()].filter(point=>point.state==="adopt")},
+    {label:"Rejected",color:"#b53e53",symbol:"x",size:9,opacity:.85,
+      points:[...state.reviews.values()].filter(point=>point.state==="reject")},
+    {label:"Current fit",color:"#125faa",symbol:"circle-open",size:12,opacity:1,points:active?[active]:[]}
+  ];
+}
+
+function renderPopulation() {
+  const groups = populationGroups();
+  renderComparisonScatter(groups,{id:"population",x:point=>point.dx,y:point=>point.dy,scale:"signed",
+    xTitle:"Δ μα* (mas/yr, signed log)",yTitle:"Δ μδ (mas/yr, signed log)"});
+  renderComparisonScatter(groups,{id:"delta-baseline",x:point=>point.mosaicBaseline,
+    y:point=>finite(point.dx)&&finite(point.dy)?Math.hypot(point.dx,point.dy):null,
+    scale:"linear",xTitle:"MOSAIC baseline (yr)",yTitle:"Total PM difference (mas/yr)"});
+  renderComparisonScatter(groups,{id:"baseline-comparison",x:point=>point.literatureBaseline,y:point=>point.mosaicBaseline,
+    scale:"equal",xTitle:"Adopted literature baseline (yr)",yTitle:"MOSAIC baseline (yr)",showBaselineSource:true});
+  renderComparisonScatter(groups,{id:"error-comparison",x:point=>point.literatureError,y:point=>point.mosaicError,
+    scale:"equal",xTitle:"Adopted literature PM uncertainty (mas/yr)",yTitle:"MOSAIC PM uncertainty (mas/yr)"});
+}
+
+function renderComparisonScatter(groups,spec) {
+  const valid = spec.scale==="equal"?positive:finite;
+  const visible = groups.map(group=>group.points.flatMap(point=>{
+    const x = spec.x(point), y = spec.y(point);
+    return valid(x)&&valid(y)?[{...point,x,y}]:[];
+  }));
+  if (spec.id==="population") {
+    el("comparison-count").textContent = visible[0].length + " unreviewed previews · "
+      + visible[1].length + " adopted · " + visible[2].length + " rejected";
+  }
+  const inRange = [...visible[0],...visible[1],...visible[3].filter(point=>state.reviews.get(point.oid)?.state!=="reject")];
+  const transform = spec.scale==="signed" ? signedLog : value=>value;
+  const traces = groups.map(({label,color,symbol,size,opacity},i)=>({
+    type:"scatter",mode:"markers",name:label,customdata:visible[i].map(point=>point.oid),
+    x:visible[i].map(point=>transform(point.x)),y:visible[i].map(point=>transform(point.y)),
+    text:visible[i].map(point=>"OID "+point.oid+"<br>"+spec.xTitle+": "+number(point.x,3)
+      +"<br>"+spec.yTitle+": "+number(point.y,3)
+      +(spec.showBaselineSource&&point.baselineSource?"<br>"+escapeHtml(point.baselineSource):"")),
     hovertemplate:"%{text}<extra></extra>",marker:{color,symbol,size,opacity}
   }));
-  const node = el("population");
-  const selected = visible.flat().find(point => point.oid === state.selectedComparison);
+  const selected = visible.flat().find(point=>point.oid===state.selectedComparison);
   if (selected) traces.push({type:"scatter",mode:"markers",showlegend:false,
-    x:[signedLog(selected.dx)],y:[signedLog(selected.dy)],customdata:[selected.oid],
+    x:[transform(selected.x)],y:[transform(selected.y)],customdata:[selected.oid],
     marker:{color:"#bb701a",symbol:"circle-open",size:17,line:{width:2}},hoverinfo:"skip"});
-  Plotly.react(node, traces, layout({height:node.clientWidth || 650,
-    xaxis:graphAxis("Δ μα* (mas/yr, signed log)","dx"),yaxis:graphAxis("Δ μδ (mas/yr, signed log)","dy"),
+
+  const xaxis = axis(spec.xTitle), yaxis = axis(spec.yTitle);
+  const shapes = [];
+  if (spec.scale==="signed") {
+    const ticks = [-1e5,-1e4,-1e3,-100,-10,-1,0,1,10,100,1e3,1e4,1e5];
+    for (const [key,layoutAxis] of [["x",xaxis],["y",yaxis]]) {
+      const extent = inRange.reduce((max,point)=>Math.max(max,Math.abs(signedLog(point[key]))),.45)*1.08;
+      Object.assign(layoutAxis,{range:[-extent,extent],tickmode:"array",tickvals:ticks.map(signedLog),ticktext:ticks.map(String)});
+    }
+  } else if (spec.scale==="equal") {
+    const logs = inRange.flatMap(point=>[Math.log10(point.x),Math.log10(point.y)]);
+    const range = paddedPlotRange(logs,.12) || [-1,1];
+    for (const layoutAxis of [xaxis,yaxis]) Object.assign(layoutAxis,{type:"log",range});
+    const [low,high] = range.map(value=>10**value);
+    shapes.push({type:"line",xref:"x",yref:"y",x0:low,x1:high,y0:low,y1:high,layer:"below",
+      line:{color:"#718496",width:1.5,dash:"dash"}});
+  } else {
+    for (const [key,layoutAxis] of [["x",xaxis],["y",yaxis]]) {
+      const top = inRange.reduce((max,point)=>Math.max(max,point[key]),1);
+      layoutAxis.range = [0,1.08*top];
+    }
+  }
+  const node = el(spec.id);
+  const height = spec.id==="population" ? (node.clientWidth || 650) : Math.min(620,node.clientWidth || 520);
+  const annotations = visible.some(points=>points.length) ? [] : [
+    {xref:"paper",yref:"paper",x:.5,y:.52,text:"No comparable measurements in this sample",showarrow:false}
+  ];
+  Plotly.react(node,traces,layout({height,xaxis,yaxis,shapes,annotations,
     legend:{orientation:"h",x:0,y:1.08},margin:{l:69,r:20,t:38,b:51},
-    uirevision:"comparison-" + state.generation}),{...plotConfig,doubleClick:"reset"}).then(() => {
-      if (node.mosaicClickBound) return;
-      node.mosaicClickBound = true;
-      node.on("plotly_click",event=>{
-        const oid = event.points[0]?.customdata;
-        if (!state.oids.includes(oid)) return;
-        state.selectedComparison = oid;
-        el("jump-review").firstChild.textContent = "Review OID "+oid+" ";
-        controls();
-        renderPopulation();
-      });
+    uirevision:spec.id+"-"+state.generation}),{...plotConfig,doubleClick:"reset"}).then(()=>{
+    if (node.mosaicClickBound) return;
+    node.mosaicClickBound = true;
+    node.on("plotly_click",event=>{
+      const oid = event.points[0]?.customdata;
+      if (!state.oids.includes(oid)) return;
+      state.selectedComparison = oid;
+      controls();
+      renderPopulation();
     });
+  });
 }
 
 async function loadBackground(generation) {
@@ -799,7 +1072,7 @@ async function renderPolicy() {
       "Legacy releases: " + data.inputPolicy.legacy_data_releases.map(item => item.mission_name + " " + item.data_release).join(", ") + ".",
       "Legacy labels: " + data.inputPolicy.deprecated_field_labels.map(item => item.label).join(", ") + ".",
       "Hard-rejected releases: " + data.inputPolicy.hard_rejected_releases.map(item => item.mission_name + " " + item.data_release).join(", ") + ".",
-      "Recalibrated epochs and 2MASS PSC are preferred by default. The fit sidebar can include other uncalibrated rows.",
+      "2MASS requires Gaia recalibration. The fit sidebar can include uncalibrated rows from other surveys.",
       data.airmass,
     ]);
     container.innerHTML = "<ul>" + exclusions.map(text => "<li>"+escapeHtml(text)+"</li>").join("") + "</ul>"
@@ -919,7 +1192,9 @@ el("reset-exclusions").onclick = () => {
   scheduleRefit();
 };
 el("mark-ignored").onclick = markIgnored;
-el("jump-review").onclick = () => jumpTo(state.selectedComparison);
+for (const button of document.querySelectorAll("[data-jump-review]")) {
+  button.onclick = () => jumpTo(state.selectedComparison);
+}
 let resizeTimer;
 window.addEventListener("resize",()=>{
   clearTimeout(resizeTimer);
@@ -940,5 +1215,6 @@ document.addEventListener("keydown",event=>{
   const action = event.code === "Numpad1" ? "adopt" : event.code === "Numpad0" ? "reject" : shortcuts[key];
   if (action) {event.preventDefault();el(action).click();}
 });
+installReviewColumns();
 renderPolicy();
 loadSample();

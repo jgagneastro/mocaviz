@@ -15,7 +15,7 @@ from mosaic.prepare import (
 
 from .astrometry_survey_offsets import add_offset_columns, fitted_survey_offsets, survey_offset_basis
 
-FIT_VERSION = "mosaic-review-20261109-v2"
+FIT_VERSION = "mosaic-review-20261109-v3"
 PARALLAX_POLICY = ParallaxBranchPolicy()
 EXCLUDED_PSIDS = {"smss_umag", "smss_vmag", "smss_gmag", "panstarrs1_gmag", "panstarrs1_rmag"}
 
@@ -209,10 +209,51 @@ def _fit(design, y, sigma, weights, epoch_unc, factors, factor_derivatives,
     dof = max(float(2 * np.dot(weights[:len(robust)], robust) - len(params)), 1.0)
     _, singular, vh = np.linalg.svd(whitened, full_matrices=False)
     cov = ((vh.T / singular**2) @ vh) * max(1.0, chi2 / dof)
+    response = None
     if not free_parallax and fixed_unc > 0:
         response = lstsq(whitened, factors.T.ravel() * weight, cond=1e-10)[0]
-        cov += np.outer(response, response) * fixed_unc**2
-    return params, np.sqrt(cov.diagonal()), chi2 / dof, model, robust, effective, floors.ravel().tolist()
+    return params, cov, response, chi2 / dof, model, robust, effective, floors.ravel().tolist()
+
+
+def adopted_trajectory(payload, fit_reference, years):
+    """Propagate the adopted reference and reported errors in the fit frame."""
+    reference = payload.get("reference") or {}
+    pm = payload.get("pm") or {}
+    plx = payload.get("parallax") or {}
+    required = [reference.get(key) for key in ("ra","dec","measurement_epoch_yr")]
+    required += [pm.get(key) for key in ("pmra_masyr","pmdec_masyr")]
+    if any(value is None or not math.isfinite(value) for value in required):
+        return None
+    ra, dec, epoch, pmra, pmdec = required
+    parallax = plx.get("parallax_mas") or 0.0
+    fit_ra, fit_dec = fit_reference["ra"], fit_reference["dec"]
+    factors = np.array([parallax_motion(fit_ra,fit_dec,year) for year in years]).T
+    epoch_factor = np.zeros(2)
+    epoch_derivative = np.zeros(2)
+    pov = str(reference.get("point_of_view") or "").strip().casefold()
+    if not reference.get("plx_corrected") and pov in {"earth","geocentric",""}:
+        epoch_factor = np.array(parallax_motion(fit_ra,fit_dec,epoch))
+        epoch_derivative = (np.array(parallax_motion(fit_ra,fit_dec,epoch+1e-4))
+                            - np.array(parallax_motion(fit_ra,fit_dec,epoch-1e-4)))/2e-4
+    delta = np.asarray(years)-epoch
+    factor_delta = factors-epoch_factor[:,None]
+    offset = np.array([((ra-fit_ra+180)%360-180)*math.cos(math.radians(fit_dec)),dec-fit_dec])*3600000
+    motion = np.array([pmra,pmdec])
+    positions = offset[:,None] + motion[:,None]*delta + parallax*factor_delta
+
+    def uncertainty(value):
+        return value if value is not None and math.isfinite(value) and value > 0 else 0.0
+
+    coordinate_unc = np.array([uncertainty(reference.get(key)) for key in ("ra_unc_mas","dec_unc_mas")])
+    motion_unc = np.array([uncertainty(pm.get(key)) for key in ("pmra_masyr_unc","pmdec_masyr_unc")])
+    epoch_unc = uncertainty(reference.get("measurement_epoch_yr_unc"))
+    parallax_unc = uncertainty(plx.get("parallax_mas_unc"))
+    variance = (coordinate_unc[:,None]**2 + (motion_unc[:,None]*delta)**2
+                + (parallax_unc*factor_delta)**2 + ((motion+parallax*epoch_derivative)[:,None]*epoch_unc)**2)
+    sigma = np.sqrt(variance)
+    return {"year":years,"ra":positions[0].tolist(),"dec":positions[1].tolist(),
+            "sigmaRa":sigma[0].tolist() if np.any(sigma[0]) else None,
+            "sigmaDec":sigma[1].tolist() if np.any(sigma[1]) else None}
 
 
 def fit_target(payload, *, offsets, calibrated, detail=True, selection=None, only_recalibrated=True,
@@ -255,12 +296,17 @@ def fit_target(payload, *, offsets, calibrated, detail=True, selection=None, onl
 
     def branch(free, design):
         fixed = 0 if free else fixed_plx
-        trajectory, uncertainty, chi, model, robust, effective, floors = _fit(
+        trajectory, covariance, response, chi, model, robust, effective, floors = _fit(
             design, y - fixed * factors.T.ravel(), sigma, weights, epoch_unc, factors, derivatives,
             fixed, fixed_unc, free, robust_fit, extra_floor)
         model += fixed * factors.T.ravel()
+        variance = covariance.diagonal().copy()
+        if response is not None:
+            variance += (response * fixed_unc)**2
+        uncertainty = np.sqrt(np.maximum(0,variance))
         fit = {
             "mode": "pm_plx" if free else "pm", "fitter": "scipy", "t0": t0,
+            "baselineYears": float(np.ptp(times)),
             "pmra": float(trajectory[1]), "pmdec": float(trajectory[3]),
             "pmraUnc": float(uncertainty[1]), "pmdecUnc": float(uncertainty[3]),
             "plx": float(trajectory[4]) if free else None,
@@ -272,9 +318,16 @@ def fit_target(payload, *, offsets, calibrated, detail=True, selection=None, onl
             phase_t = np.linspace(times.min(), times.max(), min(2400, max(150, int(np.ptp(times) * 32))))
             phase = np.array([parallax_motion(ref_ra, ref_dec, time) for time in phase_t])
             plx = trajectory[4] if free else fixed_plx
+            base = 5 if free else 4
+            prediction = _design(phase_t-t0, phase, free, np.zeros((len(phase_t),0)))
+            variance = np.einsum("ij,jk,ik->i", prediction, covariance[:base,:base], prediction)
+            if response is not None:
+                variance += ((phase.T.ravel()-prediction @ response[:base]) * fixed_unc)**2
+            curve_error = np.sqrt(np.maximum(0,variance)).reshape(2,-1)
             fit["curve"] = {
                 "year": phase_t.tolist(),
                 "parallaxRa": (plx * phase[:, 0]).tolist(), "parallaxDec": (plx * phase[:, 1]).tolist(),
+                "sigmaRa": curve_error[0].tolist(), "sigmaDec": curve_error[1].tolist(),
                 "ra": (trajectory[0] + trajectory[1] * (phase_t - t0) + plx * phase[:, 0]).tolist(),
                 "dec": (trajectory[2] + trajectory[3] * (phase_t - t0) + plx * phase[:, 1]).tolist(),
             }
@@ -300,6 +353,7 @@ def fit_target(payload, *, offsets, calibrated, detail=True, selection=None, onl
     result = {"fits": modes, "preferred": preferred, "parallaxReason": reason, "nRows": len(rows), "nGroups": len(counts)}
     if detail:
         result["reference"] = {"ra": ref_ra, "dec": ref_dec, "year": t0}
+        result["adoptedTrajectory"] = adopted_trajectory(payload, result["reference"], modes[preferred]["curve"]["year"])
         result["settings"] = {"version": FIT_VERSION, "inputPolicyVersion": ASTROMETRY_INPUT_POLICY_VERSION,
                               "calibrated": calibrated, "fitSurveyOffsets": offsets,
                               "onlyRecalibrated": only_recalibrated, "raw": use_raw,

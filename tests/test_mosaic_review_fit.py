@@ -8,6 +8,7 @@ if sys.version_info < (3, 11) or importlib.util.find_spec("mosaic") is None:
     raise unittest.SkipTest("The local MOSAIC reviewer needs Python 3.11+ and MOSAIC's src on PYTHONPATH.")
 
 try:
+    from mocaviz.mosaic_review import comparison_point, literature_baseline
     from mocaviz.mosaic_review_fit import fit_target, input_choices, selected_rows
     from mosaic.prepare import parallax_motion
 except ModuleNotFoundError as exc:
@@ -95,3 +96,28 @@ class MosaicReviewFitTests(unittest.TestCase):
         self.assertIn(1, ids)
         self.assertNotIn(2, ids)
         self.assertEqual(alternate["settings"]["selection"], selection)
+
+    def test_propagates_fit_and_adopted_trajectory_errors(self):
+        target = synthetic_target()
+        target["reference"].update(ra_unc_mas=2, dec_unc_mas=3, plx_corrected=1)
+        target["pm"] = {"pmra_masyr":80, "pmdec_masyr":-72, "pmra_masyr_unc":.9, "pmdec_masyr_unc":1.1}
+        target["parallax"] = {"parallax_mas":39, "parallax_mas_unc":.4}
+        result = fit_target(target, offsets=True, calibrated=True)
+        self.assertAlmostEqual(result["fits"]["pm"]["baselineYears"], 33*.091)
+        for fit in result["fits"].values():
+            self.assertEqual(len(fit["curve"]["sigmaRa"]), len(fit["curve"]["year"]))
+            self.assertTrue(all(value>0 for value in fit["curve"]["sigmaDec"]))
+        adopted = result["adoptedTrajectory"]
+        self.assertAlmostEqual(adopted["sigmaRa"][0], math.hypot(2,.4*parallax_motion(120,-30,2020)[0]), delta=.001)
+        self.assertGreater(adopted["sigmaDec"][-1], adopted["sigmaDec"][0])
+
+    def test_comparison_uses_reported_or_nominal_literature_span(self):
+        self.assertEqual(literature_baseline({"epoch":2016.0}), (None,None))
+        self.assertEqual(literature_baseline({"moca_pid":"gaiadr2"})[0],22/12)
+        self.assertEqual(literature_baseline({"mission_name":"Gaia","data_release":"DR3"})[0],34/12)
+        adopted = {"comments":"time baseline: 18 months","pmra_masyr":2,"pmdec_masyr":3,
+                   "pmra_masyr_unc":3,"pmdec_masyr_unc":4}
+        fit = {"pmra":3,"pmdec":1,"pmraUnc":.3,"pmdecUnc":.4,"baselineYears":11}
+        point = comparison_point(11,fit,adopted)
+        self.assertEqual((point["dx"],point["dy"],point["literatureBaseline"]),(1,-2,1.5))
+        self.assertEqual((point["mosaicBaseline"],point["mosaicError"],point["literatureError"]),(11,.5,5))

@@ -6,6 +6,8 @@ from functools import lru_cache
 import hashlib
 import json
 import logging
+import math
+import re
 import os
 from pathlib import Path
 import threading
@@ -39,15 +41,14 @@ LANES = {
     76: "pcat_spherex_sublimeaperture_visual_vetting",
 }
 PM_COLUMNS = """id,moca_oid,pmra_masyr,pmdec_masyr,pmra_masyr_unc,pmdec_masyr_unc,
-                moca_pid,origin,mission_name,data_release,adopted,public_adopted"""
+                moca_pid,origin,mission_name,data_release,adopted,public_adopted,comments,publication_comments"""
 PLX_COLUMNS = """id,moca_oid,parallax_mas,parallax_mas_unc,
                  moca_pid,origin,mission_name,data_release,adopted,public_adopted"""
 # Let the moca_oid index bound the per-target coordinate scan.
 COORD_WHERE = """ignored=0 AND single_epoch=1 AND pm_corrected=0 AND plx_corrected=0
     AND point_of_view='earth' AND ra IS NOT NULL AND `dec` IS NOT NULL
     AND measurement_epoch_yr IS NOT NULL AND ra_unc_mas>0 AND dec_unc_mas>0
-    AND ((calibration_method IS NOT NULL AND TRIM(calibration_method) NOT IN ('','none','null','nan'))
-         OR (mission_name='2MASS' AND data_release='PSC'))"""
+    AND calibration_method IS NOT NULL AND TRIM(calibration_method) NOT IN ('','__none__','none','null','nan','<na>')"""
 SAMPLE_TTL = 900
 FIT_TTL = 3600
 _SAMPLE_CACHE = {}
@@ -172,24 +173,85 @@ def sample_oids(cursor, sample):
     return oids
 
 
+_REPORTED_BASELINE = re.compile(r"\bbaseline\s*(?:of\s+|[:=]\s*)?(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mos?)\b", re.I)
+_GAIA_BASELINE_MONTHS = {"dr2":22,"edr3":34,"dr3":34}
+
+
+def literature_baseline(row):
+    """Return a reported baseline or the nominal Gaia release span."""
+    if row.get("baselineYears"):
+        return row["baselineYears"], row.get("baselineSource")
+    for column in ("comments","publication_comments"):
+        match = _REPORTED_BASELINE.search(row.get(column) or "")
+        if match:
+            value, unit = match.groups()
+            years = float(value) / (12 if unit.lower().startswith("mo") else 1)
+            if math.isfinite(years) and years > 0:
+                return years, "Reported with the MOCAdb measurement"
+    mission = (row.get("mission_name") or "").strip().casefold()
+    release = (row.get("data_release") or "").strip().casefold() if mission == "gaia" else ""
+    pid = (row.get("moca_pid") or "").strip().casefold()
+    if not release and pid in {"gaia"+key for key in _GAIA_BASELINE_MONTHS}:
+        release = pid[4:]
+    if release in _GAIA_BASELINE_MONTHS:
+        return _GAIA_BASELINE_MONTHS[release]/12, "Nominal Gaia "+release.upper()+" astrometry release span"
+    return None, None
+
+
+def combined_error(ra, dec):
+    return math.hypot(ra,dec) if all(value is not None and value>0 for value in (ra,dec)) else None
+
+
+def comparison_point(oid, fit, adopted):
+    dx,dy = comparison(fit,adopted)
+    lit_baseline,baseline_source = literature_baseline(adopted)
+    return {
+        "oid":oid,"dx":dx,"dy":dy,"mosaicBaseline":fit.get("baselineYears"),
+        "literatureBaseline":lit_baseline,"baselineSource":baseline_source,
+        "mosaicError":combined_error(fit.get("pmraUnc"),fit.get("pmdecUnc")),
+        "literatureError":combined_error(adopted.get("pmra_masyr_unc"),adopted.get("pmdec_masyr_unc")),
+    }
+
+
+def review_metadata_projection(prefix=""):
+    bundle = prefix + "measurement_bundle"
+    baseline = f"JSON_VALUE({bundle}, '$.fit.baselineYears')"
+    return f"""{prefix}comparison_json,
+        CAST({baseline} AS DOUBLE) mosaic_baseline,
+        CASE WHEN {baseline} IS NULL THEN JSON_EXTRACT({bundle}, '$.measurements[*].year') END legacy_epochs,
+        CAST(JSON_VALUE({bundle}, '$.fit.pmraUnc') AS DOUBLE) mosaic_ra_error,
+        CAST(JSON_VALUE({bundle}, '$.fit.pmdecUnc') AS DOUBLE) mosaic_dec_error"""
+
+
 def review_point(review):
     if not review:
         return None
+    adopted = json.loads(review.get("comparison_json") or "{}")
+    lit_baseline,baseline_source = literature_baseline(adopted)
+    baseline = review.get("mosaic_baseline")
+    if baseline is None and review.get("legacy_epochs"):
+        epochs = [year for year in json.loads(review["legacy_epochs"]) if isinstance(year,(int,float))]
+        if len(epochs) >= 2:
+            baseline = max(epochs)-min(epochs)
     return {"oid": review["moca_oid"], "id": review["id"], "state": review["decision"],
             "dx": review["delta_pmra"], "dy": review["delta_pmdec"], "mode": review["fit_mode"],
-            "properMotionId": review["proper_motion_id"]}
+            "properMotionId": review["proper_motion_id"], "mosaicBaseline": baseline,
+            "literatureBaseline":lit_baseline,"baselineSource":baseline_source,
+            "mosaicError":combined_error(review.get("mosaic_ra_error"),review.get("mosaic_dec_error")),
+            "literatureError":combined_error(adopted.get("pmra_masyr_unc"),adopted.get("pmdec_masyr_unc"))}
 
 
 REVIEW_FIELDS = "id,moca_oid,decision,delta_pmra,delta_pmdec,fit_mode,proper_motion_id"
 
 
 def current_review(cursor, oid, fields=REVIEW_FIELDS):
-    return one(cursor, f"""SELECT {fields} FROM {TABLE}
+    return one(cursor, f"""SELECT {fields}, {review_metadata_projection()} FROM {TABLE}
         WHERE moca_oid=%s AND undone_at IS NULL ORDER BY id DESC LIMIT 1""", (oid,))
 
 
 def latest_reviews(cursor):
-    return query(cursor, f"""SELECT {', '.join('v.' + part for part in REVIEW_FIELDS.split(','))}
+    return query(cursor, f"""SELECT {', '.join('v.' + part for part in REVIEW_FIELDS.split(','))},
+               {review_metadata_projection("v.")}
         FROM {TABLE} v JOIN (SELECT moca_oid, MAX(id) id FROM {TABLE} WHERE undone_at IS NULL
                             GROUP BY moca_oid) recent ON recent.id=v.id""")
 
@@ -210,6 +272,9 @@ def measurement_data(cursor, oids, *, detail=False):
     for kind, catalog in catalogs.items():
         for row in catalog:
             payload = payloads[row["moca_oid"]]
+            if kind == "pm":
+                row["baselineYears"], row["baselineSource"] = literature_baseline(row)
+                del row["comments"], row["publication_comments"]
             if row["adopted"]:
                 payload[kind] = row
             payload["literature"][kind].append(row)
@@ -380,7 +445,7 @@ def target(oid):
     if not snapshot or snapshot[0] != oid:
         with database() as cursor:
             payload = measurement_data(cursor, (oid,), detail=True)[oid]
-            prior = current_review(cursor, oid, REVIEW_FIELDS + ",comparison_json") if review_table_ready(cursor) else None
+            prior = current_review(cursor, oid) if review_table_ready(cursor) else None
         source_token = uuid4().hex
         remember(_TARGETS, source_token, (oid, payload, prior), 12)
     else:
@@ -398,6 +463,8 @@ def target(oid):
     adopted = payload["pm"]
     if adopted.get("origin") == ORIGIN:
         adopted = json.loads(prior["comparison_json"]) if prior else {}
+        if adopted:
+            adopted["baselineYears"], adopted["baselineSource"] = literature_baseline(adopted)
     reference = payload["reference"] or next(iter(payload["rows"]), {})
     common = {"target": payload["target"], "literature": payload["literature"], "review": review_point(prior),
               "coordinates": {"ra": reference.get("ra"), "dec": reference.get("dec")},
@@ -415,9 +482,8 @@ def target(oid):
     token = uuid4().hex
     remember(_FITS, token, {"oid": oid, "result": result, "adopted": adopted}, 32)
     fit = result["fits"][result["preferred"]]
-    dx, dy = comparison(fit, adopted)
     if not prior and request.method == "GET":
-        remember(_SUMMARY, (oid, *options.values()), {"oid": oid, "dx": dx, "dy": dy}, 4096)
+        remember(_SUMMARY, (oid, *options.values()), comparison_point(oid,fit,adopted), 4096)
     return jsonify(**common, **result, token=token, comparison=adopted)
 
 
@@ -445,7 +511,7 @@ def comparison_batch():
             if payload["pm"] and payload["rows"]:
                 try:
                     result = fit_target(payload, detail=False, **options)
-                    fit_point["dx"], fit_point["dy"] = comparison(result["fits"][result["preferred"]], payload["pm"])
+                    fit_point = comparison_point(oid,result["fits"][result["preferred"]],payload["pm"])
                 except ValueError:
                     pass
             remember(_SUMMARY, (oid, *options.values()), fit_point, 4096)
@@ -487,9 +553,10 @@ def apply_pm(cursor, oid, pid, review_id, fit, bundle_json, version=FIT_VERSION)
         if pid:
             cursor.execute("UPDATE data_proper_motions SET ignored=1 WHERE id=%s AND ignored=0", (pid,))
         return pid
+    baseline_note = f"; baseline={fit['baselineYears']:.9g} yr" if fit.get("baselineYears") else ""
     params = (fit["pmra"], fit["pmdec"], fit["pmraUnc"], fit["pmdecUnc"], fit["t0"], version.removeprefix("mosaic-"),
               fit["fitter"], hashlib.md5(bundle_json.encode("utf-8"), usedforsecurity=False).hexdigest(),
-              f"{ORIGIN}; {TABLE}.id={review_id}; fit={fit['mode']}")
+              f"{ORIGIN}; {TABLE}.id={review_id}; fit={fit['mode']}{baseline_note}")
     if pid is None:
         cursor.execute("""INSERT INTO data_proper_motions
             (pmra_masyr,pmdec_masyr,pmra_masyr_unc,pmdec_masyr_unc,epoch,data_release,calculation_method,md5_uid,comments,
