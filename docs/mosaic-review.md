@@ -29,6 +29,24 @@ does not appear on the dataviz home page.
   the rules and model versions. Airmass is retained in provenance, and no
   airmass correction is applied under the current production policy.
 
+## Review controls
+
+Use the left column to choose missions, their bands, calibration methods, and
+fit inputs. The fit updates automatically. Display controls such as PM
+subtraction, yearly phase, and binning change the plots without changing the
+measurements used in the solution. Press **P** to toggle PM subtraction,
+**A** or **1** to Adopt, and **R** or **0** to Reject.
+
+Click a measurement or press **L** to lasso a set. The selected-row table
+supports temporary fit exclusions and a separate MOCAdb ignore action.
+MOCAdb updates require a selection preview and confirmation. Undo in the
+review toolbar operates on Adopt and Reject decisions.
+
+The literature panels show an adopted uncertainty band and dashed MOSAIC
+uncertainty limits. The precision panel shows the ratio of the two reported
+uncertainties. Click a point in the square PM-difference plot, then use
+**Review selected target** or **J** to jump to it.
+
 ## Enable decisions
 
 Review and apply [the proposed table](../sql/schema/create_pcat_mosaic_pm_vetting.sql)

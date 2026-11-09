@@ -46,3 +46,31 @@ h2{font-size:15px;line-height:1.2;margin:0}
 .calibration-panel table{border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px;max-width:720px;width:100%}
 .calibration-panel td,.calibration-panel th{border-bottom:1px solid #e5ebf0;text-align:left;padding:3px 6px}
 @media(max-width:850px){.inspector{grid-template-columns:minmax(0,1fr)}.top{gap:7px 12px}.counts{margin-left:0}.review-actions{margin-left:0}.trajectory{min-height:420px}}
+
+.review-layout{display:grid;grid-template-columns:205px minmax(0,1fr);gap:10px;align-items:start;margin-top:8px}
+.review-main{min-width:0}
+.review-sidebar{font-size:13px;line-height:1.35;max-height:min(850px,calc(100vh - 90px));overflow:auto;position:sticky;top:68px}
+.review-sidebar section{padding:9px 10px;border-bottom:1px solid var(--border)}
+.review-sidebar section:last-child{border-bottom:0}
+.review-sidebar h2{margin-bottom:6px}
+.review-sidebar label{display:flex;gap:4px;align-items:baseline;margin-top:3px;overflow-wrap:anywhere}
+.review-sidebar input[type=search],.review-sidebar input[type=range]{width:100%}
+.review-sidebar button,.target-results button{padding:2px 6px;font-size:12px}
+.review-sidebar .actions{gap:4px;margin-bottom:4px}
+.filter-list{max-height:167px;overflow:auto;scrollbar-width:thin}
+.band-list{padding-left:19px;color:var(--muted)}
+.target-results button{display:block;max-width:100%;white-space:normal;text-align:left}
+.small-note{font-size:12px;color:var(--muted);margin:4px 0}
+.precision-panel{border-top:1px solid var(--border)}
+.precision-panel .small-note{padding:0 12px 6px}
+.measurements-panel{margin-top:10px}
+.measurement-table{max-height:270px;overflow:auto;padding:6px 10px}
+.measurement-table table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.measurement-table th,.measurement-table td{padding:3px 6px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
+.measurement-table th{position:sticky;top:0;background:#edf4f8}
+.measurement-actions,#ignore-status{padding:5px 10px}
+#population{width:min(100%,840px);aspect-ratio:1;margin:0 auto}
+#toggle-pm[aria-pressed=true]{background:#d3ece5;color:#0d524a}
+@media(max-width:1100px){.review-layout{grid-template-columns:175px minmax(0,1fr)}.inspector{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:650px){.review-layout{grid-template-columns:minmax(0,1fr)}.review-sidebar{position:static;max-height:310px}}
+.review{scroll-margin-top:70px}

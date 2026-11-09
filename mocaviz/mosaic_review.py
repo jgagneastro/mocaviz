@@ -1,5 +1,5 @@
 """Loopback-only MOSAIC proper-motion reviewer. Launched by Web Tools."""
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import argparse
 from contextlib import contextmanager
 from functools import lru_cache
@@ -16,11 +16,14 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 import pymysql
 from pymysql.cursors import DictCursor
 
-from .mosaic_review_fit import FIT_VERSION, calibration_metadata, fit_target
+from .mosaic_review_fit import (
+    FIT_VERSION, band_key, calibration_key, calibration_metadata, canonical_mission, fit_target, input_choices,
+    parallax_motion,
+)
 
 STATIC = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC))
-app.config["MAX_CONTENT_LENGTH"] = 16384
+app.config["MAX_CONTENT_LENGTH"] = 131072
 LOG = logging.getLogger(__name__)
 TABLE = "pcat_mosaic_pm_vetting"
 ORIGIN = "mocaviz_mosaic_pm_review"
@@ -50,6 +53,7 @@ FIT_TTL = 3600
 _SAMPLE_CACHE = {}
 _CACHE_LOCK = threading.Lock()
 _FITS = OrderedDict()
+_TARGETS = OrderedDict()
 _SUMMARY = OrderedDict()
 
 
@@ -222,13 +226,16 @@ def measurement_data(cursor, oids, *, detail=False):
             raise ReviewError("This MOCAdb target is unavailable.", 404)
         payloads[oids[0]]["target"] = target
     # Only one catalog trip for the full coordinate block and the adopted references.
+    selection = "ra IS NOT NULL AND `dec` IS NOT NULL AND measurement_epoch_yr IS NOT NULL" if detail else COORD_WHERE
     rows = query(cursor, f"""SELECT id,moca_oid,ignored,ra,`dec`,ra_unc_mas,dec_unc_mas,
+        ra - COALESCE(calibration_delta_ra_mas / NULLIF(3600000 * COS(RADIANS(`dec`)),0),0) raw_ra,
+        `dec` - COALESCE(calibration_delta_dec_mas / 3600000,0) raw_dec,
         measurement_epoch_yr,COALESCE(measurement_epoch_yr_unc,0) measurement_epoch_yr_unc,
         mission_name,data_release,moca_pid,moca_psid,calibration_method,origin,origin_table,airmass,
         single_epoch,pm_corrected,plx_corrected,point_of_view,adopt_as_reference,
         COALESCE(NULLIF(TRIM(CONCAT_WS(' ',NULLIF(TRIM(mission_name),''),NULLIF(TRIM(data_release),''))),''),moca_pid,'No mission') mission
         FROM data_equatorial_coordinates
-        WHERE moca_oid IN ({placeholders}) AND (({COORD_WHERE}) OR (adopt_as_reference=1 AND ignored=0))
+        WHERE moca_oid IN ({placeholders}) AND (({selection}) OR (adopt_as_reference=1 AND ignored=0))
         ORDER BY moca_oid,measurement_epoch_yr,id""", oids)
     for row in rows:
         payload = payloads[row["moca_oid"]]
@@ -297,27 +304,119 @@ def calibration_policy():
     return jsonify(calibration_metadata(fit_options()["calibrated"]))
 
 
-@app.get("/api/target/<int:oid>")
+@app.get("/api/search")
+def search():
+    sample = request.args.get("sample", "public_l0")
+    value = request.args.get("q", "").strip()[:100]
+    if len(value) < 2:
+        return jsonify(targets=[])
+    with database() as cursor:
+        allowed = set(sample_oids(cursor, sample))
+        if value.isascii() and value.isdecimal() and int(value) < 2**64:
+            results = query(cursor, "SELECT moca_oid,designation FROM moca_objects WHERE moca_oid=%s", (int(value),))
+        else:
+            prefix = value.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+            results = query(cursor, """SELECT moca_oid,designation FROM mechanics_all_designations
+                WHERE designation LIKE %s ESCAPE '!' ORDER BY designation LIMIT 150""", (prefix,))
+    matches = {row["moca_oid"]: row for row in results if row["moca_oid"] in allowed}
+    return jsonify(targets=list(matches.values())[:12])
+
+
+def preview_selection(body):
+    if not isinstance(body, dict):
+        raise ReviewError("Invalid fit controls.")
+    selection = {}
+    for key, limit in (("missions", 256), ("methods", 256), ("bands", 1024), ("excluded", 10000)):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list) or len(value) > limit:
+            raise ReviewError("Too many items in the fit selection.")
+        if key in {"missions", "methods"}:
+            valid = all(isinstance(item, str) and len(item) <= 255 for item in value)
+        elif key == "bands":
+            valid = all(isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+                        and (item[1] is None or isinstance(item[1], str)) for item in value)
+        else:
+            valid = all(type(item) is int and 0 < item < 2**64 for item in value)
+        if not valid:
+            raise ReviewError("Invalid measurement selection.")
+        selection[key] = value
+    return selection
+
+
+def display_measurements(payload, choices, selection, include_merged, use_raw):
+    missions = selection.get("missions", [item["label"] for item in choices["missions"] if item["default"]])
+    bands = {tuple(pair) for pair in selection.get("bands", [])}
+    methods = selection.get("methods")
+    result = []
+    for row in payload["rows"]:
+        if not row["ignored"] and not (include_merged and row["single_epoch"] == 0):
+            continue
+        mission = canonical_mission(row)
+        if mission not in missions or (mission, band_key(row)) in bands:
+            continue
+        if methods is not None and calibration_key(row) not in methods:
+            continue
+        result.append(display_measurement(row, use_raw, "Ignored in MOCAdb" if row["ignored"] else "Merged astrometry"))
+    return result
+
+
+def display_measurement(row, use_raw, kind):
+    return {"id": row.get("id"), "year": row.get("measurement_epoch_yr"), "kind": kind,
+            "mission": canonical_mission(row) if row else None, "moca_psid": row.get("moca_psid"),
+            "calibration_method": row.get("calibration_method"), "ignored": bool(row.get("ignored")),
+            "sigmaRa": row.get("ra_unc_mas"), "sigmaDec": row.get("dec_unc_mas"),
+            "raDeg": row.get("raw_ra" if use_raw else "ra"), "decDeg": row.get("raw_dec" if use_raw else "dec")}
+
+
+@app.route("/api/target/<int:oid>", methods=("GET", "POST"))
 def target(oid):
     options = fit_options()
-    with database() as cursor:
-        payload = measurement_data(cursor, (oid,), detail=True)[oid]
-        prior = current_review(cursor, oid, REVIEW_FIELDS + ",comparison_json") if review_table_ready(cursor) else None
+    body = request.get_json() if request.method == "POST" else {}
+    selection = preview_selection(body)
+    source_token = body.get("sourceToken")
+    snapshot = cached_fit(_TARGETS, source_token) if isinstance(source_token, str) else None
+    if not snapshot or snapshot[0] != oid:
+        with database() as cursor:
+            payload = measurement_data(cursor, (oid,), detail=True)[oid]
+            prior = current_review(cursor, oid, REVIEW_FIELDS + ",comparison_json") if review_table_ready(cursor) else None
+        source_token = uuid4().hex
+        remember(_TARGETS, source_token, (oid, payload, prior), 12)
+    else:
+        _, payload, prior = snapshot
+    extra = {
+        "only_recalibrated": body.get("onlyRecalibrated") is not False,
+        "ignore_duplicates": body.get("ignoreDuplicates") is not False,
+        "adjust_reference": body.get("adjustReference") is not False,
+        "robust_fit": body.get("robustFit") is not False,
+        "extra_floor": body.get("extraFloor") is True,
+        "use_raw": body.get("raw") is True,
+    }
+    include_merged = body.get("merged") is True
+    choices = input_choices(payload["rows"], only_recalibrated=extra["only_recalibrated"], include_merged=include_merged)
     adopted = payload["pm"]
     if adopted.get("origin") == ORIGIN:
         adopted = json.loads(prior["comparison_json"]) if prior else {}
     reference = payload["reference"] or next(iter(payload["rows"]), {})
     common = {"target": payload["target"], "literature": payload["literature"], "review": review_point(prior),
-              "coordinates": {"ra": reference.get("ra"), "dec": reference.get("dec")}}
+              "coordinates": {"ra": reference.get("ra"), "dec": reference.get("dec")},
+              "inputChoices": choices, "sourceToken": source_token,
+              "referenceMeasurement": display_measurement(payload["reference"], extra["use_raw"], "Adopted reference"),
+              "displayMeasurements": display_measurements(payload, choices, selection, include_merged, extra["use_raw"])}
     try:
-        result = fit_target(payload, **options)
+        result = fit_target(payload, **options, **extra, selection=selection)
     except ValueError as error:
         return jsonify(**common, unavailable=str(error))
+    fit_reference = result["reference"]
+    for row in [common["referenceMeasurement"], *common["displayMeasurements"]]:
+        if row["year"] is not None:
+            row["parallaxFactors"] = parallax_motion(fit_reference["ra"], fit_reference["dec"], row["year"])
     token = uuid4().hex
     remember(_FITS, token, {"oid": oid, "result": result, "adopted": adopted}, 32)
     fit = result["fits"][result["preferred"]]
     dx, dy = comparison(fit, adopted)
-    if not prior:
+    if not prior and request.method == "GET":
         remember(_SUMMARY, (oid, *options.values()), {"oid": oid, "dx": dx, "dy": dy}, 4096)
     return jsonify(**common, **result, token=token, comparison=adopted)
 
@@ -383,12 +482,12 @@ def owned_pm(cursor, oid):
     return pid
 
 
-def apply_pm(cursor, oid, pid, review_id, fit, bundle_json):
+def apply_pm(cursor, oid, pid, review_id, fit, bundle_json, version=FIT_VERSION):
     if fit is None:
         if pid:
             cursor.execute("UPDATE data_proper_motions SET ignored=1 WHERE id=%s AND ignored=0", (pid,))
         return pid
-    params = (fit["pmra"], fit["pmdec"], fit["pmraUnc"], fit["pmdecUnc"], fit["t0"], "review-20261109-v1",
+    params = (fit["pmra"], fit["pmdec"], fit["pmraUnc"], fit["pmdecUnc"], fit["t0"], version.removeprefix("mosaic-"),
               fit["fitter"], hashlib.md5(bundle_json.encode("utf-8"), usedforsecurity=False).hexdigest(),
               f"{ORIGIN}; {TABLE}.id={review_id}; fit={fit['mode']}")
     if pid is None:
@@ -413,6 +512,70 @@ def audit_write(cursor, oid, review_id, action, pm_modified):
 def require_review_table(cursor):
     if not review_table_ready(cursor):
         raise ReviewError("Apply the proposed MOSAIC vetting table to enable writes.", 409)
+
+
+@app.post("/api/target/<int:oid>/ignore")
+def ignore_measurements(oid):
+    body = request.get_json()
+    ids = preview_selection({"excluded": body.get("ids") if isinstance(body, dict) else None}).get("excluded")
+    if not ids:
+        raise ReviewError("Select at least one astrometric measurement.")
+    ids = sorted(set(ids))
+    comments = body.get("comments", "")
+    if not isinstance(comments, str) or len(comments) > 4096:
+        raise ReviewError("Appended comments must be at most 4096 characters.")
+    comments = comments.strip()
+    revision = body.get("revision")
+    apply = body.get("apply") is True
+    placeholders = ",".join(["%s"] * len(ids))
+    with database(write=apply) as cursor:
+        if apply:
+            lock_target(cursor, oid)
+        rows = query(cursor, f"""SELECT id,ignored,comments,modified_timestamp,is_public,rls
+            FROM data_equatorial_coordinates WHERE moca_oid=%s AND id IN ({placeholders}) ORDER BY id"""
+            + (" FOR UPDATE" if apply else ""), (oid, *ids))
+        if [row["id"] for row in rows] != ids:
+            raise ReviewError("Selected measurements changed or do not belong to this target.", 409)
+        current = hashlib.sha256(json.dumps([oid, comments, rows], default=str, sort_keys=True).encode()).hexdigest()
+        changes = [row for row in rows if not row["ignored"]]
+        if not apply:
+            return jsonify(ids=ids, count=len(changes), alreadyIgnored=len(rows)-len(changes), revision=current)
+        if current != revision:
+            raise ReviewError("The measurements or comments changed. Review the selection again.", 409)
+        groups = defaultdict(list)
+        for row in changes:
+            previous = row["comments"] or ""
+            appended = previous + ("\n" if previous and not previous.endswith("\n") else "") + comments
+            if comments and len(appended.encode("utf-8")) > 65535:
+                raise ReviewError(f"Comments exceed the database capacity for row {row['id']}.")
+            clause = "ignored=1,comments=%s" if comments else "ignored=1"
+            params = (appended, oid, row["id"]) if comments else (oid, row["id"])
+            cursor.execute(f"UPDATE data_equatorial_coordinates SET {clause} WHERE moca_oid=%s AND id=%s", params)
+            if cursor.rowcount != 1:
+                raise ReviewError("A measurement could not be updated. The changes were rolled back.", 409)
+            groups[(row["is_public"], row["rls"])].append(row["id"])
+        if changes:
+            verified = query(cursor, f"""SELECT id,ignored FROM data_equatorial_coordinates
+                WHERE moca_oid=%s AND id IN ({placeholders})""", (oid, *ids))
+            if len(verified) != len(ids) or any(not row["ignored"] for row in verified):
+                raise ReviewError("The saved flags could not be verified. The changes were rolled back.", 409)
+        for (visibility, rls), group in groups.items():
+            for start in range(0, len(group), 100):
+                batch = group[start:start+100]
+                cursor.execute("""INSERT INTO moca_changelog
+                    (`user`,machine_name,modified_tables,nrows_modified,user_description,is_public,rls)
+                    VALUES ('management',%s,'data_equatorial_coordinates',%s,%s,%s,%s)""",
+                    (os.uname().nodename[:50], len(batch),
+                     f"MOSAIC reviewer set ignored=1 for oid={oid}; IDs={batch}.", visibility, rls))
+    if changes:
+        with _CACHE_LOCK:
+            for key in [key for key, (_, snapshot) in _TARGETS.items() if snapshot[0] == oid]:
+                del _TARGETS[key]
+            for key in [key for key, (_, preview) in _FITS.items() if preview["oid"] == oid]:
+                del _FITS[key]
+            for key in [key for key in _SUMMARY if key[0] == oid]:
+                del _SUMMARY[key]
+    return jsonify(ids=ids, updated=len(changes))
 
 
 @app.post("/api/target/<int:oid>/decision")
@@ -441,7 +604,13 @@ def decision(oid):
         mode = body.get("mode")
         if not isinstance(mode, str) or mode not in result["fits"]:
             raise ReviewError("Select a fitted solution.")
-        fit = {key: val for key, val in result["fits"][mode].items() if key not in {"curve", "model"}}
+        fit = {key: val for key, val in result["fits"][mode].items() if key not in {"curve", "model", "parallaxMotion"}}
+        used_ids = tuple(sorted({row["id"] for row in result["measurements"]}))
+        placeholders = ",".join(["%s"] * len(used_ids))
+        active = query(cursor, f"""SELECT id FROM data_equatorial_coordinates
+            WHERE moca_oid=%s AND ignored=0 AND id IN ({placeholders}) FOR UPDATE""", (oid, *used_ids))
+        if len(active) != len(used_ids):
+            raise ReviewError("The measurements used by this fit changed. Reload the target before deciding.", 409)
         bundle = serialize({"settings": result["settings"], "reference": result["reference"],
                             "measurements": result["measurements"], "fit": fit})
         dx, dy = comparison(fit, preview["adopted"])
@@ -477,11 +646,11 @@ def undo(oid):
         if not previous or previous["id"] != expected:
             raise ReviewError("This is no longer the current decision. Reload to continue.", 409)
         cursor.execute(f"UPDATE {TABLE} SET undone_at=CURRENT_TIMESTAMP(6) WHERE id=%s", (expected,))
-        restored = current_review(cursor, oid, REVIEW_FIELDS + ",measurement_bundle")
+        restored = current_review(cursor, oid, REVIEW_FIELDS + ",measurement_bundle,webtool_version")
         pid = owned_pm(cursor, oid)
         if restored and restored["decision"] == "adopt":
             bundle = restored["measurement_bundle"]
-            restored_pid = apply_pm(cursor, oid, pid, restored["id"], json.loads(bundle)["fit"], bundle)
+            restored_pid = apply_pm(cursor, oid, pid, restored["id"], json.loads(bundle)["fit"], bundle, restored["webtool_version"])
             if restored_pid != pid:
                 cursor.execute(f"UPDATE {TABLE} SET proper_motion_id=%s WHERE id=%s", (restored_pid, restored["id"]))
                 restored["proper_motion_id"] = restored_pid

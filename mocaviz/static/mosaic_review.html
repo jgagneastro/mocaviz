@@ -6,9 +6,9 @@
 <meta name="referrer" content="no-referrer">
 <title>MOSAIC Proper Motion Review</title>
 <link rel="icon" href="/static/mosaic_review.svg">
-<link rel="stylesheet" href="/static/mosaic_review.css?v=1">
+<link rel="stylesheet" href="/static/mosaic_review.css?v=2">
 <script defer src="/plotly.min.js"></script>
-<script defer src="/static/mosaic_review.js?v=4"></script>
+<script defer src="/static/mosaic_review.js?v=7"></script>
 </head>
 <body>
 <header class="top">
@@ -38,32 +38,104 @@
       </div>
     </div>
     <div class="toolbar">
-      <label><input type="checkbox" id="offsets" checked> Fit constant mission offsets</label>
-      <label><input type="checkbox" id="calibrated" checked> Apply recommended MOSAIC calibrations</label>
+      <button id="toggle-pm" type="button" aria-pressed="false">Subtract PM <kbd>P</kbd></button>
       <label>Solution <select id="mode"><option value="pm">PM</option><option value="pm_plx">PM + PLX</option></select></label>
       <label>Residuals <select id="residual"><option value="fit">MOSAIC fit</option><option value="sigma">In σ</option><option value="none">Hide</option></select></label>
       <div class="actions review-actions">
-        <button class="adopt" id="adopt">Adopt <kbd>1</kbd></button>
-        <button class="reject" id="reject">Reject <kbd>0</kbd></button>
+        <button class="adopt" id="adopt">Adopt <kbd>A / 1</kbd></button>
+        <button class="reject" id="reject">Reject <kbd>R / 0</kbd></button>
         <button id="undo">Undo <kbd>⌫</kbd></button>
       </div>
     </div>
-    <div id="status" class="status" aria-live="polite"></div>
-    <div id="inspector" class="inspector" hidden>
-      <div class="plot-card">
-        <div class="card-heading"><h2>Astrometry over time</h2><span>ICRS · R.A.* and Decl.</span></div>
-        <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
-      </div>
-      <aside class="plot-card">
-        <div class="card-heading"><h2>Literature comparison</h2><span>★ Adopted</span></div>
-        <div id="motion" aria-label="Proper motion measurements with uncertainties"></div>
-        <div id="parallax" aria-label="Parallax measurements with uncertainties" hidden></div>
+
+    <div class="review-layout">
+      <aside class="plot-card review-sidebar" aria-label="Astrometry controls">
+        <section>
+          <h2>Target</h2>
+          <label for="target-search">Find in sample</label>
+          <input id="target-search" type="search" autocomplete="off" placeholder="Name or MOCA OID">
+          <div id="target-results" class="target-results" hidden></div>
+        </section>
+        <section>
+          <h2>Missions &amp; bands</h2>
+          <div class="actions"><button id="missions-all">All</button><button id="missions-none">None</button></div>
+          <div id="mission-list" class="filter-list">No target loaded</div>
+        </section>
+        <section>
+          <h2>Calibration methods</h2>
+          <div class="actions"><button id="methods-all">All</button><button id="methods-none">None</button></div>
+          <div id="method-list" class="filter-list">No target loaded</div>
+        </section>
+        <section>
+          <h2>Display</h2>
+          <label for="symbol-size">Symbol size <output id="symbol-value">100%</output></label>
+          <input type="range" id="symbol-size" min="50" max="200" step="10" value="100">
+          <label><input type="checkbox" id="subtract-pm"> Subtract proper motion <kbd>P</kbd></label>
+          <label><input type="checkbox" id="subtract-plx"> Subtract parallax motion</label>
+          <label><input type="checkbox" id="phase"> Phase yearly</label>
+          <label><input type="checkbox" id="bin"> Bin data for display</label>
+          <label><input type="checkbox" id="absolute"> Display absolute coordinates</label>
+          <label><input type="checkbox" id="merged"> Display merged astrometry</label>
+          <label><input type="checkbox" id="show-reference" checked> Display reference astrometry</label>
+        </section>
+        <section>
+          <h2>Fit settings</h2>
+          <div class="small-note">Automatic SciPy fit</div>
+          <label><input type="checkbox" id="adjust-reference" checked> Adjust reference astrometry</label>
+          <label><input type="checkbox" id="only-recalibrated" checked> Prefer recalibrated astrometry</label>
+          <label><input type="checkbox" id="ignore-duplicates" checked> Ignore duplicate measurements</label>
+          <label><input type="checkbox" id="raw"> Use raw coordinates</label>
+          <label><input type="checkbox" id="robust-fit" checked> Downweight outliers</label>
+          <label><input type="checkbox" id="extra-floor"> Fit extra astrometric error floor</label>
+          <label><input type="checkbox" id="offsets" checked> Fit constant mission offsets</label>
+          <label><input type="checkbox" id="calibrated" checked> Apply recommended MOSAIC calibrations</label>
+        </section>
+        <section>
+          <h2>Points</h2>
+          <div class="actions">
+            <button id="lasso">Lasso <kbd>L</kbd></button>
+            <button id="select-points">Select all</button>
+            <button id="deselect-points">Deselect</button>
+            <button id="exclude-points">Exclude from fit</button>
+            <button id="reset-exclusions">Reset exclusions</button>
+          </div>
+          <div id="selection-status" class="small-note">0 selected</div>
+        </section>
       </aside>
+      <div class="review-main">
+        <div id="status" class="status" aria-live="polite"></div>
+        <div id="inspector" class="inspector" hidden>
+          <div class="plot-card">
+            <div class="card-heading"><h2>Astrometry over time</h2><span>ICRS · R.A.* and Decl.</span></div>
+            <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
+          </div>
+          <aside class="plot-card">
+            <div class="card-heading"><h2>Literature comparison</h2><span>★ Adopted ±1σ band · MOSAIC dashed ±1σ limits</span></div>
+            <div id="motion" aria-label="Proper motion measurements with uncertainties"></div>
+            <div id="parallax" aria-label="Parallax measurements with uncertainties" hidden></div>
+            <section id="precision-panel" class="precision-panel" hidden>
+              <div class="card-heading"><h2>Uncertainty comparison</h2></div>
+              <div id="precision" aria-label="MOSAIC uncertainty divided by adopted uncertainty"></div>
+              <p class="small-note">Below 1 means a smaller reported uncertainty.</p>
+            </section>
+          </aside>
+        </div>
+        <div id="empty" class="empty" aria-live="polite"></div>
+        <section id="measurements-panel" class="plot-card measurements-panel" hidden>
+          <div class="card-heading"><h2>Selected astrometric measurements</h2><span id="measurement-count"></span></div>
+          <div id="measurement-table" class="measurement-table"></div>
+          <div class="actions measurement-actions">
+            <label>Append comment <input id="ignore-comment" maxlength="4096" placeholder="Optional"></label>
+            <button id="mark-ignored">Mark selected ignored in MOCAdb</button>
+          </div>
+          <p id="ignore-status" class="small-note" role="status"></p>
+        </section>
+      </div>
     </div>
-    <div id="empty" class="empty" aria-live="polite"></div>
   </section>
   <section class="plot-card comparison">
-    <div class="card-heading"><h2>MOSAIC − adopted proper motion</h2><span id="comparison-count"></span></div>
+    <div class="card-heading"><h2>MOSAIC − adopted proper motion</h2><span id="comparison-count"></span>
+      <button id="jump-review" disabled>Review selected target <kbd>J</kbd></button></div>
     <div id="population" aria-label="Signed logarithmic scatterplot of proper-motion differences"></div>
     <p class="plot-note">Unreviewed previews are sampled across the selected catalog. Rejected fits are excluded from the automatic range. Double-click to reset zoom.</p>
   </section>

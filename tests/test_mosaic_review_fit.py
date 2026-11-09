@@ -8,7 +8,7 @@ if sys.version_info < (3, 11) or importlib.util.find_spec("mosaic") is None:
     raise unittest.SkipTest("The local MOSAIC reviewer needs Python 3.11+ and MOSAIC's src on PYTHONPATH.")
 
 try:
-    from mocaviz.mosaic_review_fit import fit_target, selected_rows
+    from mocaviz.mosaic_review_fit import fit_target, input_choices, selected_rows
     from mosaic.prepare import parallax_motion
 except ModuleNotFoundError as exc:
     if exc.name.startswith("mosaic."):
@@ -68,3 +68,30 @@ class MosaicReviewFitTests(unittest.TestCase):
             dict(rows[3], id=203, mission="VHS DR6", mission_name="VHS", data_release="DR6"),
         ]
         self.assertEqual([row["id"] for row in selected_rows(rows)], list(range(1,35)))
+
+
+    def test_explicit_survey_and_band_selection_overrides_the_default_priority(self):
+        base = synthetic_target()["rows"][0]
+        untimely = dict(base, id=101, mission="WISE unTimely", mission_name="WISE",
+                       data_release="unTimely", moca_psid="wise_w1mag")
+        motion = dict(base, id=102, mission="WISE unWISEMotion W1", mission_name="WISE",
+                      data_release="unWISEMotion W1", moca_psid="wise_w1mag")
+        rows = [untimely, motion]
+        choices = input_choices(rows, only_recalibrated=True)
+        self.assertEqual({item["label"]:item["default"] for item in choices["missions"]},
+                         {"WISE unTimely":False,"WISE unWISEMotion W1":True})
+        self.assertEqual(list(selected_rows(rows)), [motion])
+        self.assertEqual(list(selected_rows(rows, missions=["WISE unTimely"])), [untimely])
+        self.assertEqual(list(selected_rows(rows, missions=["WISE unTimely"], bands=[["WISE unTimely","wise_w1mag"]])), [])
+
+    def test_optional_unrecalibrated_rows_and_manual_exclusion_are_recorded(self):
+        target = synthetic_target()
+        target["rows"][0]["calibration_method"] = None
+        default_fit = fit_target(target, offsets=True, calibrated=True)
+        self.assertNotIn(1, [row["id"] for row in default_fit["measurements"]])
+        selection = {"excluded":[2]}
+        alternate = fit_target(target, offsets=True, calibrated=True, only_recalibrated=False, selection=selection)
+        ids = [row["id"] for row in alternate["measurements"]]
+        self.assertIn(1, ids)
+        self.assertNotIn(2, ids)
+        self.assertEqual(alternate["settings"]["selection"], selection)

@@ -15,7 +15,7 @@ from mosaic.prepare import (
 
 from .astrometry_survey_offsets import add_offset_columns, fitted_survey_offsets, survey_offset_basis
 
-FIT_VERSION = "mosaic-review-20261109-v1"
+FIT_VERSION = "mosaic-review-20261109-v2"
 PARALLAX_POLICY = ParallaxBranchPolicy()
 EXCLUDED_PSIDS = {"smss_umag", "smss_vmag", "smss_gmag", "panstarrs1_gmag", "panstarrs1_rmag"}
 
@@ -26,11 +26,20 @@ def canonical_mission(row):
     return row["mission"]
 
 
-def selected_rows(rows):
-    """Apply the production survey and provenance policy before de-duplicating."""
-    candidates = []
+def calibration_key(row):
+    return (row.get("calibration_method") or "").strip()
+
+
+def band_key(row):
+    return (row.get("moca_psid") or "").strip() or None
+
+
+def candidate_rows(rows, *, only_recalibrated=True):
+    """Apply the scientific exclusions before choosing display or fit subsets."""
     for row in rows:
-        if row["ignored"] or not astrometry_row_is_fit_eligible(row):
+        if row["ignored"] or not astrometry_row_is_fit_eligible(
+            row, require_recalibration_provenance=only_recalibrated
+        ):
             continue
         mission = row["mission"].upper()
         psid = str(row.get("moca_psid") or "").lower()
@@ -43,27 +52,71 @@ def selected_rows(rows):
             continue
         if row["ra_unc_mas"] <= 0 or row["dec_unc_mas"] <= 0:
             continue
-        candidates.append(row)
+        yield row
 
+
+def preferred_missions(rows):
     latest = {}
-    for row in candidates:
+    for row in rows:
         name, release = row.get("mission_name"), str(row.get("data_release") or "").upper()
         if name and release.startswith("DR") and release[2:].strip().isdigit():
             latest[name] = max(int(release[2:]), latest.get(name, 0))
-    has_motion = any(row["mission"].lower().startswith("wise unwisemotion") for row in candidates)
-    seen = set()
-    for row in sorted(candidates, key=lambda item: item["id"]):
+    has_motion = any(row["mission"].lower().startswith("wise unwisemotion") for row in rows)
+    for row in rows:
         name, release = row.get("mission_name"), str(row.get("data_release") or "").upper()
         if name in latest and release.startswith("DR") and release[2:].strip().isdigit() and int(release[2:]) < latest[name]:
             continue
         if has_motion and row["mission"].lower() == "wise untimely":
             continue
-        key = tuple(row.get(field) for field in (
-            "ra", "dec", "measurement_epoch_yr", "ra_unc_mas", "dec_unc_mas", "measurement_epoch_yr_unc"
-        ))
-        if key not in seen:
+        yield canonical_mission(row)
+
+
+def selected_rows(rows, *, only_recalibrated=True, missions=None, bands=(), methods=None,
+                  excluded=(), ignore_duplicates=True, use_raw=False):
+    candidates = list(candidate_rows(rows, only_recalibrated=only_recalibrated))
+    if only_recalibrated and not candidates:
+        candidates = list(candidate_rows(rows, only_recalibrated=False))
+    chosen = set(preferred_missions(candidates) if missions is None else missions)
+    excluded, bands = set(excluded), {tuple(pair) for pair in bands}
+    methods = None if methods is None else set(methods)
+    seen = set()
+    for row in sorted(candidates, key=lambda item: item["id"]):
+        mission = canonical_mission(row)
+        if (mission not in chosen or (mission, band_key(row)) in bands or row["id"] in excluded
+                or (methods is not None and calibration_key(row) not in methods)):
+            continue
+        ra = row["raw_ra"] if use_raw and row.get("raw_ra") is not None else row["ra"]
+        dec = row["raw_dec"] if use_raw and row.get("raw_dec") is not None else row["dec"]
+        key = (ra, dec, row.get("measurement_epoch_yr"), row.get("ra_unc_mas"),
+               row.get("dec_unc_mas"), row.get("measurement_epoch_yr_unc"))
+        if not ignore_duplicates or key not in seen:
             yield row
             seen.add(key)
+
+
+def input_choices(rows, *, only_recalibrated, include_merged=False):
+    candidates = list(candidate_rows(rows, only_recalibrated=only_recalibrated))
+    fallback = only_recalibrated and not candidates
+    if fallback:
+        candidates = list(candidate_rows(rows, only_recalibrated=False))
+    defaults = set(preferred_missions(candidates))
+    if include_merged:
+        merged = [row for row in rows if not row["ignored"] and row["single_epoch"] == 0]
+        candidates.extend(merged)
+        defaults.update(canonical_mission(row) for row in merged)
+    missions = {}
+    methods = Counter()
+    for row in candidates:
+        mission = canonical_mission(row)
+        missions.setdefault(mission, Counter())[band_key(row)] += 1
+        methods[calibration_key(row)] += 1
+    return {
+        "missions": [{"label": name, "count": sum(bands.values()), "default": name in defaults,
+                      "bands": [{"label": band, "count": n} for band, n in sorted(bands.items(), key=lambda pair: pair[0] or "")]}
+                     for name, bands in sorted(missions.items(), key=lambda pair: pair[0].casefold())],
+        "methods": [{"label": label, "count": count} for label, count in sorted(methods.items())],
+        "recalibratedFallback": fallback,
+    }
 
 
 def calibration_metadata(enabled):
@@ -119,28 +172,38 @@ def _parallax_leverage(design, sigma, weights, times):
     return ""
 
 
-def _fit(design, y, sigma, weights, epoch_unc, factors, factor_derivatives, fixed_plx, fixed_unc, free_parallax):
+def _fit(design, y, sigma, weights, epoch_unc, factors, factor_derivatives,
+         fixed_plx, fixed_unc, free_parallax, robust_fit, extra_floor):
     """Weighted least squares with epoch errors and bounded Huber influence."""
     robust = np.ones(len(y) // 2)
     params = np.zeros(design.shape[1])
+    floors = np.zeros((2, 1))
     for iteration in range(6):
         rates = np.array([[params[1]], [params[3]]])
         plx = params[4] if free_parallax else fixed_plx
-        effective = np.hypot(sigma, (epoch_unc * (rates + plx * factor_derivatives.T)).ravel())
+        nominal = np.hypot(sigma, (epoch_unc * (rates + plx * factor_derivatives.T)).ravel())
+        effective = np.hypot(nominal.reshape(2, -1), floors).ravel()
         weight = np.sqrt(weights * np.tile(robust, 2)) / effective
         whitened = design * weight[:, None]
         updated, _, rank, _ = lstsq(whitened, y * weight, cond=1e-10)
         if rank < design.shape[1]:
             raise ValueError("These epochs do not constrain the selected astrometric model.")
-        standardized = ((y - design @ updated) / effective).reshape(2, -1)
-        distance = np.linalg.norm(standardized, axis=0)
-        updated_weights = np.minimum(1, 3.5 / np.maximum(distance, 1e-6)) if len(robust) >= 6 else robust
-        converged = np.allclose(updated, params, atol=1e-6) and np.allclose(updated_weights, robust, atol=1e-4)
+        residuals = (y - design @ updated).reshape(2, -1)
+        distance = np.linalg.norm(residuals / effective.reshape(2, -1), axis=0)
+        updated_weights = np.minimum(1, 3.5 / np.maximum(distance, 1e-6)) if robust_fit and len(robust) >= 6 else robust
+        updated_floors = floors
+        if extra_floor and len(robust) >= 6:
+            mad = 1.4826 * np.median(np.abs(residuals - np.median(residuals, axis=1, keepdims=True)), axis=1)
+            nominal_variance = np.median(nominal.reshape(2, -1)**2, axis=1)
+            updated_floors = np.sqrt(np.maximum(mad**2 - nominal_variance, 0))[:, None]
+        converged = (np.allclose(updated, params, atol=1e-6) and np.allclose(updated_weights, robust, atol=1e-4)
+                     and np.allclose(updated_floors, floors, atol=1e-4))
         params = updated
         if converged:
             break
         if iteration < 5:
             robust = updated_weights
+            floors = updated_floors
     model = design @ params
     chi2 = float(np.sum(((y - model) * weight) ** 2))
     dof = max(float(2 * np.dot(weights[:len(robust)], robust) - len(params)), 1.0)
@@ -149,17 +212,21 @@ def _fit(design, y, sigma, weights, epoch_unc, factors, factor_derivatives, fixe
     if not free_parallax and fixed_unc > 0:
         response = lstsq(whitened, factors.T.ravel() * weight, cond=1e-10)[0]
         cov += np.outer(response, response) * fixed_unc**2
-    return params, np.sqrt(cov.diagonal()), chi2 / dof, model, robust, effective
+    return params, np.sqrt(cov.diagonal()), chi2 / dof, model, robust, effective, floors.ravel().tolist()
 
 
-def fit_target(payload, *, offsets, calibrated, detail=True):
-    original_rows = list(selected_rows(payload["rows"]))
+def fit_target(payload, *, offsets, calibrated, detail=True, selection=None, only_recalibrated=True,
+               use_raw=False, ignore_duplicates=True, adjust_reference=True, robust_fit=True, extra_floor=False):
+    selection = selection or {}
+    original_rows = list(selected_rows(payload["rows"], only_recalibrated=only_recalibrated,
+        use_raw=use_raw, ignore_duplicates=ignore_duplicates, **selection))
     if len(original_rows) < 2:
         raise ValueError("Fewer than two usable MOSAIC measurements.")
     prepared = prepare_payload(
         {**payload, "rows": original_rows}, apply_systematic_errors=calibrated,
         apply_ukidss_las_ra_calibration=calibrated,
         apply_nsc_declination_calibration=False, apply_ps1_r_declination_calibration=False,
+        use_raw=use_raw, adjust_reference=adjust_reference, require_recalibration_provenance=False,
     )
     rows = prepared.rows
     by_id = {row["id"]: row for row in original_rows}
@@ -188,8 +255,9 @@ def fit_target(payload, *, offsets, calibrated, detail=True):
 
     def branch(free, design):
         fixed = 0 if free else fixed_plx
-        trajectory, uncertainty, chi, model, robust, effective = _fit(
-            design, y - fixed * factors.T.ravel(), sigma, weights, epoch_unc, factors, derivatives, fixed, fixed_unc, free)
+        trajectory, uncertainty, chi, model, robust, effective, floors = _fit(
+            design, y - fixed * factors.T.ravel(), sigma, weights, epoch_unc, factors, derivatives,
+            fixed, fixed_unc, free, robust_fit, extra_floor)
         model += fixed * factors.T.ravel()
         fit = {
             "mode": "pm_plx" if free else "pm", "fitter": "scipy", "t0": t0,
@@ -197,7 +265,7 @@ def fit_target(payload, *, offsets, calibrated, detail=True):
             "pmraUnc": float(uncertainty[1]), "pmdecUnc": float(uncertainty[3]),
             "plx": float(trajectory[4]) if free else None,
             "plxUnc": float(uncertainty[4]) if free else None, "fixedPlx": None if free else fixed_plx,
-            "fixedPlxUnc": None if free else fixed_unc,
+            "fixedPlxUnc": None if free else fixed_unc, "fittedErrorFloors": floors,
             "reducedChi2": chi, "surveyOffsets": fitted_survey_offsets(anchor, labels, trajectory[5 if free else 4:]),
         }
         if detail:
@@ -206,10 +274,12 @@ def fit_target(payload, *, offsets, calibrated, detail=True):
             plx = trajectory[4] if free else fixed_plx
             fit["curve"] = {
                 "year": phase_t.tolist(),
+                "parallaxRa": (plx * phase[:, 0]).tolist(), "parallaxDec": (plx * phase[:, 1]).tolist(),
                 "ra": (trajectory[0] + trajectory[1] * (phase_t - t0) + plx * phase[:, 0]).tolist(),
                 "dec": (trajectory[2] + trajectory[3] * (phase_t - t0) + plx * phase[:, 1]).tolist(),
             }
             fit["model"] = model.reshape(2, -1).tolist()
+            fit["parallaxMotion"] = (plx * factors).T.tolist()
             fit["effectiveUncertainties"] = effective.reshape(2, -1).tolist()
             fit["weights"] = robust.tolist()
         return fit
@@ -231,7 +301,10 @@ def fit_target(payload, *, offsets, calibrated, detail=True):
     if detail:
         result["reference"] = {"ra": ref_ra, "dec": ref_dec, "year": t0}
         result["settings"] = {"version": FIT_VERSION, "inputPolicyVersion": ASTROMETRY_INPUT_POLICY_VERSION,
-                              "calibrated": calibrated, "fitSurveyOffsets": offsets}
+                              "calibrated": calibrated, "fitSurveyOffsets": offsets,
+                              "onlyRecalibrated": only_recalibrated, "raw": use_raw,
+                              "ignoreDuplicates": ignore_duplicates, "adjustReference": adjust_reference,
+                              "robustFit": robust_fit, "fitExtraFloor": extra_floor, "selection": selection}
         result["measurements"] = [
             {**{key: row.get(key) for key in (
                 "id", "mission_name", "data_release", "moca_psid", "moca_pid", "airmass", "origin",
