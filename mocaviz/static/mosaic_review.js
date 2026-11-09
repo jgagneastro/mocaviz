@@ -703,10 +703,49 @@ function trajectoryRanges(detail,fit,coordinate,axisIndex,frame,curve,adopted,re
   };
 }
 
+function residualHistogramBins(values, nonnegative, fullRange) {
+  const sorted = values.filter(finite).sort((a,b)=>a-b);
+  const n = sorted.length;
+  if (!n) return {bins:[],range:undefined,tailCount:0};
+  const quantile = fraction => {
+    const index = fraction*(n-1), lower = Math.floor(index);
+    return sorted[lower]+(sorted[Math.ceil(index)]-sorted[lower])*(index-lower);
+  };
+  const iqr = quantile(.75)-quantile(.25);
+  const min = sorted[0], max = sorted[n-1];
+  const padding = Math.max(1,Math.abs(quantile(.5))*.025);
+  const low = min===max ? (nonnegative ? Math.max(0,min-padding) : min-padding) : min;
+  const high = min===max ? max+padding : max;
+  const trim = !fullRange && n>=12 ? Math.max(1,Math.floor(n*.01)) : 0;
+  const innerLow = sorted[trim], innerHigh = sorted[n-1-trim];
+  const spread = iqr || (innerHigh-innerLow);
+  let start = Math.max(low,innerLow-.1*spread);
+  let end = Math.min(high,innerHigh+.1*spread);
+  if (start===end) {
+    start = Math.max(low,start-padding);
+    end = Math.min(high,end+padding);
+  }
+  const fdWidth = 2*iqr/Math.cbrt(n);
+  const suggested = fdWidth>0 ? Math.ceil((end-start)/fdWidth) : Math.ceil(Math.sqrt(n));
+  const binCount = Math.max(Math.min(8,Math.max(3,n)),Math.min(45,suggested));
+  const width = (end-start)/binCount;
+  const bins = Array.from({length:binCount},(_,i)=>({lo:start+i*width,hi:start+(i+1)*width,count:0}));
+  let below = 0, above = 0;
+  for (const value of sorted) {
+    if (value<start) below++;
+    else if (value>end) above++;
+    else bins[Math.min(binCount-1,Math.floor((value-start)/width))].count++;
+  }
+  if (below) bins.unshift({lo:min,hi:start,count:below});
+  if (above) bins.push({lo:end,hi:max,count:above});
+  return {bins,range:[start,end],tailCount:below+above};
+}
+
 function renderResidualHistograms(detail,fit) {
   const ra = fitResiduals(detail,fit,"ra",0);
   const dec = fitResiduals(detail,fit,"dec",1);
   const combined = ra.map((value,i)=>Math.hypot(value,dec[i]));
+  const fullRange = checked("histogram-full-range");
   el("histogram-count").textContent = combined.filter(finite).length.toLocaleString()+" fit measurements";
   const panels = [
     ["histogram-ra","R.A.* residual (mas)",ra,"#14776c"],
@@ -714,11 +753,18 @@ function renderResidualHistograms(detail,fit) {
     ["histogram-combined","Combined residual magnitude (mas)",combined,"#9c5e28"]
   ];
   for (const [id,title,values,color] of panels) {
-    const trace = {type:"histogram",x:values.filter(finite),nbinsx:35,marker:{color},
-      hovertemplate:"%{x:.3g} mas<br>%{y} measurements<extra></extra>"};
-    Plotly.react(el(id),[trace],layout({height:240,margin:{l:47,r:12,t:18,b:55},bargap:.08,
-      xaxis:{...axis(title),title:{text:title,font:{size:12},standoff:7}},yaxis:{...axis("Count"),rangemode:"tozero"},
-      uirevision:detail.token+"-"+fit.mode}),plotConfig);
+    const {bins,range,tailCount} = residualHistogramBins(values,id==="histogram-combined",fullRange);
+    const maxCount = bins.reduce((top,bin)=>Math.max(top,bin.count),1);
+    const trace = {type:"bar",x:bins.map(bin=>(bin.lo+bin.hi)/2),width:bins.map(bin=>(bin.hi-bin.lo)*.94),
+      y:bins.map(bin=>bin.count || null),marker:{color},
+      customdata:bins.map(bin=>[bin.lo,bin.hi]),
+      hovertemplate:"%{customdata[0]:.3g} to %{customdata[1]:.3g} mas<br>%{y} measurements<extra></extra>"};
+    const annotations = tailCount ? [{xref:"paper",yref:"paper",x:1,y:1.03,xanchor:"right",
+      showarrow:false,text:tailCount+" outside view",font:{size:11,color:"#516376"}}] : [];
+    Plotly.react(el(id),[trace],layout({height:240,margin:{l:55,r:12,t:23,b:55},annotations,
+      xaxis:{...axis(title),range,title:{text:title,font:{size:12},standoff:7}},
+      yaxis:{...axis("Count (log)"),type:"log",range:[Math.log10(.65),Math.log10(1.45*maxCount)]},
+      uirevision:detail.token+"-"+fit.mode+"-"+fullRange}),{...plotConfig,doubleClick:"reset"});
   }
 }
 
@@ -1128,6 +1174,9 @@ for (const id of ["offsets","calibrated"]) el(id).onchange = () => {
 };
 el("mode").onchange = () => {renderTarget();renderPopulation();};
 el("residual").onchange = () => {if (focusedFit()) renderTarget();};
+el("histogram-full-range").onchange = () => {
+  if (focusedFit()) renderResidualHistograms(state.detail,focusedFit());
+};
 for (const id of ["subtract-pm","subtract-plx","phase","bin","absolute","show-reference"]) {
   el(id).onchange = () => {
     if (focusedFit()) renderTrajectory(state.detail,focusedFit());

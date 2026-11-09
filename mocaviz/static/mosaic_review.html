@@ -8,7 +8,7 @@
 <link rel="icon" href="/static/mosaic_review.svg">
 <link rel="stylesheet" href="/static/mosaic_review.css?v=3">
 <script defer src="/plotly.min.js"></script>
-<script defer src="/static/mosaic_review.js?v=9"></script>
+<script defer src="/static/mosaic_review.js?v=10"></script>
 </head>
 <body>
 <header class="top">
@@ -115,7 +115,10 @@
               <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
             </section>
             <section class="plot-card residual-card">
-              <div class="card-heading"><h2>Fit residual distributions</h2><span id="histogram-count"></span></div>
+              <div class="card-heading"><h2>Fit residual distributions</h2>
+                <div class="actions"><span id="histogram-count"></span>
+                  <label><input id="histogram-full-range" type="checkbox"> Full residual range</label></div>
+              </div>
               <div class="residual-histograms">
                 <div id="histogram-ra" aria-label="Histogram of R.A. star residuals"></div>
                 <div id="histogram-dec" aria-label="Histogram of declination residuals"></div>

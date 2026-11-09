@@ -53,7 +53,9 @@ Drag the dividers to resize the side columns, or hide either column with
 the toolbar buttons. Widths and visibility are remembered in the browser.
 The central plots set their display ranges from the fitted tracks and
 measurements without large residuals. The outliers remain in the plot data
-and in the signed and combined residual histograms.
+and in the signed and combined residual histograms. The histograms use
+logarithmic counts and data-dependent bins. **Full residual range** shows
+the complete tails.
 
 The dashed MOSAIC envelopes use the fit covariance. The adopted trajectory
 propagates the adopted reference coordinate, PM and parallax. Its shaded
@@ -62,11 +64,11 @@ envelope combines the reported uncertainty terms in quadrature.
 The sample plots compare PM differences, epoch baselines, and PM
 uncertainties. MOSAIC's baseline is the span from the earliest to the latest
 epoch in the fit. Adopted baselines come from explicit measurement notes or
-the nominal [Gaia DR2](https://doi.org/10.1051/0004-6361/201832727) and
-[Gaia EDR3/DR3](https://doi.org/10.1051/0004-6361/202243940) release spans.
-The precision panel plots the inverse baseline ratio so that longer MOSAIC
-coverage appears on the same side as smaller MOSAIC uncertainties. Every
-sample plot supports the **Review selected target** action.
+nominal Gaia release spans. The precision panel plots the inverse baseline
+ratio so that longer MOSAIC coverage appears on the same side as smaller
+MOSAIC uncertainties. Every sample plot supports the **Review selected
+target** action. [Gaia DR2 astrometry](https://doi.org/10.1051/0004-6361/201832727),
+[Gaia EDR3/DR3 astrometry](https://doi.org/10.1051/0004-6361/202243940).
 
 ## Enable decisions
 
