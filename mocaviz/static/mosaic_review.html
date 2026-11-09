@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>MOSAIC Proper Motion Review</title>
+<link rel="icon" href="/static/mosaic_review.svg">
+<link rel="stylesheet" href="/static/mosaic_review.css?v=1">
+<script defer src="/plotly.min.js"></script>
+<script defer src="/static/mosaic_review.js?v=4"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark">M</span><div><strong>MOSAIC</strong><span>Proper motion review</span></div></div>
+  <label>Sample <select id="sample">
+    <option value="public_l0">All publicly known L0+</option>
+    <option value="sublime2">SUBLIME2</option>
+    <option value="sublime1">SUBLIME1</option>
+    <option value="catwise">CatWISE Red Movers</option>
+  </select></label>
+  <label><input type="checkbox" id="show-reviewed"> Include reviewed</label>
+  <div class="counts" id="counts" aria-live="polite">Loading sample…</div>
+</header>
+<main>
+  <div id="setup" role="status" hidden></div>
+  <section class="review" aria-label="Review workspace">
+    <div class="review-bar">
+      <div><div class="eyebrow" id="position">Starting</div><h1 id="target">MOSAIC astrometry</h1></div>
+      <div class="actions">
+        <button id="first" title="Home">First <kbd>Home</kbd></button>
+        <button id="previous" title="Left or Up">Prev <kbd>←</kbd></button>
+        <button id="next" title="Right or Down">Next <kbd>→</kbd></button>
+        <button id="last" title="End">Last <kbd>End</kbd></button>
+        <button id="report">Report <kbd>O</kbd></button>
+        <button id="wise">WiseView <kbd>W</kbd></button>
+        <button id="quit">Quit <kbd>Q</kbd></button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <label><input type="checkbox" id="offsets" checked> Fit constant mission offsets</label>
+      <label><input type="checkbox" id="calibrated" checked> Apply recommended MOSAIC calibrations</label>
+      <label>Solution <select id="mode"><option value="pm">PM</option><option value="pm_plx">PM + PLX</option></select></label>
+      <label>Residuals <select id="residual"><option value="fit">MOSAIC fit</option><option value="sigma">In σ</option><option value="none">Hide</option></select></label>
+      <div class="actions review-actions">
+        <button class="adopt" id="adopt">Adopt <kbd>1</kbd></button>
+        <button class="reject" id="reject">Reject <kbd>0</kbd></button>
+        <button id="undo">Undo <kbd>⌫</kbd></button>
+      </div>
+    </div>
+    <div id="status" class="status" aria-live="polite"></div>
+    <div id="inspector" class="inspector" hidden>
+      <div class="plot-card">
+        <div class="card-heading"><h2>Astrometry over time</h2><span>ICRS · R.A.* and Decl.</span></div>
+        <div id="trajectory" class="trajectory" aria-label="Coordinate measurements and fit over time"></div>
+      </div>
+      <aside class="plot-card">
+        <div class="card-heading"><h2>Literature comparison</h2><span>★ Adopted</span></div>
+        <div id="motion" aria-label="Proper motion measurements with uncertainties"></div>
+        <div id="parallax" aria-label="Parallax measurements with uncertainties" hidden></div>
+      </aside>
+    </div>
+    <div id="empty" class="empty" aria-live="polite"></div>
+  </section>
+  <section class="plot-card comparison">
+    <div class="card-heading"><h2>MOSAIC − adopted proper motion</h2><span id="comparison-count"></span></div>
+    <div id="population" aria-label="Signed logarithmic scatterplot of proper-motion differences"></div>
+    <p class="plot-note">Unreviewed previews are sampled across the selected catalog. Rejected fits are excluded from the automatic range. Double-click to reset zoom.</p>
+  </section>
+  <details class="plot-card calibration-panel" open>
+    <summary>Recommended MOSAIC calibrations and exclusions</summary>
+    <div id="policy">Loading calibration policy…</div>
+  </details>
+</main>
+</body>
+</html>

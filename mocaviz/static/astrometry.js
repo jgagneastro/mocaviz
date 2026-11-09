@@ -101,6 +101,7 @@ function collectAstrometryElements() {
     "atm-fit-method",
     "atm-fit-outlier-mixture",
     "atm-fit-error-floor",
+    "atm-fit-survey-offsets",
     "atm-fit-method-note",
     "atm-reject-selected-fit",
     "atm-reset-manual-rejections",
@@ -184,6 +185,7 @@ function readAstrometryUrlState() {
       : params.get("error_floor");
     atmEl["atm-fit-error-floor"].checked = !asFalse(floorParam);
   }
+  if (atmEl["atm-fit-survey-offsets"]) atmEl["atm-fit-survey-offsets"].checked = asBool(params.get("fit_survey_offsets"));
 }
 
 function bindAstrometryControls() {
@@ -280,7 +282,7 @@ function bindAstrometryControls() {
     updateAstrometryUrl();
     await loadAstrometryObject({ keepAllMissions: hadAllMissionsSelected && atmState.hasUserMissionChoice });
   });
-  for (const id of ["atm-fit-method", "atm-fit-outlier-mixture", "atm-fit-error-floor"]) {
+  for (const id of ["atm-fit-method", "atm-fit-outlier-mixture", "atm-fit-error-floor", "atm-fit-survey-offsets"]) {
     if (!atmEl[id]) continue;
     atmEl[id].addEventListener("change", () => {
       clearAstrometryFit({ render: false });
@@ -367,6 +369,9 @@ function updateAstrometryFitControlState() {
   select.disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-outlier-mixture"]) atmEl["atm-fit-outlier-mixture"].disabled = Boolean(atmState.fitBusy);
   if (atmEl["atm-fit-error-floor"]) atmEl["atm-fit-error-floor"].disabled = Boolean(atmState.fitBusy);
+  if (atmEl["atm-fit-survey-offsets"]) {
+    atmEl["atm-fit-survey-offsets"].disabled = Boolean(atmState.fitBusy) || select.value !== "scipy";
+  }
   if (atmEl["atm-fit-method-note"]) {
     const note = ultraOption?.disabled
       ? ultranest.message || "UltraNest is not available."
@@ -1746,6 +1751,29 @@ function renderAstrometryPlot(axis, prepared, options = {}) {
         : `${fitCurve.label}<br>%{x:.5g}<br>${yHoverLabel}: %{y:${yHoverFormat}} ${yHoverUnit}<extra></extra>`,
     });
   }
+  const surveyOffsets = atmState.fitResult?.surveyOffsets?.values || {};
+  for (const [mission, offsets] of Object.entries(surveyOffsets)) {
+    if (!fitCurve) continue;
+    const shift = isRa ? offsets.raMas : offsets.decMas;
+    const epochs = prepared.rows.filter((row) => row.mission === mission && !isExcludedAstrometryRow(row))
+      .map((row) => row.plot_x);
+    if (!epochs.length) continue;
+    const min = Math.min(...epochs);
+    const max = Math.max(...epochs);
+    const x = [], offsetsMas = [];
+    fitCurve.x.forEach((value, index) => {
+      if (value >= min && value <= max) {
+        x.push(value);
+        offsetsMas.push(fitOffsets[index] + shift);
+      }
+    });
+    traces.push({
+      x, y: astrometryYSeries(prepared, axis, offsetsMas), type: "scatter", mode: "lines",
+      name: mission + " fit offset", showlegend: isRa, legendgroup: "astrometry-fit-offset-" + mission,
+      line: { color: "#a85226", width: 2, dash: "dot" },
+      hovertemplate: "%{fullData.name}<br>Shift " + shift.toFixed(2) + " mas<extra></extra>",
+    });
+  }
   const fitOutlierStyles = [
     {
       component: "measurement_failure",
@@ -2105,6 +2133,8 @@ function buildAstrometryFitRequest(mode, prepared) {
     fitter: selectedAstrometryFitMethod(),
     outlierMixture: atmEl["atm-fit-outlier-mixture"] ? atmEl["atm-fit-outlier-mixture"].checked : true,
     errorFloor: atmEl["atm-fit-error-floor"] ? atmEl["atm-fit-error-floor"].checked : true,
+    ...(selectedAstrometryFitMethod() === "scipy" && atmEl["atm-fit-survey-offsets"]?.checked
+      ? { fitSurveyOffsets: true } : {}),
     reference: {
       ra: prepared.reference.ra,
       dec: prepared.reference.dec,
@@ -2234,7 +2264,7 @@ function predictAstrometryFit(fit, prepared, epoch) {
   const pf = parallaxMotion(prepared.reference.ra, prepared.reference.dec, epoch);
   let ra = fit.posRa + fit.pmra * dt;
   let dec = fit.posDec + fit.pmdec * dt;
-  const fitPlx = fit.mode === "pm_plx" ? fit.plx : fit.fixedPlx;
+  const fitPlx = fit.plx ?? fit.fixedPlx;
   if (finite(fitPlx)) {
     ra += Number(fitPlx) * pf.ra;
     dec += Number(fitPlx) * pf.dec;
@@ -3415,6 +3445,7 @@ function updateAstrometryUrl() {
   else params.delete("fit_outlier_mixture");
   if (atmEl["atm-fit-error-floor"] && !atmEl["atm-fit-error-floor"].checked) params.set("fit_error_floor", "0");
   else params.delete("fit_error_floor");
+  setBoolParam(params, "fit_survey_offsets", Boolean(atmEl["atm-fit-survey-offsets"]?.checked));
   if (!atmEl["atm-display-reference"].checked) params.set("display_reference", "0");
   else params.delete("display_reference");
   if (!atmEl["atm-adjust-reference"].checked) params.set("adjust_ref", "0");

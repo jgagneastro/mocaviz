@@ -38,6 +38,25 @@ class AstrometryRobustFitTests(unittest.TestCase):
     def run_fit(self, rows):
         return app_module._run_astrometry_fit(astrometry_fit_body(rows), {})["fit"]
 
+    def test_optional_two_coordinate_mission_offsets(self):
+        rows = []
+        for i in range(24):
+            epoch = 2015 + i * .16
+            second = i >= 12
+            dt = epoch - 2015
+            row = astrometry_row(i, epoch, 15*dt + (7 if second else 0), -5*dt - (12 if second else 0))
+            row["mission"] = "Survey B" if second else "Survey A"
+            rows.append(row)
+        body = {**astrometry_fit_body(rows, error_floor=False), "fitSurveyOffsets":True}
+        fit = app_module._run_astrometry_fit(body, {})["fit"]
+        self.assertAlmostEqual(fit["pmra"], 15)
+        self.assertAlmostEqual(fit["pmdec"], -5)
+        self.assertAlmostEqual(fit["surveyOffsets"]["values"]["Survey B"]["raMas"], 7)
+        self.assertAlmostEqual(fit["surveyOffsets"]["values"]["Survey B"]["decMas"], -12)
+        self.assertEqual(fit["parameterNames"][-2:], ["offset_ra_star:Survey B", "offset_dec:Survey B"])
+        with self.assertRaisesRegex(ValueError, "SciPy"):
+            app_module._run_astrometry_fit({**body, "fitter":"ultranest"}, {})
+
     def test_slow_mover_does_not_activate_stationary_source_model(self):
         residuals = [0.05, -0.08, 0.02, 0.09, -0.04, -0.02, 0.06, -0.07, 0.03, -0.01, 0.04]
         rows = []

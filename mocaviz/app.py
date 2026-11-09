@@ -20958,7 +20958,7 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
             "groups for this fit."
         )
 
-    return {
+    arrays = {
         "mode": mode,
         "is_parallax": is_parallax,
         "ids": ids_arr,
@@ -20994,6 +20994,21 @@ def _astrometry_fit_arrays(body: Mapping[str, Any]) -> dict[str, Any]:
         "n_params": 5 if fit_parallax else 4,
         "min_rows": min_rows,
     }
+    if _as_bool(body.get("fitSurveyOffsets")):
+        from .astrometry_survey_offsets import survey_offset_basis
+
+        fitter = str(body.get("fitter") or body.get("method") or "scipy").strip().lower()
+        if fitter != "scipy":
+            raise ValueError("Constant mission offsets are available for SciPy fits.")
+        anchor, labels, indicators = survey_offset_basis(missions_arr, independent_group_arr)
+        arrays["survey_offset_anchor"] = anchor
+        arrays["survey_offset_labels"] = labels
+        arrays["survey_offset_indicators"] = indicators
+        arrays["n_params"] += 2 * len(labels)
+        design, _, sigma = _astrometry_design_matrix(arrays)
+        if np.linalg.matrix_rank(design / sigma[:, None]) < arrays["n_params"]:
+            raise ValueError("The selected astrometry does not constrain a fit with mission offsets.")
+    return arrays
 
 
 def _astrometry_design_matrix(
@@ -21009,7 +21024,8 @@ def _astrometry_design_matrix(
     pdec = np.asarray(arrays["pdec"], dtype=float)
     n = dt.size
     fit_parallax = bool(arrays["fit_parallax"])
-    n_params = int(arrays["n_params"])
+    indicators = arrays.get("survey_offset_indicators")
+    n_params = (5 if fit_parallax else 4) if indicators is not None else int(arrays["n_params"])
     design = np.zeros((2 * n, n_params), dtype=float)
     design[:n, 0] = 1.0
     design[:n, 1] = dt
@@ -21018,6 +21034,10 @@ def _astrometry_design_matrix(
     if fit_parallax:
         design[:n, 4] = pra
         design[n:, 4] = pdec
+    if indicators is not None:
+        from .astrometry_survey_offsets import add_offset_columns
+
+        design = add_offset_columns(design, indicators)
 
     y_ra = np.asarray(arrays["y_ra"], dtype=float).copy()
     y_dec = np.asarray(arrays["y_dec"], dtype=float).copy()
@@ -21109,6 +21129,12 @@ def _astrometry_model_from_params(arrays: Mapping[str, Any], params: Any) -> tup
     )
     ra_model = p[0] + p[1] * dt + plx * pra
     dec_model = p[2] + p[3] * dt + plx * pdec
+    indicators = arrays.get("survey_offset_indicators")
+    if indicators is not None and indicators.shape[1]:
+        base = 5 if arrays["fit_parallax"] else 4
+        split = base + indicators.shape[1]
+        ra_model += indicators @ p[base:split]
+        dec_model += indicators @ p[split:]
     return np.asarray(ra_model, dtype=float), np.asarray(dec_model, dtype=float)
 
 
@@ -21631,6 +21657,15 @@ def _astrometry_raw_fit_result(
     parameter_names = ["pos_ra", "pmra", "pos_dec", "pmdec"] + (
         ["plx"] if arrays["fit_parallax"] else []
     )
+    survey_metadata = {}
+    if "survey_offset_labels" in arrays:
+        from .astrometry_survey_offsets import fitted_survey_offsets
+
+        labels = arrays["survey_offset_labels"]
+        survey_metadata["surveyOffsets"] = fitted_survey_offsets(
+            arrays["survey_offset_anchor"], labels, p[len(parameter_names):])
+        parameter_names += [f"offset_ra_star:{name}" for name in labels]
+        parameter_names += [f"offset_dec:{name}" for name in labels]
     formal_covariance = cov[: p.size, : p.size]
     scaled_covariance = formal_covariance * variance_scale
     ids = np.asarray(arrays["ids"], dtype=object)
@@ -21741,6 +21776,7 @@ def _astrometry_raw_fit_result(
         "objectErrorFloorSource": str(
             arrays.get("object_error_floor_source") or ""
         ),
+        **survey_metadata,
         "parameterNames": parameter_names,
         "formalParameterCovariance": formal_covariance.tolist(),
         "parameterCovariance": scaled_covariance.tolist(),

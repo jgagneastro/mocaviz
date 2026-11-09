@@ -117,6 +117,10 @@
             <input id="atm-fit-error-floor" type="checkbox" checked>
             <span>Fit extra astrometric error floor</span>
           </label>
+          <label class="checkline" title="SciPy only. Each fitted dataset needs at least 10 independent groups. The best sampled dataset anchors the offsets.">
+            <input id="atm-fit-survey-offsets" type="checkbox">
+            <span>Fit constant mission R.A.* and Decl. offsets (SciPy)</span>
+          </label>
           <div class="button-grid astrometry-fit-actions">
             <button id="atm-reject-selected-fit" type="button" disabled>Reject selected from fit</button>
             <button id="atm-reset-manual-rejections" type="button" disabled>Reset manual rejections</button>
@@ -254,6 +258,7 @@
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
           <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
           <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses a Gaussian moving-source likelihood plus a Student-t measurement-failure component, and activates a distinct stationary-source component only when supported by multiple separated measurements.</td></tr>
+          <tr><td><code>fit_survey_offsets</code></td><td><code>1</code> enables it</td><td>Fits constant per-mission R.A.* and Decl. shifts with SciPy. Off by default.</td></tr>
           <tr><td><code>fit_error_floor</code></td><td><code>0</code> disables it</td><td>Fits an extra RA/Decl. astrometric error floor by default.</td></tr>
           <tr><td><code>ignore_duplicates</code></td><td><code>0</code> disables it</td><td>By default, keeps one copy of measurements with exactly matching offsets, epochs, and uncertainties. Repeated copies are omitted from plots, the table, and exports.</td></tr>
           <tr><td><code>mock</code></td><td><code>1</code></td><td>Uses a local synthetic dataset for smoke testing.</td></tr>
@@ -271,6 +276,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b-fit-progress-20261026a-bands-20261107a-missions-20261109a"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b-fit-progress-20261026a-bands-20261107a-missions-20261109a-survey-offsets-20261109a"></script>
 </body>
 </html>
