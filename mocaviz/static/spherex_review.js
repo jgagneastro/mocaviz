@@ -65,15 +65,10 @@
     }, Math.max(0, failedJob.errorExpiresAt - Date.now()));
   }
   function resolveSubmissionErrors(job) {
-    const sameTarget = previous => previous.lane === job.lane && previous.item.moca_oid === job.item.moca_oid;
-    const displayed = submissionErrorJob && sameTarget(submissionErrorJob);
-    for (const previous of jobs.filter(sameTarget)) {
-      if (previous !== job && previous.body.action === job.body.action && previous.errorMessage &&
-        ["failed", "queued"].includes(previous.state)) previous.state = "superseded";
-      previous.errorMessage = null; previous.errorExpiresAt = 0;
-    }
-    if (displayed) {
-      const other = [...jobs].reverse().find(previous => previous.state === "failed" &&
+    job.errorMessage = null;
+    job.errorExpiresAt = 0;
+    if (submissionErrorJob === job) {
+      const other = [...jobs].reverse().find(previous =>
         previous.errorMessage && previous.errorExpiresAt > Date.now());
       error(other?.errorMessage || "", other || null);
       if (!other) status("Submission for moca_oid=" + job.item.moca_oid + " saved.");
@@ -81,6 +76,11 @@
   }
   function key(item, lane = queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
+  function failedCount() { return jobs.filter(job => job.state === "failed").length; }
+  function moveToSubmissionTail(job) {
+    jobs.splice(jobs.indexOf(job), 1);
+    jobs.push(job);
+  }
   function updateUploadStatus() {
     const pending = pendingCount();
     const uploading = jobs.filter((job) => job.state === "submitting").length;
@@ -125,7 +125,9 @@
   function updateControls() {
     const pending = pendingCount();
     updateUploadStatus();
-    $("submitting").textContent = pending + " results currently submitting to mocadb";
+    const failed = failedCount();
+    $("submitting").textContent = pending + " results currently submitting to mocadb" +
+      (failed ? " · " + failed + " awaiting retry" : "");
     updateCacheStatus();
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
@@ -156,7 +158,7 @@
     $("undo").disabled = !history.length || busyUndo || loading || closed;
     $("refit").disabled = !current || loading || closed;
     for (const name of ["first", "previous", "next", "last"]) $(name).disabled = loading || closed;
-    $("retry").disabled = !writable() || !jobs.some((j) => j.state === "failed");
+    $("retry").disabled = !writable() || failed === 0;
     $("report").disabled = !current || closed;
     $("wiseview").disabled = !current || !Number.isFinite(current.object.ra) || !Number.isFinite(current.object.dec) || closed;
     document.querySelectorAll("#classifications button").forEach((b) => {
@@ -291,7 +293,11 @@
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         queueLane = $("lane").value;
         queueRequest = request; autoNextAttempt = null;
-        hidden.clear(); resetAnalysis(); items = []; current = null; index = -1; generation++;
+        hidden.clear();
+        for (const job of jobs) {
+          if (job.state === "failed") hidden.add(key(job.item, job.lane));
+        }
+        resetAnalysis(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
         $("queue-total").textContent = "";
@@ -520,27 +526,35 @@
     if (draining || closed) return;
     draining = true;
     try {
-      for (const job of jobs) {
-        if (job.state !== "queued" || closed) continue;
+      while (!closed) {
+        const job = jobs.find(candidate => candidate.state === "queued");
+        if (!job) break;
         job.state = "submitting"; job.controller = new AbortController(); updateControls();
         job.promise = (async () => {
           try {
             const prepared = await api("preview", job.body, job.controller);
             if (closed || job.state === "cancelled") return;
             const result = await api("submit", {receipt: prepared.receipt}, job.controller);
+            if (closed) return;
             job.undoReceipt = result.undo_receipt; job.state = "submitted";
             resolveSubmissionErrors(job);
           } catch (e) {
             if (closed || job.state === "cancelled") return;
-            job.state = "failed"; hidden.delete(key(job.item, job.lane));
-            job.errorMessage = "Submission for moca_oid=" + job.item.moca_oid + " failed. It is back in the review queue.\n" + e.message;
+            const temporary = !e.status || e.status >= 500 || [408, 429].includes(e.status) ||
+              (e.status === 409 && e.message.startsWith("The database is busy."));
+            const retry = temporary && !job.autoRetried && !job.undoRequested;
+            job.state = retry ? "queued" : "failed";
+            if (retry) {
+              job.autoRetried = true;
+              moveToSubmissionTail(job);
+            }
+            const recovery = retry ? "Queued at the end for one automatic retry." :
+              "Result kept in this tab. Use Retry failed to submit it again.";
+            job.errorMessage = "Submission for moca_oid=" + job.item.moca_oid + " failed. " + recovery + "\n" + e.message;
             job.errorExpiresAt = Date.now() + 20000;
             error(job.errorMessage, job);
           } finally {
-            if (!closed) {
-              updateControls();
-              if (index === -1 && visibleIndices().length) show(visibleIndices()[0], true);
-            }
+            if (!closed) updateControls();
           }
         })();
         await job.promise;
@@ -551,12 +565,14 @@
     if (!history.length || busyUndo || closed) return;
     busyUndo = true; updateControls();
     const job = history.at(-1);
+    job.undoRequested = true;
     try {
       if (job.state === "queued") job.state = "cancelled";
       if (job.state === "submitting") { status("Waiting for this submission before undoing it…"); await job.promise; }
       if (job.state === "submitted") await api("undo", {receipt: job.undoReceipt});
       if (closed) return;
       history.pop(); job.state = "undone"; job.undoReceipt = null; hidden.delete(key(job.item, job.lane));
+      resolveSubmissionErrors(job);
       if (queueLane !== job.lane) { queueLane = job.lane; $("lane").value = job.lane; items = [job.item]; hasMore = false; }
       else if (!items.some((i) => key(i) === key(job.item))) items.push(job.item);
       // Undo can change pixels and adopted-type metadata for this object.
@@ -566,22 +582,18 @@
       await show(items.findIndex((i) => key(i) === key(job.item)));
       status("Last decision undone.");
     } catch (e) { if (!closed) error(e.message); }
-    finally { busyUndo = false; if (!closed) updateControls(); }
+    finally { job.undoRequested = false; busyUndo = false; if (!closed) updateControls(); }
   }
-  async function retryFailed() {
+  function retryFailed() {
     if (!writable()) return;
-    for (const job of jobs.filter((j) => j.state === "failed")) {
-      try {
-        const latest = await analysis(job.item, job.lane, job.body.options, true);
-        job.body.revision = latest.revision; job.body.data_revision = latest.data_revision;
-        job.state = "queued"; hidden.add(key(job.item, job.lane));
-      } catch (e) { error("moca_oid=" + job.item.moca_oid + ": " + e.message); }
+    for (const job of jobs.filter(job => job.state === "failed")) {
+      job.state = "queued";
+      moveToSubmissionTail(job);
     }
-    if (current && hidden.has(key(current.object))) show(index + 1);
-    updateControls(); drain();
+    updateControls(); void drain();
   }
   function quit() {
-    const count = pendingCount();
+    const count = pendingCount() + failedCount();
     if (count && !confirm("Quit and discard " + count + " pending submissions? Requests already sent may still commit; check MOCAdb before reviewing them again.")) return;
     closed = true; clearTimeout(autoNextTimer); autoNextTimer = null;
     for (const job of jobs) if (job.state === "queued") job.state = "cancelled";
@@ -628,7 +640,7 @@
     updateControls();
   };
   window.addEventListener("beforeunload", (event) => {
-    if (!closed && pendingCount()) { event.preventDefault(); event.returnValue = ""; }
+    if (!closed && (pendingCount() || failedCount())) { event.preventDefault(); event.returnValue = ""; }
   });
   document.addEventListener("keydown", (event) => {
     if (closed || event.repeat) return;

@@ -112,10 +112,11 @@ try{
   await page.waitForFunction(()=>document.querySelector('#object-meta').textContent.includes('No spectra returned'));
   await settle();assert.equal(queues().length,2);
 
-  // Failed reviews are restored before paging; retry can resume the transition.
-  await open({failOid:1002});await classify([1001,1002,1003]);await target(1002);await pending(0);
-  assert.equal(queues().length,1,'A failed submission must stay available for review');
-  await page.locator('#retry').click();await target(1004);assert.equal(queues().length,2);
+  // A temporary failure retries in the background and never interrupts the review queue.
+  await open({failOid:1002});await classify([1001,1002,1003]);await target(1004);await pending(0);
+  assert.equal(queues().length,2);
+  const attempts=state.requests.filter(request=>request.op==='preview'&&request.body.moca_oid===1002);
+  assert.equal(attempts.length,2);assert.deepEqual(attempts[0].body,attempts[1].body);
 
   // Quit during draining must never schedule a later batch.
   await open({holdSubmits:true});await classify([1001,1002,1003]);await pending(3);
@@ -128,7 +129,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('#object-title').textContent==='No matching spectra');
   await settle();assert.equal(queues().length,1,'Empty initial results must not start a paging loop');
   assert.deepEqual(errors,[]);
-  console.log('Passed: automatic paging waits for uploads/requests, uses loaded filters/current batch size, requests once, preserves Undo, stops at end/error/empty results, restores failed reviews, and respects Quit.');
+  console.log('Passed: automatic paging waits for uploads/requests, uses loaded filters/current batch size, requests once, preserves Undo, stops at end/error/empty results, retries failed submissions, and respects Quit.');
 }finally{
   if(state){state.ended=true;state.releaseCount?.();state.releaseNext?.();for(const gate of state.submits)gate.resolve('ok');}
   await page.unrouteAll({behavior:'wait'});await browser.close();

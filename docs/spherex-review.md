@@ -195,9 +195,12 @@ Any error before commit rolls back vetting, spectral-type/pixel changes and the
 changelog together.
 
 Results advance immediately while submissions run serially from a browser queue.
-The pending counter includes queued and active requests. Failures return to the
-review queue, with a manual retry button. Write requests are not blindly retried
-after connection loss because the commit outcome can be uncertain.
+The pending counter includes queued and active requests. A temporary failure
+moves the original result to the end of the submission queue for one automatic
+retry. Persistent failures stay in tab memory for **Retry failed** (Alt+R) and
+are counted beside the pending total. Both retry paths keep the original
+classification, fit options, and revision checks. Undo restores the spectrum
+to review if you want to revise the decision.
 
 Undo receipts hold the before/after state in tab memory, signed using a
 domain-separated HMAC key derived from the supplied management password. The
@@ -385,15 +388,14 @@ When every loaded spectrum has been classified and the plot is cleared while
 submissions remain, the spectrum area displays a large centered “Upload queue
 emptying...” message, a spinner, the remaining count, and uploading/waiting
 counts. It updates as jobs finish and disappears when uploads finish, a plot
-returns (including a failed submission restored for review), or the session
-closes. It does not cover a displayed spectrum. Reduced-motion preferences
+returns, or the session closes. It does not cover a displayed spectrum. Reduced-motion preferences
 retain the loading ring without animation.
 
 When the loaded review queue is exhausted and more results exist, the next
 batch loads automatically after pending submissions, fits, and data requests
 finish. It keeps the loaded filters, order, and cursor, uses the current batch
-size, and preserves Undo history across batches. Failed submissions return to
-review before advancing. A failed or empty next-batch response stops automatic
+size, and preserves Undo history across batches. Results waiting for a manual
+retry stay in memory as you advance. A failed or empty next-batch response stops automatic
 attempts at that cursor; use **Next batch** to retry. Initial page opening,
 empty initial results, exact-spectrum mode, and a closed session do not trigger
 automatic loading.

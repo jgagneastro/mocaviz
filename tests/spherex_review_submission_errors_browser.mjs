@@ -14,7 +14,8 @@ await page.route('**/api/spherex-review/*',async route=>{
   if(op==='preview')return fulfill({receipt:'synthetic-plan',row_counts:{vetting:1},plan:{operations:[]}});
   if(op==='submit'){
     const outcome=closing?'ok':await new Promise(resolve=>gates.push(resolve));
-    return outcome==='fail'?fulfill({error:'Database request failed. Reload to check its state before retrying; no submission is assumed successful.'},503):
+    if(outcome==='fail')return fulfill({error:'Synthetic temporary failure.'},503);
+    return outcome==='conflict'?fulfill({error:'Synthetic revision conflict.'},409):
       fulfill({submitted:true,undo_receipt:'synthetic-undo'});
   }
   assert(['context','queue','queue-count','analyze'].includes(op),'Unexpected API operation');
@@ -45,57 +46,45 @@ async function classify(label='good'){
 async function finish(gate,outcome='ok'){gates[gate](outcome);await pending(0);}
 try {
   await open();
-  const failed=await classify();await target(1002);await finish(failed,'fail');
+  const failed=await classify('good_candidate');await target(1002);await finish(failed,'conflict');
   assert.match(await page.locator('#errors').innerText(),/5058867 failed/);
-  await page.locator('#first').click();await target(5058867);
-  const replacement=await classify('good_candidate');await target(1002);
-  assert(await page.locator('#errors').isVisible(),'Keep the error until the replacement upload succeeds');
-  await finish(replacement);
-  assert(await page.locator('#errors').isHidden(),'A new classification must clear the earlier failed job’s message');
-  assert(await page.locator('#retry').isDisabled(),'A successful replacement must supersede the old failed decision');
-
-  // Fixing one target must preserve another target’s still-current failure.
-  await open();
-  const first=await classify();await target(1002);await finish(first,'fail');
-  const second=await classify();await target(1003);await finish(second,'fail');
-  await page.locator('#first').click();await target(5058867);
-  await finish(await classify('good_candidate'));await target(1002);
-  assert.match(await page.locator('#errors').innerText(),/1002 failed/);
-  assert(await page.locator('#retry').isEnabled());
+  assert.match(await page.locator('#submitting').innerText(),/1 awaiting retry/);
+  await page.locator('#first').click();await target(1002);
+  await page.locator('#load').click();await target(1002);
   await page.waitForLoadState('networkidle');await page.clock.fastForward(20000);
-  assert(await page.locator('#errors').isHidden(),'Submission banners expire within twenty seconds');
+  assert(await page.locator('#errors').isHidden());
   assert(await page.locator('#retry').isEnabled(),'An expired banner must not discard its failed upload');
   const retry=gates.length;await page.locator('#retry').click();await pending(1);
   for(let n=0;n<100&&!gates[retry];n++)await new Promise(resolve=>setTimeout(resolve,20));
   assert(gates[retry]);await finish(retry);
-  assert(await page.locator('#errors').isHidden());assert(await page.locator('#retry').isDisabled());
+  assert(await page.locator('#retry').isDisabled());
+
+  // Undo during a failed request restores the decision without scheduling a retry.
+  await open();
+  const duringUndo=await classify();await target(1002);
+  await page.locator('#undo').click();await finish(duringUndo,'fail');
+  await target(5058867);
+  assert.equal(gates.length,duringUndo+1);
+  assert(await page.locator('#retry').isDisabled());
 
   // A previous timer cannot dismiss a newer failure banner.
   await open();
-  const old=await classify();await target(1002);await finish(old,'fail');
+  const old=await classify();await target(1002);await finish(old,'conflict');
   await page.waitForLoadState('networkidle');await page.clock.fastForward(15000);
-  const latest=await classify();await target(1003);await finish(latest,'fail');
+  const latest=await classify();await target(1003);await finish(latest,'conflict');
   await page.waitForLoadState('networkidle');await page.clock.fastForward(6000);
   assert.match(await page.locator('#errors').innerText(),/1002 failed/);
   await page.clock.fastForward(14000);
   assert(await page.locator('#errors').isHidden());
 
-  // A classification replaces an earlier classification, not a separate failed Save type operation.
-  await open();const save=gates.length;await page.locator('#save-type').click();await pending(1);await target(1002);
-  for(let n=0;n<100&&!gates[save];n++)await new Promise(resolve=>setTimeout(resolve,20));
-  assert(gates[save]);await finish(save,'fail');
-  await page.locator('#first').click();await target(5058867);await finish(await classify());await target(1002);
-  assert(await page.locator('#errors').isHidden());
-  assert(await page.locator('#retry').isEnabled(),'Keep a different failed action available to retry');
-
   // The expiry belongs to submission failures, not unrelated validation errors.
-  await open();const validation=await classify();await target(1002);await finish(validation,'fail');
+  await open();const validation=await classify();await target(1002);await finish(validation,'conflict');
   await page.locator('#batch-size').fill('0');await page.locator('#load').click();
   await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('Batch size'));
   await page.clock.fastForward(20000);
   assert.match(await page.locator('#errors').innerText(),/Batch size/);
   assert.deepEqual(errors,[]);
-  console.log('Submission errors: successful reclassification/retry, twenty-second expiry, retained retry state and newer/unrelated banner protection passed.');
+  console.log('Submission errors: retained decisions, manual retry, undo during failure, twenty-second expiry and newer/unrelated banner protection passed.');
 } finally {
   closing=true;for(const resolve of gates)resolve('ok');
   await page.unrouteAll({behavior:'ignoreErrors'});await browser.close();

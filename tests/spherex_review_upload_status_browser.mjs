@@ -90,13 +90,21 @@ try{
   await release(0);await count(2);
   await page.waitForFunction(()=>document.querySelector('#upload-counts').textContent==='1 uploading · 1 waiting');
   assert.equal(await page.locator('#upload-remaining').textContent(),'2 results remaining');
-  await release(1,'fail');await target(1002);await count(1);
-  assert(await page.locator('#upload-draining').isHidden()); // a restored plot must stay unobscured
-  await release(2);await count(0);
+  await release(1,'fail');await count(2);
+  assert(await page.locator('#upload-draining').isVisible());
+  assert.equal(await page.locator('#object-title').textContent(),'Queue complete');
+  await release(2);await count(1);
+  await release(3,'fail');await count(0);
   assert(await page.locator('#upload-draining').isHidden());
+  assert.match(await page.locator('#submitting').textContent(),/1 awaiting retry/);
+  assert.equal(await page.locator('#object-title').textContent(),'Queue complete');
   await page.locator('#retry').click();await count(1);await page.waitForSelector('#upload-draining',{state:'visible'});
   assert.equal(await page.locator('#upload-remaining').textContent(),'1 result remaining');
-  await release(3);await count(0);await page.waitForSelector('#upload-draining',{state:'hidden'});
+  await release(4);await count(0);await page.waitForSelector('#upload-draining',{state:'hidden'});
+  const attempts=requests.filter(r=>r.op==='preview').map(r=>r.body);
+  assert.deepEqual(attempts.map(body=>body.moca_oid),[1001,1002,1003,1002,1002]);
+  assert.deepEqual(attempts[3],attempts[1]);
+  assert.deepEqual(attempts[4],attempts[1]);
   assert(await page.locator('#load').isEnabled());assert(await page.locator('#batch-size').isEnabled());
   await openPage('&batch_size=7');await target(1001);assert.equal(lastQueue().limit,7);
   await page.locator('#write-enabled').check();
@@ -106,7 +114,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('#submitting').textContent==='Session closed');
   assert(await page.locator('#upload-draining').isHidden());
   assert.deepEqual(errors,[]);
-  console.log('Passed: batch sizing and validation, next-batch resizing, upload spinner/counts, completion, failed-item restoration, retry and quit.');
+  console.log('Passed: batch sizing and validation, next-batch resizing, upload spinner/counts, completion, submission retry order, retained decisions and quit.');
 }finally{
   closing=true;for(const resolve of gates)resolve('ok');
   await page.unrouteAll({behavior:'wait'});await browser.close();
