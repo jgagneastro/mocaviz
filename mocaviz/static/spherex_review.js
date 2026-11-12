@@ -13,7 +13,7 @@
   let plotShown = false;
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
-  const LOOKAHEAD = 10, FIT_CACHE_LIMIT = 24;
+  const LOOKAHEAD = 50, FIT_CACHE_LIMIT = LOOKAHEAD + 14;
   let analyzing = false;
   const analysisQueue = [];
   let autoNextTimer = null, autoNextAttempt = null;
@@ -47,6 +47,7 @@
           if (cache.get(job.key) === job) cache.delete(job.key);
           job.reject(e);
         }
+        updateCacheStatus();
         // Let navigation/rendering reprioritize the queue before starting another fit.
         await Promise.resolve();
       }
@@ -125,6 +126,7 @@
     const pending = pendingCount();
     updateUploadStatus();
     $("submitting").textContent = pending + " results currently submitting to mocadb";
+    updateCacheStatus();
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
@@ -328,9 +330,27 @@
     finally { loading = false; if (!closed) updateControls(); }
   }
   function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
+  function upcomingItems() {
+    if (index < 0) return [];
+    const upcoming = [];
+    for (let i = index + 1; i < items.length && upcoming.length < LOOKAHEAD; i++) {
+      if (!hidden.has(key(items[i]))) upcoming.push(items[i]);
+    }
+    return upcoming;
+  }
+  function fitCacheKey(item, lane, fitOptions, adoptedSptSource = queueRequest.adopted_spt_source || "private") {
+    return key(item, lane) + ":" + adoptedSptSource + ":" + JSON.stringify(fitOptions);
+  }
+  function updateCacheStatus() {
+    const fitOptions = options();
+    const ready = upcomingItems().filter(item => cache.get(fitCacheKey(item, queueLane, fitOptions))?.state === "ready");
+    const message = "Cached " + ready.length + " next spectra in queue";
+    const counter = $("cached-next");
+    if (counter.textContent !== message) counter.textContent = message;
+  }
   function analysis(item, lane = queueLane, fitOptions = options(), refresh = false, background = false) {
     const adoptedSptSource = queueRequest.adopted_spt_source || "private";
-    const k = key(item, lane) + ":" + adoptedSptSource + ":" + JSON.stringify(fitOptions);
+    const k = fitCacheKey(item, lane, fitOptions, adoptedSptSource);
     if (refresh) cache.delete(k);
     let job = cache.get(k);
     if (!job) {
@@ -343,7 +363,7 @@
       analysisQueue.splice(analysisQueue.indexOf(job), 1);
       analysisQueue.unshift(job);
     }
-    // Keep the current fit and all ten upcoming fits, plus recent back-navigation.
+    // Keep the current and upcoming fits, plus recent fits for back navigation.
     cache.delete(k); cache.set(k, job);
     while (cache.size > FIT_CACHE_LIMIT) {
       const oldest = [...cache].find(([, entry]) => entry.state === "ready");
@@ -390,8 +410,9 @@
       const data = await analysis(item, queueLane, fitOptions, refresh);
       if (gen !== generation || closed) return;
       current = data; render(data); status(data.warning || "Ready to review."); updateControls();
-      for (const i of visible.slice(visible.indexOf(index) + 1, visible.indexOf(index) + 1 + LOOKAHEAD))
-        analysis(items[i], queueLane, fitOptions, false, true).catch(() => {});
+      for (const upcoming of upcomingItems())
+        analysis(upcoming, queueLane, fitOptions, false, true).catch(() => {});
+      updateCacheStatus();
     } catch (e) {
       if (gen !== generation || closed) return;
       if (e.status === 404) {
@@ -563,6 +584,7 @@
     error(""); status("Review data and in-memory credentials cleared. Credentials remain in the address bar; close the tab to hide them.");
     document.querySelectorAll("button,input,select,textarea").forEach((el) => el.disabled = true);
     $("submitting").textContent = "Session closed";
+    updateCacheStatus();
     plotShown = false; updateUploadStatus();
   }
   function openReport() {
@@ -581,6 +603,8 @@
   $("specid").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
   });
+  for (const field of ["drop", "cap", "odds", "extreme"])
+    $(field).addEventListener("input", updateCacheStatus);
   $("refit").onclick = () => { resetAnalysis(); show(index, true); };
   $("match-count").onchange = () => { if (current) render(current); };
   for (const name of ["first", "previous", "next", "last"]) $(name).onclick = () => navigate(name);

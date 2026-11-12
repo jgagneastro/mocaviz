@@ -22,15 +22,21 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=20261106-spectral-cnn">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261112-queue-cache">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261106-auto-flags"></script>
+  <script defer src="static/spherex_review.js?v=20261112-queue-cache"></script>
 </head>
 <body>
   <header>
     <div><span class="eyebrow">MOCAdb / SPHEREx</span><h1>Autotype & quality review</h1></div>
-    <div class="session"><span id="access">Connecting…</span><span id="submitting" aria-live="polite">0 results currently submitting to mocadb</span></div>
+    <div class="session">
+      <span id="access">Connecting…</span>
+      <div class="session-counts">
+        <span id="submitting" aria-live="polite">0 results currently submitting to mocadb</span>
+        <span id="cached-next">Cached 0 next spectra in queue</span>
+      </div>
+    </div>
   </header>
   <main>
     <aside>
@@ -83,7 +89,7 @@
         <div class="pair"><label>Drop worst N<input id="drop" type="number" min="0" max="100" value="5"></label><label>χ² sigma cap<input id="cap" type="number" min="0.1" max="100" value="5" step="0.1"></label></div>
         <div class="pair"><label>Non-field odds<input id="odds" type="number" min="1" max="1000000000" value="500"></label><label>Extreme odds<input id="extreme" type="number" min="1" max="1000000000000" value="500000"></label></div>
         <button id="refit">Refit [Alt+F]</button>
-        <p class="hint">After the displayed fit finishes, the next 10 objects fit one at a time in the background. Fits and figures stay in memory. No PNGs, sidecars, or server files are created.</p>
+        <p class="hint">After the displayed fit finishes, up to 50 upcoming spectra fit one at a time in the background. Fits and figures stay in memory. No PNGs, sidecars, or server files are created.</p>
       </section>
       <section id="write-settings">
         <h2>Database submission</h2>

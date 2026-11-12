@@ -6,7 +6,7 @@ const origin = process.argv[2] || 'http://127.0.0.1:8061';
 const browser = await chromium.launch({headless: true});
 const page = await browser.newPage();
 const fits = [], errors = [];
-let queueSize = 30, active = 0, maxActive = 0, closing = false, queueFilterVersion = 0;
+let queueSize = 65, active = 0, maxActive = 0, closing = false, queueFilterVersion = 0;
 page.on('pageerror', e => errors.push(e.message));
 await page.route('**/api/spherex-review/*', async route => {
   const body = route.request().postDataJSON();
@@ -52,6 +52,10 @@ async function target(oid) {
   await page.waitForFunction(oid => document.querySelector('#object-title').textContent.includes(String(oid)) &&
     !document.querySelector('#report').disabled, oid);
 }
+async function cached(count) {
+  await page.waitForFunction(count => document.querySelector('#cached-next').textContent ===
+    'Cached ' + count + ' next spectra in queue', count);
+}
 async function finish(fit, outcome = 'ok') {
   fit.release(outcome);
   await until(() => fit.done, 'Fit did not finish');
@@ -60,31 +64,40 @@ try {
   await page.goto(origin + '/spherex-autotype?mock=1');
   await page.waitForFunction(() => !document.querySelector('#load').disabled);
   assert.equal(fits.length, 0, 'Opening the page must not start fitting');
+  await cached(0);
   await page.locator('#load').click();
   const first = await nextFit(1001);
   assert.equal(fits.length, 1, 'Look-ahead must wait for the displayed fit');
   await finish(first); await target(1001);
-  for (let oid = 1002; oid <= 1011; oid++) await finish(await nextFit(oid));
+  const firstPrefetch = await nextFit(1002);
+  await cached(0);
+  await finish(firstPrefetch);
+  await nextFit(1003); await cached(1);
+  for (let oid = 1003; oid <= 1051; oid++) await finish(await nextFit(oid));
+  await cached(50);
   await page.waitForLoadState('networkidle');
-  assert.deepEqual(fits.map(f => f.body.moca_oid), Array.from({length: 11}, (_, i) => 1001 + i));
+  assert.deepEqual(fits.map(f => f.body.moca_oid), Array.from({length: 51}, (_, i) => 1001 + i));
   assert.equal(maxActive, 1, 'Fits must run sequentially');
 
-  // Keep a background fit running while rapidly navigating through the ten cached results.
+  // Keep a background fit running while rapidly navigating through the 50 cached results.
   await page.locator('#next').click(); await target(1002);
-  const twelfth = await nextFit(1012);
-  for (let oid = 1003; oid <= 1011; oid++) {
+  const pendingPrefetch = await nextFit(1052);
+  await cached(49);
+  for (let oid = 1003; oid <= 1051; oid++) {
     await page.keyboard.press('ArrowRight'); await target(oid);
   }
-  assert.equal(fits.length, 12, 'Cached navigation must not refit or overlap the running fit');
-  await finish(twelfth);
-  const thirteenth = await nextFit(1013);
+  await cached(0);
+  assert.equal(fits.length, 52, 'Cached navigation must not refit or overlap the running fit');
+  await finish(pendingPrefetch);
+  const nextPrefetch = await nextFit(1053);
   await page.keyboard.press('End');
-  await page.waitForFunction(() => document.querySelector('#object-title').textContent.includes('1030'));
-  assert.equal(fits.length, 13);
-  await finish(thirteenth);
-  await finish(await nextFit(1030)); await target(1030);
+  await page.waitForFunction(() => document.querySelector('#object-title').textContent.includes('1065'));
+  assert.equal(fits.length, 53);
+  await finish(nextPrefetch);
+  await finish(await nextFit(1065)); await target(1065);
+  await cached(0);
   await page.waitForLoadState('networkidle');
-  assert.deepEqual(fits.slice(12).map(f => f.body.moca_oid), [1013, 1030],
+  assert.deepEqual(fits.slice(52).map(f => f.body.moca_oid), [1053, 1065],
     'A jump must discard obsolete look-ahead and prioritize the displayed object');
 
   // Refitting invalidates results/options and queues the selected target after any running fit.
@@ -93,6 +106,7 @@ try {
   await page.locator('#load').click(); await finish(await nextFit(1001, start)); await target(1001);
   const oldBackground = await nextFit(1002, start);
   await page.locator('#drop').fill('7');
+  await cached(0);
   await page.locator('#refit').click();
   await finish(oldBackground);
   const refit = await nextFit(1001, start + 2);
@@ -111,6 +125,7 @@ try {
   await finish(await nextFit(1002, start), 'fail');
   await finish(await nextFit(1003, start)); await finish(await nextFit(1004, start));
   await page.waitForLoadState('networkidle');
+  await cached(2);
   assert(await page.locator('#errors').isHidden(), 'Speculative errors must not replace the displayed result');
   await page.locator('#next').click();
   await finish(await nextFit(1002, start + 4)); await target(1002);
@@ -138,8 +153,9 @@ try {
   await page.waitForLoadState('networkidle');
   assert.equal(fits.length, start + 2);
   assert.equal(await page.locator('#object-title').textContent(), 'Review session closed');
+  await cached(0);
   assert.equal(maxActive, 1); assert.deepEqual(errors, []);
-  console.log('Passed: sequential ten-object look-ahead, cached rapid navigation, jump priority, refit/options, failed-fit retry, lane reload and quit; no database writes.');
+  console.log('Passed: sequential 50-spectrum prefetch, ready cache counter, cached rapid navigation, jump priority, refit/options, failed-fit retry, lane reload and quit; no database writes.');
 } finally {
   closing = true;
   for (const fit of fits) fit.release('ok');
