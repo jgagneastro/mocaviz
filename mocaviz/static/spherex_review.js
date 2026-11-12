@@ -131,7 +131,7 @@
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
     for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
-      "sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
+      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
@@ -145,7 +145,7 @@
     $("sublime2-cuts-hint").textContent = sublime2Cuts ?
       "SUBLIME2 detection cut applies to All objects and SUBLIME2." :
       "SUBLIME2 detection cut is not applied to this sample.";
-    $("sublime2-snr").disabled ||= !sublime2Cuts;
+    for (const field of ["sublime2-snr", "max-sublime2-snr"]) $(field).disabled ||= !sublime2Cuts;
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
     if (current?.read_only) $("write-enabled").checked = false;
@@ -218,6 +218,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.max_snr != null || request.max_sublime2_snr != null) return 12;
     if (request.cnn_priority_source === "combined" && ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 11;
     if (request.min_spectral_cnn_probability != null || ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 10;
     if (request.adopted_spt_source || request.adopted_spt_moca_pids?.length) return 9;
@@ -234,7 +235,9 @@
     const label = $("queue-total");
     label.textContent = "Counting all matches…";
     try {
-      const {total} = await api("queue-count", request);
+      const {total, queue_filter_version} = await api("queue-count", request);
+      if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
+        throw new Error("The review service needs to be restarted to count these S/N filters.");
       if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + " total matches at load";
     } catch {
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
@@ -264,6 +267,7 @@
     try {
       if (!more) {
         const specid = $("specid").value.trim();
+        const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
         const request = specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
@@ -273,12 +277,14 @@
             min_spectral_cnn_probability: $("spectral-cnn-probability").value || null,
             adopted_spt_source: $("adopted-spt-source").value,
             adopted_spt_moca_pids: [...new Set($("adopted-spt-moca-pids").value.trim().split(/[\s,;]+/).filter(Boolean))],
-            min_sublime2_snr: ["all", "sublime2"].includes($("review-sample").value) ? $("sublime2-snr").value || null : null,
+            min_sublime2_snr: sublime2Cuts ? $("sublime2-snr").value || null : null,
+            max_sublime2_snr: sublime2Cuts ? $("max-sublime2-snr").value || null : null,
             min_cnn_probability: $("cnn-probability").value || null,
             min_abs_galactic_latitude: $("galactic-latitude").value || null,
             max_reduced_chi2: $("max-chi2").value || null,
             snr_wavelength_range: $("snr-wavelength-range").value,
-            min_snr: $("snr").value || null, min_sptn: $("sptn").value || null,
+            min_snr: $("snr").value || null, max_snr: $("max-snr").value || null,
+            min_sptn: $("sptn").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
@@ -646,6 +652,7 @@
     for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
       min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
       max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range",
+      max_snr: "max-snr", max_sublime2_snr: "max-sublime2-snr",
       adopted_spt_moca_pids: "adopted-spt-moca-pids"})) {
       if (params.has(param)) $(id).value = params.get(param);
     }

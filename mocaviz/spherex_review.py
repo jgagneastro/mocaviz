@@ -73,7 +73,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 11
+QUEUE_FILTER_VERSION = 12
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime2": "pcat_sublime_candidates_v2",
@@ -428,6 +428,15 @@ def priority_after_sql(cursor):
     return sql, values
 
 
+def snr_bounds(body, name, label):
+    lower, upper = (body.get(f"{bound}_{name}") for bound in ("min", "max"))
+    lower = bounded_float(lower, f"Minimum {label}", 0, 1e9) if lower not in (None, "") else None
+    upper = bounded_float(upper, f"Maximum {label}", 0, 1e9) if upper not in (None, "") else None
+    if lower is not None and upper is not None and lower > upper:
+        raise ReviewError(f"Maximum {label} must be at least the minimum.")
+    return lower, upper
+
+
 def queue(cur, body, *, count_only=False):
     source = body.get("adopted_spt_source", "private")
     adopted_column = adopted_spt_column(source)
@@ -564,13 +573,16 @@ def queue(cur, body, *, count_only=False):
             raise ReviewError("Clear the minimum WiseView score to select objects without scores.")
         conditions.append("NOT EXISTS (SELECT 1 FROM pcat_wiseview_visual_vetting motion WHERE motion.moca_oid=s.moca_oid AND motion.classification_integer IS NOT NULL)")
     detection_conditions, detection_params = [], []
-    for name, column, label, upper in (
-        ("min_sublime2_snr", "detection_snr", "Minimum SUBLIME2 detection S/N", 1e9),
-        ("min_cnn_probability", "visual_nn_good_probability", "Minimum SUBLIME2 CNN probability", 1),
-    ):
-        if body.get(name) not in (None, ""):
-            detection_conditions.append(f"detection.{column}>=%s")
-            detection_params.append(bounded_float(body[name], label, 0, upper))
+    min_detection, max_detection = snr_bounds(body, "sublime2_snr", "SUBLIME2 detection S/N")
+    if min_detection is not None:
+        detection_conditions.append("detection.detection_snr>=%s")
+        detection_params.append(min_detection)
+    if max_detection is not None:
+        detection_conditions.append("detection.detection_snr<=%s")
+        detection_params.append(max_detection)
+    if body.get("min_cnn_probability") not in (None, ""):
+        detection_conditions.append("detection.visual_nn_good_probability>=%s")
+        detection_params.append(bounded_float(body["min_cnn_probability"], "Minimum SUBLIME2 CNN probability", 0, 1))
     # These catalogs have no moca_oid index. Materialize DISTINCT object IDs
     # once, rather than rescanning the catalog in a dependent EXISTS per spectrum.
     catalogs = []
@@ -604,9 +616,7 @@ def queue(cur, body, *, count_only=False):
     band = body.get("snr_wavelength_range", "all")
     if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
         raise ReviewError("Choose a valid spectrum S/N wavelength range.")
-    min_snr = None
-    if body.get("min_snr") not in (None, ""):
-        min_snr = bounded_float(body["min_snr"], "Minimum spectrum median S/N", 0, 1e9)
+    min_snr, max_snr = snr_bounds(body, "snr", "spectrum median S/N")
     adopted_conditions = []
     if body.get("min_sptn") not in (None, ""):
         adopted_conditions.append("d.spectral_type_number>=%s")
@@ -641,7 +651,7 @@ def queue(cur, body, *, count_only=False):
     """
     params = [*source_params, *params]
     projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
-    if min_snr is not None or rank_pixels:
+    if min_snr is not None or max_snr is not None or rank_pixels:
         from . import spherex_queue_metrics as metrics
         # Finish catalog/quality selection before touching pixels. Keeping these
         # as separate read-only statements prevents derived-CTE expansion and
@@ -657,9 +667,9 @@ def queue(cur, body, *, count_only=False):
         wavelength_range = SNR_WAVELENGTH_RANGES[band]
         if count_only:
             eligible = metrics.passing_snr(cur, [row['moca_specid'] for row in candidates],
-                min_snr, wavelength_range, rows)
+                min_snr, wavelength_range, rows, maximum=max_snr)
             return {"total": len(eligible)}
-        records = metrics.page(cur, candidates, minimum=min_snr, wavelength_range=wavelength_range,
+        records = metrics.page(cur, candidates, minimum=min_snr, maximum=max_snr, wavelength_range=wavelength_range,
             order=order, cursor=priority_cursor, limit=limit, read=rows)
         if records:
             ids = [row['moca_specid'] for row in records]
@@ -1033,7 +1043,7 @@ def api(operation):
                     result = submit(conn, cur, auth, body)
                 else:
                     result = undo(conn, cur, auth, body)
-        if operation in {"context", "queue"}:
+        if operation in {"context", "queue", "queue-count"}:
             result["queue_filter_version"] = QUEUE_FILTER_VERSION
         if operation == "context":
             result["write_policy_version"] = WRITE_POLICY_VERSION

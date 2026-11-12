@@ -5,7 +5,7 @@ const origin=process.argv[2] || 'http://127.0.0.1:8079';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const requests=[],errors=[];
-let contextVersion=11,queueVersion=11,contextGate=null;
+let contextVersion=12,queueVersion=12,contextGate=null;
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
@@ -123,11 +123,16 @@ try{
   await page.locator('#cnn-priority-source').selectOption('sublime2');
   await page.locator('#wiseview-score').fill('4');
   await page.locator('#no-wiseview-score').check();assert(await page.locator('#wiseview-score').isDisabled());
-  await page.locator('#snr-wavelength-range').selectOption('2.5-4');await load();
+  await page.locator('#snr-wavelength-range').selectOption('2.5-4');
+  await page.locator('#max-snr').fill('8');
+  await page.locator('#max-sublime2-snr').fill('12');
+  await load();
   assert.equal(last('queue').no_wiseview_score,true);assert.equal(last('queue').min_wiseview_score,null);
   assert.equal(last('queue').snr_wavelength_range,'2.5-4');
   await page.waitForFunction(()=>document.querySelector('#queue-total').textContent==='6 total matches at load');
   const loaded=last('queue');assert.equal(loaded.cnn_priority_source,'sublime2');
+  assert.equal(loaded.max_snr,'8');assert.equal(loaded.max_sublime2_snr,'12');
+  assert.equal(last('queue-count').max_snr,'8');assert.equal(last('queue-count').max_sublime2_snr,'12');
   await page.locator('#queue-order').selectOption('oid_desc');
   await page.locator('#snr-wavelength-range').selectOption('4-5');
   await page.locator('#adopted-spt-source').selectOption('public');
@@ -141,9 +146,9 @@ try{
   for(const order of ['spt_asc','oid_asc','oid_desc']){
     await page.locator('#queue-order').selectOption(order);await load();assert.equal(last('queue').queue_order,order);
   }
-  for(const id of ['sublime2-snr','cnn-probability','spectral-cnn-probability','galactic-latitude','snr','max-chi2'])await page.locator('#'+id).fill('');
+  for(const id of ['sublime2-snr','cnn-probability','spectral-cnn-probability','galactic-latitude','snr','max-snr','max-sublime2-snr','max-chi2'])await page.locator('#'+id).fill('');
   await page.locator('#exclude-duplicates').uncheck();await load();
-  for(const key of ['min_sublime2_snr','min_cnn_probability','min_spectral_cnn_probability','min_abs_galactic_latitude','min_snr','max_reduced_chi2'])assert.equal(last('queue')[key],null);
+  for(const key of ['min_sublime2_snr','min_cnn_probability','min_spectral_cnn_probability','min_abs_galactic_latitude','min_snr','max_snr','max_sublime2_snr','max_reduced_chi2'])assert.equal(last('queue')[key],null);
   assert.equal(last('queue').exclude_duplicates,false);
   // Old workers must never silently ignore new default cuts or sorting.
   for(const stale of ['context','queue']){
@@ -153,6 +158,16 @@ try{
     await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));
     assert(!requests.slice(before).some(r=>r.op==='analyze'));
   }
+  // Workers with the previous filter version must reject new maximum cuts.
+  contextVersion=11;queueVersion=11;
+  await page.goto(url+'&max_snr=8&max_sublime2_snr=12');
+  await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+  assert.equal(await page.locator('#max-snr').inputValue(),'8');
+  assert.equal(await page.locator('#max-sublime2-snr').inputValue(),'12');
+  const beforeMax=requests.length;await page.locator('#load').click();
+  await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));
+  assert.equal(requests.length,beforeMax);
+  contextVersion=12;queueVersion=12;
   // Exact-spectrum requests continue to bypass every queue filter.
   await page.goto(url+'&specid=2860761');await load();
   assert.deepEqual(last('queue'),{moca_specid:2860761,adopted_spt_source:'private',after:0,mock:true});

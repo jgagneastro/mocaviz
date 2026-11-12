@@ -32,6 +32,12 @@ class PixelMetricsTests(unittest.TestCase):
                 expected={oid for oid,snr in values.items() if statistics.median(snr)>=threshold}
                 actual=metrics.passing_snr(None,list(values),threshold,None,self.read)
                 self.assertEqual(actual,expected)
+        for lower, upper in ((None, 0), (None, 2), (2, 2), (2, 7.5), (15, 30)):
+            with self.subTest(lower=lower, upper=upper), patch.object(metrics, 'PIXEL_BATCH', 13):
+                expected = {oid for oid, snr in values.items() if statistics.median(snr) <= upper
+                            and (lower is None or statistics.median(snr) >= lower)}
+                actual = metrics.passing_snr(None, list(values), lower, None, self.read, maximum=upper)
+                self.assertEqual(actual, expected)
         self.assertTrue(all('ROW_NUMBER' not in sql for sql,_ in self.calls))
 
     def test_page_reads_only_needed_coarse_groups_and_advances_past_cursor(self):

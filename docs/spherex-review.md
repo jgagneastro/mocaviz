@@ -71,9 +71,12 @@ these spectra and continues to verify package membership on submission and undo.
 
 Existing legacy spherex_sublimeap_autotype rows remain supported. The queue selects
 the newest spectrum in the chosen lane for each active object. It supports
-explicit object IDs, minimum S/N, minimum **adopted** spectral-type number, adopted-type publication IDs, missing
+explicit object IDs, minimum and maximum S/N, minimum **adopted** spectral-type number, adopted-type publication IDs, missing
 spectral-vetting scope, a minimum WiseView motion score, and exclusion of already
-known nonphotometric M/L/T/Y spectral types.
+known nonphotometric M/L/T/Y spectral types. Spectrum S/N bounds use the median
+per-pixel S/N over the selected wavelengths. SUBLIME2 detection S/N bounds use
+the catalog detection for All objects and SUBLIME2. Both maximum fields are
+optional and inclusive. The URL parameters are `max_snr` and `max_sublime2_snr`.
 
 **Missing spectral vetting** defaults to the selected reduction lane on the
 review page, and to **No restriction** on the autotype page. Other choices are

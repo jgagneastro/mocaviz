@@ -256,6 +256,22 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual([row["moca_oid"] for row in second["items"]],[6,11])
         self.assertEqual(self.oids("either",4,min_snr=15),[13])
 
+    def test_maximum_snr_uses_selected_pixels_and_the_same_queue_and_count_filters(self):
+        self.db.execute("INSERT INTO data_spectra VALUES(1001,30000,4,1,0)")
+        self.db.execute("INSERT INTO data_spectra VALUES(1002,30000,5,1,0)")
+        self.db.execute("INSERT INTO data_spectra VALUES(1003,30000,6,1,0)")
+        self.db.execute("CREATE TABLE pcat_sublime_candidates_v2(moca_oid INTEGER,detection_snr REAL)")
+        self.db.executemany("INSERT INTO pcat_sublime_candidates_v2 VALUES(?,?)",
+                            [(1, 12), (2, 7), (2, 14), (3, 10), (6, 8)])
+        body = {"lane": "spiffstacker", "missing_vetting": "either", "min_snr": 4,
+                "max_snr": 5, "snr_wavelength_range": "2.5-4"}
+        self.assertEqual([row["moca_oid"] for row in review.queue(self.cur, body)["items"]], [1, 2])
+        bounds = {**body, "min_sublime2_snr": 8, "max_sublime2_snr": 12}
+        self.assertEqual([row["moca_oid"] for row in review.queue(self.cur, bounds)["items"]], [1])
+        self.assertEqual(review.queue(self.cur, bounds, count_only=True), {"total": 1})
+        with self.assertRaisesRegex(review.ReviewError, "Maximum spectrum median S/N"):
+            review.queue(self.cur, {**body, "max_snr": 3})
+
     def test_viable_elsewhere_uses_either_other_lane_and_excludes_current_reviews(self):
         self.db.executemany("INSERT INTO moca_spectra VALUES(?,?,76,0,10)",
                             [(3000 + oid, oid) for oid in range(1, 14)])

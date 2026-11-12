@@ -14,9 +14,25 @@ def chunks(values):
         yield values[start:start + PIXEL_BATCH]
 
 
-def passing_snr(cur, specids, minimum, wavelength_range, read):
-    if minimum is None:
+def passing_snr(cur, specids, minimum, wavelength_range, read, *, maximum=None):
+    if minimum is None and maximum is None:
         return set(specids)
+
+    snr = 'd.flux_flambda/d.flux_flambda_unc'
+    cuts, thresholds = [], []
+    for threshold, passing_op, failing_op, passing_edge, failing_edge in (
+        (minimum, '>=', '<', 'MIN', 'MAX'),
+        (maximum, '<=', '>', 'MAX', 'MIN'),
+    ):
+        if threshold is None:
+            continue
+        matching = f'SUM(CASE WHEN {snr}{passing_op}%s THEN 1 ELSE 0 END)'
+        # On an even split, average the closest sample on each side.
+        cuts.append(f"""(2*{matching}>COUNT(*) OR (2*{matching}=COUNT(*) AND
+            ({passing_edge}(CASE WHEN {snr}{passing_op}%s THEN {snr} END)+
+             {failing_edge}(CASE WHEN {snr}{failing_op}%s THEN {snr} END))/2.0{passing_op}%s))""")
+        thresholds.extend([threshold] * 5)
+
     passing = set()
     for batch in chunks(specids):
         conditions = ['d.moca_specid IN ('+','.join(['%s']*len(batch))+')',
@@ -27,16 +43,10 @@ def passing_snr(cur, specids, minimum, wavelength_range, read):
             low, high = wavelength_range
             conditions.append('d.wavelength_angstrom BETWEEN %s AND %s')
             params.extend((low*10000, high*10000))
-        snr = 'd.flux_flambda/d.flux_flambda_unc'
-        above = f'SUM(CASE WHEN {snr}>=%s THEN 1 ELSE 0 END)'
-        # On an even split the upper/lower central samples are respectively
-        # MIN(above) and MAX(below). Their average is the exact even median.
         sql = f"""SELECT d.moca_specid FROM data_spectra d
             WHERE {' AND '.join(conditions)} GROUP BY d.moca_specid
-            HAVING 2*{above}>COUNT(*) OR (2*{above}=COUNT(*) AND
-              (MAX(CASE WHEN {snr}<%s THEN {snr} END)+
-               MIN(CASE WHEN {snr}>=%s THEN {snr} END))/2.0>=%s)"""
-        passing.update(row['moca_specid'] for row in read(cur,sql,tuple([*params,*([minimum]*5)])))
+            HAVING {' AND '.join(cuts)}"""
+        passing.update(row['moca_specid'] for row in read(cur, sql, (*params, *thresholds)))
     return passing
 
 
@@ -68,7 +78,7 @@ def priority_key(row, galactic):
     return coarse_key(row,galactic) + (snr is None, -snr if snr is not None else 0, row['moca_oid'])
 
 
-def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read):
+def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read, maximum=None):
     priority = order in ('cnn_spt_snr','gal_cnn_spt_snr')
     galactic = order == 'gal_cnn_spt_snr'
     after_key = None
@@ -92,7 +102,7 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
     selected=[]
     for group in groups:
         ids=[row['moca_specid'] for row in group]
-        eligible=passing_snr(cur,ids,minimum,wavelength_range,read)
+        eligible=passing_snr(cur,ids,minimum,wavelength_range,read,maximum=maximum)
         group=[row for row in group if row['moca_specid'] in eligible]
         snr=ordering_snr(cur,[row['moca_specid'] for row in group],read) if priority else {}
         for row in group:row['sort_snr_1_2']=snr.get(row['moca_specid'])
