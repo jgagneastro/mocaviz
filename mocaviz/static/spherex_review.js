@@ -559,7 +559,12 @@
       history.pop(); job.state = "undone"; job.undoReceipt = null; hidden.delete(key(job.item, job.lane));
       if (queueLane !== job.lane) { queueLane = job.lane; $("lane").value = job.lane; items = [job.item]; hasMore = false; }
       else if (!items.some((i) => key(i) === key(job.item))) items.push(job.item);
-      resetAnalysis(); await show(items.findIndex((i) => key(i) === key(job.item)), true); status("Last decision undone.");
+      // Undo can change pixels and adopted-type metadata for this object.
+      for (const [fitKey, fit] of cache) {
+        if (Number(fit.item.moca_oid) === Number(job.item.moca_oid)) cache.delete(fitKey);
+      }
+      await show(items.findIndex((i) => key(i) === key(job.item)));
+      status("Last decision undone.");
     } catch (e) { if (!closed) error(e.message); }
     finally { busyUndo = false; if (!closed) updateControls(); }
   }

@@ -117,8 +117,9 @@ the submission status shows how many of those fits are ready. Advancing reuses
 the ready fits and prefetches more. Navigation takes priority
 over queued background work; a fit already running finishes before the newly
 selected target starts. Cached fits include the reduction lane, exact spectrum
-ID, adopted SPT source and fitting options. Reload, Refit, Undo and Quit discard queued work and
-stale results. Up to 64 fits stay in this tab's memory for forward/back navigation;
+ID, adopted SPT source and fitting options. Reload, Refit and Quit clear cached
+fits. Undo refreshes the restored object and retains completed fits for other
+objects. Up to 64 fits stay in this tab's memory for forward/back navigation;
 background fitting never submits classifications or spectral types.
 
 Fits use database moca_spherex_templates/data_spherex_templates and

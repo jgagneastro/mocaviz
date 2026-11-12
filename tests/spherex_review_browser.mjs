@@ -237,8 +237,13 @@ try {
   await title("1002"); await pending(1);
   assert.equal(submissions, 1);
   await pending(0);
+  const readsBeforeUndo = apiRequests.length;
   await page.keyboard.press("Backspace");
   await title("1001"); assert.equal(undos, 1);
+  await page.waitForLoadState("networkidle");
+  const undoFits = apiRequests.slice(readsBeforeUndo).filter(r => r.op === "analyze");
+  assert.deepEqual(undoFits.map(r => r.body.moca_oid), [1001], "Undo should refit only the restored object");
+  assert.equal(await page.locator("#cached-next").textContent(), "Cached 5 next spectra in queue");
   // NumLock-independent keypad binding.
   submitMode = "fail";
   await page.locator("#object-title").click();
