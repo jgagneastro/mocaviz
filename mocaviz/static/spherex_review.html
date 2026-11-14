@@ -78,6 +78,10 @@
         <label>Stored autotype reduced χ² ≤<input id="max-chi2" title="Latest stored fit for this spectrum; prefers robust 10% capped reduced chi squared, then capped, then raw." type="number" min="0" step="any" value="1.5" placeholder="Any"></label>
         <small>Spectrum cuts use the selected reduction lane. Blank = no cut; missing values fail enabled cuts.</small>
         <label><span tabindex="0" title="Uses the selected private- or public-adopted spectral type, excluding ignored rows.">Adopted type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
+        <small>The adopted type is stored for the object; it can differ from this spectrum's current fit.</small>
+        <label>Current fitted type ≥<input id="current-fit-sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
+        <small>Checked against the best fit shown in the plot, using the current template-fit settings. Earlier or unavailable fits are skipped without saving a vetting. Blank allows all. Direct spectrum-ID loads bypass queue cuts.</small>
+        <small id="fit-filter-info" role="status"></small>
         <label>Adopted-type moca_pid(s)<textarea id="adopted-spt-moca-pids" rows="2" placeholder="e.g. Ref2020, Ref2025"></textarea></label>
         <small>Match any listed publication ID on the selected adopted SPT. Separate values with commas, spaces or new lines; blank allows all.</small>
         <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">Either spectrum missing (OR)</option><option value="both">Both spectra missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>

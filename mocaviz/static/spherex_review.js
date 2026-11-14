@@ -6,6 +6,7 @@
   const params = new URLSearchParams(location.search);
   const demo = params.get("mock") === "1";
   const base = new URL("./", location.href);
+  const fitHidden = new Set();
   const cache = new Map(), controllers = new Set(), jobs = [], history = [], hidden = new Set();
   let items = [], index = -1, current = null, context = null, generation = 0;
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
@@ -129,11 +130,12 @@
     $("submitting").textContent = pending + " results currently submitting to mocadb" +
       (failed ? " · " + failed + " awaiting retry" : "");
     updateCacheStatus();
+    $("fit-filter-info").textContent = fitHidden.size ? fitHidden.size + " spectra skipped by current-fit type cut; no vetting saved" : "";
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
     for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
-      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "no-known", "exclude-duplicates", "oids"])
+      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
@@ -240,12 +242,13 @@
       const {total, queue_filter_version} = await api("queue-count", request);
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
-      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + " total matches at load";
+      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + (request.min_current_fit_sptn != null ? " database matches before current-fit cut" : " total matches at load");
     } catch {
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
     }
   }
   let otherSampleVetting = $("missing-vetting").value, previousSample = $("review-sample").value;
+  let otherSampleFitMinimum = $("current-fit-sptn").value;
   let otherSampleSptSource = $("adopted-spt-source").value;
   $("review-sample").addEventListener("change", () => {
     const vetting = $("missing-vetting");
@@ -259,12 +262,16 @@
       $("adopted-spt-source").value = otherSampleSptSource;
     }
     if ($("review-sample").value === "sublime3c" && previousSample !== "sublime3c") {
+      otherSampleFitMinimum = $("current-fit-sptn").value;
+      $("current-fit-sptn").value = "10";
       $("lane").value = "sublimeaperture";
       $("adopted-spt-source").value = "private";
       $("queue-order").value = "oid_asc";
       for (const id of ["snr", "max-snr", "max-chi2", "sptn", "galactic-latitude", "cnn-probability", "spectral-cnn-probability"])
         $(id).value = "";
     }
+    if (previousSample === "sublime3c" && $("review-sample").value !== "sublime3c")
+      $("current-fit-sptn").value = otherSampleFitMinimum;
     previousSample = $("review-sample").value;
     updateControls();
   });
@@ -294,13 +301,17 @@
             snr_wavelength_range: $("snr-wavelength-range").value,
             min_snr: $("snr").value || null, max_snr: $("max-snr").value || null,
             min_sptn: $("sptn").value || null,
+            min_current_fit_sptn: $("current-fit-sptn").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
+        if (request.min_current_fit_sptn != null && (!Number.isFinite(Number(request.min_current_fit_sptn)) ||
+            Number(request.min_current_fit_sptn) < -60 || Number(request.min_current_fit_sptn) > 40))
+          throw new Error("Current fitted type must be a number from -60 to 40.");
         queueLane = $("lane").value;
         queueRequest = request; autoNextAttempt = null;
-        hidden.clear();
+        hidden.clear(); fitHidden.clear();
         for (const job of jobs) {
           if (job.state === "failed") hidden.add(key(job.item, job.lane));
         }
@@ -348,12 +359,12 @@
     } }
     finally { loading = false; if (!closed) updateControls(); }
   }
-  function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i]))); }
+  function visibleIndices() { return items.map((_, i) => i).filter((i) => !hidden.has(key(items[i])) && !fitHidden.has(key(items[i]))); }
   function upcomingItems() {
     if (index < 0) return [];
     const upcoming = [];
     for (let i = index + 1; i < items.length && upcoming.length < LOOKAHEAD; i++) {
-      if (!hidden.has(key(items[i]))) upcoming.push(items[i]);
+      if (!hidden.has(key(items[i])) && !fitHidden.has(key(items[i]))) upcoming.push(items[i]);
     }
     return upcoming;
   }
@@ -404,6 +415,7 @@
   }
   async function show(nextIndex, refresh = false) {
     if (closed) return;
+    if (refresh) fitHidden.clear();
     const gen = ++generation;
     cancelQueuedAnalysis();
     const fitOptions = options();
@@ -428,6 +440,15 @@
     try {
       const data = await analysis(item, queueLane, fitOptions, refresh);
       if (gen !== generation || closed) return;
+      const minimum = queueRequest.min_current_fit_sptn;
+      const fittedType = data.fit?.best?.spectral_type_number;
+      if (minimum != null && minimum !== "" &&
+          (typeof fittedType !== "number" || !Number.isFinite(fittedType) || fittedType < Number(minimum))) {
+        fitHidden.add(key(item));
+        clearFit(); updateControls();
+        await show(index + 1);
+        return;
+      }
       current = data; render(data); status(data.warning || "Ready to review."); updateControls();
       for (const upcoming of upcomingItems())
         analysis(upcoming, queueLane, fitOptions, false, true).catch(() => {});
@@ -458,7 +479,8 @@
     const name = obj.designation || "Object " + obj.moca_oid;
     const type = obj.adopted_spectral_type, reference = obj.adopted_spectral_type_reference;
     const typeLabel = obj.adopted_spt_source === "public" ? "Public-adopted" : "Adopted";
-    $("object-title").textContent = name + (type ? ` · ${typeLabel} ${type}${reference ? ` (${reference})` : ""}` : "");
+    const fittedLabel = fit?.best?.display_type || fit?.best?.spectral_type;
+    $("object-title").textContent = name + (fittedLabel ? ` · Current fit ${fittedLabel}` : "") + (type ? ` · ${typeLabel} ${type}${reference ? ` (${reference})` : ""}` : "");
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
@@ -673,6 +695,8 @@
     if (params.has("batch_size")) $("batch-size").value = params.get("batch_size");
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
+    $("current-fit-sptn").value = params.has("min_current_fit_sptn") ? params.get("min_current_fit_sptn") :
+      params.get("review_sample") === "sublime3c" ? "10" : "";
     for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
       min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
       max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range",
