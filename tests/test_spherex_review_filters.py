@@ -442,4 +442,10 @@ class FilterSelectionTests(unittest.TestCase):
                 with self.assertRaises(sr.ReviewError):sr.queue(cur,cuts)
                 cur.execute.assert_not_called()
 
+    def test_sublime3c_sample_does_not_require_sublime2_membership(self):
+        self.db.execute('CREATE TABLE pcat_sublime_candidates_v3c(moca_oid INTEGER)')
+        self.db.execute('INSERT INTO pcat_sublime_candidates_v3c VALUES(2)')
+        self.db.execute('DELETE FROM pcat_sublime_candidates_v2 WHERE moca_oid=2')
+        self.assertEqual(self.oids(review_sample='sublime3c'), [2])
+
 if __name__=='__main__':unittest.main()

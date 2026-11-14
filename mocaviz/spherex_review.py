@@ -73,9 +73,10 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 12
+QUEUE_FILTER_VERSION = 13
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
+    "sublime3c": "pcat_sublime_candidates_v3c",
     "sublime2": "pcat_sublime_candidates_v2",
     "sublime1": "pcat_sublime_candidates",
     "catwiseredmovers": "pcat_catwise2020_red_movers",

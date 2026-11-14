@@ -258,6 +258,13 @@
       vetting.value = otherSampleVetting;
       $("adopted-spt-source").value = otherSampleSptSource;
     }
+    if ($("review-sample").value === "sublime3c" && previousSample !== "sublime3c") {
+      $("lane").value = "sublimeaperture";
+      $("adopted-spt-source").value = "private";
+      $("queue-order").value = "oid_asc";
+      for (const id of ["snr", "max-snr", "max-chi2", "sptn", "galactic-latitude", "cnn-probability", "spectral-cnn-probability"])
+        $(id).value = "";
+    }
     previousSample = $("review-sample").value;
     updateControls();
   });
