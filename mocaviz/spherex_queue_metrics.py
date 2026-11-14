@@ -5,8 +5,12 @@ threshold, except for an even split, where the two central values decide it.
 The 1–2 µm ordering median is computed only within needed coarse-priority groups.
 """
 from itertools import groupby
+from math import floor
 
 PIXEL_BATCH = 4000
+SNR_BIN_ORDER = "gal_cnn_snr_bin_spt"
+GALACTIC_ORDERS = {"gal_cnn_spt_snr", SNR_BIN_ORDER}
+PRIORITY_ORDERS = GALACTIC_ORDERS | {"cnn_spt_snr"}
 
 
 def chunks(values):
@@ -67,30 +71,42 @@ def ordering_snr(cur, specids, read):
     return result
 
 
-def coarse_key(row, galactic):
-    subtype = row['sort_subtype']
-    return ((row['sort_galactic_bin'],) if galactic else ()) + (
-        row['sort_cnn_bin'], subtype is None, -subtype if subtype is not None else 0)
+def descending(value):
+    return value is None, -value if value is not None else 0
 
 
-def priority_key(row, galactic):
+def coarse_key(row, galactic, snr_first):
+    key = ((row['sort_galactic_bin'],) if galactic else ()) + (row['sort_cnn_bin'],)
+    return key if snr_first else key + descending(row['sort_subtype'])
+
+
+def priority_key(row, galactic, snr_first):
     snr = row.get('sort_snr_1_2')
-    return coarse_key(row,galactic) + (snr is None, -snr if snr is not None else 0, row['moca_oid'])
+    key = coarse_key(row, galactic, snr_first)
+    if snr_first:
+        # A signed median in [n, n+1) belongs to bin n. Rebuild the
+        # same bin from the cursor's median when paging.
+        key += descending(floor(snr) if snr is not None else None)
+        key += descending(row['sort_subtype'])
+    return key + descending(snr) + (row['moca_oid'],)
 
 
 def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read, maximum=None):
-    priority = order in ('cnn_spt_snr','gal_cnn_spt_snr')
-    galactic = order == 'gal_cnn_spt_snr'
+    priority = order in PRIORITY_ORDERS
+    galactic = order in GALACTIC_ORDERS
+    snr_first = order == SNR_BIN_ORDER
     after_key = None
     if priority:
         if cursor is not None:
             after = dict(moca_oid=cursor['moca_oid'],sort_cnn_bin=cursor['cnn_bin'],
                 sort_subtype=cursor['spectral_subtype'],sort_snr_1_2=cursor['snr_1_2'])
             if galactic: after['sort_galactic_bin']=cursor['galactic_bin']
-            after_key=priority_key(after,galactic)
-            candidates=[row for row in candidates if coarse_key(row,galactic)>=coarse_key(after,galactic)]
-        candidates.sort(key=lambda row:coarse_key(row,galactic))
-        groups=(list(group) for _,group in groupby(candidates,key=lambda row:coarse_key(row,galactic)))
+            after_key = priority_key(after, galactic, snr_first)
+            after_group = coarse_key(after, galactic, snr_first)
+            candidates = [row for row in candidates if coarse_key(row, galactic, snr_first) >= after_group]
+        group_key = lambda row: coarse_key(row, galactic, snr_first)
+        candidates.sort(key=group_key)
+        groups = (list(group) for _, group in groupby(candidates, key=group_key))
     else:
         if order.startswith('spt_'):
             direction = -1 if order=='spt_desc' else 1
@@ -107,8 +123,9 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
         snr=ordering_snr(cur,[row['moca_specid'] for row in group],read) if priority else {}
         for row in group:row['sort_snr_1_2']=snr.get(row['moca_specid'])
         if priority:
-            group.sort(key=lambda row:priority_key(row,galactic))
-            if after_key is not None:group=[row for row in group if priority_key(row,galactic)>after_key]
+            group.sort(key=lambda row: priority_key(row, galactic, snr_first))
+            if after_key is not None:
+                group = [row for row in group if priority_key(row, galactic, snr_first) > after_key]
         selected.extend(group[:limit+1-len(selected)])
         if len(selected)>limit:break
     return selected

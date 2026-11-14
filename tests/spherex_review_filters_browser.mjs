@@ -5,7 +5,7 @@ const origin=process.argv[2] || 'http://127.0.0.1:8079';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const requests=[],errors=[];
-let contextVersion=12,queueVersion=12,contextGate=null;
+let contextVersion=14,queueVersion=14,contextGate=null;
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
@@ -65,7 +65,7 @@ try{
   await load();
   assert.equal(await page.locator('#adopted-spt-source').inputValue(),'private');
   assert.match(await page.locator('#object-title').innerText(),/Adopted T8 \(PrivateT8\)/);
-  for(const [id,value] of Object.entries({'sublime2-snr':'7','cnn-probability':'0.8','galactic-latitude':'15',snr:'2','snr-wavelength-range':'all','max-chi2':'1.5','queue-order':'gal_cnn_spt_snr'}))
+  for(const [id,value] of Object.entries({'sublime2-snr':'7','cnn-probability':'0.8','galactic-latitude':'15',snr:'2','snr-wavelength-range':'all','max-chi2':'1.5','queue-order':'gal_cnn_snr_bin_spt'}))
     assert.equal(await page.locator('#'+id).inputValue(),value,id);
   assert(await page.locator('#exclude-duplicates').isChecked());
   const initial=last('queue');
@@ -73,7 +73,7 @@ try{
   assert.equal(initial.exclude_duplicates,true);assert.equal(initial.min_sublime2_snr,'7');
   assert.equal(initial.min_cnn_probability,'0.8');assert.equal(initial.min_abs_galactic_latitude,'15');
   assert.equal(initial.min_snr,'2');assert.equal(initial.max_reduced_chi2,'1.5');
-  assert.equal(initial.queue_order,'gal_cnn_spt_snr');
+  assert.equal(initial.queue_order,'gal_cnn_snr_bin_spt');
   await page.waitForFunction(()=>document.querySelector('#queue-total').textContent==='6 total matches at load');
   const {after,...cuts}=initial;assert.deepEqual(last('queue-count'),cuts);
   for(const sample of ['sublime2','catwiseredmovers','sublime1','public-ucd','all']){
@@ -152,15 +152,20 @@ try{
   assert.equal(last('queue').exclude_duplicates,false);
   // Old workers must never silently ignore new default cuts or sorting.
   for(const stale of ['context','queue']){
-    contextVersion=stale==='context'?10:11;queueVersion=stale==='queue'?10:11;
-    await page.goto(url);await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+    contextVersion=stale==='context'?13:14;queueVersion=stale==='queue'?13:14;
+    await page.goto(url+'&queue_order=gal_cnn_snr_bin_spt');
+    await page.waitForFunction(()=>!document.querySelector('#load').disabled);
     const before=requests.length;await page.locator('#load').click();
     await page.waitForFunction(()=>document.querySelector('#errors').textContent.includes('restarted'));
     assert(!requests.slice(before).some(r=>r.op==='analyze'));
   }
+  contextVersion=13;queueVersion=13;
+  await page.goto(url);await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+  assert.equal(await page.locator('#queue-order').inputValue(),'gal_cnn_spt_snr');
+  await load();assert.equal(last('queue').queue_order,'gal_cnn_spt_snr');
   // Workers with the previous filter version must reject new maximum cuts.
   contextVersion=11;queueVersion=11;
-  await page.goto(url+'&max_snr=8&max_sublime2_snr=12');
+  await page.goto(url+'&queue_order=gal_cnn_spt_snr&max_snr=8&max_sublime2_snr=12');
   await page.waitForFunction(()=>!document.querySelector('#load').disabled);
   assert.equal(await page.locator('#max-snr').inputValue(),'8');
   assert.equal(await page.locator('#max-sublime2-snr').inputValue(),'12');

@@ -26,6 +26,7 @@ import pymysql
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+from . import spherex_queue_metrics as metrics
 from .spherex_cnn_metadata import parse_comments, probability
 
 from .spherex_autotype_core import (
@@ -73,7 +74,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 13
+QUEUE_FILTER_VERSION = 14
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",
@@ -450,13 +451,14 @@ def queue(cur, body, *, count_only=False):
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
     order = body.get("queue_order", "oid_asc")
-    if not isinstance(order, str) or order not in {"gal_cnn_spt_snr", "cnn_spt_snr", "spt_desc", "spt_asc", "oid_asc", "oid_desc"}:
+    orders = metrics.PRIORITY_ORDERS | {"spt_desc", "spt_asc", "oid_asc", "oid_desc"}
+    if not isinstance(order, str) or order not in orders:
         raise ReviewError("Choose a valid queue order.")
     cnn_source = body.get("cnn_priority_source", "combined")
     if cnn_source not in ("combined", "spectral", "sublime2"):
         raise ReviewError("Choose combined, spectral or SUBLIME2 CNN priority.")
-    galactic_order = order == "gal_cnn_spt_snr"
-    priority_order = galactic_order or order == "cnn_spt_snr"
+    galactic_order = order in metrics.GALACTIC_ORDERS
+    priority_order = order in metrics.PRIORITY_ORDERS
     rank_pixels = priority_order and not count_only
     type_order = order.startswith("spt_") or priority_order
     after = None if count_only else body.get("after")
@@ -653,7 +655,6 @@ def queue(cur, body, *, count_only=False):
     params = [*source_params, *params]
     projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
     if min_snr is not None or max_snr is not None or rank_pixels:
-        from . import spherex_queue_metrics as metrics
         # Finish catalog/quality selection before touching pixels. Keeping these
         # as separate read-only statements prevents derived-CTE expansion and
         # repeated selection inside MariaDB's window-ranking query.

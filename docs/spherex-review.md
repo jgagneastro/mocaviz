@@ -315,27 +315,28 @@ version 9 prevents new pages from silently loading unfiltered results from old
 workers; restart the local service after deploying the Python update.
 
 
-Queue ordering defaults to `gal_cnn_spt_snr`: latitude bands take precedence
+Queue ordering defaults to `gal_cnn_snr_bin_spt`: latitude bands take precedence
 in the order |gb|>15, 10<|gb|<=15, |gb|<=10, then unavailable latitude. This
 uses calc_galactic_coordinates.adopt_as_reference=1; 15 degrees belongs to the
 middle band and 10 degrees to the low band. The minimum-latitude filter remains
 15 degrees by default; lower bands appear when it is lowered or cleared.
 Within each latitude band, first the selected CNN P(good)>=0.8 bin, then the
-below-0.8/unavailable bin. Within each CNN bin, the selected adopted types
-(private: adopted=1; public: public_adopted=1; both require ignored=0) are rounded to the nearest integer subtype and sorted
-latest-to-earliest; half subtypes round away from zero. Within each rounded
-subtype, sort by decreasing median signed flux/uncertainty over valid,
-non-ignored pixels at 1–2 microns (inclusive) in the selected reduction lane.
-This fixed sorting band is independent of the spectrum S/N filter's chosen band.
-Untyped objects sort last in each CNN bin; missing 1–2 micron S/N sorts last
-within a subtype. Object ID breaks remaining ties. CNN priority source defaults
+below-0.8/unavailable bin. Within each CNN bin, rank the one-unit bins of
+median signed flux/uncertainty from highest to lowest. Compute the median
+over valid, non-ignored pixels at 1–2 microns (inclusive) in the selected
+reduction lane. A value from n inclusive to n+1 exclusive belongs to bin n.
+The sorting band is independent of the spectrum S/N filter's chosen band.
+Within each S/N bin, round the selected adopted types to integer subtypes
+and sort latest-to-earliest. Half subtypes round away from zero. Missing S/N
+sorts last in its CNN bin, and missing types sort last in their S/N bin.
+Exact median S/N, then object ID, breaks remaining ties. CNN priority source defaults
 to the mean of the spectral autotype and highest valid SUBLIME2 catalog
 probabilities when both are available, otherwise the single available value.
 Zero is an available probability; when both are missing, use the lower-priority
 bin. The source can still be set to either CNN individually. The selected value
 is not used as a continuous rank inside a bin.
-The former `cnn_spt_snr` order, exact-type and object-ID
-ordering choices remain available.
+The previous type-first orders, exact-type orders, and object-ID orders remain available.
+The S/N-bin order requires queue filter version 14.
 
 The cursor carries the latitude bin, CNN bin, rounded subtype, median 1–2 micron S/N and
 object ID, rather than an offset, so classifying objects between batches does

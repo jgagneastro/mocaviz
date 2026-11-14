@@ -331,6 +331,25 @@ class FilterSelectionTests(unittest.TestCase):
                 result=self.queue(queue_order='gal_cnn_spt_snr',moca_oids=[1])
                 self.assertEqual(result['items'][0]['sort_galactic_bin'],rank)
 
+    def test_snr_bins_precede_type_and_page_within_a_bin(self):
+        self.priority_fixture()
+        self.db.execute('UPDATE calc_galactic_coordinates SET gb=20,adopt_as_reference=1')
+        self.db.execute('UPDATE data_spectra SET flux_flambda=3.9 WHERE moca_specid=101 AND wavelength_angstrom<=20000')
+        self.db.execute('UPDATE data_spectra SET flux_flambda=-0.1 WHERE moca_specid=103')
+        self.db.execute('UPDATE data_spectra SET flux_flambda=0 WHERE moca_specid=107')
+        order = 'gal_cnn_snr_bin_spt'
+        expected = [2, 5, 4, 1, 7, 3, 6]
+        self.assertEqual(self.oids(queue_order=order), expected)
+        for limit in (1, 2, 3):
+            after, actual = 0, []
+            while True:
+                page = self.queue(queue_order=order, limit=limit, after=after)
+                actual.extend(row['moca_oid'] for row in page['items'])
+                if not page['has_more']:
+                    break
+                after = page['next_after']
+            self.assertEqual(actual, expected)
+
     def test_latitude_priority_pagination_and_count_cross_all_bands(self):
         expected=self.galactic_priority_fixture()
         for limit in (1,2,3):
