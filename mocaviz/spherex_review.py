@@ -32,6 +32,7 @@ from .spherex_cnn_metadata import parse_comments, probability
 from .spherex_autotype_core import (
     DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
 )
+from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, fit_spectrum_rows as native_fit_spectrum_rows
 
 review = Blueprint("spherex_review", __name__)
 STATIC = Path(__file__).resolve().parent / "static"
@@ -152,6 +153,22 @@ def bounded_float(value, name, low, high):
         return number
     except (TypeError, ValueError):
         raise ReviewError(f"{name} must be between {low} and {high}.") from None
+
+
+def is_native_cube(meta):
+    return (meta.get("moca_specpackid") == 76 and
+            meta.get("data_reduction_pipeline") == "SUBLIME3C native DR1 cube aperture extraction")
+
+
+def spectrum_fit(meta, spectrum, templates, options):
+    if is_native_cube(meta):
+        return native_fit_spectrum_rows(spectrum, templates, options)
+    return fit_spectrum(spectrum, templates, options)
+
+
+def data_fingerprint(meta, spectrum, templates):
+    return fingerprint([spectrum, templates, NATIVE_FIT_VERSION] if is_native_cube(meta)
+                       else [spectrum, templates])
 
 
 def fit_options(body):
@@ -282,7 +299,7 @@ def spectrum_metadata(cur, specid, oid=None, lane=None, *, adopted_spt_source="p
         conditions.append("s.moca_specpackid=%s")
         params.append(lane["pack"])
     meta = rows(cur, f"""
-        SELECT s.moca_specid, s.moca_oid, s.moca_specpackid, s.ignored, s.median_snr_per_pix,
+        SELECT s.moca_specid, s.moca_oid, s.moca_specpackid, s.ignored, s.median_snr_per_pix, s.data_reduction_pipeline,
                mo.designation, mo.ra, mo.\x60dec\x60, mo.origin AS object_origin,
                COALESCE(NULLIF(TRIM(st.spectral_type), ''), NULLIF(TRIM(st.complete_spectral_type), '')) AS adopted_spectral_type,
                COALESCE(NULLIF(TRIM(st.moca_pid), ''), NULLIF(TRIM(st.origin), '')) AS adopted_spectral_type_reference,
@@ -368,12 +385,12 @@ def analyze(cur, body):
     options = fit_options(body)
     fit, warning = None, None
     try:
-        fit = fit_spectrum(spectrum, templates, options)
+        fit = spectrum_fit(meta, spectrum, templates, options)
     except ValueError as exc:
         warning = str(exc)
     return clean({
         "lane": key, "read_only": key is None, "object": meta, "state": state, "revision": fingerprint(state),
-        "data_revision": fingerprint([spectrum, templates]), "fit": fit,
+        "data_revision": data_fingerprint(meta, spectrum, templates), "fit": fit,
         "raw_spectrum": spectrum, "warning": warning,
     })
 
@@ -731,10 +748,18 @@ def make_spt(item, lane, ignored, public, rls, *, classification=None):
         raise ReviewError("A valid autotype fit is required to write a spectral type.")
     existing_methods = {row["calculation_method"] for row in item["state"]["spt"]}
     method = next((value for value in lane["methods"] if value in existing_methods), lane["method"])
+    best = dict(item["fit"]["best"])
+    provenance_note = None
+    if item["fit"].get("fit_version") == NATIVE_FIT_VERSION:
+        # The legacy empirical peculiarity calibration does not apply to this objective.
+        best["red_chi2_10pct"] = None
+        provenance_note = ("native_fit_version=" + NATIVE_FIT_VERSION +
+                           "; delta_early_minus_late=" + str(item["fit"].get("delta_early_minus_late")))
     values = _build_autotype_spectral_type_db_values(
         moca_oid=item["object"]["moca_oid"], moca_specid=item["object"]["moca_specid"],
-        best_row=pd.Series(item["fit"]["best"]), code_name="mocaviz/spherex_review.py",
+        best_row=pd.Series(best), code_name="mocaviz/spherex_review.py",
         calculation_method=method, ignored_value=ignored,
+        provenance_note=provenance_note,
         cnn_result=item["object"].get("spectral_cnn"),
     )
     row = dict(zip(SPT_FIELDS, values))
@@ -861,8 +886,8 @@ def submit(conn, cur, auth, body):
     lock_object(cur, oid)
     before = snapshot(cur, lane, oid, lock=True)
     lock_source_pixels(cur, specid)
-    _, spectrum, templates = dataset(cur, lane, oid, specid)
-    if fingerprint(before) != plan["revision"] or fingerprint([spectrum, templates]) != plan["data_revision"]:
+    meta, spectrum, templates = dataset(cur, lane, oid, specid)
+    if fingerprint(before) != plan["revision"] or data_fingerprint(meta, spectrum, templates) != plan["data_revision"]:
         raise ReviewError("Another review or spectrum update changed this object. Reload it.", 409)
     pixel_before = []
     for op in plan["operations"]:

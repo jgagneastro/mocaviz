@@ -81,6 +81,8 @@
         <small>The adopted type is stored for the object; it can differ from this spectrum's current fit.</small>
         <label>Current fitted type ≥<input id="current-fit-sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
         <small>Checked against the best fit shown in the plot, using the current template-fit settings. Earlier or unavailable fits are skipped without saving a vetting. Blank allows all. Direct spectrum-ID loads bypass queue cuts.</small>
+        <label>Native DR1 early/late fit separation ≥<input id="current-fit-gap" type="number" step="any" placeholder="2 for SUBLIME3C"></label>
+        <small>Best earlier-than-L0 score minus best L0+ score; larger favors L0+. This is not a probability. Applies only to native DR1 fits. Blank disables this cut; direct spectrum-ID inspection bypasses it.</small>
         <small id="fit-filter-info" role="status"></small>
         <label>Adopted-type moca_pid(s)<textarea id="adopted-spt-moca-pids" rows="2" placeholder="e.g. Ref2020, Ref2025"></textarea></label>
         <small>Match any listed publication ID on the selected adopted SPT. Separate values with commas, spaces or new lines; blank allows all.</small>

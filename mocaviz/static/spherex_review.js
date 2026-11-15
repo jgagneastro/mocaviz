@@ -130,12 +130,12 @@
     $("submitting").textContent = pending + " results currently submitting to mocadb" +
       (failed ? " · " + failed + " awaiting retry" : "");
     updateCacheStatus();
-    $("fit-filter-info").textContent = fitHidden.size ? fitHidden.size + " spectra skipped by current-fit type cut; no vetting saved" : "";
+    $("fit-filter-info").textContent = fitHidden.size ? fitHidden.size + " spectra skipped by current-fit cuts; no vetting saved" : "";
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
     for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
-      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "no-known", "exclude-duplicates", "oids"])
+      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
@@ -243,13 +243,14 @@
       const {total, queue_filter_version} = await api("queue-count", request);
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
-      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + (request.min_current_fit_sptn != null ? " database matches before current-fit cut" : " total matches at load");
+      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + ((request.min_current_fit_sptn != null || request.min_current_fit_gap != null) ? " database matches before current-fit cut" : " total matches at load");
     } catch {
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
     }
   }
   let otherSampleVetting = $("missing-vetting").value, previousSample = $("review-sample").value;
   let otherSampleFitMinimum = $("current-fit-sptn").value;
+  let otherSampleFitGap = $("current-fit-gap").value;
   let otherSampleSptSource = $("adopted-spt-source").value;
   $("review-sample").addEventListener("change", () => {
     const vetting = $("missing-vetting");
@@ -264,15 +265,19 @@
     }
     if ($("review-sample").value === "sublime3c" && previousSample !== "sublime3c") {
       otherSampleFitMinimum = $("current-fit-sptn").value;
+      otherSampleFitGap = $("current-fit-gap").value;
       $("current-fit-sptn").value = "10";
+      $("current-fit-gap").value = "2";
       $("lane").value = "sublimeaperture";
       $("adopted-spt-source").value = "private";
       $("queue-order").value = "oid_asc";
       for (const id of ["snr", "max-snr", "max-chi2", "sptn", "galactic-latitude", "cnn-probability", "spectral-cnn-probability"])
         $(id).value = "";
     }
-    if (previousSample === "sublime3c" && $("review-sample").value !== "sublime3c")
+    if (previousSample === "sublime3c" && $("review-sample").value !== "sublime3c") {
       $("current-fit-sptn").value = otherSampleFitMinimum;
+      $("current-fit-gap").value = otherSampleFitGap;
+    }
     previousSample = $("review-sample").value;
     updateControls();
   });
@@ -303,6 +308,7 @@
             min_snr: $("snr").value || null, max_snr: $("max-snr").value || null,
             min_sptn: $("sptn").value || null,
             min_current_fit_sptn: $("current-fit-sptn").value || null,
+            min_current_fit_gap: $("current-fit-gap").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
@@ -310,6 +316,8 @@
         if (request.min_current_fit_sptn != null && (!Number.isFinite(Number(request.min_current_fit_sptn)) ||
             Number(request.min_current_fit_sptn) < -60 || Number(request.min_current_fit_sptn) > 40))
           throw new Error("Current fitted type must be a number from -60 to 40.");
+        if (request.min_current_fit_gap != null && !Number.isFinite(Number(request.min_current_fit_gap)))
+          throw new Error("Native DR1 fit separation must be a finite number.");
         queueLane = $("lane").value;
         queueRequest = request; autoNextAttempt = null;
         hidden.clear(); fitHidden.clear();
@@ -443,8 +451,12 @@
       if (gen !== generation || closed) return;
       const minimum = queueRequest.min_current_fit_sptn;
       const fittedType = data.fit?.best?.spectral_type_number;
-      if (minimum != null && minimum !== "" &&
-          (typeof fittedType !== "number" || !Number.isFinite(fittedType) || fittedType < Number(minimum))) {
+      const gapMinimum = queueRequest.min_current_fit_gap;
+      const gap = data.fit?.delta_early_minus_late;
+      const failsGap = data.fit?.fit_version === "native_signed_student4_v1" && gapMinimum != null && gapMinimum !== "" &&
+        (typeof gap !== "number" || !Number.isFinite(gap) || gap < Number(gapMinimum));
+      if (failsGap || (minimum != null && minimum !== "" &&
+          (typeof fittedType !== "number" || !Number.isFinite(fittedType) || fittedType < Number(minimum)))) {
         fitHidden.add(key(item));
         clearFit(); updateControls();
         await show(index + 1);
@@ -504,6 +516,8 @@
     catalogCNN.textContent = "SUBLIME2 CNN P=" + (finite(obj.sublime2_cnn_probability) && obj.sublime2_cnn_probability >= 0 && obj.sublime2_cnn_probability <= 1 ?
       (100 * obj.sublime2_cnn_probability).toFixed(1) + "%" : "—");
     $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
+    if (fit?.fit_version === "native_signed_student4_v1")
+      $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
     const origin = document.createElement("div");
     origin.textContent = "Object origin: " + (obj.object_origin?.trim() || "—");
     $("object-meta").append(origin);
@@ -696,6 +710,7 @@
     if (params.has("batch_size")) $("batch-size").value = params.get("batch_size");
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
+    $("current-fit-gap").value = params.has("min_current_fit_gap") ? params.get("min_current_fit_gap") : params.get("review_sample") === "sublime3c" ? "2" : "";
     $("current-fit-sptn").value = params.has("min_current_fit_sptn") ? params.get("min_current_fit_sptn") :
       params.get("review_sample") === "sublime3c" ? "10" : "";
     for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
