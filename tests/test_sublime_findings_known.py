@@ -13,7 +13,8 @@ class KnownSourceTests(unittest.TestCase):
         CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INT,spectral_type_number REAL,adopted INT,public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT);
         CREATE TABLE pcat_sublime_candidates(id INT,moca_oid INT,detection_snr REAL);
         CREATE TABLE pcat_sublime_candidates_v2(id INT,moca_oid INT,detection_snr REAL,autotype_spectral_type_number REAL,visual_nn_good_probability REAL,visual_nn_classification TEXT,autotype_reduced_chi2 REAL);
-        CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
+        CREATE TABLE pcat_sublime_candidates_v3c(id INT,moca_oid INT,ra_deg REAL,dec_deg REAL,autotype_spectral_type_number REAL,status TEXT,cnn_acceptance_probability REAL,median_raw_snr REAL);
+                CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
         CREATE TABLE pcat_duplicated_vetting(moca_oid INT,potential_duplicated_moca_oid INT,classification TEXT);
         CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INT,classification_integer REAL);
         CREATE TABLE mechanics_all_designations(moca_oid INT,designation TEXT);
@@ -21,7 +22,7 @@ class KnownSourceTests(unittest.TestCase):
         ''')
         for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw','pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
             self.db.execute('CREATE TABLE '+table+'(moca_oid INT)')
-        for cfg in sf.sr.LANES.values():self.db.execute('CREATE TABLE '+cfg['table']+'(moca_oid INT PRIMARY KEY,classification TEXT)')
+        for cfg in sf.LANE_CONFIG.values():self.db.execute('CREATE TABLE '+cfg['table']+'(moca_oid INT PRIMARY KEY,classification TEXT)')
         for oid in range(1,6):
             self.db.execute("INSERT INTO moca_objects VALUES (?,'Fixture',0,0,0,1)",(oid,))
             self.db.execute('INSERT INTO pcat_sublime_candidates VALUES (?,?,NULL)',(oid,oid))
@@ -105,3 +106,20 @@ class KnownSourceTests(unittest.TestCase):
         self.assertEqual(c.count_interval(0)[0],0);self.assertGreater(c.count_interval(0)[1],1)
 
 if __name__=='__main__':unittest.main()
+
+
+class Sublime3CSelectionTests(KnownSourceTests):
+    def test_new_sample_keeps_pass_row_and_refined_coordinates(self):
+        self.db.execute("UPDATE moca_objects SET designation='SUBLIME3C 1' WHERE moca_oid=4")
+        self.db.execute("INSERT INTO pcat_sublime_candidates_v3c VALUES (1,4,64.928,10.294,12,'AUTO_SELECTION_PASS[native_signed_student4_v1];reason=test',.99,7.7)")
+        self.db.execute("INSERT INTO pcat_sublime_candidates_v3c VALUES (2,4,64.9,10.3,4,'AUTO_SELECTION_FAIL[native_signed_student4_v1];',.9,7.1)")
+        filters=sf.parse_filters(dict(sources=['sublime3c'],quality_any='any',spt_source='sublime3c',min_spt=10))
+        sql,params=sf.selected_sql(filters)
+        result=[dict(r) for r in self.db.execute(sql.replace('%s','?'),params)]
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['moca_oid'],4)
+        self.assertEqual(result[0]['spt'],12)
+        self.assertEqual(result[0]['ra'],64.928)
+        self.assertTrue(result[0]['sublime3c'])
+        self.db.execute('DELETE FROM pcat_sublime_candidates_v3c WHERE id=1')
+        self.assertEqual(list(self.db.execute(sql.replace('%s','?'),params)),[])

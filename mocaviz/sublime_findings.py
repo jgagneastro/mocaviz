@@ -24,10 +24,11 @@ from . import sublime_findings_completeness as completeness
 STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
 SOURCES = {'sublime1': 'pcat_sublime_candidates', 'sublime2': 'pcat_sublime_candidates_v2',
-           'redmovers': 'pcat_catwise2020_red_movers'}
+           'sublime3c': 'pcat_sublime_candidates_v3c', 'redmovers': 'pcat_catwise2020_red_movers'}
 CLAIM_TOKENS = ('yadu', 'tom', 'bickle', 'sarah', 'azul', 'eastonh')
 MAX_OBJECTS = 100000
-LANES = tuple(sr.LANES)
+LANES = ('spiff', 'spiffstacker', 'sublimeaperture')
+LANE_CONFIG = {lane: sr.LANES[lane] for lane in LANES}
 GOOD_QUALITY = ('good', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star')
 GOOD_CANDIDATE_QUALITY = (*GOOD_QUALITY, 'good_candidate')
 QUALITY_CLASSES = {
@@ -58,10 +59,13 @@ TEXT = {'cnn_classes', 'motion_classes', 'cutout_classes'} | {
 def parse_filters(raw):
     if not isinstance(raw, dict):
         raise sr.ReviewError('Filters must be an object.')
-    allowed = NUMERIC | set(TRI) | TEXT | set(QUALITY_SWITCHES.values()) | {'sources', 'spt_source', 'snr_lane', 'duplicates', 'cutout_policy', 'distance_mode', 'synthetic_lane', 'quality_any'}
+    allowed = NUMERIC | set(TRI) | TEXT | set(QUALITY_SWITCHES.values()) | {'sublime3c_pass_only', 'sources', 'spt_source', 'snr_lane', 'duplicates', 'cutout_policy', 'distance_mode', 'synthetic_lane', 'quality_any'}
     if set(raw) - allowed:
         raise sr.ReviewError('Unknown dashboard filter.')
     out = dict(raw)
+    out.setdefault('sublime3c_pass_only', True)
+    if not isinstance(out['sublime3c_pass_only'], bool):
+        raise sr.ReviewError('SUBLIME3C selection switch must be boolean.')
     for key in QUALITY_SWITCHES.values():
         value = out.get(key, False)
         if not isinstance(value, bool):
@@ -98,7 +102,7 @@ def parse_filters(raw):
             raise sr.ReviewError('Membership filters must be yes, no, or either.')
     defaults = {'spt_source':'best', 'snr_lane':'spiffstacker', 'duplicates':'exclude',
                 'cutout_policy':'all', 'distance_mode':'astrometric', 'synthetic_lane':'any', 'quality_any':'good'}
-    options = {'spt_source': ('best', 'sublime2', 'adopted', 'published', *LANES), 'snr_lane': LANES,
+    options = {'spt_source': ('best', 'sublime2', 'sublime3c', 'adopted', 'published', *LANES), 'snr_lane': LANES,
                'duplicates': ('exclude', 'only', 'either'), 'cutout_policy': ('all', 'any'),
                'distance_mode': ('astrometric', 'include_photometric'), 'synthetic_lane': ('any', *LANES), 'quality_any': ('any',*QUALITY_CLASSES,'reviewed','unreviewed')}
     for key, default in defaults.items():
@@ -167,12 +171,12 @@ def quality_condition(mode, oid='mo.moca_oid'):
     if mode=='any':return '1=1'
     if mode in ALL_QUALITY:
         available=[];passing=[]
-        for cfg in sr.LANES.values():
+        for cfg in LANE_CONFIG.values():
             active='EXISTS (SELECT 1 FROM moca_spectra active_s WHERE active_s.moca_oid='+oid+' AND active_s.moca_specpackid='+str(cfg['pack'])+' AND active_s.ignored=0)'
             available.append(active)
             passing.append('(NOT '+active+' OR '+reviewed(cfg,QUALITY_CLASSES[mode])+')')
         return '('+' OR '.join(available)+') AND '+' AND '.join(passing)
-    clauses=[reviewed(cfg,QUALITY_CLASSES.get(mode)) for cfg in sr.LANES.values()]
+    clauses=[reviewed(cfg,QUALITY_CLASSES.get(mode)) for cfg in LANE_CONFIG.values()]
     return ('NOT ' if mode=='unreviewed' else '')+'('+' OR '.join(clauses)+')'
 
 
@@ -180,13 +184,16 @@ def selected_sql(f):
     """Keep the large catalogue union in SQL; never download an unfiltered catalogue."""
     unions = ['SELECT moca_oid, 0 AS is_other FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
               for s in f['sources'] if s in SOURCES]
+    if f['sublime3c_pass_only'] and 'sublime3c' in f['sources']:
+        prefix='AUTO_SELECTION_PASS[native_signed_student4_v1];'
+        unions=[q+" AND SUBSTR(status,1,"+str(len(prefix))+")='"+prefix+"'" if '`pcat_sublime_candidates_v3c`' in q else q for q in unions]
     if 'other' in f['sources']:
         if f['apply_known_quality'] and (f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed'):
             classes=QUALITY_CLASSES.get(f['quality_any'])
             quality_where=' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
-            seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in sr.LANES.values())
+            seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in LANE_CONFIG.values())
         else:
-            methods = ','.join("'" + method + "'" for cfg in sr.LANES.values() for method in cfg['methods'])
+            methods = ','.join("'" + method + "'" for cfg in LANE_CONFIG.values() for method in cfg['methods'])
             seed = ('SELECT DISTINCT moca_oid FROM data_spectral_types WHERE ignored=0 '
                     'AND spectral_type_number IS NOT NULL AND calculation_method IN (' + methods + ')')
         other_from = '(' + seed + ') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
@@ -196,12 +203,12 @@ def selected_sql(f):
                       ' AND NOT '+known_expression('mo')+' AND ' +
                       ' AND '.join('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `' + t + '` c WHERE c.moca_oid IS NOT NULL)' for t in SOURCES.values()))
     type_cols, type_joins = [], []
-    for lane, config in sr.LANES.items():
+    for lane, config in LANE_CONFIG.items():
         methods = ','.join("'" + m + "'" for m in config['methods'])
         type_joins.append('LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM data_spectral_types WHERE ignored=0 AND calculation_method IN ('+methods+') GROUP BY moca_oid) latest_'+lane+' ON latest_'+lane+'.moca_oid=mo.moca_oid LEFT JOIN data_spectral_types t_'+lane+' ON t_'+lane+'.id=latest_'+lane+'.id')
         type_cols.append('t_' + lane + '.spectral_type_number AS ' + lane + '_spt')
     type_joins.append('LEFT JOIN data_spectral_types ta ON ta.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.adopted=1 AND d.ignored=0)')
-    expressions = {'sublime2':'p2.autotype_spectral_type_number', 'adopted':'ta.spectral_type_number','published':'tp.spectral_type_number'}
+    expressions = {'sublime3c':'p3.autotype_spectral_type_number', 'sublime2':'p2.autotype_spectral_type_number', 'adopted':'ta.spectral_type_number','published':'tp.spectral_type_number'}
     expressions.update({lane:'t_' + lane + '.spectral_type_number' for lane in LANES})
     type_joins.append('LEFT JOIN data_spectral_types tp ON tp.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0)')
     type_joins.append('LEFT JOIN data_spectral_types tc ON tc.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.public_adopted=1 AND d.photometric_estimate=1 AND d.ignored=0)')
@@ -210,7 +217,7 @@ def selected_sql(f):
         ('tp.spectral_type_number IS NOT NULL AND tp.calculation_method IS NULL', 'tp.spectral_type_number', 'published'),
     ]
     for lane in TYPE_LANE_ORDER:
-        type_joins.append('LEFT JOIN '+sr.LANES[lane]['table']+' quality_'+lane+' ON quality_'+lane+'.moca_oid=mo.moca_oid')
+        type_joins.append('LEFT JOIN '+LANE_CONFIG[lane]['table']+' quality_'+lane+' ON quality_'+lane+'.moca_oid=mo.moca_oid')
     for classes in TYPE_QUALITY_ORDER:
         accepted = ','.join("'"+value+"'" for value in classes)
         for lane in TYPE_LANE_ORDER:
@@ -234,8 +241,10 @@ def selected_sql(f):
         elif f['spt_source']=='adopted':
             candidates='SELECT d.moca_oid FROM data_spectral_types d WHERE d.adopted=1 AND d.ignored=0 AND d.spectral_type_number>='+threshold
         elif f['spt_source'] in LANES:
-            methods=','.join("'"+m+"'" for m in sr.LANES[f['spt_source']]['methods'])
+            methods=','.join("'"+m+"'" for m in LANE_CONFIG[f['spt_source']]['methods'])
             candidates='SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0 AND d.calculation_method IN ('+methods+') AND d.spectral_type_number>='+threshold
+        elif f['spt_source']=='sublime3c':
+            candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v3c WHERE autotype_spectral_type_number>='+threshold
         elif f['spt_source']=='sublime2':
             candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='+threshold
         else:
@@ -259,7 +268,7 @@ def selected_sql(f):
         where.append(exempt('('+quality_condition(f['quality_any'])+')', 'quality'))
     if f['duplicates']!='either':
         where.append(('NOT ' if f['duplicates']=='exclude' else '')+"EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup WHERE dup.potential_duplicated_moca_oid=mo.moca_oid AND dup.classification='y')")
-    for lane,cfg in sr.LANES.items():
+    for lane,cfg in LANE_CONFIG.items():
         for prefix,negative in (('include_',False),('exclude_',True)):
             classes=f[prefix+lane]
             if not classes:continue
@@ -290,11 +299,16 @@ def selected_sql(f):
             params.extend(classes)
         if 'none' in f['cnn_classes']:terms.append('p2.visual_nn_classification IS NULL')
         where.append(exempt('('+' OR '.join(terms)+')', 'detection'))
-    return '''SELECT mo.moca_oid,mo.designation,mo.ra,mo.`dec`,mo.is_public,
+    return '''SELECT mo.moca_oid,mo.designation,
+        CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.ra_deg,mo.ra) ELSE mo.ra END AS ra,
+        CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.dec_deg,mo.`dec`) ELSE mo.`dec` END AS `dec`,mo.is_public,
         ''' + spt + ''' AS spt,''' + ','.join(type_cols) + ''',
         p2.autotype_spectral_type_number AS sublime2_spt,ta.spectral_type_number AS adopted_spt,tp.spectral_type_number AS published_spt,tc.spectral_type_number AS published_candidate_spt,
         ''' + best_source + ''' AS best_spt_source,
-        p1.id IS NOT NULL AS sublime1,p2.id IS NOT NULL AS sublime2,
+        p1.id IS NOT NULL AS sublime1,p2.id IS NOT NULL AS sublime2,p3.id IS NOT NULL AS sublime3c,
+        p3.autotype_spectral_type_number AS sublime3c_spt,p3.status AS sublime3c_selection,
+        p3.ra_deg AS sublime3c_ra,p3.dec_deg AS sublime3c_dec,
+        p3.cnn_acceptance_probability AS sublime3c_cnn_acceptance,p3.median_raw_snr AS sublime3c_median_snr,
         COALESCE(p2.detection_snr,p1.detection_snr) AS detection_snr,
         p2.detection_snr AS sublime2_detection_snr,
         p2.visual_nn_good_probability AS cnn,p2.visual_nn_classification AS cnn_class,
@@ -306,6 +320,8 @@ def selected_sql(f):
         LEFT JOIN pcat_sublime_candidates p1 ON p1.id=latest_p1.id
         LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM pcat_sublime_candidates_v2 GROUP BY moca_oid) latest_p2 ON latest_p2.moca_oid=mo.moca_oid
         LEFT JOIN pcat_sublime_candidates_v2 p2 ON p2.id=latest_p2.id
+        LEFT JOIN (SELECT moca_oid,COALESCE(MAX(CASE WHEN SUBSTR(status,1,47)='AUTO_SELECTION_PASS[native_signed_student4_v1];' THEN id END),MAX(id)) AS id FROM pcat_sublime_candidates_v3c WHERE moca_oid IS NOT NULL GROUP BY moca_oid) latest_p3 ON latest_p3.moca_oid=mo.moca_oid
+        LEFT JOIN pcat_sublime_candidates_v3c p3 ON p3.id=latest_p3.id
         ''' + '\n'.join(type_joins) + '\n WHERE ' + ' AND '.join(where) + ' ORDER BY mo.moca_oid LIMIT ' + str(MAX_OBJECTS + 1), tuple(params)
 
 
@@ -361,7 +377,7 @@ def enrich(cur, rows):
             target['cutout_count'] += 1
             target['cutout_scores'].append(r['classification_integer'])
             target['cutout_classes'].append(r['classification'])
-        for lane, cfg in sr.LANES.items():
+        for lane, cfg in LANE_CONFIG.items():
             for r in fetch(cur, 'SELECT moca_oid,classification FROM `' + cfg['table'] + '` WHERE moca_oid IN (' + ph + ')', ids):
                 by_oid[r['moca_oid']][lane+'_quality'] = r['classification']
             for r in fetch(cur, '''SELECT s.moca_oid,s.moca_specid,s.median_snr_per_pix,s.ignored FROM moca_spectra s JOIN
@@ -495,7 +511,7 @@ def photometry(cur, rows, f):
             obj=by_oid[p['moca_oid']]
             key='synthetic_w2' if p['is_synthetic'] else 'w2'
             # Synthetic measurements follow the selected reduction lane when present.
-            if p['is_synthetic'] and f['synthetic_lane'] != 'any' and p['moca_specpackid'] != sr.LANES[f['synthetic_lane']]['pack']: continue
+            if p['is_synthetic'] and f['synthetic_lane'] != 'any' and p['moca_specpackid'] != LANE_CONFIG[f['synthetic_lane']]['pack']: continue
             if key in obj: continue
             obj[key]=p['magnitude'];obj[key+'_unc']=p['magnitude_unc'];obj[key+'_id']=p['id']
             if p['is_synthetic']:
@@ -541,7 +557,7 @@ def demo_rows(f):
     rows=[]
     for i in range(180):
         r={'moca_oid':1001+i,'designation':'Demo J%04d'%i,'ra':(i*137.508)%360,'dec':-78+(i*19)%156,
-           'spt':10+(i%24)*.9,'sublime1':i%3==0,'sublime2':i%3==1,'redmovers':i%3==2,'other':False,
+           'spt':10+(i%24)*.9,'sublime1':i%3==0,'sublime2':i%3==1,'sublime3c':i%4==0,'redmovers':i%3==2,'other':False,
            'detection_snr':7+i%30,'cnn':.7+(i%29)/100,'cnn_class':'good',
            'best_spt_source':'spiffstacker','motion':3+i%4,'motion_class':'clear motion, red detection',
            'cutout_scores':[3,4],'cutout_classes':['Good centered on PSF but crowded','Good centered on PSF and isolated'],
@@ -555,7 +571,7 @@ def demo_rows(f):
         r['duplicate']=i%17==0
         for lane in LANES:r.update({lane+'_quality':'good',lane+'_spt':r['spt'],lane+'_snr':8+i%15,lane+'_specid':11001+i})
         if i%19==0:r['spiffstacker_quality']='peculiar_ucd'
-        r.update(sublime2_spt=r['spt'],adopted_spt=r['spt'],parallax=40+i,parallax_unc=2,parallax_snr=(40+i)/2,
+        r.update(sublime3c_spt=r['spt'],sublime3c_selection='AUTO_SELECTION_PASS[native_signed_student4_v1];',sublime2_spt=r['spt'],adopted_spt=r['spt'],parallax=40+i,parallax_unc=2,parallax_snr=(40+i)/2,
                  distance_pc=1000/(40+i),distance_kind='parallax',spt_source='spiffstacker',
                  w2=14+i/40,synthetic_w2=14.1+i/40,w2_difference=.1,
                  M_w2=10+i/40,M_synthetic_w2=10.1+i/40,M_w2_unc=.1,M_synthetic_w2_unc=.12)
@@ -717,11 +733,11 @@ def api(operation):
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
                                      'mock':mock,'loaded_at':time.time(),'complete':True,'known_source_version':1,'quality_definition_version':2,
-                                     'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1,'trigonometric_photometry_version':1}))
+                                     'sublime3c_sample_version':1,'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1,'trigonometric_photometry_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
         lane_key=body.get('lane','spiffstacker')
-        if lane_key not in sr.LANES:raise sr.ReviewError('Invalid spectrum lane.')
+        if lane_key not in LANE_CONFIG:raise sr.ReviewError('Invalid spectrum lane.')
         parsed=[(sr.integer(r.get('moca_oid'),'Object ID'),sr.integer(r.get('moca_specid'),'Spectrum ID')) for r in items if isinstance(r,dict)]
         if len(parsed)!=len(items):raise sr.ReviewError('Invalid spectrum requests.')
         results=[]
@@ -734,7 +750,7 @@ def api(operation):
                 templates=None
                 for oid,specid in parsed:
                     try:
-                        meta=sr.spectrum_metadata(cur,specid,oid,sr.LANES[lane_key])
+                        meta=sr.spectrum_metadata(cur,specid,oid,LANE_CONFIG[lane_key])
                         spectrum=fetch(cur,'SELECT id AS data_spectra_id,wavelength_angstrom,flux_flambda,flux_flambda_unc,ignored FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom,id LIMIT 10001',(specid,))
                         if len(spectrum)>10000:raise sr.ReviewError('Spectrum exceeds interactive size limit.')
                         if templates is None:

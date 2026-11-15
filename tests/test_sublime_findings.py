@@ -41,7 +41,7 @@ class FindingsTests(unittest.TestCase):
 
     def test_default_sample_and_catalog_memberships(self):
         f=sf.parse_filters({})
-        self.assertEqual(f['sources'],['other','redmovers','sublime1','sublime2'])
+        self.assertEqual(f['sources'],['other','redmovers','sublime1','sublime2','sublime3c'])
         self.assertEqual({key:f[key] for key in sf.TRI},{key:'either' for key in sf.TRI})
 
     def test_new_quality_modes_accept_mock_requests(self):
@@ -80,13 +80,13 @@ class FindingsTests(unittest.TestCase):
         self.addCleanup(db.close)
         db.execute('CREATE TABLE moca_objects (moca_oid INTEGER)')
         db.execute('CREATE TABLE moca_spectra (moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER)')
-        for cfg in sf.sr.LANES.values():db.execute('CREATE TABLE '+cfg['table']+' (moca_oid INTEGER,classification TEXT)')
+        for cfg in sf.LANE_CONFIG.values():db.execute('CREATE TABLE '+cfg['table']+' (moca_oid INTEGER,classification TEXT)')
         records=[]
         for oid,(quality,active,ignored,expected) in enumerate(cases,1):
             db.execute('INSERT INTO moca_objects VALUES (?)',(oid,))
             r={key:False for key in sf.TRI}
             r.update(moca_oid=oid,duplicate=False,cutout_scores=[],cutout_classes=[])
-            for i,(lane,cfg) in enumerate(sf.sr.LANES.items()):
+            for i,(lane,cfg) in enumerate(sf.LANE_CONFIG.items()):
                 if quality[i] is not None:
                     r[lane+'_quality']=quality[i]
                     db.execute('INSERT INTO '+cfg['table']+' VALUES (?,?)',(oid,quality[i]))
@@ -250,6 +250,7 @@ class FindingsTests(unittest.TestCase):
                 CREATE TABLE pcat_sublime_candidates(id INT, moca_oid INT, detection_snr REAL);
                 CREATE TABLE pcat_sublime_candidates_v2(id INT, moca_oid INT, detection_snr REAL, autotype_spectral_type_number REAL,
                     visual_nn_good_probability REAL, visual_nn_classification TEXT, autotype_reduced_chi2 REAL);
+                CREATE TABLE pcat_sublime_candidates_v3c(id INT,moca_oid INT,ra_deg REAL,dec_deg REAL,autotype_spectral_type_number REAL,status TEXT,cnn_acceptance_probability REAL,median_raw_snr REAL);
                 CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
                 CREATE TABLE pcat_duplicated_vetting(moca_oid INT, potential_duplicated_moca_oid INT, classification TEXT);
             ''')
@@ -257,7 +258,7 @@ class FindingsTests(unittest.TestCase):
                 db.execute('CREATE TABLE '+table+'(moca_oid INT)')
             db.execute('CREATE TABLE mechanics_all_designations(moca_oid INT, designation TEXT)')
             db.executemany("INSERT INTO moca_objects VALUES (?, 'Fixture', 0, 0, 0, 1)", [(oid,) for oid in range(1, 10)])
-            for cfg in sf.sr.LANES.values():
+            for cfg in sf.LANE_CONFIG.values():
                 db.execute('CREATE TABLE ' + cfg['table'] + '(moca_oid INT, classification TEXT)')
             db.executemany("INSERT INTO pcat_spherex_visual_vetting VALUES (?, 'good')", [(oid,) for oid in range(1, 10)])
             db.execute("INSERT INTO pcat_sublime_candidates VALUES (1, 8, 10)")

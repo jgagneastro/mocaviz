@@ -104,7 +104,7 @@ if(typeof document!=='undefined') (() => {
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const finite=Number.isFinite, fmt=(v,n=2)=>v==null||!finite(Number(v))?'—':Number(v).toFixed(n), num=v=>Number(v).toLocaleString();
 const laneNames={spiffstacker:'SPIFFStacker',spiff:'SPIFF',sublimeaperture:'SUBLIME aperture'};
-const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',redmovers:'CatWISE red movers',other:'Other unpublished'};
+const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',sublime3c:'SUBLIME3C',redmovers:'CatWISE red movers',other:'Other unpublished'};
 const spt=v=>!finite(Number(v))||v==null?'—':(v<0?'K'+fmt(10+Number(v),1):v<10?'M'+fmt(v,1):v<20?'L'+fmt(v-10,1):v<30?'T'+fmt(v-20,1):'Y'+fmt(v-30,1)).replace('.0','');
 const ticks=Array.from({length:9},(_,i)=>i*5-5),ticktext=ticks.map(spt);
 const classDefinitions=FindingClasses.definitions;
@@ -117,7 +117,7 @@ let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
 let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
-const defaults={sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
+const defaults={sublime3c_pass_only:true,sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
 function range(key,label){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum')}${input('max_'+key,'Maximum')}</div>`;}
@@ -128,7 +128,7 @@ const triOptions=[['either','Either'],['yes','Present / yes'],['no','Absent / no
 $('plot-classes').innerHTML=classDefinitions.map(d=>`<span class="plot-class" title="${esc(d.detail)}"><i style="background:${d.color}"></i>${esc(d.label)} <b id="class-count-${d.key}">—</b></span>`).join('');
 $('filter-fields').innerHTML=
 fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished'],['yes','Known recovered'],['either','Both populations']])+select('known_candidate','Known photometric UCD candidates',triOptions)+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
-fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Preferred type (ranked)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
+fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Preferred type (ranked)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['sublime3c','SUBLIME3C candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
 fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text')+knownSwitch('detection'))+
 fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>'+knownSwitch('quality'))+
 fs('Spectrum S/N',select('snr_lane','Reduction lane',laneOptions)+range('snr','Median S/N per pixel')+knownSwitch('snr'))+
@@ -173,6 +173,7 @@ async function load(){
  $('apply').disabled=false;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample… You can change cuts and Apply again while this loads.';
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. You can change cuts and Apply again; previous plots stay labeled until the new sample is ready.';},15000);
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;clearInterval(timer);
+  if(f.sources.includes('sublime3c') && result.sublime3c_sample_version!==1)throw Error('Restart the Findings Dashboard service to load SUBLIME3C.');
   if(result.known_source_version!==1)throw Error('Restart the Findings Dashboard service to apply known-source joins and quality exemptions.');
   if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
   if((f.spt_source||'best')==='best' && result.type_priority_version!==1)throw Error('Restart the Findings Dashboard service to apply the adopted and review-ranked type priority.');
@@ -778,6 +779,7 @@ for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-con
  }
  setFilters(cuts);load();
 };
+$('preset-sublime3c').onclick=()=>{setFilters({...defaults,sources:['sublime3c'],spt_source:'sublime3c',quality_any:'any',min_motion:null});load();};
 $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;f.known_candidate=known==='no'?'no':'either';if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
