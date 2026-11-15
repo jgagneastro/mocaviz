@@ -82,6 +82,7 @@ optional and inclusive. The URL parameters are `max_snr` and `max_sublime2_snr`.
 review page, and to **No restriction** on the autotype page. Other choices are
 SPIFF, SPIFFStacker, **either missing** (OR), **both missing** (AND), and
 **Unreviewed here · viable elsewhere**.
+The AND scope checks SPIFF, SPIFFStacker and SUBLIME aperture (including SUBLIME3C); any existing classification excludes the object. The OR scope still checks the explicitly named SPIFF/SPIFFStacker pair.
 “Missing” means no row in the corresponding visual-vetting table, regardless
 of the class stored in any existing row. A missing-vetting filter selects
 non-ignored spectra, taking the latest active spectrum in the chosen reduction

@@ -258,6 +258,24 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids("both"),[1,6,11,13])
         self.assertEqual(self.oids("lane",lane="spiff"),[1,3,6,8,11,13])
 
+    def test_all_missing_includes_aperture_for_every_legacy_lane_and_count(self):
+        self.db.executemany("INSERT INTO moca_spectra VALUES(?,?,?,?,?)", [
+            (3000 + oid, oid, 76, 0, 10) for oid in range(1, 14)])
+        self.db.executemany("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES(?,?)", [
+            (1, "good"), (6, "bad"), (8, "bad"), (11, None)])
+        before = self.db.total_changes
+        for lane in ("spiff", "spiffstacker", "sublimeaperture"):
+            with self.subTest(lane=lane):
+                self.assertEqual(self.oids("both", lane=lane), [13])
+                body = {"lane": lane, "missing_vetting": "both", "min_wiseview_score": 4, "limit": 1}
+                self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 1})
+                self.assertFalse(review.queue(self.cur, body)["has_more"])
+                self.assertEqual(review.queue(self.cur, {**body, "after": 13})["items"], [])
+        # Explicit pair-OR and selected-lane scopes retain their documented meanings.
+        self.assertEqual(self.oids("either"), [1, 2, 3, 6, 11, 13])
+        self.assertEqual(self.oids("lane"), [1, 2, 6, 11, 13])
+        self.assertEqual(self.db.total_changes, before)
+
     def test_inclusive_motion_score_and_missing_motion_rows(self):
         self.assertEqual(self.oids("either",6),[1,2,11,13])
         self.assertEqual(self.oids("either",5),[1,2,3,11,13])

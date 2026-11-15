@@ -75,7 +75,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 15
+QUEUE_FILTER_VERSION = 16
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + NATIVE_FIT_VERSION + "];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
@@ -559,7 +559,13 @@ def queue(cur, body, *, count_only=False):
             conditions.append(absent[missing])
         else:
             operator = "OR" if missing == "either" else "AND"
-            conditions.append(f"({absent['spiff']} {operator} {absent['spiffstacker']})")
+            clauses = [absent['spiff'], absent['spiffstacker']]
+            # AND checks every original lane, including package 76 used by SUBLIME3C.
+            # The explicitly named SPIFF/Stacker OR retains its pair scope.
+            if missing == "both":
+                clauses.append("NOT EXISTS (SELECT 1 FROM " + LANES['sublimeaperture']['table'] +
+                               " missing_aperture WHERE missing_aperture.moca_oid=s.moca_oid)")
+            conditions.append("(" + (" " + operator + " ").join(clauses) + ")")
     spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
     source_params = []
     if missing == "viable_elsewhere":
