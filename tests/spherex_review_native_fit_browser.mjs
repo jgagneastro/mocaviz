@@ -49,6 +49,8 @@ try{
   await page.locator('#review-sample').selectOption('sublime3c');
   assert.equal(await page.locator('#current-fit-sptn').inputValue(),'10');
   assert.equal(await page.locator('#current-fit-gap').inputValue(),'2');
+  assert(await page.locator('#sublime3c-selection-pass').isChecked());
+  assert(await page.locator('#sublime3c-selection-controls').isVisible());
   await page.locator('#batch-size').fill('3');await page.locator('#load').click();
   await page.waitForFunction(()=>document.querySelector('#object-title').textContent.includes('1004')&&!document.querySelector('#report').disabled);
   assert((await page.locator('#object-title').textContent()).includes('Current fit L0 · Adopted T1'));
@@ -59,7 +61,13 @@ try{
   await page.waitForFunction(()=>document.querySelector('#fit-filter-info').textContent.startsWith('4 spectra skipped'));
   assert((await page.locator('#object-title').textContent()).includes('1004'),'Last retained object remains visible at the end');
   assert((await page.locator('#fit-filter-info').textContent()).startsWith('4 spectra skipped'));
+  assert(requests.filter(x=>['queue','queue-count'].includes(x.op)).every(x=>x.body.sublime3c_selection_pass_only===true));
+  await page.locator('#sublime3c-selection-pass').uncheck();
+  await page.locator('#load').click();
+  await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+  assert.equal(requests.filter(x=>x.op==='queue').at(-1).body.sublime3c_selection_pass_only,false);
   await page.locator('#review-sample').selectOption('all');
+  assert(await page.locator('#sublime3c-selection-controls').isHidden());
   assert.equal(await page.locator('#current-fit-sptn').inputValue(),'');
   await page.locator('#specid').fill('11001');await page.locator('#load').click();
   await page.waitForFunction(()=>document.querySelector('#object-title').textContent.includes('Current fit K0')&&!document.querySelector('#report').disabled);

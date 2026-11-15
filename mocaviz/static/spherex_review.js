@@ -134,11 +134,13 @@
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
+    for (const name of ["review-sample", "sublime3c-selection-pass", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
       "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
+    $("sublime3c-selection-controls").hidden = sample !== "sublime3c";
+    $("sublime3c-selection-pass").disabled ||= sample !== "sublime3c";
     if (sample !== cnnFilterSample) {
       catalogCnnBySample.set(cnnFilterSample, $("cnn-probability").value);
       $("cnn-probability").value = catalogCnnBySample.get(sample) ?? (["all", "sublime2"].includes(sample) ? "0.8" : "");
@@ -222,6 +224,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.sublime3c_selection_pass_only) return 15;
     if (request.queue_order === "gal_cnn_snr_bin_spt") return 14;
     if (request.max_snr != null || request.max_sublime2_snr != null) return 12;
     if (request.cnn_priority_source === "combined" && ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 11;
@@ -241,6 +244,8 @@
     label.textContent = "Counting all matches…";
     try {
       const {total, queue_filter_version} = await api("queue-count", request);
+      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 15)
+        throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
       if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + ((request.min_current_fit_sptn != null || request.min_current_fit_gap != null) ? " database matches before current-fit cut" : " total matches at load");
@@ -295,6 +300,7 @@
             missing_vetting: $("missing-vetting").value,
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
+            sublime3c_selection_pass_only: $("review-sample").value === "sublime3c" && $("sublime3c-selection-pass").checked,
             queue_order: $("queue-order").value, cnn_priority_source: $("cnn-priority-source").value,
             min_spectral_cnn_probability: $("spectral-cnn-probability").value || null,
             adopted_spt_source: $("adopted-spt-source").value,
@@ -710,6 +716,8 @@
     if (params.has("batch_size")) $("batch-size").value = params.get("batch_size");
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
+    if (params.has("sublime3c_selection_pass_only"))
+      $("sublime3c-selection-pass").checked = !["0", "false"].includes(params.get("sublime3c_selection_pass_only"));
     $("current-fit-gap").value = params.has("min_current_fit_gap") ? params.get("min_current_fit_gap") : params.get("review_sample") === "sublime3c" ? "2" : "";
     $("current-fit-sptn").value = params.has("min_current_fit_sptn") ? params.get("min_current_fit_sptn") :
       params.get("review_sample") === "sublime3c" ? "10" : "";

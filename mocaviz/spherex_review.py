@@ -75,7 +75,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 14
+QUEUE_FILTER_VERSION = 15
+SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + NATIVE_FIT_VERSION + "];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",
@@ -607,7 +608,14 @@ def queue(cur, body, *, count_only=False):
     # once, rather than rescanning the catalog in a dependent EXISTS per spectrum.
     catalogs = []
     if sample in REVIEW_SAMPLES and not (sample == "sublime2" and detection_conditions):
-        catalogs.append((f"SELECT DISTINCT moca_oid FROM {REVIEW_SAMPLES[sample]} WHERE moca_oid IS NOT NULL", []))
+        catalog = f"SELECT DISTINCT moca_oid FROM {REVIEW_SAMPLES[sample]} WHERE moca_oid IS NOT NULL"
+        catalog_params = []
+        if sample == "sublime3c" and boolean(body.get("sublime3c_selection_pass_only")):
+            # Exact versioned prefix: LIKE would treat version underscores as wildcards.
+            # DISTINCT allows repeated detections when at least one current pass exists.
+            catalog += " AND LEFT(status,%s)=%s"
+            catalog_params = [len(SUBLIME3C_SELECTION_PREFIX), SUBLIME3C_SELECTION_PREFIX]
+        catalogs.append((catalog, catalog_params))
     if detection_conditions:
         catalogs.append(("SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 detection WHERE moca_oid IS NOT NULL AND " +
                          " AND ".join(detection_conditions), detection_params))

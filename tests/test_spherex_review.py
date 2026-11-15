@@ -222,6 +222,34 @@ class QueueSelectionTests(unittest.TestCase):
     def oids(self,mode="lane",score=4,**other):
         return [row["moca_oid"] for row in self.selection(mode,score,**other)["items"]]
 
+    def test_sublime3c_saved_selection_filters_rows_count_and_pagination(self):
+        self.db.execute("CREATE TABLE pcat_sublime_candidates_v3c(moca_oid INTEGER,status TEXT)")
+        prefix = review.SUBLIME3C_SELECTION_PREFIX
+        self.db.executemany("INSERT INTO pcat_sublime_candidates_v3c VALUES(?,?)", [
+            (1, prefix + "reason=L0plus_and_quality"),
+            (2, prefix.replace("PASS", "FAIL") + "reason=early_type"),
+            (3, None), (4, "AUTO_SELECTION_PASS[previous_version];"),
+            (5, prefix.replace("_", "x")), (6, prefix),
+            (6, prefix.replace("PASS", "FAIL")), (7, prefix[:-2] + "2];"),
+        ])
+        execute = self.cur.execute
+        self.cur.execute = lambda sql, params: execute(sql.replace("LEFT(status,", "SUBSTR(status,1,"), params)
+        body = {"lane": "spiffstacker", "missing_vetting": "all", "review_sample": "sublime3c",
+                "sublime3c_selection_pass_only": True, "limit": 1}
+        changes = self.db.total_changes
+        first = review.queue(self.cur, body)
+        self.assertEqual([x["moca_oid"] for x in first["items"]], [1])
+        second = review.queue(self.cur, {**body, "after": first["next_after"]})
+        self.assertEqual([x["moca_oid"] for x in second["items"]], [6])
+        self.assertFalse(second["has_more"])
+        self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 2})
+        unfiltered = {**body, "sublime3c_selection_pass_only": False, "limit": 20}
+        self.assertEqual([x["moca_oid"] for x in review.queue(self.cur, unfiltered)["items"]], list(range(1, 8)))
+        self.assertEqual(review.queue(self.cur, unfiltered, count_only=True), {"total": 7})
+        all_sample = {**body, "review_sample": "all", "limit": 20}
+        self.assertEqual(review.queue(self.cur, all_sample), review.queue(self.cur, {**all_sample, "sublime3c_selection_pass_only": False}))
+        self.assertEqual(self.db.total_changes, changes, "Filtering never writes human vetting or candidate rows")
+
     def test_missing_vetting_and_or_scopes_use_objects_not_only_selected_lane(self):
         self.assertEqual(self.oids("lane"),[1,2,6,11,13])
         self.assertEqual(self.oids("spiffstacker"),[1,2,6,11,13])
