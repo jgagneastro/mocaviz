@@ -23,7 +23,7 @@ sys.dont_write_bytecode = True
 import numpy as np
 import pandas as pd
 import pymysql
-from flask import Blueprint, jsonify, request, send_from_directory
+from flask import Blueprint, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from . import spherex_queue_metrics as metrics
@@ -1046,8 +1046,20 @@ def page():
     return send_from_directory(STATIC, "spherex_review.html")
 
 
+@review.get("/spherex-review-wiseview")
+def motion_frame():
+    from . import spherex_motion as motion
+    try:
+        prefix = request.script_root + request.path.rsplit("/", 1)[0]
+        return Response(motion.frame_html(prefix), mimetype="text/html")
+    except Exception:
+        return Response("WiseView is unavailable. Use Reload motion & cutout to retry.", status=503, mimetype="text/plain")
+
+
 @review.post("/api/spherex-review/<operation>")
 def api(operation):
+    from . import spherex_motion as motion
+    motion_writes = {"motion-preview", "motion-submit", "motion-undo"}
     try:
         if not request.is_json:
             raise ReviewError("Provide an application/json request.", 415)
@@ -1061,13 +1073,16 @@ def api(operation):
         if not isinstance(body, dict):
             raise ReviewError("Provide a JSON object.")
         mock = boolean(body.get("mock"))
-        if operation not in {"context", "queue", "queue-count", "analyze", "preview", "submit", "undo"}:
+        if operation not in {"context", "queue", "queue-count", "analyze", "preview", "submit", "undo", "motion-context", *motion_writes}:
             raise ReviewError("Unknown review operation.", 404)
         if mock:
-            if operation in {"preview", "submit", "undo"}:
+            if operation in {"preview", "submit", "undo", *motion_writes}:
                 raise ReviewError("Demo results cannot be written to MOCAdb.", 403)
             if operation == "context":
                 result = {"role": "demo", "can_write": False, "lanes": LANES, "classifications": CLASSIFICATIONS}
+            elif operation == "motion-context":
+                result = {"object": {key: body.get(key) for key in ("lane", "moca_oid", "moca_specid")},
+                          "review": None, "revision": "demo", "choices": motion.choices(), "motion_policy_version": motion.VERSION}
             elif operation == "queue-count":
                 result = {"total": 1 if body.get("moca_specid") not in (None, "") else 6}
             elif operation == "queue":
@@ -1081,7 +1096,7 @@ def api(operation):
                 result = demo_item(body)
         else:
             auth = credentials()
-            if operation in {"preview", "submit", "undo"}:
+            if operation in {"preview", "submit", "undo", *motion_writes}:
                 require_management(auth)
             with connection(auth) as (conn, cur):
                 if operation == "context":
@@ -1091,6 +1106,14 @@ def api(operation):
                     result = queue(cur, body, count_only=operation == "queue-count")
                 elif operation == "analyze":
                     result = analyze(cur, body)
+                elif operation == "motion-context":
+                    result = motion.context(cur, body)
+                elif operation == "motion-preview":
+                    result = motion.prepare(cur, auth, body)
+                elif operation == "motion-submit":
+                    result = motion.submit(conn, cur, auth, body)
+                elif operation == "motion-undo":
+                    result = motion.undo(conn, cur, auth, body)
                 elif operation == "preview":
                     result = prepare(cur, body, auth)
                 elif operation == "submit":
@@ -1101,6 +1124,7 @@ def api(operation):
             result["queue_filter_version"] = QUEUE_FILTER_VERSION
         if operation == "context":
             result["write_policy_version"] = WRITE_POLICY_VERSION
+            result["motion_policy_version"] = motion.VERSION
         return jsonify({"ok": True, **clean(result)})
     except ReviewError as exc:
         return jsonify(ok=False, error=str(exc)), exc.status

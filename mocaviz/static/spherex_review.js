@@ -12,6 +12,7 @@
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
   let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
   let plotShown = false;
+  const motionReview = window.SpherexMotionReview.create({api, writable, base, demo});
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
   const LOOKAHEAD = 50, FIT_CACHE_LIMIT = LOOKAHEAD + 14;
@@ -175,6 +176,7 @@
       writable() ? "Choose a quality label to submit and advance immediately. Undo restores the last decision." :
       context?.can_write ? "Enable submissions to classify. Preview is available without enabling writes." :
       "Read-only access. Management URL credentials are required to submit.";
+    motionReview.update();
     scheduleAutoNextBatch();
   }
   async function api(operation, body = {}, suppliedController = null) {
@@ -442,7 +444,7 @@
     const gen = ++generation;
     cancelQueuedAnalysis();
     const fitOptions = options();
-    current = null;
+    current = null; motionReview.clear();
     const visible = visibleIndices();
     if (!visible.length) {
       index = -1;
@@ -476,7 +478,7 @@
         await show(index + 1);
         return;
       }
-      current = data; render(data); status(data.warning || "Ready to review."); updateControls();
+      current = data; render(data); motionReview.show(data); status(data.warning || "Ready to review."); updateControls();
       for (const upcoming of upcomingItems())
         analysis(upcoming, queueLane, fitOptions, false, true).catch(() => {});
       updateCacheStatus();
@@ -666,9 +668,10 @@
     updateControls(); void drain();
   }
   function quit() {
+    if (motionReview.pending()) { error("Wait for the motion submission to finish before quitting."); return; }
     const count = pendingCount() + failedCount();
     if (count && !confirm("Quit and discard " + count + " pending submissions? Requests already sent may still commit; check MOCAdb before reviewing them again.")) return;
-    closed = true; clearTimeout(autoNextTimer); autoNextTimer = null;
+    closed = true; motionReview.close(); clearTimeout(autoNextTimer); autoNextTimer = null;
     for (const job of jobs) if (job.state === "queued") job.state = "cancelled";
     for (const controller of controllers) controller.abort();
     for (const name of Object.keys(auth)) auth[name] = "";
@@ -713,7 +716,7 @@
     updateControls();
   };
   window.addEventListener("beforeunload", (event) => {
-    if (!closed && (pendingCount() || failedCount())) { event.preventDefault(); event.returnValue = ""; }
+    if (!closed && (pendingCount() || failedCount() || motionReview.pending())) { event.preventDefault(); event.returnValue = ""; }
   });
   document.addEventListener("keydown", (event) => {
     if (closed || event.repeat) return;

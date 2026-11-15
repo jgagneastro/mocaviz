@@ -22,10 +22,12 @@
       };
     })();
   </script>
-  <link rel="stylesheet" href="static/spherex_review.css?v=20261115-psf-v18">
+  <link rel="stylesheet" href="static/spherex_review.css?v=20261115-motion-v1">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
-  <script defer src="static/spherex_review.js?v=20261115-psf-v18"></script>
+  <link rel="stylesheet" href="static/spherex_motion.css?v=20261115-motion-v1">
+  <script defer src="static/spherex_motion.js?v=20261115-motion-v1"></script>
+  <script defer src="static/spherex_review.js?v=20261115-motion-v1"></script>
 </head>
 <body>
   <header>
@@ -148,7 +150,26 @@
             <strong>Upload queue emptying...</strong>
             <span id="upload-remaining"></span><span id="upload-counts"></span>
           </div></div>
-        <div class="result-strip"><strong id="best-type">No fit loaded</strong><span id="fit-detail"></span></div></div>
+        <div class="result-strip"><strong id="best-type">No fit loaded</strong><span id="fit-detail"></span></div>
+        <section id="motion-panel" class="motion-panel" hidden aria-label="Optional WiseView motion review">
+          <h3>WiseView &amp; motion review (optional)</h3>
+          <p id="motion-target"></p><p id="motion-stored" role="status"></p>
+          <small>Save motion records an object-level motion decision only. Spectral quality is saved separately above.</small>
+          <div class="motion-grid">
+            <label>Motion classification<select id="motion-classification"><option value="">No motion decision selected</option></select></label>
+            <label>Motion comments<textarea id="motion-comments" rows="2" maxlength="4000"></textarea></label>
+          </div>
+          <label class="motion-check"><input id="motion-replace" type="checkbox">Replace this object's existing motion review</label>
+          <div class="motion-buttons">
+            <button id="motion-save" disabled>Save motion [Alt+M]</button>
+            <button id="motion-undo" disabled>Undo motion [Alt+U]</button>
+            <button id="motion-reload">Reload motion &amp; cutout [Alt+W]</button>
+          </div>
+          <p id="motion-last-action" role="status" aria-live="polite"></p>
+          <label class="motion-check"><input id="motion-autoload" type="checkbox" checked>Automatically load WiseView for the displayed spectrum</label>
+          <p id="motion-status" role="status"></p>
+          <iframe id="motion-frame" title="WiseView animation at the current object's coordinates" sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
+        </section></div>
         <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
       </div>
       <details><summary>Template ranking and stored result</summary><div class="table-wrap"><table><thead><tr><th>Type</th><th>Grid</th><th>Score</th><th>χ² (robust)</th><th>Points</th></tr></thead><tbody id="matches"></tbody></table></div><pre id="stored"></pre></details>

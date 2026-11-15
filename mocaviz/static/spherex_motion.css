@@ -1,0 +1,14 @@
+.motion-panel {margin:1.2rem 0 .5rem; padding:1rem; border:1px solid #c2d5de; border-radius:12px; background:#f4f9fa;}
+.motion-panel h3 {margin:0 0 .3rem; font-size:1.15rem;}
+.motion-panel p {margin:.45rem 0;}
+.motion-panel .motion-grid {display:grid; grid-template-columns:minmax(240px,1.2fr) minmax(200px,1fr); gap:.75rem; margin:.65rem 0;}
+.motion-panel label {display:block; font-weight:600;}
+.motion-panel select,.motion-panel textarea {box-sizing:border-box; width:100%; margin-top:.3rem;}
+.motion-panel .motion-check {display:flex; align-items:center; gap:.5rem; font-weight:400; margin:.6rem 0;}
+.motion-panel input[type=checkbox] {width:auto; margin:0;}
+.motion-panel .motion-buttons {display:flex; flex-wrap:wrap; gap:.5rem;}
+.motion-panel small {display:block; color:#486574; margin:.5rem 0;}
+#motion-frame {display:block; width:100%; height:850px; border:1px solid #c2d5de; background:#fff; border-radius:6px; margin-top:.7rem;}
+#motion-frame[hidden],.motion-panel[hidden] {display:none;}
+#motion-last-action {font-weight:600; color:#196878;}
+@media(max-width:700px) {.motion-panel .motion-grid {grid-template-columns:1fr;} #motion-frame {height:780px;}}

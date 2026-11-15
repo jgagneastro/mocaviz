@@ -415,3 +415,26 @@ In the SUBLIME3C sample, **SUBLIME3C PSF morphology → Passing only (exclude po
 The spectrum header displays a colored, text-labeled morphology flag, with per-map reasons in its tooltip. Native cube spectra are matched by the exact source-key spectrum name and object ID, never by another detection's best flag. Other reduction lanes use the latest active native cube spectrum for that object. No matching native detection is undefined. When combined with **Require all updated SUBLIME3C filters**, the same detection must satisfy both requirements. Direct spectrum-ID inspection intentionally bypasses queue cuts but still displays the flag.
 
 The existing diagnostic passes when either the deep or very-red map has a measured PSF pass. This optional review filter does not change the campaign's acceptance thresholds, human vettings, ignored flags, coordinates or object IDs.
+
+### Optional motion review and embedded WiseView
+
+The panel below the spectral plot automatically loads WiseView for the current
+object, without preloading animations for the spectral lookahead queue. Uncheck
+**Automatically load WiseView** to stop loading cutouts. **Reload motion & cutout
+[Alt+W]** refreshes the existing review and animation. The WCS crosshair marks the
+object's stored sky coordinates.
+
+Choose a motion classification and use **Save motion [Alt+M]**. This writes the
+existing `pcat_wiseview_visual_vetting` row with human provenance, reviewer,
+coordinates and the displayed spectrum ID. It does not submit a spectral label,
+change spectral types, set ignored flags, or advance the spectral queue. Existing
+motion decisions are displayed and require the separate replacement checkbox.
+**Undo motion [Alt+U]** restores the last motion decision; the standard spectral
+undo controls continue to act on spectral decisions. Refresh clears both undo
+histories. Motion saves use the same management/submissions-enabled requirement.
+
+Motion preview is read-only; signed receipts bind each save to the exact object,
+spectrum, position and previous review. Concurrent changes block save/undo.
+WiseView runs in an opaque sandbox; only anonymous coordinates and overlay
+settings cross that boundary. Cutout loading depends on WiseView's public image
+service; a failed optional finder image does not invalidate the WISE animation.
