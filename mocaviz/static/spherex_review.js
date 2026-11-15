@@ -134,13 +134,14 @@
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
     $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "sublime3c-selection-pass", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
+    for (const name of ["review-sample", "sublime3c-selection-pass", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
       "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"])
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
     $("sublime3c-selection-controls").hidden = sample !== "sublime3c";
     $("sublime3c-selection-pass").disabled ||= sample !== "sublime3c";
+    $("sublime3c-psf-morphology").disabled ||= sample !== "sublime3c";
     if (sample !== cnnFilterSample) {
       catalogCnnBySample.set(cnnFilterSample, $("cnn-probability").value);
       $("cnn-probability").value = catalogCnnBySample.get(sample) ?? (["all", "sublime2"].includes(sample) ? "0.8" : "");
@@ -224,6 +225,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
     if (request.sublime3c_selection_pass_only) return 17;
     if (request.missing_vetting === "both") return 16;
     if (request.queue_order === "gal_cnn_snr_bin_spt") return 14;
@@ -247,6 +249,8 @@
       const {total, queue_filter_version} = await api("queue-count", request);
       if (request.missing_vetting === "both" && (queue_filter_version ?? 0) < 16)
         throw new Error("The review service needs to be restarted to include SUBLIME aperture vettings.");
+      if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all" && (queue_filter_version ?? 0) < 18)
+        throw new Error("The review service needs to be restarted to count PSF morphology passes.");
       if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 17)
         throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
@@ -304,6 +308,7 @@
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
             sublime3c_selection_pass_only: $("review-sample").value === "sublime3c" && $("sublime3c-selection-pass").checked,
+            sublime3c_psf_morphology: $("review-sample").value === "sublime3c" ? $("sublime3c-psf-morphology").value : "all",
             queue_order: $("queue-order").value, cnn_priority_source: $("cnn-priority-source").value,
             min_spectral_cnn_probability: $("spectral-cnn-probability").value || null,
             adopted_spt_source: $("adopted-spt-source").value,
@@ -527,6 +532,21 @@
     $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
     if (fit?.fit_version === "native_signed_student4_v1")
       $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
+    const morphology = obj.sublime3c_morphology;
+    if (morphology) {
+      const flag = document.createElement("span");
+      const status = ["pass", "fail"].includes(morphology.status) ? morphology.status : "undefined";
+      flag.id = "header-psf-morphology";
+      flag.className = "psf-morphology-flag " + status;
+      flag.textContent = "PSF morphology: " + ({pass: "passing", fail: "poor", undefined: "undefined"}[status]);
+      const reasons = Object.entries(morphology.bands || {}).map(([band, result]) =>
+        band + ": " + (result.status || "undefined") + (result.reason ? " (" + String(result.reason).replaceAll("_", " ").replaceAll("|", ", ") + ")" : ""));
+      flag.title = (morphology.scope || "SUBLIME3C detection") +
+        (morphology.candidate_id ? " · candidate " + morphology.candidate_id : " · no matching detection") +
+        (reasons.length ? "\n" + reasons.join("\n") : "\nNo conclusive measurement available.") +
+        "\nDiagnostic flag only; human vetting is unchanged.";
+      $("object-meta").append(" · ", flag);
+    }
     const origin = document.createElement("div");
     origin.textContent = "Object origin: " + (obj.object_origin?.trim() || "—");
     $("object-meta").append(origin);
@@ -724,7 +744,7 @@
     $("current-fit-gap").value = params.has("min_current_fit_gap") ? params.get("min_current_fit_gap") : params.get("review_sample") === "sublime3c" ? "2" : "";
     $("current-fit-sptn").value = params.has("min_current_fit_sptn") ? params.get("min_current_fit_sptn") :
       params.get("review_sample") === "sublime3c" ? "10" : "";
-    for (const [param, id] of Object.entries({review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
+    for (const [param, id] of Object.entries({sublime3c_psf_morphology: "sublime3c-psf-morphology", review_sample: "review-sample", queue_order: "queue-order", min_sublime2_snr: "sublime2-snr",
       min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
       max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range",
       max_snr: "max-snr", max_sublime2_snr: "max-sublime2-snr",

@@ -55,6 +55,14 @@
         <div id="sublime3c-selection-controls" hidden>
           <label class="check"><input id="sublime3c-selection-pass" type="checkbox" checked title="Includes the full-spectrum and 1–2.5 µm evidence filter. Older unassessed rows are excluded; human reviews are preserved."> Require all updated SUBLIME3C filters</label>
           <small>SUBLIME3C only: requires a saved pass of the updated L0+, fit-separation, near-infrared evidence, CNN and channel-coverage criteria. Failed, unassessed and older-version flags are excluded before loading. Human vetting is unchanged. Reload the queue after changing this filter.</small>
+          <label>SUBLIME3C PSF morphology<select id="sublime3c-psf-morphology">
+            <option value="all" selected>All morphologies</option>
+            <option value="pass">Passing only (exclude poor + undefined)</option>
+            <option value="not_pass">Poor or undefined only</option>
+            <option value="fail">Poor only</option>
+            <option value="undefined">Undefined only</option>
+          </select></label>
+          <small>Optional image-shape filter, separate from spectral selection. Passing means a measured PSF pass in the deep or very-red map. Undefined includes missing or inconclusive measurements. Uses this native cube detection; other lanes use the latest active native cube detection for the object. Reload the queue to apply.</small>
         </div>
         <label>Adopted SPT source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option></select></label>
         <small>Used for type filtering, queue order and the SPT beside the object name. Public UCD candidates automatically selects public. Load a queue to apply changes.</small>

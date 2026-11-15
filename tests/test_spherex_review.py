@@ -378,7 +378,7 @@ class DirectSpectrumTests(unittest.TestCase):
 
     def cursor(self, meta=None):
         cur = MagicMock()
-        cur.fetchall.side_effect = [[meta or self.meta], self.item["raw_spectrum"], self.templates]
+        cur.fetchall.side_effect = [[meta or self.meta], self.item["raw_spectrum"], self.templates, []]
         return cur
 
     def test_exact_specid_bypasses_queue_filters_and_detects_all_packages(self):

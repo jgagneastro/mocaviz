@@ -407,3 +407,11 @@ value applies to both Load and Next batch, so changing it need not reset the
 loaded queue. Next batch retains the loaded sample filters and sorting cursor.
 `batch_size=...` in the page URL can override the default. Exact spectrum IDs
 continue to bypass queue filters and batch-size validation.
+
+### SUBLIME3C PSF morphology
+
+In the SUBLIME3C sample, **SUBLIME3C PSF morphology → Passing only (exclude poor + undefined)** removes measured failures and all missing, inconclusive, unrecognized or inconsistent morphology flags. **Poor or undefined only**, **Poor only** and **Undefined only** provide diagnostic queues. The default remains **All morphologies**. Reload the queue after changing it. Counts, ordering and subsequent batches use the same database filter (queue policy 18).
+
+The spectrum header displays a colored, text-labeled morphology flag, with per-map reasons in its tooltip. Native cube spectra are matched by the exact source-key spectrum name and object ID, never by another detection's best flag. Other reduction lanes use the latest active native cube spectrum for that object. No matching native detection is undefined. When combined with **Require all updated SUBLIME3C filters**, the same detection must satisfy both requirements. Direct spectrum-ID inspection intentionally bypasses queue cuts but still displays the flag.
+
+The existing diagnostic passes when either the deep or very-red map has a measured PSF pass. This optional review filter does not change the campaign's acceptance thresholds, human vettings, ignored flags, coordinates or object IDs.

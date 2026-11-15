@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from . import spherex_queue_metrics as metrics
+from . import spherex_morphology as morphology
 from .spherex_cnn_metadata import parse_comments, probability
 
 from .spherex_autotype_core import (
@@ -75,7 +76,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 17
+QUEUE_FILTER_VERSION = 18
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + SELECTION_VERSION + "];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
@@ -383,6 +384,7 @@ def analyze(cur, body):
     key = spectrum_lane(meta)
     state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
     meta.update(stored_spectral_cnn(state, specid))
+    meta["sublime3c_morphology"] = morphology.metadata(cur, specid, rows)
     options = fit_options(body)
     fit, warning = None, None
     try:
@@ -468,6 +470,9 @@ def queue(cur, body, *, count_only=False):
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
     key, lane = lane_for(body)
+    psf_mode = body.get("sublime3c_psf_morphology", "all")
+    if not isinstance(psf_mode, str) or psf_mode not in morphology.MODES:
+        raise ReviewError("Choose a valid SUBLIME3C PSF morphology filter.")
     order = body.get("queue_order", "oid_asc")
     orders = metrics.PRIORITY_ORDERS | {"spt_desc", "spt_asc", "oid_asc", "oid_desc"}
     if not isinstance(order, str) or order not in orders:
@@ -632,6 +637,14 @@ def queue(cur, body, *, count_only=False):
         else:
             spectrum_source += f" JOIN ({catalog}) {alias} ON {alias}.moca_oid=s.moca_oid"
         source_params.extend(catalog_params)
+    if sample == "sublime3c" and psf_mode != "all":
+        spectrum_source += " " + morphology.join_sql()
+        conditions.append("(" + morphology.status_sql() + ")" + ("<>%s" if psf_mode == "not_pass" else "=%s"))
+        params.append("pass" if psf_mode == "not_pass" else psf_mode)
+        if boolean(body.get("sublime3c_selection_pass_only")):
+            # Both requirements must describe the same detection.
+            conditions.append("LEFT(s3c_psf.status,%s)=%s")
+            params.extend((len(SUBLIME3C_SELECTION_PREFIX), SUBLIME3C_SELECTION_PREFIX))
     if body.get("min_abs_galactic_latitude") not in (None, ""):
         conditions.append("EXISTS (SELECT 1 FROM calc_galactic_coordinates gal WHERE gal.moca_oid=s.moca_oid AND gal.adopt_as_reference=1 AND ABS(gal.gb)>=%s)")
         params.append(bounded_float(body["min_abs_galactic_latitude"], "Minimum absolute Galactic latitude", 0, 90))

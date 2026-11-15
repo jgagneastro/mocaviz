@@ -20,3 +20,8 @@
 @media(prefers-reduced-motion:reduce){.upload-spinner{animation:none}}
 
 #sublime2-cuts[hidden]{display:none}
+
+.psf-morphology-flag{display:inline-block;padding:2px 6px;border:1px solid;border-radius:4px;font-weight:600}
+.psf-morphology-flag.pass{color:#185a42;background:#eaf7ee;border-color:#6ca891}
+.psf-morphology-flag.fail{color:#842e26;background:#fff0ec;border-color:#c88273}
+.psf-morphology-flag.undefined{color:#775316;background:#fff8e5;border-color:#c6a75f}
