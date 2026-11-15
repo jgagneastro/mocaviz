@@ -4,8 +4,10 @@
   window.SpherexMotionReview = {create({api, writable, base, demo}) {
     const $ = id => document.getElementById(id);
     let current = null, context = null, generation = 0, busy = false, closed = false;
-    let undoState = null;
-    const panel = $('motion-panel'), frame = $('motion-frame');
+    let undoState = null, loadTimer = null, watchdog = null, frameSerial = 0, activeFrame = '';
+    const stopTimers = () => {clearTimeout(loadTimer); clearTimeout(watchdog); loadTimer = watchdog = null;};
+    const panel = $('motion-panel');
+    let frame = $('motion-frame');
     const same = object => current && Number(current.object.moca_oid) === Number(object.moca_oid) &&
       Number(current.object.moca_specid) === Number(object.moca_specid);
     function update() {
@@ -19,31 +21,61 @@
       $('motion-undo').textContent = 'Undo motion' + (undoState ? ' for OID ' + undoState.object.moca_oid : '') + ' [Alt+U]';
     }
     function clear() {
-      ++generation; current = context = null; panel.hidden = true;
+      ++generation; stopTimers(); activeFrame = '';
+      current = context = null; panel.hidden = true;
       frame.removeAttribute('src'); frame.hidden = true;
       $('motion-classification').replaceChildren(new Option('No motion decision selected', ''));
       $('motion-comments').value = ''; $('motion-replace').checked = false;
       $('motion-stored').textContent = ''; $('motion-status').textContent = '';
       update();
     }
-    function loadFrame() {
+    function loadFrame(attempt = 0) {
+      stopTimers(); activeFrame = '';
       frame.removeAttribute('src'); frame.hidden = true;
-      if (!current || closed || !$('motion-autoload').checked) return;
+      if (!current || closed || !$('motion-autoload').checked) {
+        $('motion-status').textContent = ''; return;
+      }
       const {ra, dec} = current.object;
       if (!Number.isFinite(ra) || !Number.isFinite(dec)) {
         $('motion-status').textContent = 'No valid coordinates for WiseView.'; return;
       }
       if (demo) { $('motion-status').textContent = 'Demo: external cutouts are disabled.'; return; }
+      // A fresh browsing context cancels abandoned target requests and events.
+      const next = frame.cloneNode(false);
+      frame.replaceWith(next); frame = next;
+      frame.addEventListener('load', () => {
+        frame.contentWindow?.postMessage({kind:'wise-overlays', crosshairs:true, properMotion:false}, '*');
+      });
+      const request = activeFrame = 'motion-' + (++frameSerial);
+      const gen = generation;
       const url = new URL('spherex-review-wiseview', base);
-      url.hash = new URLSearchParams({ra, dec, size:75, band:3, speed:500, minbright:-50,
-        maxbright:500, window:5, diff_window:1, linear:1, color:'', zoom:9, border:0,
+      url.searchParams.set('frame', request);
+      url.hash = new URLSearchParams({ra, dec, size:30, band:3, speed:500, minbright:-50,
+        maxbright:500, window:5, diff_window:1, linear:1, color:'', zoom:40, border:0,
         gaia:1, invert:1, maxdyr:1, scandir:0, neowise:0, diff:0,
         outer_epochs:1, unique_window:1, smooth_scan:0, shift:0, pmra:0, pmdec:0});
       frame.src = url.href; frame.hidden = false;
+      $('motion-status').textContent = attempt ? 'Retrying WiseView cutout…' : 'Loading WiseView cutout…';
+      watchdog = setTimeout(() => {
+        if (activeFrame !== request || gen !== generation || !current || closed) return;
+        if (attempt === 0) loadFrame(1);
+        else $('motion-status').textContent = 'WiseView is taking longer than expected. Use Reload motion & cutout [Alt+W] to retry.';
+      }, 30000);
     }
-    frame.addEventListener('load', () => {
-      // Opaque frame: only public overlay settings, never credentials or IDs.
-      frame.contentWindow?.postMessage({kind:'wise-overlays', crosshairs:true, properMotion:false}, '*');
+    function scheduleFrame() {
+      stopTimers();
+      $('motion-status').textContent = $('motion-autoload').checked ? 'Waiting for target navigation to settle…' : '';
+      loadTimer = setTimeout(() => loadFrame(), 300);
+    }
+    window.addEventListener('message', event => {
+      const message = event.data;
+      // The opaque frame sends no credentials, IDs or classification data.
+      if (closed || !activeFrame || event.source !== frame.contentWindow ||
+          message?.kind !== 'spherex-motion-cutout' || message.frame !== activeFrame) return;
+      if (message.state === 'ready') {
+        clearTimeout(watchdog); watchdog = null;
+        $('motion-status').textContent = 'WiseView loaded.';
+      }
     });
     async function refreshContext() {
       if (!current || current.read_only || closed) return;
@@ -76,7 +108,7 @@
       clear(); current = data; panel.hidden = false;
       $('motion-target').textContent = (data.object.designation || 'Object') + ' · OID ' + data.object.moca_oid;
       if (data.read_only) $('motion-stored').textContent = 'Read-only spectrum; motion submissions are disabled.';
-      loadFrame(); void refreshContext(); update();
+      scheduleFrame(); void refreshContext(); update();
     }
     async function save() {
       update(); if ($('motion-save').disabled) return;
@@ -113,7 +145,7 @@
     $('motion-save').onclick = save; $('motion-undo').onclick = undo;
     $('motion-reload').onclick = () => { loadFrame(); void refreshContext(); };
     $('motion-classification').onchange = $('motion-replace').onchange = update;
-    $('motion-autoload').onchange = loadFrame;
+    $('motion-autoload').onchange = () => loadFrame();
     document.addEventListener('keydown', event => {
       if (closed || event.repeat || !event.altKey || event.ctrlKey || event.metaKey ||
           ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName) || event.target.isContentEditable) return;

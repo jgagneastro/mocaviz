@@ -39,6 +39,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('#motion-target').textContent.includes('1001')&&document.querySelector('#motion-classification').options.length>1);
   assert.equal(calls.filter(c=>c.op.startsWith('motion-')&&c.op!=='motion-context').length,0);
   assert(await page.locator('#motion-autoload').isChecked());
+  await page.waitForFunction(()=>document.querySelector('#motion-frame').getAttribute('src'));
   const src=await page.locator('#motion-frame').getAttribute('src');
   assert(src.includes('ra=123.1001'));assert(!src.includes('user=')&&!src.includes('password='));
   assert.equal(await page.locator('#motion-frame').getAttribute('sandbox'),'allow-scripts');

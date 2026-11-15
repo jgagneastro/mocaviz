@@ -219,7 +219,7 @@ def wiseview_url(ra, dec):
         {
             "ra": ra,
             "dec": dec,
-            "size": 75,
+            "size": 30,
             "band": 3,
             "speed": 500,
             "minbright": -50,
@@ -228,7 +228,7 @@ def wiseview_url(ra, dec):
             "diff_window": 1,
             "linear": 1,
             "color": "",
-            "zoom": 9,
+            "zoom": 40,
             "border": 0,
             "gaia": 1,
             "invert": 1,
@@ -261,7 +261,11 @@ def frame_html(prefix):
     crosshair = re.sub(r"</script", lambda _: r"<\/script", crosshair, flags=re.I)
     boot = """const p=new URLSearchParams(location.hash.slice(1));
         TargetCrosshair.install({ra_deg:Number(p.get('ra')),dec_deg:Number(p.get('dec'))});"""
+    lifecycle = (Path(__file__).parent / "static" / "spherex_motion_frame.js").read_text()
+    lifecycle = re.sub(r"</script", lambda _: r"<\/script", lifecycle, flags=re.I)
     # Install before the vendor's DOM-ready startup builds its swapper.
     return html.replace(
-        "</head>", "<script>" + crosshair + "\n" + boot + "</script></head>", 1
+        "</head>",
+        "<script>" + crosshair + "\n" + boot + "\n" + lifecycle + "</script></head>",
+        1,
     )
