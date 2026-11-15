@@ -32,7 +32,7 @@ from .spherex_cnn_metadata import parse_comments, probability
 from .spherex_autotype_core import (
     DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
 )
-from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, fit_spectrum_rows as native_fit_spectrum_rows
+from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, SELECTION_VERSION, fit_spectrum_rows as native_fit_spectrum_rows
 
 review = Blueprint("spherex_review", __name__)
 STATIC = Path(__file__).resolve().parent / "static"
@@ -75,8 +75,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 16
-SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + NATIVE_FIT_VERSION + "];"
+QUEUE_FILTER_VERSION = 17
+SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + SELECTION_VERSION + "];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",

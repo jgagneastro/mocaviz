@@ -53,8 +53,8 @@
         <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime3c">SUBLIME3C</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
         <div id="sublime3c-selection-controls" hidden>
-          <label class="check"><input id="sublime3c-selection-pass" type="checkbox" checked> Only updated-selection passes</label>
-          <small>SUBLIME3C only: requires a saved pass of the updated L0+, fit-separation, CNN and channel-coverage criteria. Failed, unassessed and older-version flags are excluded before loading. Human vetting is unchanged. Reload the queue after changing this filter.</small>
+          <label class="check"><input id="sublime3c-selection-pass" type="checkbox" checked title="Includes the full-spectrum and 1–2.5 µm evidence filter. Older unassessed rows are excluded; human reviews are preserved."> Require all updated SUBLIME3C filters</label>
+          <small>SUBLIME3C only: requires a saved pass of the updated L0+, fit-separation, near-infrared evidence, CNN and channel-coverage criteria. Failed, unassessed and older-version flags are excluded before loading. Human vetting is unchanged. Reload the queue after changing this filter.</small>
         </div>
         <label>Adopted SPT source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option></select></label>
         <small>Used for type filtering, queue order and the SPT beside the object name. Public UCD candidates automatically selects public. Load a queue to apply changes.</small>

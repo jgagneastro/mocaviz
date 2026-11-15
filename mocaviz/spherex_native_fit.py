@@ -7,6 +7,50 @@ to MOCAviz; parity is tested by hash. Template interpolation never extrapolates.
 import numpy as np
 
 VERSION = "native_signed_student4_v1"
+# Selection has its own version: a new rejection rule does not change the fitter.
+SELECTION_VERSION = "native_student4_nirguard_v1"
+NIR_GUARD_PARAMETERS = {
+    "selection_version": SELECTION_VERSION,
+    "nir_guard_full_delta_max": 10.0,
+    "nir_guard_short_delta_max": -2.0,
+    "nir_guard_wave_um": [1.0, 2.5],
+}
+
+
+def nir_evidence_guard(grid, wave, flux, error, full_fit, ignored=None):
+    """Reject weak full-spectrum L evidence contradicted by the 1–2.5 um fit.
+
+    These are penalized Student-t deviance differences, not sigma/probability.
+    Missing evidence is unassessed, never an automated bad classification.
+    Strong full-spectrum evidence bypasses the short-range contradiction test.
+    """
+    full_delta = full_fit.get("delta_early_minus_late")
+    result = dict(selection_version=SELECTION_VERSION, nir_guard_assessed=False,
+                  nir_guard_reject=False, fit_nir_delta=None, fit_nir_n_used=0,
+                  nir_guard_error=None)
+    if full_delta is None or not np.isfinite(full_delta):
+        result["nir_guard_error"] = "nonfinite_full_delta"
+        return result
+    if full_delta >= NIR_GUARD_PARAMETERS["nir_guard_full_delta_max"]:
+        result["nir_guard_assessed"] = True
+        return result
+    wave = np.asarray(wave, dtype=float)
+    mask = (wave < 10000.) | (wave >= 25000.)
+    if ignored is not None:
+        mask |= np.asarray(ignored, dtype=bool)
+    try:
+        partial = grid.fit(wave, flux, error, ignored=mask)
+        delta = partial["delta_early_minus_late"]
+        if delta is None or not np.isfinite(delta):
+            raise ValueError("nonfinite_short_delta")
+        result.update(nir_guard_assessed=True, fit_nir_delta=float(delta),
+                      fit_nir_n_used=int(partial["best"]["n_used"]),
+                      nir_guard_reject=bool(delta < NIR_GUARD_PARAMETERS["nir_guard_short_delta_max"]))
+    except ValueError as exc:
+        result["nir_guard_error"] = str(exc)
+    return result
+
+
 NU = 4.0
 
 

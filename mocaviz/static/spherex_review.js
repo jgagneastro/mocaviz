@@ -224,8 +224,8 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.sublime3c_selection_pass_only) return 17;
     if (request.missing_vetting === "both") return 16;
-    if (request.sublime3c_selection_pass_only) return 15;
     if (request.queue_order === "gal_cnn_snr_bin_spt") return 14;
     if (request.max_snr != null || request.max_sublime2_snr != null) return 12;
     if (request.cnn_priority_source === "combined" && ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 11;
@@ -247,7 +247,7 @@
       const {total, queue_filter_version} = await api("queue-count", request);
       if (request.missing_vetting === "both" && (queue_filter_version ?? 0) < 16)
         throw new Error("The review service needs to be restarted to include SUBLIME aperture vettings.");
-      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 15)
+      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 17)
         throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
