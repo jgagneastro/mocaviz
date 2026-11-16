@@ -462,7 +462,11 @@
     $("object-title").textContent = item.designation || "moca_oid=" + item.moca_oid;
     $("object-meta").textContent = "";
     $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining in loaded queue";
-    status("Fitting spectrum…"); updateControls();
+    const hasFitCut = [queueRequest.min_current_fit_sptn, queueRequest.min_current_fit_gap]
+      .some(value => value != null && value !== "");
+    status(hasFitCut ? "Checking current-fit cuts… " + fitHidden.size +
+      " spectra skipped by these cuts; no classifications saved by filtering." : "Fitting spectrum…");
+    updateControls();
     try {
       const data = await analysis(item, queueLane, fitOptions, refresh);
       if (gen !== generation || closed) return;

@@ -20,7 +20,7 @@ page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1);
   const body=route.request().postDataJSON(); requests.push({op,body});
-  assert(['context','queue','queue-count','analyze'].includes(op),'No vetting write is permitted');
+  assert(['context','queue','queue-count','analyze','motion-context'].includes(op),'No vetting write is permitted');
   const response=await route.fetch({postData:JSON.stringify({...body,mock:true})});
   const payload=await response.json();
   if(op==='queue'&&!body.moca_specid){
@@ -30,6 +30,9 @@ await page.route('**/api/spherex-review/*',async route=>{
     payload.next_after=payload.items.length?{moca_oid:payload.items.at(-1).moca_oid}:null;
   }
   if(op==='analyze'){
+    if (Number(body.moca_oid) === 1002) {
+      assert((await page.locator('#status').textContent()).includes('1 spectra skipped by these cuts; no classifications saved by filtering.'));
+    }
     const oid=payload.object.moca_oid;
     payload.object.adopted_spectral_type='T1';
     const number={1001:-10,1002:0,1004:10,1005:9.5}[oid];
