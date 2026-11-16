@@ -24,6 +24,12 @@ await page.route('**/api/findings/*',async route=>{
   }
   const response=await route.fetch();
   if(control)await control.promise;
+  if(op==='load' && response.ok()){
+   assert.equal(body.filters.min_motion,undefined,'Default minimum motion is disabled');
+   const json=await response.json();
+   Object.assign(json.rows[0],{motion:null,motion_class:null});
+   return await route.fulfill({status:response.status(),json});
+  }
   await route.fulfill({response});
  }catch(e){if(!closing&&!control?.retired)throw e;}
 });
@@ -41,6 +47,12 @@ try{
  assert.equal(await page.locator('#refresh-state-icon').evaluate(node=>getComputedStyle(node).animationName),'findings-refresh-spin');
  loadControl.release();loadControl=null;await complete();
  const count=await page.evaluate(()=>window.SublimeFindings.rows.length);assert(count>0);
+ assert.equal(await page.locator('input[name="min_motion"]').inputValue(),'');
+ assert.equal(await page.locator('.sample-metrics .metric').count(),3);
+ assert.equal(await page.getByText('With absolute W2',{exact:true}).count(),0);
+ await page.waitForFunction(()=>['histogram','motion','cmd'].every(id=>
+  document.getElementById(id)?.data?.some(trace=>trace.name==='No motion vetting'&&trace.showlegend)));
+ assert.ok(await page.locator('#motion').evaluate(plot=>plot.layout.yaxis.ticktext.includes('No motion vetting')));
 
  // A visible busy state spans both the catalog request and progressive diagnostics.
  const catalog=gate(),spectra=gate();loadControl=catalog;diagnosticControl=spectra;
@@ -80,7 +92,7 @@ try{
  // Make all legend classes visible in this mock fixture and verify no overlap.
  await page.evaluate(()=>{const definitions=window.SublimeFindings.plotClasses;window.SublimeFindings.rows.slice(0,definitions.length).forEach((row,i)=>{row.plot_class=definitions[i].key;row.plot_class_label=definitions[i].label;});});
  await page.locator('#hist-bin').selectOption('2');
- await page.waitForFunction(()=>document.querySelectorAll('#histogram .legend .traces').length===7);
+ await page.waitForFunction(()=>document.querySelectorAll('#histogram .legend .traces').length===window.SublimeFindings.plotClasses.length);
  const legendChecks=[];
  for(const width of [1440,1180,760]){
   await page.setViewportSize({width,height:1000});

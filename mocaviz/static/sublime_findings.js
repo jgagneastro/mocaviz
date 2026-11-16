@@ -4,20 +4,25 @@ const FindingClasses = (() => {
   const accepted = new Set(['good', 'good_candidate', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
   const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
   const definitions = [
-    {key:'known', label:'Known UCDs', color:'#bc7a3d', detail:'Existing published spectroscopic status, including confirmed duplicate links; takes precedence over the other classes.'},
+    {key:'known', label:'Known UCDs', color:'#bc7a3d', detail:'Published spectroscopic status, including confirmed duplicate links, with a stored WiseView motion review.'},
     {key:'known_candidate', label:'Known UCD candidates', color:'#c5a142', detail:'Public-adopted photometric spectral type joined by MOCAdb object ID. Spectroscopic known sources take precedence.'},
     {key:'claimed', label:'Claimed UCDs', color:'#b14e5a', detail:'BYW membership, a BYW, Yadu or Azul claim, or an SMDET designation. Applies after Known recovered and before the motion categories.'},
     {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'. WiseView score ≥ 5. Excludes known and claimed objects.'},
     {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'. WiseView score ≥ 3 and < 5. Excludes known and claimed objects.'},
     {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'. WiseView score from 1 through 2 inclusive. Excludes known and claimed objects.'},
-    {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including missing or nonqualifying reviews.'},
+    {key:'no_motion_vetting', label:'No motion vetting', color:'#656b76', detail:'No stored WiseView motion score or review label.'},
+    {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including nonqualifying reviews.'},
   ];
+  function motionScore(row) {
+    return row.motion==null || row.motion==='' ? NaN : Number(row.motion);
+  }
   function classify(row) {
+    const score=motionScore(row);
+    if(!Number.isFinite(score) && !String(row.motion_class??'').trim()) return 'no_motion_vetting';
     if(row.known) return 'known';
     if(row.known_candidate) return 'known_candidate';
     if(row.byw || row.byw_claim || row.yadu || row.azul || row.smdet) return 'claimed';
     const qualifies=['spiffstacker','spiff','sublimeaperture'].some(lane=>accepted.has(String(row[lane+'_quality']??'').trim().toLowerCase()));
-    const score=row.motion===null || row.motion===undefined || row.motion==='' ? NaN : Number(row.motion);
     if(!qualifies || !Number.isFinite(score)) return 'others';
     if(score>=5) return 'confirmed';
     if(score>=3) return 'candidate';
@@ -25,7 +30,7 @@ const FindingClasses = (() => {
     return 'others';
   }
   function isConfirmed(row,standard='good') {
-    const score=row.motion==null || row.motion==='' ? NaN : Number(row.motion);
+    const score=motionScore(row);
     return Number.isFinite(score) && score>=5 && ['spiffstacker','spiff','sublimeaperture'].some(lane=>{
       const quality=String(row[lane+'_quality']??'').trim().toLowerCase();
       return accepted.has(quality) && (standard==='good_candidate' || quality!=='good_candidate');
@@ -63,7 +68,7 @@ const FindingClasses = (() => {
         meta:{...trace.meta,plot_class:def.key}};
     });
   }
-  return {definitions,classify,annotate,groups,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point};
+  return {definitions,classify,annotate,groups,motionScore,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point};
 })();
 const FindingProbability = {
   epsilon:1e-6,
@@ -117,10 +122,10 @@ let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
 let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
-const defaults={sublime3c_pass_only:true,sources:Object.keys(sourceNames),min_spt:10,min_motion:1,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
+const defaults={sublime3c_pass_only:true,sources:Object.keys(sourceNames),min_spt:10,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
 function input(name,label,placeholder='',step='any'){return `<label>${esc(label)}<input name="${name}" type="${step==='text'?'text':'number'}" ${step==='text'?'':`step="${step}"`} placeholder="${esc(placeholder)}"></label>`;}
-function range(key,label){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum')}${input('max_'+key,'Maximum')}</div>`;}
+function range(key,label,minPlaceholder=''){return `<label>${esc(label)}</label><div class="range">${input('min_'+key,'Minimum',minPlaceholder)}${input('max_'+key,'Maximum')}</div>`;}
 function knownSwitch(group){return `<label class="check known-switch"><input type="checkbox" name="apply_known_${group}">Also apply filter to known sources</label>`;}
 function fs(title,html){return `<fieldset><legend>${esc(title)}</legend>${html}</fieldset>`;}
 const laneOptions=Object.entries(laneNames).map(([k,v])=>[k,v]);
@@ -132,7 +137,7 @@ fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best',
 fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text')+knownSwitch('detection'))+
 fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>'+knownSwitch('quality'))+
 fs('Spectrum S/N',select('snr_lane','Reduction lane',laneOptions)+range('snr','Median S/N per pixel')+knownSwitch('snr'))+
-fs('Motion quality',range('motion','WiseView motion score')+input('motion_classes','Include motion classes','none = no review','text')+'<p class="hint">5–6 clear motion · 3–4 potential · 1–2 still · 1.5 M-type · 0.5 undetected · 0 unclear · −1 bad</p>'+knownSwitch('motion'))+
+fs('Motion quality',range('motion','WiseView motion score','None')+input('motion_classes','Include motion classes','none = no review','text')+'<p class="hint">5–6 clear motion · 3–4 potential · 1–2 still · 1.5 M-type · 0.5 undetected · 0 unclear · −1 bad</p>'+knownSwitch('motion'))+
 fs('SUBLIME cutout quality',input('min_cutout','Minimum cutout score','4 = centered & isolated')+select('cutout_policy','Combine reviewed cutouts',[['all','All reviewed cutouts must pass'],['any','At least one reviewed cutout passes']])+input('cutout_classes','Include cutout classes','none = no cutout review','text')+'<p class="hint">4 centered & isolated · 3 centered & crowded · 2 off-center & isolated · 1 off-center & crowded · −1 halo</p>'+knownSwitch('cutout'))+
 fs('Catalog & claim membership',select('byw','In BYW',triOptions)+select('byw_claim','In BYW claimlists',triOptions)+select('yadu',"In Yadu’s claimlist",triOptions)+select('azul',"In Azul’s July 16, 2026 table",triOptions)+select('smdet','Has an SMDET designation',triOptions))+
 '<details class="filters-more" open><summary>Typing & visual-quality cuts by reduction</summary>'+Object.entries(laneNames).map(([k,v])=>fs(v,range(k+'_spt','Stored autotype number')+input('include_'+k,'Include visual classes','good, good_candidate, none','text')+input('exclude_'+k,'Exclude visual classes','bad, snr, scatter','text')+knownSwitch(k))).join('')+'</details>'+
@@ -185,8 +190,6 @@ async function load(){
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
   for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
   $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
-  const m=rows.filter(r=>finite(r.M_w2)).length,s=rows.filter(r=>finite(r.M_synthetic_w2)).length;
-  $('count-mw2').textContent=num(m);$('count-mw2-note').textContent=`Measured: ${num(m)} · synthetic: ${num(s)}`;
   setTab(tab);
   if(result.spectral_diagnostics_version===1){
    await loadDiagnostics(seq);if(seq!==dataGeneration)return;
@@ -269,7 +272,26 @@ function renderCharts(){
   type:'scatter',hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>SUBLIME2 detection S/N: %{y:.2f}<extra>'+n+'</extra>'
  })),l);
  $('sublime2-detection-snr-note').textContent=`${num(detected.length)} SUBLIME2 objects · ${num(rows.filter(r=>r.sublime2&&finite(r.spt)).length-detections.length)} missing detection S/N · SUBLIME2 catalog measurement · log y-axis${detections.length>detected.length?' · '+num(detections.length-detected.length)+' nonpositive values omitted':''}`;
- const moving=rows.filter(r=>finite(r.spt)&&finite(r.motion));l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;emptyNote(l,moving.length);plot('motion',groups(moving,(d,n,c)=>spectralScatterTrace(d,r=>r.motion,n,c)),l);
+ const scored=typed.filter(r=>finite(FindingClasses.motionScore(r)));
+ const unvetted=typed.filter(r=>r.plot_class==='no_motion_vetting');
+ l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;
+ let unvettedRow;
+ if(unvetted.length){
+  const low=Math.floor(scored.reduce((min,r)=>Math.min(min,FindingClasses.motionScore(r)),-1));
+  const high=Math.ceil(scored.reduce((max,r)=>Math.max(max,FindingClasses.motionScore(r)),6));
+  // Reserve a labeled display row below the numeric scores for objects without vetting.
+  unvettedRow=low-1;
+  const scoreTicks=Array.from({length:high-low+1},(_,i)=>low+i);
+  Object.assign(l.yaxis,{tickmode:'array',tickvals:[unvettedRow,...scoreTicks],
+   ticktext:['No motion vetting',...scoreTicks.map(String)]});
+ }
+ const motionRows=[...scored,...unvetted];
+ const motionTraces=groups(motionRows,(d,n,c)=>d[0]?.plot_class==='no_motion_vetting'
+  ?spectralScatterTrace(d,()=>unvettedRow,n,c,{
+   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<extra>'+n+'</extra>'
+  })
+  :spectralScatterTrace(d,FindingClasses.motionScore,n,c));
+ emptyNote(l,motionRows.length);plot('motion',motionTraces,l);
  const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
  const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));
  const positiveProperMotion=withProperMotion.filter(r=>r.pmtot_masyr>0);
@@ -779,7 +801,7 @@ for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-con
  }
  setFilters(cuts);load();
 };
-$('preset-sublime3c').onclick=()=>{setFilters({...defaults,sources:['sublime3c'],spt_source:'sublime3c',quality_any:'any',min_motion:null});load();};
+$('preset-sublime3c').onclick=()=>{setFilters({...defaults,sources:['sublime3c'],spt_source:'sublime3c',quality_any:'any'});load();};
 $('refresh').onclick=load;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;f.known_candidate=known==='no'?'no':'either';if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};

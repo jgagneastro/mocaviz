@@ -81,3 +81,6 @@
 
 /* Keep the wrapping spectral-census legend above the bars. */
 #histogram{height:395px}
+
+@media(min-width:851px){.sample-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:850px){.sample-metrics .mainmetric{grid-column:1/-1}}

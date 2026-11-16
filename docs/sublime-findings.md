@@ -32,7 +32,7 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
   membership selectors to **Absent / no** and selects **Unpublished**. It
   immediately applies those settings with the other current cuts.
   **Reset to default filter** restores and applies the dashboard defaults.
-- Minimum WiseView motion quality defaults to **1** (inclusive). Clear the minimum to disable this cut.
+- Minimum WiseView motion quality is blank by default. This includes sources without a motion review.
   Known UCDs, known UCD candidates, and claimed sources bypass quality cuts by default; each quality group has an opt-in checkbox.
 - The default sample includes L0+ objects outside the duplicate side of
   confirmed pairs, with good-family or `good_candidate` spectral quality in at least one lane.
@@ -157,10 +157,13 @@ node scripts/chromium_probe.mjs --url 'http://127.0.0.1:8901/?mock=1' --wait-js 
 
 ## Plot color classes
 
-All overview plots use the same mutually exclusive categories, in this order:
+All overview plots use the same mutually exclusive categories. Objects without
+a WiseView motion score or review label are shown as **No motion vetting** (slate),
+including in a labeled row below the numeric scores in the motion-score plot.
+Objects with a motion review use these classes in order:
 
 1. **Known UCDs** (ochre): the existing published-spectroscopic status,
-   including confirmed duplicate links, regardless of motion or spectral quality.
+   including confirmed duplicate links, regardless of score or spectral quality.
 2. **Known UCD candidates** (gold): a direct public-adopted photometric spectral-type join; spectroscopy takes precedence.
 3. **Claimed UCDs** (muted rose): BYW membership, a BYW, Yadu or Azul claim,
    or an SMDET designation. This class takes precedence over the motion categories.
@@ -173,8 +176,9 @@ All overview plots use the same mutually exclusive categories, in this order:
 7. **Others** (gray): every other object admitted by the current filters.
 
 Accepted reviews are exactly `good`, `good_candidate`, `contaminated_ucd`,
-`peculiar_ucd`, and `good_plus_star`. For the motion categories, missing or nonfinite scores, scores between
-2 and 3, and missing or nonqualifying spectral reviews fall into Others.
+`peculiar_ucd`, and `good_plus_star`. Objects with a motion review but no numeric score fall into Others unless a
+publication or claim category applies. Scores between 2 and 3 and missing or
+nonqualifying spectral reviews also fall into Others when no earlier class applies.
 The motion categories use the stored visual-vetting labels. Existing sample filters remain independent of the
 color classes. Measured and synthetic W2 share class colors; synthetic points
 use open diamonds (open triangles for photometric distances). The on-page legend
