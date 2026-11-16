@@ -76,8 +76,8 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 19
-SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + SELECTION_VERSION + "];"
+QUEUE_FILTER_VERSION = 20
+SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",
