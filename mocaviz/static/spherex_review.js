@@ -227,9 +227,9 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.sublime3c_selection_pass_only) return 20;
     if (request.queue_order === "snr_bin_spt") return 19;
     if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
-    if (request.sublime3c_selection_pass_only) return 17;
     if (request.missing_vetting === "both") return 16;
     if (request.queue_order === "gal_cnn_snr_bin_spt") return 14;
     if (request.max_snr != null || request.max_sublime2_snr != null) return 12;
@@ -254,7 +254,7 @@
         throw new Error("The review service needs to be restarted to include SUBLIME aperture vettings.");
       if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all" && (queue_filter_version ?? 0) < 18)
         throw new Error("The review service needs to be restarted to count PSF morphology passes.");
-      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 17)
+      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 20)
         throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
