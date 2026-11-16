@@ -76,7 +76,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 18
+QUEUE_FILTER_VERSION = 19
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[" + SELECTION_VERSION + "];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
@@ -413,23 +413,26 @@ def stored_chi2_sql(column):
     return "COALESCE(" + ",".join(expressions) + ")"
 
 
-def priority_queue_cursor(after, *, galactic_order=False):
-    keys = {"moca_oid", "cnn_bin", "spectral_subtype", "snr_1_2"}
-    if galactic_order:
+def priority_queue_cursor(after, order):
+    keys = {"moca_oid", "spectral_subtype", "snr_1_2"}
+    if order in metrics.CNN_ORDERS:
+        keys.add("cnn_bin")
+    if order in metrics.GALACTIC_ORDERS:
         keys.add("galactic_bin")
     if not isinstance(after, dict) or set(after) != keys:
         raise ReviewError("Invalid priority queue cursor. Reload the queue.")
-    galactic = ({"galactic_bin": integer(after["galactic_bin"], "Queue cursor Galactic latitude bin", 0, 3)}
-                if galactic_order else {})
-    return {
-        **galactic,
+    cursor = {
         "moca_oid": integer(after["moca_oid"], "Queue cursor object ID"),
-        "cnn_bin": integer(after["cnn_bin"], "Queue cursor CNN bin", 0, 1),
         "spectral_subtype": None if after["spectral_subtype"] is None else
             integer(after["spectral_subtype"], "Queue cursor rounded subtype", -100, 100),
         "snr_1_2": None if after["snr_1_2"] is None else
             bounded_float(after["snr_1_2"], "Queue cursor S/N", -sys.float_info.max, sys.float_info.max),
     }
+    if "cnn_bin" in keys:
+        cursor["cnn_bin"] = integer(after["cnn_bin"], "Queue cursor CNN bin", 0, 1)
+    if "galactic_bin" in keys:
+        cursor["galactic_bin"] = integer(after["galactic_bin"], "Queue cursor Galactic latitude bin", 0, 3)
+    return cursor
 
 
 def priority_after_sql(cursor):
@@ -481,6 +484,7 @@ def queue(cur, body, *, count_only=False):
     if cnn_source not in ("combined", "spectral", "sublime2"):
         raise ReviewError("Choose combined, spectral or SUBLIME2 CNN priority.")
     galactic_order = order in metrics.GALACTIC_ORDERS
+    cnn_order = order in metrics.CNN_ORDERS
     priority_order = order in metrics.PRIORITY_ORDERS
     rank_pixels = priority_order and not count_only
     type_order = order.startswith("spt_") or priority_order
@@ -490,7 +494,7 @@ def queue(cur, body, *, count_only=False):
     priority_cursor = None
     if after not in (None, 0):
         if priority_order:
-            priority_cursor = priority_queue_cursor(after, galactic_order=galactic_order)
+            priority_cursor = priority_queue_cursor(after, order)
         elif type_order:
             if not isinstance(after, dict) or set(after) != {"moca_oid", "spectral_type_number"}:
                 raise ReviewError("Invalid spectral-type queue cursor. Reload the queue.")
@@ -515,10 +519,11 @@ def queue(cur, body, *, count_only=False):
               AND a.{adopted_column}=1 AND a.ignored=0 AND a.spectral_type_number IS NOT NULL)"""
         type_projection = ",adopted.spectral_type_number AS sort_spt"
         if rank_pixels:
+            type_projection += ",ROUND(adopted.spectral_type_number,0) AS sort_subtype"
+        if rank_pixels and cnn_order:
             catalog_cnn = """(SELECT MAX(p2.visual_nn_good_probability)
                 FROM pcat_sublime_candidates_v2 p2 WHERE p2.moca_oid=s.moca_oid
                 AND p2.visual_nn_good_probability BETWEEN 0 AND 1)"""
-            type_projection += ",ROUND(adopted.spectral_type_number,0) AS sort_subtype"
             if cnn_source == "combined":
                 # Fetch each probability once; combine before coarse grouping and
                 # pagination. Repeated SQL expressions would repeat both lookups.
@@ -704,7 +709,7 @@ def queue(cur, body, *, count_only=False):
         # repeated selection inside MariaDB's window-ranking query.
         metadata = "s.moca_specid" if count_only else "s.moca_oid,s.moca_specid" + type_projection
         candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
-        if rank_pixels and cnn_source == "combined":
+        if rank_pixels and cnn_order and cnn_source == "combined":
             for row in candidates:
                 combined = combined_cnn_probability(row.pop("sort_spectral_cnn_probability"),
                                                     row.pop("sort_catalog_cnn_probability"))
@@ -739,8 +744,10 @@ def queue(cur, body, *, count_only=False):
     if len(records) >= limit:
         last = records[limit - 1]
         if priority_order:
-            next_after = {"moca_oid": last["moca_oid"], "cnn_bin": last["sort_cnn_bin"],
+            next_after = {"moca_oid": last["moca_oid"],
                           "spectral_subtype": last["sort_subtype"], "snr_1_2": last["sort_snr_1_2"]}
+            if cnn_order:
+                next_after["cnn_bin"] = last["sort_cnn_bin"]
             if galactic_order:
                 next_after["galactic_bin"] = last["sort_galactic_bin"]
         else:

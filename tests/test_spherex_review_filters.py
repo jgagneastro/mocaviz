@@ -350,6 +350,23 @@ class FilterSelectionTests(unittest.TestCase):
                 after = page['next_after']
             self.assertEqual(actual, expected)
 
+    def test_snr_bins_without_latitude_or_cnn_groups(self):
+        self.galactic_priority_fixture()
+        self.db.execute('UPDATE data_spectra SET flux_flambda=3.9 WHERE moca_specid=103')
+        order = 'snr_bin_spt'
+        expected = [2, 5, 3, 4, 7, 1, 6]
+        self.assertEqual(self.oids(queue_order=order), expected)
+        self.assertEqual(self.oids(queue_order=order, cnn_priority_source='combined'), expected)
+        after, actual = 0, []
+        while True:
+            page = self.queue(queue_order=order, after=after, limit=2)
+            actual.extend(row['moca_oid'] for row in page['items'])
+            if not page['has_more']:
+                break
+            after = page['next_after']
+            self.assertEqual(set(after), {'moca_oid', 'spectral_subtype', 'snr_1_2'})
+        self.assertEqual(actual, expected)
+
     def test_latitude_priority_pagination_and_count_cross_all_bands(self):
         expected=self.galactic_priority_fixture()
         for limit in (1,2,3):

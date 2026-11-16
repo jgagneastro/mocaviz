@@ -338,6 +338,10 @@ bin. The source can still be set to either CNN individually. The selected value
 is not used as a continuous rank inside a bin.
 The previous type-first orders, exact-type orders, and object-ID orders remain available.
 The S/N-bin order requires queue filter version 14.
+The selectable `snr_bin_spt` order uses the same bins and type tie-breaker
+across the filtered sample without grouping by latitude or CNN probability.
+It requires queue filter version 19. In Vetting, the saved ALL_S3C preset uses
+this order.
 
 The cursor carries the latitude bin, CNN bin, rounded subtype, median 1–2 micron S/N and
 object ID, rather than an offset, so classifying objects between batches does

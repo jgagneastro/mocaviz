@@ -227,6 +227,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.queue_order === "snr_bin_spt") return 19;
     if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
     if (request.sublime3c_selection_pass_only) return 17;
     if (request.missing_vetting === "both") return 16;
@@ -697,6 +698,24 @@
       linear: 1, color: "", zoom: "20.0", border: 0, gaia: 1, invert: 1, maxdyr: 1, scandir: 0,
       neowise: 0, diff: 0, outer_epochs: 1, unique_window: 1, smooth_scan: 0, shift: 0, pmra: 0, pmdec: 0});
     window.open("http://byw.tools/wiseview-v2#" + p, "_blank", "noopener,noreferrer");
+  }
+  // Update the existing Vetting preset once, preserving its other filters.
+  if (window.__spherexNativeVetting === true) {
+    const key = "spherex-review-datasets-v1";
+    const migration = key + ":all-s3c-snr-order-v1";
+    try {
+      if (!localStorage.getItem(migration)) {
+        const presets = new Map(JSON.parse(localStorage.getItem(key) || "[]"));
+        const preset = presets.get("ALL_S3C");
+        if (preset?.["review-sample"] === "sublime3c") {
+          presets.set("ALL_S3C", {...preset, "queue-order": "snr_bin_spt"});
+          localStorage.setItem(key, JSON.stringify([...presets]));
+          localStorage.setItem(migration, "1");
+        }
+      }
+    } catch {
+      // The reviewer remains usable if local storage is unavailable.
+    }
   }
   $("load").onclick = () => loadQueue(); $("more").onclick = () => loadQueue(true);
   $("specid").addEventListener("keydown", (event) => {

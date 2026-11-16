@@ -8,9 +8,11 @@ from itertools import groupby
 from math import floor
 
 PIXEL_BATCH = 4000
+SNR_TYPE_ORDER = "snr_bin_spt"
 SNR_BIN_ORDER = "gal_cnn_snr_bin_spt"
 GALACTIC_ORDERS = {"gal_cnn_spt_snr", SNR_BIN_ORDER}
-PRIORITY_ORDERS = GALACTIC_ORDERS | {"cnn_spt_snr"}
+CNN_ORDERS = GALACTIC_ORDERS | {"cnn_spt_snr"}
+PRIORITY_ORDERS = CNN_ORDERS | {SNR_TYPE_ORDER}
 
 
 def chunks(values):
@@ -75,15 +77,17 @@ def descending(value):
     return value is None, -value if value is not None else 0
 
 
-def coarse_key(row, galactic, snr_first):
-    key = ((row['sort_galactic_bin'],) if galactic else ()) + (row['sort_cnn_bin'],)
-    return key if snr_first else key + descending(row['sort_subtype'])
+def coarse_key(row, order):
+    if order == SNR_TYPE_ORDER:
+        return ()
+    key = ((row['sort_galactic_bin'],) if order in GALACTIC_ORDERS else ()) + (row['sort_cnn_bin'],)
+    return key if order == SNR_BIN_ORDER else key + descending(row['sort_subtype'])
 
 
-def priority_key(row, galactic, snr_first):
+def priority_key(row, order):
     snr = row.get('sort_snr_1_2')
-    key = coarse_key(row, galactic, snr_first)
-    if snr_first:
+    key = coarse_key(row, order)
+    if order in (SNR_BIN_ORDER, SNR_TYPE_ORDER):
         # A signed median in [n, n+1) belongs to bin n. Rebuild the
         # same bin from the cursor's median when paging.
         key += descending(floor(snr) if snr is not None else None)
@@ -93,18 +97,19 @@ def priority_key(row, galactic, snr_first):
 
 def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read, maximum=None):
     priority = order in PRIORITY_ORDERS
-    galactic = order in GALACTIC_ORDERS
-    snr_first = order == SNR_BIN_ORDER
     after_key = None
     if priority:
         if cursor is not None:
-            after = dict(moca_oid=cursor['moca_oid'],sort_cnn_bin=cursor['cnn_bin'],
-                sort_subtype=cursor['spectral_subtype'],sort_snr_1_2=cursor['snr_1_2'])
-            if galactic: after['sort_galactic_bin']=cursor['galactic_bin']
-            after_key = priority_key(after, galactic, snr_first)
-            after_group = coarse_key(after, galactic, snr_first)
-            candidates = [row for row in candidates if coarse_key(row, galactic, snr_first) >= after_group]
-        group_key = lambda row: coarse_key(row, galactic, snr_first)
+            after = dict(moca_oid=cursor['moca_oid'], sort_subtype=cursor['spectral_subtype'],
+                         sort_snr_1_2=cursor['snr_1_2'])
+            if order in CNN_ORDERS:
+                after['sort_cnn_bin'] = cursor['cnn_bin']
+            if order in GALACTIC_ORDERS:
+                after['sort_galactic_bin'] = cursor['galactic_bin']
+            after_key = priority_key(after, order)
+            after_group = coarse_key(after, order)
+            candidates = [row for row in candidates if coarse_key(row, order) >= after_group]
+        group_key = lambda row: coarse_key(row, order)
         candidates.sort(key=group_key)
         groups = (list(group) for _, group in groupby(candidates, key=group_key))
     else:
@@ -123,9 +128,9 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
         snr=ordering_snr(cur,[row['moca_specid'] for row in group],read) if priority else {}
         for row in group:row['sort_snr_1_2']=snr.get(row['moca_specid'])
         if priority:
-            group.sort(key=lambda row: priority_key(row, galactic, snr_first))
+            group.sort(key=lambda row: priority_key(row, order))
             if after_key is not None:
-                group = [row for row in group if priority_key(row, galactic, snr_first) > after_key]
+                group = [row for row in group if priority_key(row, order) > after_key]
         selected.extend(group[:limit+1-len(selected)])
         if len(selected)>limit:break
     return selected
