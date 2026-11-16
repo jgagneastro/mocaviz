@@ -8,6 +8,8 @@ import re
 import statistics
 import time
 from pathlib import Path
+import sqlite3
+from contextlib import closing
 
 from . import spherex_review as sr
 
@@ -15,6 +17,64 @@ MAX_ITEMS = 96
 BANDS = ('all', 'one_five', 'nir', 'mid', 'red')
 ROOT = Path(os.environ.get('FINDINGS_AUTOTYPE_ROOT', '/Volumes/TData2/Documents/Science_Products/autotype_plots'))
 _DIRECTORIES = {}
+
+
+# Spectral points can be corrected in place; recent summaries expire even for a stable ID.
+CACHE_TTL = 3600
+CACHE_PATH = Path(os.environ.get('FINDINGS_DIAGNOSTICS_CACHE',
+                  Path.home()/'.cache'/'mocaviz'/'findings-diagnostics-v1.sqlite3'))
+
+
+class DiagnosticCache:
+    """Cache summaries only, scoped to a successfully authenticated database account."""
+
+    def __init__(self, account, path=None):
+        self.account = account
+        self.path = path if path is not None else CACHE_PATH
+
+    def connect(self):
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(fd)
+        db = sqlite3.connect(self.path, timeout=2)
+        try:
+            db.execute("""CREATE TABLE IF NOT EXISTS summaries (
+                account TEXT NOT NULL, specid INTEGER NOT NULL, expires REAL NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY (account, specid)
+            )""")
+            db.execute('CREATE INDEX IF NOT EXISTS summaries_expires ON summaries(expires)')
+        except sqlite3.Error:
+            db.close()
+            raise
+        return db
+
+    def get(self, items):
+        ids = tuple(item['moca_specid'] for item in items)
+        if not ids:
+            return {}
+        placeholders = ','.join('?' for _ in ids)
+        result = {}
+        try:
+            with closing(self.connect()) as db:
+                rows = db.execute(f'SELECT specid,payload FROM summaries WHERE account=? AND expires>? '
+                                  f'AND specid IN ({placeholders})', (self.account, time.time(), *ids))
+                for specid, payload in rows:
+                    result[specid] = json.loads(payload)
+        except (OSError, sqlite3.Error, ValueError):
+            return {}
+        return result
+
+    def save(self, results):
+        now = time.time()
+        try:
+            with closing(self.connect()) as db, db:
+                db.execute('DELETE FROM summaries WHERE expires<=?', (now,))
+                db.executemany('INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)',
+                               ((self.account, row['moca_specid'], now+CACHE_TTL,
+                                 json.dumps(row, separators=(',', ':'))) for row in results))
+        except (OSError, sqlite3.Error):
+            # A locked or unavailable cache should not prevent a database-backed response.
+            pass
 
 
 def number(value):
@@ -132,7 +192,7 @@ def sidecar_metrics(item):
     return {'chi2': None, 'cnn': None, 'fit_source': None, 'cnn_source': None}
 
 
-def load(cur, items):
+def load(cur, items, cache=None):
     if not items:
         return []
     ids = sorted({item['moca_specid'] for item in items})
@@ -144,9 +204,17 @@ def load(cur, items):
     valid = [item for item in items if item['moca_specid'] in meta
              and meta[item['moca_specid']]['moca_oid'] == item['moca_oid']
              and meta[item['moca_specid']]['moca_specpackid'] == sr.LANES[item['lane']]['pack']]
-    valid_ids = sorted({item['moca_specid'] for item in valid})
+    cached = cache.get(valid) if cache else {}
+    hits = {}
+    for item in valid:
+        specid = item['moca_specid']
+        summary = cached.get(specid)
+        if summary and all(summary.get(key)==value for key,value in item.items()):
+            hits[specid] = summary
+    missing = [item for item in valid if item['moca_specid'] not in hits]
+    valid_ids = sorted({item['moca_specid'] for item in missing})
     if not valid_ids:
-        return []
+        return [hits[item['moca_specid']] for item in valid]
     placeholders = ','.join(['%s'] * len(valid_ids))
     cur.execute('SELECT moca_specid,wavelength_angstrom,flux_flambda,flux_flambda_unc FROM data_spectra '
                 f'WHERE moca_specid IN ({placeholders}) AND ignored=0 LIMIT 1000001', tuple(valid_ids))
@@ -160,7 +228,7 @@ def load(cur, items):
                 f'WHERE moca_specid IN ({placeholders}) AND ignored=0 ORDER BY id DESC', tuple(valid_ids))
     types = list(cur.fetchall())
     result = []
-    for item in valid:
+    for item in missing:
         metrics = sidecar_metrics(item)
         if metrics['chi2'] is None:
             row = next((row for row in types if row['moca_specid'] == item['moca_specid']
@@ -169,7 +237,10 @@ def load(cur, items):
             if metrics['chi2'] is not None:
                 metrics['fit_source'] = 'Exact-spectrum stored autotype comments'
         result.append({**item, **metrics, 'snr': summarize(grouped[item['moca_specid']])})
-    return result
+    if cache:
+        cache.save(result)
+    summaries = {**hits, **{row['moca_specid']:row for row in result}}
+    return [summaries[item['moca_specid']] for item in valid]
 
 
 def demo(items):

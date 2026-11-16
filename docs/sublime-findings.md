@@ -326,11 +326,16 @@ to be displayed on linear axes (both axes default logarithmic).
 
 **Refresh data** displays a sticky status banner with a spinning indicator and
 elapsed time. It first shows **Refreshing data…** for the catalog/review/photometry
-query, then **Refreshing spectra…** with actual diagnostic progress. The button
-is disabled and reads **Refreshing…** until both phases finish. A persistent
-checkmark and **Refresh complete** identify success; failures show **Refresh
-failed**, and unsuccessful diagnostic batches produce **Refresh completed with
-gaps** with a retry message. All outcomes re-enable the refresh button.
+query, then marks the sample ready for use. The spectrum S/N histogram uses
+the stored median per-pixel S/N for the reduction selected in the sample
+filters. Both axes are logarithmic, and the caption reports missing and
+nonpositive measurements.
+
+The detailed spectral diagnostics start when their section comes into view
+or when **Load spectral diagnostics** is pressed. Their progress and retry
+button are in the diagnostics section. The local service caches summaries
+by authenticated account and spectrum ID for one hour. Each request still
+checks that the object and spectrum are active and the reduction matches.
 
 Applying another filter set cancels the previous refresh and starts a new one;
 responses from earlier requests cannot stop or overwrite the current indicator.

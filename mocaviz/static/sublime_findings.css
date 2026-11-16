@@ -68,8 +68,6 @@
 .refresh-state-copy strong{font-size:16px;line-height:1.3}
 .refresh-state-copy>span{font-size:12px;line-height:1.5}
 #refresh-state-elapsed{font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
-#refresh-state-progress{width:100%;height:5px;accent-color:#0d6961;margin-top:3px}
-#refresh-state-progress[hidden]{display:none}
 .refresh-state[data-state=error]{background:#fff0ed;border-color:#edb6a9;color:#9c3326}
 .refresh-state[data-state=partial]{background:#fff7e6;border-color:#e2c584;color:#80581a}
 #refresh[aria-busy=true]{opacity:1;background:#e1f2eb;border-color:#87bdae;color:#164f46;cursor:progress}

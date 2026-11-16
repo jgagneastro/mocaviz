@@ -6,13 +6,17 @@ No application import starts jobs, queries the database, or writes files.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
+import gzip
+from hashlib import sha256
+from io import BytesIO
 import json
 import math
 import time
 from pathlib import Path
 
 import pymysql
-from flask import Blueprint, Flask, jsonify, request, send_from_directory
+from flask import Blueprint, Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from . import spherex_review as sr
@@ -25,6 +29,8 @@ STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
 SOURCES = {'sublime1': 'pcat_sublime_candidates', 'sublime2': 'pcat_sublime_candidates_v2',
            'sublime3c': 'pcat_sublime_candidates_v3c', 'redmovers': 'pcat_catwise2020_red_movers'}
+CLAIM_TABLES = ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw',
+                'pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026')
 CLAIM_TOKENS = ('yadu', 'tom', 'bickle', 'sarah', 'azul', 'eastonh')
 MAX_OBJECTS = 100000
 LANES = ('spiff', 'spiffstacker', 'sublimeaperture')
@@ -134,7 +140,7 @@ def known_expression(alias):
     oid=alias+'.moca_oid'
     published="d.public_adopted=1 AND d.photometric_estimate=0 AND d.ignored=0 AND d.spectral_type_number>=0"
     return '('+(' OR '.join((
-        'EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid='+oid+' AND '+published+')',
+        '(SELECT d.id FROM data_spectral_types d WHERE d.moca_oid='+oid+' AND '+published+' LIMIT 1) IS NOT NULL',
         "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.moca_oid WHERE dup.classification='y' AND dup.potential_duplicated_moca_oid="+oid+' AND '+published+')',
         "EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup JOIN data_spectral_types d ON d.moca_oid=dup.potential_duplicated_moca_oid WHERE dup.classification='y' AND dup.moca_oid="+oid+' AND '+published+')'
     )))+')'
@@ -144,11 +150,10 @@ def protected_expression(alias='mo'):
     """Same known/candidate/claim membership used by the browser's color classes."""
     oid = alias+'.moca_oid'
     terms = [known_expression(alias),
-             'EXISTS (SELECT 1 FROM data_spectral_types d WHERE d.moca_oid='+oid+
-             ' AND d.public_adopted=1 AND d.photometric_estimate=1 AND d.ignored=0 AND d.spectral_type_number>=0)']
-    for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw',
-                  'pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
-        terms.append('EXISTS (SELECT 1 FROM '+table+' c WHERE c.moca_oid='+oid+')')
+             '(SELECT d.id FROM data_spectral_types d WHERE d.moca_oid='+oid+
+             ' AND d.public_adopted=1 AND d.photometric_estimate=1 AND d.ignored=0 AND d.spectral_type_number>=0 LIMIT 1) IS NOT NULL']
+    for table in CLAIM_TABLES:
+        terms.append('(SELECT 1 FROM '+table+' c WHERE c.moca_oid='+oid+' LIMIT 1) IS NOT NULL')
     terms.append("EXISTS (SELECT 1 FROM mechanics_all_designations c WHERE c.moca_oid="+oid+" AND c.designation LIKE 'SMDET%%')")
     return '('+' OR '.join(terms)+')'
 
@@ -164,10 +169,10 @@ def apply_quality(row, filters, group):
 def quality_condition(mode, oid='mo.moca_oid'):
     """SQL quality semantics, including unreviewed active reductions for all modes."""
     def reviewed(cfg, classes=None):
-        sql='EXISTS (SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid='+oid
+        sql='(SELECT 1 FROM `'+cfg['table']+'` q WHERE q.moca_oid='+oid
         if classes:
             sql+=' AND LOWER(q.classification) IN ('+','.join("'"+c+"'" for c in classes)+')'
-        return sql+')'
+        return sql+' LIMIT 1) IS NOT NULL'
     if mode=='any':return '1=1'
     if mode in ALL_QUALITY:
         available=[];passing=[]
@@ -180,32 +185,99 @@ def quality_condition(mode, oid='mo.moca_oid'):
     return ('NOT ' if mode=='unreviewed' else '')+'('+' OR '.join(clauses)+')'
 
 
-def selected_sql(f):
-    """Keep the large catalogue union in SQL; never download an unfiltered catalogue."""
-    unions = ['SELECT moca_oid, 0 AS is_other FROM `' + SOURCES[s] + '` WHERE moca_oid IS NOT NULL'
-              for s in f['sources'] if s in SOURCES]
-    if f['sublime3c_pass_only'] and 'sublime3c' in f['sources']:
-        prefix='AUTO_SELECTION_PASS[native_signed_student4_v1];'
-        unions=[q+" AND SUBSTR(status,1,"+str(len(prefix))+")='"+prefix+"'" if '`pcat_sublime_candidates_v3c`' in q else q for q in unions]
-    if 'other' in f['sources']:
-        if f['apply_known_quality'] and (f['quality_any'] in QUALITY_CLASSES or f['quality_any']=='reviewed'):
-            classes=QUALITY_CLASSES.get(f['quality_any'])
-            quality_where=' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
-            seed=' UNION '.join('SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in LANE_CONFIG.values())
-        else:
+def possible_types_sql(f):
+    # A conservative prefilter for objects that can meet the selected type minimum.
+    if f['min_spt'] is None:
+        return None
+    threshold = str(float(f['min_spt']))
+    if f['spt_source']=='published':
+        candidates='SELECT d.moca_oid FROM data_spectral_types d WHERE d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>='+threshold
+    elif f['spt_source']=='adopted':
+        candidates='SELECT d.moca_oid FROM data_spectral_types d WHERE d.adopted=1 AND d.ignored=0 AND d.spectral_type_number>='+threshold
+    elif f['spt_source'] in LANES:
+        methods=','.join("'"+m+"'" for m in LANE_CONFIG[f['spt_source']]['methods'])
+        candidates='SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0 AND d.calculation_method IN ('+methods+') AND d.spectral_type_number>='+threshold
+    elif f['spt_source']=='sublime3c':
+        candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v3c WHERE autotype_spectral_type_number>='+threshold
+    elif f['spt_source']=='sublime2':
+        candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='+threshold
+    else:
+        eligible = (
+            'd.adopted=1 AND d.photometric_estimate=0',
+            'd.public_adopted=1',
+            'd.calculation_method IN ('+','.join("'"+method+"'" for lane in LANE_CONFIG.values() for method in lane['methods'])+')',
+        )
+        candidates = ' UNION '.join(
+            'SELECT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0 AND d.spectral_type_number>='
+            + threshold + ' AND '+predicate for predicate in eligible
+        )
+    return candidates
+
+
+def reviewed_candidate_sql(f):
+    """Select review matches and the possible exemptions before looking up types."""
+    if f['quality_any'] not in QUALITY_CLASSES and f['quality_any']!='reviewed':
+        return None
+    classes = QUALITY_CLASSES.get(f['quality_any'])
+    quality_where = ' WHERE LOWER(classification) IN ('+','.join("'"+c+"'" for c in classes)+')' if classes else ''
+    seeds = ['SELECT moca_oid FROM `'+cfg['table']+'`'+quality_where for cfg in LANE_CONFIG.values()]
+    if not f['apply_known_quality']:
+        types = possible_types_sql(f)
+        if types is None:
+            # Without a type threshold, seed from the catalogues to avoid sending all public IDs.
+            return None
+        seeds += [
+            'SELECT typed.moca_oid FROM ('+types+') typed WHERE (SELECT id FROM data_spectral_types '
+            'WHERE moca_oid=typed.moca_oid AND public_adopted=1 AND ignored=0 AND spectral_type_number>=0 LIMIT 1) IS NOT NULL',
+            "SELECT moca_oid FROM pcat_duplicated_vetting WHERE classification='y'",
+            "SELECT potential_duplicated_moca_oid FROM pcat_duplicated_vetting WHERE classification='y'",
+            *('SELECT moca_oid FROM '+table for table in CLAIM_TABLES),
+            "SELECT moca_oid FROM mechanics_all_designations WHERE designation LIKE 'SMDET%%'",
+        ]
+    return ' UNION '.join(seeds)
+
+
+def selected_sql(f, candidate_ids=None):
+    """Retrieve ranked types and provenance for the requested catalog sample."""
+    bounded = candidate_ids is not None
+    pass_only = f['sublime3c_pass_only']
+    pass_prefix = "SUBSTR(status,1,47)='AUTO_SELECTION_PASS[native_signed_student4_v1];'"
+    catalog_tests = []
+    for source, table in SOURCES.items():
+        if source in f['sources']:
+            match = '(SELECT 1 FROM `'+table+'` WHERE moca_oid=mo.moca_oid'
+            catalog_tests.append(match + (' AND '+pass_prefix if source=='sublime3c' and pass_only else '') + ' LIMIT 1) IS NOT NULL')
+    other_tests = [
+        '(SELECT private_type.id FROM data_spectral_types private_type WHERE private_type.moca_oid=mo.moca_oid '
+        'AND private_type.adopted=1 AND private_type.ignored=0 AND private_type.spectral_type_number>=0 LIMIT 1) IS NOT NULL',
+        'NOT '+known_expression('mo'),
+        *(('(SELECT 1 FROM `'+table+'` WHERE moca_oid=mo.moca_oid LIMIT 1) IS NULL' if bounded
+           else 'mo.moca_oid NOT IN (SELECT c.moca_oid FROM `'+table+'` c WHERE c.moca_oid IS NOT NULL)')
+          for table in SOURCES.values()),
+    ]
+    if bounded:
+        origin, sample_join = 'moca_objects mo', ''
+    else:
+        unions = [
+            'SELECT moca_oid, 0 AS is_other FROM `'+table+'` WHERE moca_oid IS NOT NULL'
+            + (' AND '+pass_prefix if source=='sublime3c' and pass_only else '')
+            for source, table in SOURCES.items() if source in f['sources']
+        ]
+        if 'other' in f['sources']:
             methods = ','.join("'" + method + "'" for cfg in LANE_CONFIG.values() for method in cfg['methods'])
             seed = ('SELECT DISTINCT moca_oid FROM data_spectral_types WHERE ignored=0 '
                     'AND spectral_type_number IS NOT NULL AND calculation_method IN (' + methods + ')')
-        other_from = '(' + seed + ') eligible JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid'
-        adopted_m0 = ('EXISTS (SELECT 1 FROM data_spectral_types private_type WHERE private_type.moca_oid=mo.moca_oid '
-                      'AND private_type.adopted=1 AND private_type.ignored=0 AND private_type.spectral_type_number>=0)')
-        unions.append('SELECT mo.moca_oid, 1 AS is_other FROM '+other_from+' WHERE mo.ignored=0 AND '+adopted_m0+
-                      ' AND NOT '+known_expression('mo')+' AND ' +
-                      ' AND '.join('mo.moca_oid NOT IN (SELECT c.moca_oid FROM `' + t + '` c WHERE c.moca_oid IS NOT NULL)' for t in SOURCES.values()))
+            unions.append('SELECT mo.moca_oid, 1 AS is_other FROM ('+seed+') eligible '
+                          'JOIN moca_objects mo ON mo.moca_oid=eligible.moca_oid WHERE mo.ignored=0 AND '
+                          + ' AND '.join(other_tests))
+        origin = '(' + ' UNION '.join(unions) + ') sample'
+        sample_join = 'JOIN moca_objects mo ON mo.moca_oid=sample.moca_oid'
     type_cols, type_joins = [], []
     for lane, config in LANE_CONFIG.items():
         methods = ','.join("'" + m + "'" for m in config['methods'])
-        type_joins.append('LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM data_spectral_types WHERE ignored=0 AND calculation_method IN ('+methods+') GROUP BY moca_oid) latest_'+lane+' ON latest_'+lane+'.moca_oid=mo.moca_oid LEFT JOIN data_spectral_types t_'+lane+' ON t_'+lane+'.id=latest_'+lane+'.id')
+        type_joins.append('LEFT JOIN data_spectral_types t_'+lane+' ON t_'+lane+'.id='
+                          '(SELECT MAX(id) FROM data_spectral_types WHERE moca_oid=mo.moca_oid '
+                          'AND ignored=0 AND calculation_method IN ('+methods+'))')
         type_cols.append('t_' + lane + '.spectral_type_number AS ' + lane + '_spt')
     type_joins.append('LEFT JOIN data_spectral_types ta ON ta.id=(SELECT MAX(d.id) FROM data_spectral_types d WHERE d.moca_oid=mo.moca_oid AND d.adopted=1 AND d.ignored=0)')
     expressions = {'sublime3c':'p3.autotype_spectral_type_number', 'sublime2':'p2.autotype_spectral_type_number', 'adopted':'ta.spectral_type_number','published':'tp.spectral_type_number'}
@@ -234,29 +306,19 @@ def selected_sql(f):
     # A union of potentially passing types safely covers the preferred-type cut.
     # Apply it before catalogue joins to avoid hundreds of thousands of lookups.
     preselect = ''
-    if f['min_spt'] is not None:
-        threshold = str(float(f['min_spt']))
-        if f['spt_source']=='published':
-            candidates='SELECT d.moca_oid FROM data_spectral_types d WHERE d.public_adopted=1 AND d.photometric_estimate=0 AND d.spectral_type_number>='+threshold
-        elif f['spt_source']=='adopted':
-            candidates='SELECT d.moca_oid FROM data_spectral_types d WHERE d.adopted=1 AND d.ignored=0 AND d.spectral_type_number>='+threshold
-        elif f['spt_source'] in LANES:
-            methods=','.join("'"+m+"'" for m in LANE_CONFIG[f['spt_source']]['methods'])
-            candidates='SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0 AND d.calculation_method IN ('+methods+') AND d.spectral_type_number>='+threshold
-        elif f['spt_source']=='sublime3c':
-            candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v3c WHERE autotype_spectral_type_number>='+threshold
-        elif f['spt_source']=='sublime2':
-            candidates='SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 WHERE autotype_spectral_type_number>='+threshold
-        else:
-            candidates='''SELECT DISTINCT d.moca_oid FROM data_spectral_types d WHERE d.ignored=0
-                AND d.spectral_type_number>='''+threshold+''' AND (
-                ((d.adopted=1 AND d.photometric_estimate=0) OR d.public_adopted=1)
-                OR d.calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))'''
+    if not bounded and (candidates := possible_types_sql(f)):
         preselect='JOIN ('+candidates+') typed ON typed.moca_oid=sample.moca_oid'
     where, params = ['mo.ignored=0'], []
-    if 'other' in f['sources']:
-        lane_types = ','.join(expressions[lane] for lane in LANES)
-        where.append('(sample.is_other=0 OR COALESCE(' + lane_types + ') IS NOT NULL)')
+    if candidate_ids is not None:
+        where.append('mo.moca_oid IN ('+','.join(['%s']*len(candidate_ids))+')')
+        params.extend(candidate_ids)
+    lane_types = 'COALESCE(' + ','.join(expressions[lane] for lane in LANES) + ') IS NOT NULL'
+    if bounded:
+        if 'other' in f['sources']:
+            catalog_tests.append('('+' AND '.join([*other_tests,lane_types])+')')
+        where.append('('+' OR '.join(catalog_tests)+')')
+    elif 'other' in f['sources']:
+        where.append('(sample.is_other=0 OR '+lane_types+')')
     def exempt(condition, group):
         return condition if f[QUALITY_SWITCHES[group]] else '('+protected_expression()+' OR ('+condition+'))'
     def bound(expr, low, high=None, group=None):
@@ -299,7 +361,7 @@ def selected_sql(f):
             params.extend(classes)
         if 'none' in f['cnn_classes']:terms.append('p2.visual_nn_classification IS NULL')
         where.append(exempt('('+' OR '.join(terms)+')', 'detection'))
-    return '''SELECT mo.moca_oid,mo.designation,
+    sql = '''SELECT mo.moca_oid,mo.designation,
         CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.ra_deg,mo.ra) ELSE mo.ra END AS ra,
         CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.dec_deg,mo.`dec`) ELSE mo.`dec` END AS `dec`,mo.is_public,
         ''' + spt + ''' AS spt,''' + ','.join(type_cols) + ''',
@@ -313,16 +375,16 @@ def selected_sql(f):
         p2.detection_snr AS sublime2_detection_snr,
         p2.visual_nn_good_probability AS cnn,p2.visual_nn_classification AS cnn_class,
         p2.autotype_reduced_chi2 AS chi2
-        FROM (''' + ' UNION '.join(unions) + ''') sample
-        ''' + preselect + '''
-        JOIN moca_objects mo ON mo.moca_oid=sample.moca_oid
-        LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM pcat_sublime_candidates GROUP BY moca_oid) latest_p1 ON latest_p1.moca_oid=mo.moca_oid
-        LEFT JOIN pcat_sublime_candidates p1 ON p1.id=latest_p1.id
-        LEFT JOIN (SELECT moca_oid,MAX(id) AS id FROM pcat_sublime_candidates_v2 GROUP BY moca_oid) latest_p2 ON latest_p2.moca_oid=mo.moca_oid
-        LEFT JOIN pcat_sublime_candidates_v2 p2 ON p2.id=latest_p2.id
-        LEFT JOIN (SELECT moca_oid,COALESCE(MAX(CASE WHEN SUBSTR(status,1,47)='AUTO_SELECTION_PASS[native_signed_student4_v1];' THEN id END),MAX(id)) AS id FROM pcat_sublime_candidates_v3c WHERE moca_oid IS NOT NULL GROUP BY moca_oid) latest_p3 ON latest_p3.moca_oid=mo.moca_oid
-        LEFT JOIN pcat_sublime_candidates_v3c p3 ON p3.id=latest_p3.id
-        ''' + '\n'.join(type_joins) + '\n WHERE ' + ' AND '.join(where) + ' ORDER BY mo.moca_oid LIMIT ' + str(MAX_OBJECTS + 1), tuple(params)
+        FROM ''' + origin + ' ' + preselect + ' ' + sample_join + '''
+        LEFT JOIN pcat_sublime_candidates p1 ON p1.id=(SELECT MAX(id) FROM pcat_sublime_candidates WHERE moca_oid=mo.moca_oid)
+        LEFT JOIN pcat_sublime_candidates_v2 p2 ON p2.id=(SELECT MAX(id) FROM pcat_sublime_candidates_v2 WHERE moca_oid=mo.moca_oid)
+        LEFT JOIN pcat_sublime_candidates_v3c p3 ON p3.id=(
+            SELECT COALESCE(MAX(CASE WHEN ''' + pass_prefix + ''' THEN id END),MAX(id))
+            FROM pcat_sublime_candidates_v3c WHERE moca_oid=mo.moca_oid)
+        ''' + '\n'.join(type_joins) + '\n WHERE ' + ' AND '.join(where)
+    # Apply the safety limit before sorting so the optimizer starts with eligible IDs.
+    sql += ' LIMIT ' + str(MAX_OBJECTS + 1)
+    return 'SELECT * FROM ('+sql+') ranked ORDER BY moca_oid', tuple(params)
 
 
 def preferred_spectrum_lane(row):
@@ -540,11 +602,25 @@ def photometry(cur, rows, f):
     return result
 
 
+def selected_rows(cur, f):
+    seed_sql = reviewed_candidate_sql(f)
+    if seed_sql is None:
+        batches = (None,)
+    else:
+        ids = [row['moca_oid'] for row in fetch(cur,seed_sql) if row['moca_oid'] is not None]
+        # Bound the per-query joins and expression caches on MariaDB.
+        batches = (ids[start:start+2000] for start in range(0,len(ids),2000))
+    rows = []
+    for batch in batches:
+        sql,params=selected_sql(f,batch)
+        rows.extend(fetch(cur,sql,params))
+        if len(rows)>MAX_OBJECTS:
+            raise sr.ReviewError('More than 100,000 objects pass the initial sample/type cuts. Raise the minimum spectral type or select fewer samples; no partial dashboard was produced.',422)
+    return rows
+
+
 def load(cur,f):
-    sql,params=selected_sql(f)
-    rows=fetch(cur,sql,params)
-    if len(rows)>MAX_OBJECTS:
-        raise sr.ReviewError('More than 100,000 objects pass the initial sample/type cuts. Raise the minimum spectral type or select fewer samples; no partial dashboard was produced.',422)
+    rows=selected_rows(cur,f)
     rows=list({r['moca_oid']:r for r in rows}.values())
     preliminary=len(rows)
     rows=[r for r in enrich(cur,rows) if passes(r,f)]
@@ -593,7 +669,9 @@ def demo_rows(f):
 
 @findings.after_request
 def private_response(response):
-    response.headers.update({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff',
+    if (request.endpoint or '').rsplit('.',1)[-1]!='plotly_asset' or response.status_code not in (200,304):
+        response.headers['Cache-Control']='no-store'
+    response.headers.update({'Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff',
                              'Content-Security-Policy':"frame-ancestors 'self'"})
     return response
 
@@ -624,10 +702,26 @@ def asset(name):
     return send_from_directory(STATIC,name)
 
 
+@lru_cache(maxsize=2)
+def compressed_plotly(path, mtime_ns):
+    data=gzip.compress(path.read_bytes(), compresslevel=6, mtime=0)
+    return data, sha256(data).hexdigest()
+
+
 @findings.get('/assets/plotly.js')
 def plotly_asset():
     import plotly
-    return send_from_directory(Path(plotly.__file__).parent/'package_data','plotly.min.js')
+    path=Path(plotly.__file__).parent/'package_data'/'plotly.min.js'
+    if request.accept_encodings['gzip']>0:
+        stamp=path.stat()
+        data,etag=compressed_plotly(path,stamp.st_mtime_ns)
+        response=send_file(BytesIO(data), mimetype='text/javascript', etag=etag,
+                           last_modified=stamp.st_mtime, max_age=86400)
+        response.headers['Content-Encoding']='gzip'
+    else:
+        response=send_file(path,mimetype='text/javascript',max_age=86400)
+    response.vary.add('Accept-Encoding')
+    return response
 
 
 @findings.post('/api/findings/<operation>')
@@ -720,9 +814,11 @@ def api(operation):
             items=diagnostics.parse_items(body.get('items'))
             if mock:result=diagnostics.demo(items)
             else:
-                with sr.connection(sr.credentials()) as (conn,cur):
+                auth=sr.credentials()
+                with sr.connection(auth) as (_,cur):
                     cur.execute('START TRANSACTION READ ONLY')
-                    result=diagnostics.load(cur,items)
+                    cache=diagnostics.DiagnosticCache(auth['database']+':'+auth['user']) if request.blueprint=='sublime_findings' else None
+                    result=diagnostics.load(cur,items,cache)
             return jsonify(sr.clean({'ok':True,'items':result}))
         if operation=='load':
             f=parse_filters(body.get('filters',{}))

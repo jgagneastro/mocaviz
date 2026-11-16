@@ -9,12 +9,13 @@ const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 await page.emulateMedia({reducedMotion:'no-preference'});
 const errors=[],controls=new Set();
-let closing=false,loadControl=null,diagnosticControl=null,failLoad=false,failDiagnostic=false;
+let closing=false,loadControl=null,diagnosticControl=null,failLoad=false,failDiagnostic=false,diagnosticRequests=0;
 function gate(){let release;const promise=new Promise(resolve=>{release=resolve;});const control={promise,release,retired:false};controls.add(control);return control;}
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/findings/*',async route=>{
  const op=new URL(route.request().url()).pathname.split('/').at(-1);
  const control=op==='load'?loadControl:op==='diagnostics'?diagnosticControl:null;
+ if(op==='diagnostics')diagnosticRequests++;
  try{
   const body=route.request().postDataJSON();
   assert.equal(body.mock,true,'Browser checks must never query the live database');
@@ -35,7 +36,7 @@ await page.route('**/api/findings/*',async route=>{
 });
 const state=async wanted=>page.waitForFunction(value=>document.querySelector('#refresh-state')?.dataset.state===value,wanted);
 const title=async text=>page.waitForFunction(value=>document.querySelector('#refresh-state-title')?.textContent===value,text);
-async function complete(){await state('done');assert.equal(await page.locator('#refresh-state-title').textContent(),'Refresh complete');assert.equal(await page.locator('#refresh-state-icon').textContent(),'✓');assert(await page.locator('#refresh').isEnabled());assert.equal(await page.locator('#refresh').getAttribute('aria-busy'),'false');assert(await page.locator('#refresh-state-progress').isHidden());}
+async function complete(){await state('done');assert.equal(await page.locator('#refresh-state-title').textContent(),'Refresh complete');assert.equal(await page.locator('#refresh-state-icon').textContent(),'✓');assert(await page.locator('#refresh').isEnabled());assert.equal(await page.locator('#refresh').getAttribute('aria-busy'),'false');}
 async function snapshot(name){if(screenshots)await page.locator('#refresh-state').screenshot({path:screenshots+'/'+name+'.png'});}
 try{
  loadControl=gate();
@@ -54,22 +55,30 @@ try{
   document.getElementById(id)?.data?.some(trace=>trace.name==='No motion vetting'&&trace.showlegend)));
  assert.ok(await page.locator('#motion').evaluate(plot=>plot.layout.yaxis.ticktext.includes('No motion vetting')));
 
- // A visible busy state spans both the catalog request and progressive diagnostics.
- const catalog=gate(),spectra=gate();loadControl=catalog;diagnosticControl=spectra;
- await page.locator('#refresh').click();await title('Refreshing data…');
- await page.waitForFunction(()=>document.querySelector('#refresh-state-elapsed').textContent!=='0 s');
- await snapshot('refreshing-data');
- catalog.release();loadControl=null;
- await title('Refreshing spectra…');
- assert(await page.locator('#refresh-state-progress').isVisible());
- assert(await page.locator('#refresh').isDisabled());
- await snapshot('refreshing-spectra');
- spectra.release();diagnosticControl=null;await complete();await snapshot('refresh-complete');
+ // The catalog and S/N histogram are available before diagnostics are requested.
+ await page.waitForFunction(()=>document.getElementById('snr-histogram')?.layout?.yaxis.type==='log');
+ const histogram=await page.locator('#snr-histogram').evaluate(node=>({
+  axes:[node.layout.xaxis.type,node.layout.yaxis.type],
+  objects:node.data.reduce((sum,t)=>sum+t.y.reduce((n,c)=>n+c,0),0),
+  expected:window.SublimeFindings.rows.filter(r=>r.spiffstacker_snr>0).length,
+ }));
+ assert.deepEqual(histogram.axes,['log','log']);assert(histogram.objects>0);
+ assert.equal(histogram.objects,histogram.expected);
+ assert.equal(diagnosticRequests,0);
+ await snapshot('catalog-ready');
 
- // Diagnostic failures end the spinner with an explicit partial outcome.
- failDiagnostic=true;await page.locator('#refresh').click();await state('partial');
- assert((await page.locator('#refresh-state-detail').textContent()).includes('failed'));
- assert(await page.locator('#refresh').isEnabled());
+ // Entering the diagnostics section starts background work and leaves catalog controls available.
+ failDiagnostic=true;
+ const spectra=gate();diagnosticControl=spectra;
+ await page.locator('#diagnostics-status').scrollIntoViewIfNeeded();
+ await page.waitForFunction(()=>document.querySelector('#diagnostics-status').textContent.includes('active spectra checked'));
+ await complete();assert(diagnosticRequests>0);
+ spectra.release();diagnosticControl=null;
+ await page.locator('#load-diagnostics').waitFor({state:'visible'});
+ assert((await page.locator('#diagnostics-status').textContent()).includes('failed'));
+ await page.locator('#load-diagnostics').click();
+ await page.waitForFunction(()=>document.querySelector('#snr-spiffstacker')?.data?.some(t=>t.x.length));
+ await page.waitForFunction(()=>!document.querySelector('#diagnostics-status').textContent.includes('failed'));
 
  // A catalog failure retains the previous data and exposes an error, then retries.
  failLoad=true;await page.locator('#refresh').click();await state('error');
@@ -79,15 +88,15 @@ try{
  assert(await page.locator('#refresh').isEnabled());await snapshot('refresh-failed');
  await page.locator('#refresh').click();await complete();assert(await page.locator('#error').isHidden());
 
- // An aborted earlier request cannot clear a newer refresh's busy indicator.
+ // An aborted earlier request cannot clear a newer catalog request's busy indicator.
  const old=gate();loadControl=old;await page.locator('#refresh').click();await title('Refreshing data…');
- old.retired=true;loadControl=null;
- const current=gate();diagnosticControl=current;
- await page.locator('#apply').click();await title('Refreshing spectra…');old.release();
+ old.retired=true;
+ const current=gate();loadControl=current;
+ await page.locator('#apply').click();old.release();
  await page.waitForTimeout(150);
  assert.equal(await page.locator('#refresh-state').getAttribute('data-state'),'loading');
  assert(await page.locator('#refresh').isDisabled());
- current.release();diagnosticControl=null;await complete();
+ current.release();loadControl=null;await complete();
 
  // Make all legend classes visible in this mock fixture and verify no overlap.
  await page.evaluate(()=>{const definitions=window.SublimeFindings.plotClasses;window.SublimeFindings.rows.slice(0,definitions.length).forEach((row,i)=>{row.plot_class=definitions[i].key;row.plot_class_label=definitions[i].label;});});
@@ -108,7 +117,7 @@ try{
  }
  if(screenshots)await page.locator('#histogram').screenshot({path:screenshots+'/histogram-legend.png'});
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({ok:true,checks:['catalog busy','spectral busy/progress','completed','partial failure','catalog failure and retry','superseded request','histogram legend geometry'],legendChecks},null,2));
+ console.log(JSON.stringify({ok:true,checks:['catalog busy','log-log S/N histogram','lazy diagnostics and retry','catalog failure and retry','superseded request','histogram legend geometry'],legendChecks},null,2));
 }finally{
  closing=true;for(const control of controls)control.release();await browser.close();
 }

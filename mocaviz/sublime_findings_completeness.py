@@ -174,9 +174,7 @@ def census(cur, filters):
     # Keep quality settings but include all publication/claim populations.
     filters=census_filters(filters)
     sources=filters['sources']
-    sql,params=sf.selected_sql(filters)
-    rows=sf.fetch(cur,sql,params)
-    if len(rows)>sf.MAX_OBJECTS:raise sf.sr.ReviewError('The catalog census exceeds 100,000 objects; select fewer input catalogs.',422)
+    rows=sf.selected_rows(cur,filters)
     rows=list({r['moca_oid']:r for r in rows}.values())
     rows=[r for r in sf.enrich(cur,rows) if sf.passes(r,filters)]
     for r in rows:r['other']=not any(r.get(s) for s in sf.SOURCES) and not r.get('known')

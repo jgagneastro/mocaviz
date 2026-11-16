@@ -55,8 +55,11 @@ class DiagnosticsTests(unittest.TestCase):
         db.executemany('INSERT INTO moca_spectra VALUES (?,?,?,?)',[(10,1,62,0),(11,1,55,1),(12,2,55,0)])
         db.executemany('INSERT INTO data_spectra VALUES (?,?,?,?,?)',[(10,15000,8,2,0),(10,15000,1000,1,1)])
         db.executemany('INSERT INTO data_spectral_types VALUES (?,?,?,?,?)',[(1,10,'spherex_autotype','reduced_chi2=100',0),(2,10,'spiff_stacker_autotype','reduced_chi2=2',0)])
+        queries=[]
         class Cursor:
-            def execute(self,sql,params):self.result=db.execute(sql.replace('%s','?'),params)
+            def execute(self,sql,params):
+                queries.append(sql)
+                self.result=db.execute(sql.replace('%s','?'),params)
             def fetchall(self):return [dict(r) for r in self.result.fetchall()]
         with patch.object(diag,'sidecar_metrics',return_value={'chi2':None,'cnn':None,'fit_source':None,'cnn_source':None}):
             result=diag.load(Cursor(),[{'moca_oid':1,'moca_specid':10,'lane':'spiffstacker'},
@@ -65,6 +68,40 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(len(result),1)
         self.assertEqual(result[0]['snr']['all']['mean'],4)
         self.assertEqual(result[0]['chi2'],2)
+
+        item={'moca_oid':1,'moca_specid':10,'lane':'spiffstacker'}
+        metrics={'chi2':None,'cnn':None,'fit_source':None,'cnn_source':None}
+        with tempfile.TemporaryDirectory() as tmp,patch.object(diag,'sidecar_metrics',return_value=metrics) as sidecar:
+            path=Path(tmp)/'diagnostics.sqlite3'
+            cache=diag.DiagnosticCache('management',path)
+            self.assertEqual(diag.load(Cursor(),[item],cache),result)
+            queries.clear()
+            self.assertEqual(diag.load(Cursor(),[item],diag.DiagnosticCache('management',path)),result)
+            self.assertEqual(len(queries),1)
+            self.assertEqual(sidecar.call_count,1)
+            self.assertEqual(diag.DiagnosticCache('collaborators',path).get([item]),{})
+            db.execute('UPDATE moca_spectra SET ignored=1 WHERE moca_specid=10')
+            self.assertEqual(diag.load(Cursor(),[item],cache),[])
+            db.execute('UPDATE moca_spectra SET ignored=0 WHERE moca_specid=10')
+            with patch.object(diag.time,'time',return_value=diag.time.time()+diag.CACHE_TTL+1):
+                self.assertEqual(cache.get([item]),{})
+
+    def test_plotly_compression_and_conditional_cache(self):
+        import gzip
+        client=sf.create_app().test_client()
+        path='/assets/plotly.js'
+        plain=client.get(path,buffered=True)
+        encoded=client.get(path,headers={'Accept-Encoding':'gzip'})
+        self.assertEqual(encoded.headers.get('Content-Encoding'),'gzip')
+        self.assertIn('Accept-Encoding',encoded.headers.get('Vary',''))
+        self.assertIn('max-age=',encoded.headers.get('Cache-Control',''))
+        self.assertNotEqual(plain.headers['ETag'],encoded.headers['ETag'])
+        self.assertEqual(gzip.decompress(encoded.data),plain.data)
+        self.assertLess(len(encoded.data),len(plain.data)//2)
+        cached=client.get(path,headers={'Accept-Encoding':'gzip','If-None-Match':encoded.headers['ETag']})
+        self.assertEqual(cached.status_code,304)
+        self.assertIn('Accept-Encoding',cached.headers.get('Vary',''))
+        self.assertEqual(client.get('/',buffered=True).headers['Cache-Control'],'no-store')
 
     def test_mock_endpoint_and_invalid_batches_never_open_database(self):
         client=sf.create_app().test_client()

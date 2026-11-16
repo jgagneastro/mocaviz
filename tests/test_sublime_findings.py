@@ -274,8 +274,17 @@ class FindingsTests(unittest.TestCase):
             db.execute("INSERT INTO data_spectral_types VALUES (NULL, 9, 19, 0, 0, 0, 0, 'spherex_sublimeap_autotype')")
 
             def oids(**filters):
-                sql, params = sf.selected_sql(sf.parse_filters({'sources':['other'], **filters}))
-                return [row[0] for row in db.execute(sql.replace('%s', '?'), params)]
+                cuts=sf.parse_filters({'sources':['other'], **filters})
+                sql,params=sf.selected_sql(cuts)
+                expected=[row[0] for row in db.execute(sql.replace('%s','?'),params)]
+                class Cursor:
+                    def execute(self,statement,params):
+                        self.result=db.execute(statement.replace('%s','?'),params)
+                    def fetchall(self):
+                        return [dict(zip([col[0] for col in self.result.description],row))
+                                for row in self.result.fetchall()]
+                self.assertEqual(sorted(r['moca_oid'] for r in sf.selected_rows(Cursor(),cuts)),expected)
+                return expected
 
             self.assertEqual(oids(), [1, 9])
             self.assertEqual(oids(quality_any='any', spt_source='adopted'), [1, 9])

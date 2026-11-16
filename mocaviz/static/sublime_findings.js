@@ -121,6 +121,8 @@ let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='
 let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
+const diagnosticPlots=['snr-sublimeaperture','snr-spiffstacker','snr-spiff','snr-chi2','fit-chi2','fit-cnn'];
+let catalogGeneration=0,diagnosticGeneration=0,diagnosticsAvailable=false,diagnosticsVisible=false;
 let diagnosticController=null,diagnosticDone=0,diagnosticTotal=0,diagnosticFailed=0,diagnosticRenderTimer=null;
 const defaults={sublime3c_pass_only:true,sources:Object.keys(sourceNames),min_spt:10,known:'either',known_candidate:'either',byw:'either',byw_claim:'either',yadu:'either',azul:'either',smdet:'either',duplicates:'exclude',spt_source:'best',snr_lane:'spiffstacker',cutout_policy:'all',distance_mode:'astrometric',synthetic_lane:'any',quality_any:'good'};
 function select(name,label,options){return `<label>${esc(label)}<select name="${name}">${options.map(o=>`<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;}
@@ -151,15 +153,13 @@ let refreshStarted=0,refreshClock=null;
 function updateRefreshElapsed(){
  if(refreshStarted)$('refresh-state-elapsed').textContent=Math.floor((performance.now()-refreshStarted)/1000)+' s';
 }
-function showRefreshState(state,title,detail,done=0,total=0){
+function showRefreshState(state,title,detail){
  const busy=state==='loading',panel=$('refresh-state');
  panel.hidden=false;panel.dataset.state=state;
  $('refresh-state-title').textContent=title;$('refresh-state-detail').textContent=detail;
  $('refresh-state-icon').textContent=busy?'':state==='done'?'✓':'!';
  $('refresh').disabled=busy;$('refresh').setAttribute('aria-busy',String(busy));
  $('refresh-button-label').textContent=busy?'Refreshing…':'Refresh data';
- const progress=$('refresh-state-progress');progress.hidden=!busy||!total;
- if(total){progress.max=total;progress.value=Math.min(done,total);}
  updateRefreshElapsed();
  if(!busy){clearInterval(refreshClock);refreshClock=null;}
 }
@@ -167,9 +167,6 @@ function startRefresh(){
  clearInterval(refreshClock);refreshStarted=performance.now();
  showRefreshState('loading','Refreshing data…','Loading the catalog, review flags and photometry.');
  refreshClock=setInterval(updateRefreshElapsed,1000);
-}
-function updateSpectralRefresh(){
- showRefreshState('loading','Refreshing spectra…',`Catalog refreshed. Checking spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} spectra.`,diagnosticDone,diagnosticTotal);
 }
 function purgePlots(root){for(const el of root.querySelectorAll('.js-plotly-plot'))Plotly.purge(el);}
 async function load(){
@@ -190,15 +187,18 @@ async function load(){
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
   for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
   $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
-  setTab(tab);
-  if(result.spectral_diagnostics_version===1){
-   await loadDiagnostics(seq);if(seq!==dataGeneration)return;
-   if(diagnosticFailed)showRefreshState('partial','Refresh completed with gaps',`${num(rows.length)} objects refreshed. ${num(diagnosticFailed)} spectral-diagnostic requests failed; refresh again to retry.`);
-   else showRefreshState('done','Refresh complete',`${num(rows.length)} objects and ${num(diagnosticTotal)} spectral diagnostics refreshed. Finished at ${new Date().toLocaleTimeString()}.`);
-  }else{
-   $('diagnostics-status').textContent='Restart the Findings Dashboard service to load spectral diagnostics.';
-   showRefreshState('partial','Catalog refreshed; spectra unavailable','Restart the Findings Dashboard service to enable spectral diagnostics.');
+  catalogGeneration=seq;diagnosticsAvailable=result.spectral_diagnostics_version===1;
+  clearTimeout(diagnosticRenderTimer);diagnosticRenderTimer=null;
+  for(const id of diagnosticPlots){
+   if($(id).classList.contains('js-plotly-plot'))Plotly.purge($(id));
+   if($(id+'-note'))$(id+'-note').textContent='';
   }
+  $('diagnostics-status').textContent=diagnosticsAvailable?'Spectral diagnostics load when this section comes into view.':'Spectral diagnostics are unavailable from this service.';
+  $('load-diagnostics').textContent='Load spectral diagnostics';
+  $('load-diagnostics').hidden=!diagnosticsAvailable;
+  setTab(tab);
+  showRefreshState('done','Refresh complete',`${num(rows.length)} objects refreshed. Finished at ${new Date().toLocaleTimeString()}.`);
+  maybeLoadDiagnostics();
  }catch(e){if(e.name!=='AbortError'&&seq===dataGeneration){showError(e.message);$('status').textContent=rows.length?'Load failed. Plots still show the previously applied sample.':'Load failed. Adjust filters or check your Web Tools connection.';showRefreshState('error','Refresh failed',(rows.length?'The previous sample is still displayed. ':'')+e.message);}}
  finally{clearInterval(timer);if(seq===dataGeneration)$('apply').disabled=false;}
 }
@@ -237,6 +237,7 @@ function renderCharts(){
  l.yaxis.uirevision=l.uirevision+':'+l.yaxis.type;
  l.legend={...l.legend,y:1.04,yanchor:'bottom',x:0,xanchor:'left'};l.margin.t=90;
  l.barmode='stack';emptyNote(l,typed.length);plot('histogram',hist,l,false);$('hist-note').textContent=`${num(typed.length)} typed objects · ${num(rows.length-typed.length)} without a selected type`;
+ renderSNRHistogram();
  const skySystem=$('sky-projection').value,skyFrame=FindingSky.systems[skySystem];
  const skyRows=rows.filter(r=>finite(r.ra)&&finite(r.dec)).map(r=>({...r,skyCoordinates:FindingSky.transform(r.ra,r.dec,skySystem)}));
  l=baseLayout(skyFrame.x,skyFrame.y);l.uirevision+=':sky:'+skySystem;
@@ -319,7 +320,31 @@ function renderCharts(){
  l=baseLayout('','Selected catalog memberships');l.margin={l:155,r:22,t:25,b:48};l.barmode='stack';l.yaxis.autorange='reversed';plot('recovery',groups(rows,(d,n,c)=>({type:'bar',orientation:'h',y:Object.values(sourceNames),x:Object.keys(sourceNames).map(k=>d.filter(r=>r[k]).length),name:n,marker:{color:c},hovertemplate:'%{y}<br>%{x} objects<extra>'+n+'</extra>'})),l,false);
  renderDiagnostics();
 }
+function renderSNRHistogram(){
+ const lane=filters.snr_lane||defaults.snr_lane,key=lane+'_snr';
+ const measured=rows.filter(row=>finite(row[key])),positive=measured.filter(row=>row[key]>0);
+ const layout=baseLayout('Median spectrum S/N per pixel','Unique objects');
+ layout.xaxis.type='log';layout.yaxis.type='log';layout.barmode='stack';
+ layout.legend={...layout.legend,y:1.04,yanchor:'bottom'};layout.margin.t=90;
+ $('snr-histogram-note').textContent=`${laneNames[lane]} · ${num(positive.length)} objects plotted · ${num(rows.length-measured.length)} without a measurement · ${num(measured.length-positive.length)} nonpositive values omitted`;
+ if(!positive.length){emptyNote(layout,0,'No positive median S/N values for this reduction');plot('snr-histogram',[],layout,false);return;}
+ const binCount=24;
+ let lo=Infinity,hi=-Infinity;
+ for(const row of positive){const value=Math.log10(row[key]);lo=Math.min(lo,value);hi=Math.max(hi,value);}
+ if(lo===hi){lo-=.25;hi+=.25;}
+ const step=(hi-lo)/binCount,edges=Array.from({length:binCount+1},(_,i)=>10**(lo+i*step));
+ const traces=groups(positive,(data,name,color)=>{
+  const counts=Array(binCount).fill(0);
+  for(const row of data)counts[Math.min(binCount-1,Math.max(0,Math.floor((Math.log10(row[key])-lo)/step)))]++;
+  const bins=counts.flatMap((count,i)=>count?[{left:edges[i],right:edges[i+1],count}]:[]);
+  return {type:'bar',name,marker:{color},x:bins.map(b=>(b.left+b.right)/2),y:bins.map(b=>b.count),
+   width:bins.map(b=>b.right-b.left),customdata:bins.map(b=>[b.left,b.right]),
+   hovertemplate:'S/N %{customdata[0]:.3g}–%{customdata[1]:.3g}<br>%{y} objects<extra>'+name+'</extra>'};
+ });
+ plot('snr-histogram',traces,layout,false);
+}
 function renderDiagnostics(){
+ if(!diagnosticGeneration||diagnosticGeneration!==catalogGeneration)return;
  const statistic=$('snr-statistic').value,band=$('snr-band').value;
  const names={all:'all wavelengths',nir:'1–2.5 µm',mid:'2.5–4 µm',red:'4–5 µm'};
  for(const lane of ['sublimeaperture','spiffstacker','spiff']){
@@ -369,30 +394,50 @@ function renderDiagnostics(){
  })),snrChi2Layout);
  const nonpositive=snrChi2.length-snrChi2Visible.length,peculiarCount=snrChi2Visible.filter(r=>r.peculiar_lanes.length).length;
  $('snr-chi2-note').textContent=`${num(snrChi2Visible.length)} plotted · ${num(rows.length-snrChi2.length)} missing paired diagnostics${nonpositive?' · '+num(nonpositive)+' nonpositive values omitted on log axes':''} · ${num(peculiarCount)} open diamonds mark peculiar_ucd in any reduction. S/N and χ² come from the same active spectrum; 1–5 µm median is fixed independently of the S/N panel controls. `+(laneChoice==='auto'?'Automatic review ranking across all three reductions; SPIFFStacker wins ties.':laneNames[laneChoice]+'.');
- $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed; Apply filters to retry':''}. Values update progressively. Missing measurements are omitted.`;
+ $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed':''}. Values update progressively. Missing measurements are omitted.`;
 }
-function queueDiagnosticRender(){if(diagnosticRenderTimer)return;diagnosticRenderTimer=setTimeout(()=>{diagnosticRenderTimer=null;if(tab==='overview')renderDiagnostics();},300);}
+function queueDiagnosticRender(){if(diagnosticRenderTimer)return;diagnosticRenderTimer=setTimeout(()=>{diagnosticRenderTimer=null;if(tab==='overview')renderDiagnostics();},900);}
+function maybeLoadDiagnostics(){
+ if(diagnosticsVisible&&tab==='overview'&&diagnosticGeneration!==catalogGeneration)loadDiagnostics(catalogGeneration);
+}
 async function loadDiagnostics(seq){
+ if(seq!==dataGeneration||!diagnosticsAvailable||tab!=='overview')return;
+ diagnosticGeneration=seq;
+ $('load-diagnostics').hidden=true;
  diagnosticController?.abort();diagnosticController=new AbortController();
  const signal=diagnosticController.signal,items=[];
- for(const r of rows){r.diagnostics={};for(const lane of Object.keys(laneNames))if(r[lane+'_specid']&&!r[lane+'_ignored'])items.push({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid'],lane});}
- diagnosticDone=0;diagnosticFailed=0;diagnosticTotal=items.length;updateSpectralRefresh();
+ for(const r of rows){
+  r.diagnostics??={};
+  for(const lane of Object.keys(laneNames))if(r[lane+'_specid']&&!r[lane+'_ignored']&&!(lane in r.diagnostics)){
+   items.push({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid'],lane});
+  }
+ }
+ diagnosticDone=0;diagnosticFailed=0;diagnosticTotal=items.length;
  if(tab==='overview')renderDiagnostics();
  let cursor=0;
  const worker=async()=>{while(cursor<items.length&&!signal.aborted&&seq===dataGeneration){
   const batch=items.slice(cursor,cursor+96);cursor+=batch.length;
   try{
    const result=await api('diagnostics',{items:batch},signal);if(seq!==dataGeneration||signal.aborted)return;
+   for(const item of batch)byId.get(item.moca_oid).diagnostics[item.lane]=null;
    for(const item of result.items){const r=byId.get(item.moca_oid);if(r&&r[item.lane+'_specid']===item.moca_specid)r.diagnostics[item.lane]=item;}
   }catch(error){if(error.name==='AbortError'||seq!==dataGeneration||signal.aborted)return;diagnosticFailed++;}
   if(seq!==dataGeneration||signal.aborted)return;
-  diagnosticDone+=batch.length;updateSpectralRefresh();queueDiagnosticRender();
+  diagnosticDone+=batch.length;queueDiagnosticRender();
  }};
  await Promise.all([worker(),worker()]);
  if(seq===dataGeneration&&!signal.aborted){
   clearTimeout(diagnosticRenderTimer);diagnosticRenderTimer=null;
   if(tab==='overview')renderDiagnostics();
+  if(diagnosticFailed){$('load-diagnostics').hidden=false;$('load-diagnostics').textContent='Retry spectral diagnostics';}
  }
+}
+$('load-diagnostics').onclick=()=>loadDiagnostics(catalogGeneration);
+if(typeof IntersectionObserver==='function'){
+ const observer=new IntersectionObserver(([entry])=>{
+  diagnosticsVisible=entry.isIntersecting;maybeLoadDiagnostics();
+ },{rootMargin:'160px 0px'});
+ observer.observe($('diagnostics-status').closest('article'));
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates','completeness'])$('view-'+name).hidden=name!==value;if(value==='completeness')loadCompleteness();if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}

@@ -17,6 +17,8 @@ class TypePriorityTests(unittest.TestCase):
             CREATE TABLE pcat_sublime_candidates(id INT,moca_oid INT,detection_snr REAL);
             CREATE TABLE pcat_sublime_candidates_v2(id INT,moca_oid INT,detection_snr REAL,autotype_spectral_type_number REAL,
                 visual_nn_good_probability REAL,visual_nn_classification TEXT,autotype_reduced_chi2 REAL);
+            CREATE TABLE pcat_sublime_candidates_v3c(id INT,moca_oid INT,ra_deg REAL,dec_deg REAL,
+                autotype_spectral_type_number REAL,status TEXT,cnn_acceptance_probability REAL,median_raw_snr REAL);
             CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
             CREATE TABLE pcat_duplicated_vetting(moca_oid INT,potential_duplicated_moca_oid INT,classification TEXT);
         """)
