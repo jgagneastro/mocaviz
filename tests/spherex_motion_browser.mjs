@@ -1,15 +1,18 @@
 // Synthetic write transport only: no live database mutations.
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {chromium} from 'playwright';
 const origin=process.argv[2] || 'http://127.0.0.1:8077';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1500,height:1100}});
+const bridge=readFileSync(new URL('../mocaviz/static/spherex_motion_frame.js', import.meta.url), 'utf8');
 const errors=[], calls=[], frames=[];let review=null, releaseSubmit=null, releaseContext=null;
 page.on('dialog',dialog=>dialog.accept());
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/spherex-review-wiseview*',async route=>{
   frames.push(route.request().url());assert(!route.request().headers()['x-moca-password']);
-  await route.fulfill({contentType:'text/html',body:'<!doctype html><html><body>WiseView fixture</body></html>'});
+  await route.fulfill({contentType:'text/html',body:`<!doctype html><body><button>WiseView fixture</button>
+    <script>window.WiseSwapper = function () {};</script><script>${bridge}</script></body>`});
 });
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1), body=route.request().postDataJSON();
@@ -43,8 +46,33 @@ try{
   const src=await page.locator('#motion-frame').getAttribute('src');
   assert(src.includes('ra=123.1001'));assert(!src.includes('user=')&&!src.includes('password='));
   assert.equal(await page.locator('#motion-frame').getAttribute('sandbox'),'allow-scripts');
+  const motionScore=page.locator('#motion-classification');
+  const scoreSix=page.locator('#motion-score-six');
+  await page.locator('#motion-reload').focus();
+  await page.keyboard.press('Shift+Digit8');
+  assert.equal(await motionScore.inputValue(),'');
+  assert(await scoreSix.isDisabled());
   await page.locator('#write-enabled').check();
-  await page.locator('#motion-classification').selectOption('6');
+  await page.locator('#motion-reload').focus();
+  await page.keyboard.press('Shift+Digit8');
+  assert.equal(await motionScore.inputValue(),'6');
+  await motionScore.selectOption('5');
+  await page.locator('#motion-reload').focus();
+  await page.keyboard.press('NumpadMultiply');
+  assert.equal(await motionScore.inputValue(),'6');
+  await motionScore.selectOption('5');
+  await page.locator('#motion-comments').focus();
+  await page.keyboard.press('Shift+Digit8');
+  assert.equal(await page.locator('#motion-comments').inputValue(),'*');
+  assert.equal(await motionScore.inputValue(),'5');
+  await page.locator('#motion-comments').fill('');
+  await scoreSix.click();
+  assert.equal(await motionScore.inputValue(),'6');
+  await motionScore.selectOption('5');
+  await page.frameLocator('#motion-frame').getByRole('button', {name:'WiseView fixture'}).click();
+  await page.keyboard.press('Shift+Digit8');
+  await page.waitForFunction(()=>document.querySelector('#motion-classification').value==='6');
+  assert.equal(calls.filter(c=>['motion-preview','motion-submit'].includes(c.op)).length,0);
   await page.locator('#motion-save').click();
   await page.waitForFunction(()=>document.querySelector('#motion-last-action').textContent.includes('Saving'));
   await page.locator('#next').click();

@@ -176,7 +176,7 @@ function checkCaps() {
 async function checkBridge() {
   let poll, receive, resumed = 0;
   const cleared = [], settings = [], messages = [], parent = {postMessage:message => messages.push(message)};
-  const window = {parent, addEventListener(_name, handler) { receive = handler; },
+  const window = {parent, addEventListener(name, handler) { if (name === 'message') receive = handler; },
     WiseSwapper:function() {
       this.images = []; this.interval = 9; this.overlay_scale = 10;
       this.zoom_input = {slider:(...args) => settings.push(args)};

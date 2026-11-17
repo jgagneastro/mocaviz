@@ -1,4 +1,4 @@
-/* Public cutout readiness only; this frame has an opaque sandbox origin. */
+/* Cutout readiness and keyboard events from the opaque WiseView frame. */
 (() => {
   'use strict';
   const Original = window.WiseSwapper;
@@ -20,6 +20,14 @@
     if (!parked) return;
     parked = false;
     swapper.updateSpeed();
+  });
+  window.addEventListener('keydown', event => {
+    if (background || window.parent === window || event.defaultPrevented || event.repeat || event.isComposing ||
+        event.altKey || event.ctrlKey || event.metaKey ||
+        ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName) || event.target.isContentEditable ||
+        (event.key !== '*' && event.code !== 'NumpadMultiply')) return;
+    event.preventDefault();
+    window.parent.postMessage({kind:'spherex-motion-score-six', frame}, '*');
   });
   const timer = setInterval(async () => {
     const images = swapper?.images;

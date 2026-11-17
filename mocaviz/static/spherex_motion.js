@@ -12,13 +12,16 @@
     let upcoming = [], resolveObject, resolving = null, preloading = null, budgetReached = false;
     const cache = new Map(), skipped = new Set();
     const panel = $('motion-panel'), template = $('motion-frame');
+    const classification = $('motion-classification'), scoreSix = $('motion-score-six');
+    const sixChoice = () => context?.choices?.find(choice => choice.score === 6);
     const same = object => current && Number(current.object.moca_oid) === Number(object.moca_oid) &&
       Number(current.object.moca_specid) === Number(object.moca_specid);
     function update() {
       const ready = !!context && !busy && !closed && writable() && !current?.read_only;
       $('motion-save').disabled = !ready || !$('motion-classification').value ||
         (!!context?.review && !$('motion-replace').checked);
-      $('motion-classification').disabled = $('motion-comments').disabled = !ready;
+      classification.disabled = $('motion-comments').disabled = !ready;
+      scoreSix.disabled = !ready || !sixChoice();
       $('motion-replace').disabled = !ready || !context?.review;
       $('motion-undo').disabled = !undoState || busy || closed || !writable();
       $('motion-reload').disabled = !current || busy || closed;
@@ -156,9 +159,13 @@
       const message = event.data;
       const entry = [active, preloading].find(frame => frame && event.source === frame.node.contentWindow &&
         message?.frame === frame.token);
-      // The opaque frame sends no credentials, IDs or classification data.
-      if (closed || !entry || event.origin !== 'null' || message.kind !== 'spherex-motion-cutout' ||
-          message.state !== 'ready' || entry.ready) return;
+      // Accept shortcuts only from the active opaque iframe. This selects a draft.
+      if (closed || !entry || event.origin !== 'null') return;
+      if (message.kind === 'spherex-motion-score-six') {
+        if (entry === active) scoreSix.click();
+        return;
+      }
+      if (message.kind !== 'spherex-motion-cutout' || message.state !== 'ready' || entry.ready) return;
       clearTimeout(entry.watchdog);
       entry.ready = true;
       if (entry === active) {
@@ -248,6 +255,10 @@
       } catch (error) { $('motion-last-action').textContent = 'Motion undo: ' + error.message; }
       finally { busy = false; update(); }
     }
+    scoreSix.onclick = () => {
+      classification.value = sixChoice().key;
+      update();
+    };
     $('motion-save').onclick = save; $('motion-undo').onclick = undo;
     $('motion-reload').onclick = () => { loadFrame(0, true); void refreshContext(); };
     $('motion-classification').onchange = $('motion-replace').onchange = update;
@@ -259,8 +270,15 @@
       loadFrame();
     };
     document.addEventListener('keydown', event => {
-      if (closed || event.repeat || !event.altKey || event.ctrlKey || event.metaKey ||
+      if (closed || event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey ||
           ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName) || event.target.isContentEditable) return;
+      if (!event.altKey) {
+        if ((event.key === '*' || event.code === 'NumpadMultiply') && !scoreSix.disabled) {
+          event.preventDefault();
+          scoreSix.click();
+        }
+        return;
+      }
       const id = {KeyM:'motion-save', KeyU:'motion-undo', KeyW:'motion-reload'}[event.code];
       if (id) {event.preventDefault(); $(id).click();}
     });
