@@ -77,8 +77,15 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 21
+QUEUE_FILTER_VERSION = 22
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
+SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
+
+
+def cube_pass_clause(column):
+    prefixes = (SUBLIME3C_STRONG_T_PREFIX, SUBLIME3C_SELECTION_PREFIX)
+    clause = " OR ".join(f"LEFT({column},%s)=%s" for _ in prefixes)
+    return "(" + clause + ")", [value for p in prefixes for value in (len(p), p)]
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",
@@ -698,15 +705,19 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         detection_params.append(bounded_float(body["min_cnn_probability"], "Minimum SUBLIME2 CNN probability", 0, 1))
     # These catalogs have no moca_oid index. Materialize DISTINCT object IDs
     # once, rather than rescanning the catalog in a dependent EXISTS per spectrum.
+    high_priority = sample == "sublime3c" and boolean(body.get("sublime3c_priority_high_only"))
     catalogs = []
     if sample in REVIEW_SAMPLES and not (sample == "sublime2" and detection_conditions):
         catalog = f"SELECT DISTINCT moca_oid FROM {REVIEW_SAMPLES[sample]} WHERE moca_oid IS NOT NULL"
         catalog_params = []
-        if sample == "sublime3c" and boolean(body.get("sublime3c_selection_pass_only")):
+        if sample == "sublime3c" and (high_priority or boolean(body.get("sublime3c_selection_pass_only"))):
             # Exact versioned prefix: LIKE would treat version underscores as wildcards.
             # DISTINCT allows repeated detections when at least one current pass exists.
-            catalog += " AND LEFT(status,%s)=%s"
-            catalog_params = [len(SUBLIME3C_SELECTION_PREFIX), SUBLIME3C_SELECTION_PREFIX]
+            clause, catalog_params = cube_pass_clause("status")
+            catalog += " AND " + clause
+            if high_priority:
+                catalog += " AND visual_nn_classification=%s"
+                catalog_params.append("priority_high_motion_v1")
         catalogs.append((catalog, catalog_params))
     if detection_conditions:
         catalogs.append(("SELECT DISTINCT moca_oid FROM pcat_sublime_candidates_v2 detection WHERE moca_oid IS NOT NULL AND " +
@@ -718,14 +729,19 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         else:
             spectrum_source += f" JOIN ({catalog}) {alias} ON {alias}.moca_oid=s.moca_oid"
         source_params.extend(catalog_params)
-    if sample == "sublime3c" and psf_mode != "all":
+    if sample == "sublime3c" and (psf_mode != "all" or high_priority):
         spectrum_source += " " + morphology.join_sql()
-        conditions.append("(" + morphology.status_sql() + ")" + ("<>%s" if psf_mode == "not_pass" else "=%s"))
-        params.append("pass" if psf_mode == "not_pass" else psf_mode)
-        if boolean(body.get("sublime3c_selection_pass_only")):
+        if psf_mode != "all":
+            conditions.append("(" + morphology.status_sql() + ")" + ("<>%s" if psf_mode == "not_pass" else "=%s"))
+            params.append("pass" if psf_mode == "not_pass" else psf_mode)
+        if high_priority:
+            conditions.append("s3c_psf.visual_nn_classification=%s")
+            params.append("priority_high_motion_v1")
+        if high_priority or boolean(body.get("sublime3c_selection_pass_only")):
             # Both requirements must describe the same detection.
-            conditions.append("LEFT(s3c_psf.status,%s)=%s")
-            params.extend((len(SUBLIME3C_SELECTION_PREFIX), SUBLIME3C_SELECTION_PREFIX))
+            clause, values = cube_pass_clause("s3c_psf.status")
+            conditions.append(clause)
+            params.extend(values)
     if body.get("min_abs_galactic_latitude") not in (None, ""):
         conditions.append("EXISTS (SELECT 1 FROM calc_galactic_coordinates gal WHERE gal.moca_oid=s.moca_oid AND gal.adopt_as_reference=1 AND ABS(gal.gb)>=%s)")
         params.append(bounded_float(body["min_abs_galactic_latitude"], "Minimum absolute Galactic latitude", 0, 90))

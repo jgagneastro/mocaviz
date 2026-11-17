@@ -36,6 +36,7 @@ def status_sql():
 
 def metadata(cur, specid, read):
     found = read(cur, f"""SELECT s3c_psf.id AS candidate_id,s3c_psf.source_key,
+        s3c_psf.visual_nn_classification AS review_priority,s3c_psf.visual_nn_good_probability AS review_priority_score,
         s3c_psf.psf_morphology_status AS stored_status,s3c_psf.psf_morphology_version AS version,
         s3c_psf.psf_morphology_json AS details,{status_sql()} AS status,
         {native_sql()} AS exact_spectrum,

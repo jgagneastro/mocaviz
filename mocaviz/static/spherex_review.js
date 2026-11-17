@@ -14,7 +14,7 @@
   let plotShown = false;
   const motionReview = window.SpherexMotionReview.create({api, writable, base, demo,
     preload: window.__spherexNativeVetting === true});
-  const queueFilterFields = ["lane", "review-sample", "sublime3c-selection-pass", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids",
+  const queueFilterFields = ["lane", "review-sample", "sublime3c-selection-pass", "sublime3c-priority-high", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids",
     "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "vetting-classification",
     "wiseview-score", "no-wiseview-score", "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude",
     "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"];
@@ -147,6 +147,7 @@
     const sample = $("review-sample").value;
     $("sublime3c-selection-controls").hidden = sample !== "sublime3c";
     $("sublime3c-selection-pass").disabled ||= sample !== "sublime3c";
+    $("sublime3c-priority-high").disabled ||= sample !== "sublime3c";
     $("sublime3c-psf-morphology").disabled ||= sample !== "sublime3c";
     if (sample !== cnnFilterSample) {
       catalogCnnBySample.set(cnnFilterSample, $("cnn-probability").value);
@@ -233,8 +234,8 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
-    if (request.sublime3c_selection_pass_only) return 20;
     if (request.queue_order === "snr_bin_spt") return 19;
     if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
     if (request.missing_vetting === "both") return 16;
@@ -261,7 +262,7 @@
         throw new Error("The review service needs to be restarted to include SUBLIME aperture vettings.");
       if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all" && (queue_filter_version ?? 0) < 18)
         throw new Error("The review service needs to be restarted to count PSF morphology passes.");
-      if (request.sublime3c_selection_pass_only && (queue_filter_version ?? 0) < 20)
+      if ((request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) && (queue_filter_version ?? 0) < 22)
         throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
@@ -328,6 +329,7 @@
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
             sublime3c_selection_pass_only: $("review-sample").value === "sublime3c" && $("sublime3c-selection-pass").checked,
+            sublime3c_priority_high_only: $("review-sample").value === "sublime3c" && $("sublime3c-priority-high").checked,
             sublime3c_psf_morphology: $("review-sample").value === "sublime3c" ? $("sublime3c-psf-morphology").value : "all",
             queue_order: $("queue-order").value, cnn_priority_source: $("cnn-priority-source").value,
             min_spectral_cnn_probability: $("spectral-cnn-probability").value || null,
@@ -567,6 +569,12 @@
       $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
     const morphology = obj.sublime3c_morphology;
     if (morphology) {
+      const priority = {priority_high_motion_v1: "high", priority_normal_motion_v1: "normal"}[morphology.review_priority];
+      if (priority) {
+        const score = Number(morphology.review_priority_score);
+        $("object-meta").append(" · CNN review priority " + priority +
+          (morphology.review_priority_score != null && Number.isFinite(score) ? " (" + score.toFixed(3) + ")" : ""));
+      }
       const flag = document.createElement("span");
       const status = ["pass", "fail"].includes(morphology.status) ? morphology.status : "undefined";
       flag.id = "header-psf-morphology";
@@ -732,7 +740,7 @@
   const datasetStorageKey = "spherex-review-datasets-v1";
   const motionDatasetName = "Good_Motion_Candidate_Spectra";
   const motionDataset = {
-    "lane": "all", "review-sample": "all", "sublime3c-selection-pass": false,
+    "lane": "all", "review-sample": "all", "sublime3c-selection-pass": false, "sublime3c-priority-high": false,
     "sublime3c-psf-morphology": "all", "adopted-spt-source": "private", "adopted-spt-moca-pids": "",
     "queue-order": "snr_bin_spt", "cnn-priority-source": "combined", "spectral-cnn-probability": "",
     "batch-size": "100", "missing-vetting": "all", "vetting-classification": "good_candidate",
@@ -822,6 +830,8 @@
     if (params.has("batch_size")) $("batch-size").value = params.get("batch_size");
     if (params.has("min_snr")) $("snr").value = params.get("min_snr");
     if (params.has("min_sptn")) $("sptn").value = params.get("min_sptn");
+    if (params.has("sublime3c_priority_high_only"))
+      $("sublime3c-priority-high").checked = !["0", "false"].includes(params.get("sublime3c_priority_high_only"));
     if (params.has("sublime3c_selection_pass_only"))
       $("sublime3c-selection-pass").checked = !["0", "false"].includes(params.get("sublime3c_selection_pass_only"));
     $("current-fit-gap").value = params.has("min_current_fit_gap") ? params.get("min_current_fit_gap") : params.get("review_sample") === "sublime3c" ? "2" : "";
