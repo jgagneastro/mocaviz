@@ -25,9 +25,10 @@
   <link rel="stylesheet" href="static/spherex_review.css?v=20261115-motion-v1">
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
+  <script defer src="static/review_presets.js?v=4"></script>
   <link rel="stylesheet" href="static/spherex_motion.css?v=20261115-motion-v1">
   <script defer src="static/spherex_motion.js?v=20261117-motion-score-six"></script>
-  <script defer src="static/spherex_review.js?v=20261117-wiseview-preload"></script>
+  <script defer src="static/spherex_review.js?v=20261117-mixed-lanes"></script>
 </head>
 <body>
   <header>
@@ -44,15 +45,24 @@
     <aside>
       <section>
         <h2>Review queue</h2>
+        <div id="dataset-title" aria-live="polite" hidden></div>
         <div id="queue-actions">
         <button id="load" disabled>Load spectrum / queue [Alt+L]</button>
         <button id="more" disabled>Next batch [Alt+N]</button>
         <small id="queue-info">Up to 300 objects per batch by default.</small>
         <div role="status"><small id="queue-total"></small></div>
         </div>
+        <div id="review-presets" class="saved-datasets" hidden>
+          <form><input data-name aria-label="Dataset name" placeholder="Dataset name" maxlength="80" required>
+            <button type="submit" data-save>Save dataset</button></form>
+          <div class="saved-dataset-actions"><select data-presets aria-label="Saved datasets"></select>
+            <button type="button" data-load disabled>Load</button>
+            <button type="button" data-delete disabled>Delete saved filter</button></div>
+          <small role="status"></small>
+        </div>
         <label>Spectrum ID<input id="specid" placeholder="2860761" autocomplete="off"></label>
         <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
-        <label>Reduction lane<select id="lane"><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
+        <label>Reduction lane<select id="lane"><option value="all">All</option><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option></select></label>
         <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime3c">SUBLIME3C</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
         <div id="sublime3c-selection-controls" hidden>
           <label class="check"><input id="sublime3c-selection-pass" type="checkbox" checked title="Includes signed median channel S/N ≥2.2 and the full-spectrum and 1–2.5 µm evidence filter. Older unassessed rows are excluded; human reviews are preserved."> Require all updated SUBLIME3C filters</label>
@@ -102,6 +112,8 @@
         <small>Match any listed publication ID on the selected adopted SPT. Separate values with commas, spaces or new lines; blank allows all.</small>
         <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">SPIFF or SPIFFStacker missing (OR)</option><option value="both">All three lanes missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
         <small>All three checks SPIFF, SPIFFStacker and SUBLIME aperture, including SUBLIME3C.</small>
+        <label>Current spectral vetting<select id="vetting-classification"><option value="">Any classification</option></select></label>
+        <small>Matches the stored classification in each spectrum’s own reduction lane.</small>
         <label class="check"><input id="no-wiseview-score" type="checkbox">Only objects without WiseView scores</label>
         <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
         <small>Without scores includes missing reviews and blank scores. A score of zero counts as scored.</small>

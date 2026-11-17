@@ -58,6 +58,49 @@ class FilterSelectionTests(unittest.TestCase):
     def queue(self, **cuts): return sr.queue(self.cur, {'lane':'spiffstacker','cnn_priority_source':'sublime2',**cuts})
     def oids(self, **cuts): return [r['moca_oid'] for r in self.queue(**cuts)['items']]
 
+    def test_mixed_lane_preset_filters_and_pages_by_exact_spectrum(self):
+        # One object has two matching lanes and two spectra in one of them.
+        # A good classification in SPIFF cannot qualify its SUBLIME spectrum.
+        self.db.executemany('INSERT INTO moca_spectra VALUES(?,?,?,0,999)',
+                            [(201,5,55), (202,5,55), (203,5,76), (204,2,55)])
+        self.db.executemany('INSERT INTO data_spectra VALUES(?,15000,?,1,0)',
+                            [(201,3), (202,3), (203,20), (204,4)])
+        self.db.executemany('INSERT INTO pcat_wiseview_visual_vetting VALUES(?,?)', [(2,6), (3,4), (4,6)])
+        for key, reviews in [
+            ('spiff', [(5,'good_candidate'), (2,'good_candidate')]),
+            ('spiffstacker', [(5,'good_candidate'), (3,'good_candidate'), (4,'good_candidate')]),
+            ('sublimeaperture', [(5,'good')]),
+        ]:
+            self.db.executemany(f"INSERT INTO {sr.LANES[key]['table']} VALUES(?,?)", reviews)
+        cuts = dict(lane='all', vetting_classification='good_candidate', min_sptn=10,
+                    min_wiseview_score=5, limit=1)
+        self.assertEqual(sr.queue(self.cur, cuts, count_only=True), {'total': 4})
+        for order, expected in [
+            ('snr_bin_spt', [204,105,201,202]),
+            ('spt_desc', [105,201,202,204]),
+            ('spt_asc', [204,105,201,202]),
+            ('oid_asc', [204,105,201,202]),
+            ('oid_desc', [105,201,202,204]),
+        ]:
+            with self.subTest(order=order):
+                cursor, records = None, []
+                for _ in expected:
+                    page = self.queue(**cuts, queue_order=order, after=cursor)
+                    self.assertEqual(page['lane'], 'all')
+                    records.extend(page['items'])
+                    cursor = page['next_after']
+                self.assertFalse(page['has_more'])
+                self.assertEqual([row['moca_specid'] for row in records], expected)
+                self.assertEqual({row['lane'] for row in records}, {'spiffstacker', 'spiff'})
+                self.assertTrue(all(row['classification'] == 'good_candidate' for row in records))
+        self.assertEqual(self.oids(**{**cuts, 'lane': 'spiff', 'limit': 100}), [2,5])
+
+    def test_invalid_current_vetting_filter_is_rejected_before_sql(self):
+        cursor = MagicMock()
+        with self.assertRaises(sr.ReviewError):
+            sr.queue(cursor, {'lane': 'all', 'vetting_classification': "bad' OR 1=1"})
+        cursor.execute.assert_not_called()
+
     def dual_adopted_fixture(self):
         # Regression: the private T8 must rank/filter/display as public M7.
         for oid, specid in [(526890,600001),(526891,600002),(526892,600003)]:
@@ -112,6 +155,8 @@ class FilterSelectionTests(unittest.TestCase):
         self.dual_adopted_fixture()
         for column in ('ra REAL','dec REAL','origin TEXT'):
             self.db.execute('ALTER TABLE moca_objects ADD COLUMN '+column)
+        for column in ('data_reduction_pipeline TEXT','is_public INTEGER','rls TEXT'):
+            self.db.execute('ALTER TABLE moca_spectra ADD COLUMN '+column)
         for column in ('spectral_type TEXT','complete_spectral_type TEXT','origin TEXT'):
             self.db.execute('ALTER TABLE data_spectral_types ADD COLUMN '+column)
         self.db.execute("UPDATE data_spectral_types SET spectral_type='T8' WHERE id=100")

@@ -25,3 +25,12 @@
 .psf-morphology-flag.pass{color:#185a42;background:#eaf7ee;border-color:#6ca891}
 .psf-morphology-flag.fail{color:#842e26;background:#fff0ec;border-color:#c88273}
 .psf-morphology-flag.undefined{color:#775316;background:#fff8e5;border-color:#c6a75f}
+
+.saved-datasets { display:grid; gap:5px; min-width:0; margin:8px 0; }
+.saved-datasets form, .saved-dataset-actions { display:flex; flex-wrap:wrap; gap:5px; }
+.saved-datasets input, .saved-datasets select { flex:1 1 110px; min-width:0; width:auto; }
+.saved-datasets [role=status]:empty { display:none; }
+#dataset-title{
+  grid-area:1/2;text-align:center;font-size:clamp(14px,1.4vw,20px);font-weight:650;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}

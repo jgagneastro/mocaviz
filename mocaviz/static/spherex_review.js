@@ -14,6 +14,11 @@
   let plotShown = false;
   const motionReview = window.SpherexMotionReview.create({api, writable, base, demo,
     preload: window.__spherexNativeVetting === true});
+  const queueFilterFields = ["lane", "review-sample", "sublime3c-selection-pass", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids",
+    "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "vetting-classification",
+    "wiseview-score", "no-wiseview-score", "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude",
+    "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"];
+  let updatePresetButtons;
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
   const LOOKAHEAD = 50, FIT_CACHE_LIMIT = LOOKAHEAD + 14;
@@ -41,6 +46,7 @@
             adopted_spt_source: job.adoptedSptSource});
           if (Number(data.object?.moca_specid) !== Number(job.item.moca_specid) ||
               Number(data.object?.moca_oid) !== Number(job.item.moca_oid) ||
+              (job.item.lane && data.lane !== job.lane) ||
               typeof data.read_only !== "boolean" || !Object.hasOwn(data.object, "spectral_cnn_probability")) {
             throw new Error("The server returned a different spectrum or an outdated response. " +
               "The review service may need to be restarted after deployment. No fit was loaded.");
@@ -77,7 +83,7 @@
       if (!other) status("Submission for moca_oid=" + job.item.moca_oid + " saved.");
     }
   }
-  function key(item, lane = queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
+  function key(item, lane = item.lane ?? queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
   function failedCount() { return jobs.filter(job => job.state === "failed").length; }
   function moveToSubmissionTail(job) {
@@ -134,10 +140,8 @@
     updateCacheStatus();
     $("fit-filter-info").textContent = fitHidden.size ? fitHidden.size + " spectra skipped by current-fit cuts; no vetting saved" : "";
     $("load").disabled = !context || closed || busyUndo || loading || pending > 0;
-    $("lane").disabled = closed || busyUndo || loading || pending > 0;
     $("specid").disabled = closed || busyUndo || loading || pending > 0;
-    for (const name of ["review-sample", "sublime3c-selection-pass", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids", "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "wiseview-score", "no-wiseview-score",
-      "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"])
+    for (const name of queueFilterFields)
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
@@ -157,6 +161,7 @@
     for (const field of ["sublime2-snr", "max-sublime2-snr"]) $(field).disabled ||= !sublime2Cuts;
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
     $("more").disabled = closed || busyUndo || loading || pending > 0 || !hasMore;
+    updatePresetButtons?.();
     if (current?.read_only) $("write-enabled").checked = false;
     $("write-enabled").disabled = !context?.can_write || !policyReady() || current?.read_only || closed;
     $("preview").disabled = !context?.can_write || !policyReady() || !canReview() || closed;
@@ -169,7 +174,7 @@
     $("report").disabled = !current || closed;
     $("wiseview").disabled = !current || !Number.isFinite(current.object.ra) || !Number.isFinite(current.object.dec) || closed;
     document.querySelectorAll("#classifications button").forEach((b) => {
-      b.disabled = !writable() || !canReview() || hidden.has(key(current.object));
+      b.disabled = !writable() || !canReview() || hidden.has(key(current.object, current.lane));
     });
     $("write-hint").textContent = demo ? "Demonstration only — database writes are disabled." :
       context?.can_write && !policyReady() ? "Restart the review service and reload to enable automatic photometric/ignored flags." :
@@ -228,6 +233,7 @@
   }
   function requiredQueueFilterVersion(request) {
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
+    if (request.lane === "all" || request.vetting_classification) return 21;
     if (request.sublime3c_selection_pass_only) return 20;
     if (request.queue_order === "snr_bin_spt") return 19;
     if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
@@ -298,7 +304,16 @@
     updateControls();
   });
   $("no-wiseview-score").addEventListener("change", updateControls);
-  async function loadQueue(more = false, automatic = false) {
+  $("vetting-classification").addEventListener("change", () => {
+    if ($("vetting-classification").value) $("missing-vetting").value = "all";
+    updateControls();
+  });
+  function setDatasetTitle(name) {
+    const title = $("dataset-title");
+    title.textContent = title.title = name;
+    title.hidden = !name;
+  }
+  async function loadQueue(more = false, automatic = false, datasetName = "") {
     if (pendingCount() || loading || closed || busyUndo) return;
     if (more) autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
     error("");
@@ -309,6 +324,7 @@
         const request = specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
+            vetting_classification: $("vetting-classification").value || null,
             min_wiseview_score: $("no-wiseview-score").checked ? null : $("wiseview-score").value || null,
             no_wiseview_score: $("no-wiseview-score").checked, review_sample: $("review-sample").value,
             sublime3c_selection_pass_only: $("review-sample").value === "sublime3c" && $("sublime3c-selection-pass").checked,
@@ -342,6 +358,7 @@
         for (const job of jobs) {
           if (job.state === "failed") hidden.add(key(job.item, job.lane));
         }
+        setDatasetTitle("");
         resetAnalysis(); motionReview.clear(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
@@ -369,11 +386,13 @@
       }
       const start = items.length;
       items.push(...data.items); hasMore = data.has_more; nextAfter = data.next_after;
+      if (!more) setDatasetTitle(datasetName);
       if (more && data.items.length === 0)
         autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
       $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
         (data.read_only ? " · read only" : " · " + queueLane) :
-        items.length + " objects loaded" + (hasMore ? " · more available" : " · end of queue");
+        items.length + (queueLane === "all" ? " spectra loaded" : " objects loaded") +
+          (hasMore ? " · more available" : " · end of queue");
       if (!more && !queueRequest.moca_specid && (data.queue_filter_version ?? 0) >= 3) {
         void showQueueTotal(queueRequest);
       }
@@ -400,12 +419,13 @@
   }
   function updateCacheStatus() {
     const fitOptions = options();
-    const ready = upcomingItems().filter(item => cache.get(fitCacheKey(item, queueLane, fitOptions))?.state === "ready");
+    const ready = upcomingItems().filter(item => cache.get(fitCacheKey(item, item.lane ?? queueLane, fitOptions))?.state === "ready");
     const message = "Cached " + ready.length + " next spectra in queue";
     const counter = $("cached-next");
     if (counter.textContent !== message) counter.textContent = message;
   }
-  function analysis(item, lane = queueLane, fitOptions = options(), refresh = false, background = false) {
+  function analysis(item, fitOptions = options(), refresh = false, background = false) {
+    const lane = item.lane ?? queueLane;
     const adoptedSptSource = queueRequest.adopted_spt_source || "private";
     const k = fitCacheKey(item, lane, fitOptions, adoptedSptSource);
     if (refresh) cache.delete(k);
@@ -471,7 +491,7 @@
       " spectra skipped by these cuts; no classifications saved by filtering." : "Fitting spectrum…");
     updateControls();
     try {
-      const data = await analysis(item, queueLane, fitOptions, refresh);
+      const data = await analysis(item, fitOptions, refresh);
       if (gen !== generation || closed) return;
       const minimum = queueRequest.min_current_fit_sptn;
       const fittedType = data.fit?.best?.spectral_type_number;
@@ -488,10 +508,10 @@
       }
       current = data; render(data);
       motionReview.show(data, upcoming, async candidate =>
-        (await analysis(candidate, queueLane, fitOptions, false, true)).object);
+        (await analysis(candidate, fitOptions, false, true)).object);
       status(data.warning || "Ready to review."); updateControls();
       for (const candidate of upcoming)
-        analysis(candidate, queueLane, fitOptions, false, true).catch(() => {});
+        analysis(candidate, fitOptions, false, true).catch(() => {});
       updateCacheStatus();
     } catch (e) {
       if (gen !== generation || closed) return;
@@ -578,7 +598,7 @@
     const count = Number($("match-count").value);
     if (fit && (fit.overlays?.length || 0) < Math.min(count, fit.matches?.length || 0))
       $("fit-detail").textContent += " · Restart the review service and reload to show more matches.";
-    const figure = SpherexReviewPlot.figure(data, key(obj) + ":" + count, $("plot").clientWidth, count);
+    const figure = SpherexReviewPlot.figure(data, key(obj, data.lane) + ":" + count, $("plot").clientWidth, count);
     Plotly.react($("plot"), figure.traces, figure.layout,
       {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"]});
     plotShown = figure.traces.some((trace) => trace.x?.length && trace.y?.length);
@@ -600,9 +620,9 @@
     } catch (e) { error(e.message); }
   }
   function enqueue(action, classification = null) {
-    if (!writable() || !canReview() || hidden.has(key(current.object))) return;
+    if (!writable() || !canReview() || hidden.has(key(current.object, current.lane))) return;
     if (classification) lastClass = classification;
-    const job = {body: decisionBody(current, action, classification), item: {...current.object},
+    const job = {body: decisionBody(current, action, classification), item: {...current.object, lane: current.lane},
       lane: current.lane, state: "queued", undoReceipt: null};
     jobs.push(job); history.push(job); hidden.add(key(job.item, job.lane));
     const oldIndex = index;
@@ -659,7 +679,7 @@
       if (closed) return;
       history.pop(); job.state = "undone"; job.undoReceipt = null; hidden.delete(key(job.item, job.lane));
       resolveSubmissionErrors(job);
-      if (queueLane !== job.lane) { queueLane = job.lane; $("lane").value = job.lane; items = [job.item]; hasMore = false; }
+      if (queueLane !== "all" && queueLane !== job.lane) { queueLane = job.lane; $("lane").value = job.lane; items = [job.item]; hasMore = false; }
       else if (!items.some((i) => key(i) === key(job.item))) items.push(job.item);
       // Undo can change pixels and adopted-type metadata for this object.
       for (const [fitKey, fit] of cache) {
@@ -709,9 +729,21 @@
       neowise: 0, diff: 0, outer_epochs: 1, unique_window: 1, smooth_scan: 0, shift: 0, pmra: 0, pmdec: 0});
     window.open("http://byw.tools/wiseview-v2#" + p, "_blank", "noopener,noreferrer");
   }
+  const datasetStorageKey = "spherex-review-datasets-v1";
+  const motionDatasetName = "Good_Motion_Candidate_Spectra";
+  const motionDataset = {
+    "lane": "all", "review-sample": "all", "sublime3c-selection-pass": false,
+    "sublime3c-psf-morphology": "all", "adopted-spt-source": "private", "adopted-spt-moca-pids": "",
+    "queue-order": "snr_bin_spt", "cnn-priority-source": "combined", "spectral-cnn-probability": "",
+    "batch-size": "100", "missing-vetting": "all", "vetting-classification": "good_candidate",
+    "wiseview-score": "5", "no-wiseview-score": false, "sublime2-snr": "", "max-sublime2-snr": "",
+    "cnn-probability": "", "galactic-latitude": "", "snr-wavelength-range": "all", "snr": "",
+    "max-snr": "", "max-chi2": "", "sptn": "10", "current-fit-sptn": "", "current-fit-gap": "",
+    "no-known": false, "exclude-duplicates": false, "oids": "", "replace": true,
+  };
   // Update the existing Vetting preset once, preserving its other filters.
   if (window.__spherexNativeVetting === true) {
-    const key = "spherex-review-datasets-v1";
+    const key = datasetStorageKey;
     const migration = key + ":all-s3c-snr-order-v1";
     try {
       if (!localStorage.getItem(migration)) {
@@ -727,6 +759,25 @@
       // The reviewer remains usable if local storage is unavailable.
     }
   }
+  updatePresetButtons = window.installReviewPresets(datasetStorageKey, [...queueFilterFields, "replace"], {
+    initial: {[motionDatasetName]: motionDataset},
+    canLoad: () => !$("load").disabled,
+    newestFirst: true,
+    apply(datasetName, preset) {
+      $("replace").checked = preset.replace === true;
+      if (!Object.hasOwn(preset, "vetting-classification")) $("vetting-classification").value = "";
+      const sample = $("review-sample").value;
+      cnnFilterSample = previousSample = sample;
+      catalogCnnBySample.set(sample, $("cnn-probability").value);
+      if (sample !== "public-ucd") {
+        otherSampleVetting = $("missing-vetting").value;
+        otherSampleSptSource = $("adopted-spt-source").value;
+      }
+      $("specid").value = "";
+      updateControls();
+      void loadQueue(false, false, datasetName);
+    },
+  });
   $("load").onclick = () => loadQueue(); $("more").onclick = () => loadQueue(true);
   $("specid").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
@@ -805,6 +856,8 @@
         $("queue-order").value = "gal_cnn_spt_snr";
       }
       $("access").textContent = demo ? "Demo · read only" : context.can_write ? "Management · writes disabled until enabled" : "Collaborator · read only";
+      for (const [label] of context.classifications)
+        $("vetting-classification").add(new Option(label, label));
       const usable = new Set(["good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
         "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M"]);
       for (const [label, shortcut] of context.classifications) {

@@ -92,7 +92,16 @@ def priority_key(row, order):
         # same bin from the cursor's median when paging.
         key += descending(floor(snr) if snr is not None else None)
         key += descending(row['sort_subtype'])
-    return key + descending(snr) + (row['moca_oid'],)
+    return key + descending(snr) + (row['moca_oid'], row.get('moca_specid', 0))
+
+
+def plain_key(row, order):
+    oid, specid = row['moca_oid'], row['moca_specid']
+    if order.startswith('spt_'):
+        spt = row['sort_spt']
+        value = descending(spt) if order == 'spt_desc' else (spt is None, spt)
+        return value + (oid, specid)
+    return (-oid if order == 'oid_desc' else oid, specid)
 
 
 def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read, maximum=None):
@@ -102,6 +111,8 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
         if cursor is not None:
             after = dict(moca_oid=cursor['moca_oid'], sort_subtype=cursor['spectral_subtype'],
                          sort_snr_1_2=cursor['snr_1_2'])
+            # Old cursors have a unique object ID per lane.
+            after['moca_specid'] = cursor.get('moca_specid', float('inf'))
             if order in CNN_ORDERS:
                 after['sort_cnn_bin'] = cursor['cnn_bin']
             if order in GALACTIC_ORDERS:
@@ -113,12 +124,7 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
         candidates.sort(key=group_key)
         groups = (list(group) for _, group in groupby(candidates, key=group_key))
     else:
-        if order.startswith('spt_'):
-            direction = -1 if order=='spt_desc' else 1
-            candidates.sort(key=lambda row:(row['sort_spt'] is None,
-                direction*row['sort_spt'] if row['sort_spt'] is not None else 0,row['moca_oid']))
-        else:
-            candidates.sort(key=lambda row:row['moca_oid'],reverse=order=='oid_desc')
+        candidates.sort(key=lambda row: plain_key(row, order))
         groups=chunks(candidates)
     selected=[]
     for group in groups:

@@ -76,7 +76,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 20
+QUEUE_FILTER_VERSION = 21
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
@@ -413,12 +413,14 @@ def stored_chi2_sql(column):
     return "COALESCE(" + ",".join(expressions) + ")"
 
 
-def priority_queue_cursor(after, order):
+def priority_queue_cursor(after, order, *, mixed=False):
     keys = {"moca_oid", "spectral_subtype", "snr_1_2"}
     if order in metrics.CNN_ORDERS:
         keys.add("cnn_bin")
     if order in metrics.GALACTIC_ORDERS:
         keys.add("galactic_bin")
+    if mixed:
+        keys.add("moca_specid")
     if not isinstance(after, dict) or set(after) != keys:
         raise ReviewError("Invalid priority queue cursor. Reload the queue.")
     cursor = {
@@ -428,6 +430,8 @@ def priority_queue_cursor(after, order):
         "snr_1_2": None if after["snr_1_2"] is None else
             bounded_float(after["snr_1_2"], "Queue cursor S/N", -sys.float_info.max, sys.float_info.max),
     }
+    if mixed:
+        cursor["moca_specid"] = integer(after["moca_specid"], "Queue cursor spectrum ID")
     if "cnn_bin" in keys:
         cursor["cnn_bin"] = integer(after["cnn_bin"], "Queue cursor CNN bin", 0, 1)
     if "galactic_bin" in keys:
@@ -462,9 +466,9 @@ def snr_bounds(body, name, label):
     return lower, upper
 
 
-def queue(cur, body, *, count_only=False):
+def queue(cur, body, *, count_only=False, management=False):
     source = body.get("adopted_spt_source", "private")
-    adopted_column = adopted_spt_column(source)
+    adopted_spt_column(source)
     if body.get("moca_specid") not in (None, ""):
         meta = spectrum_metadata(cur, integer(body["moca_specid"], "moca_specid"), adopted_spt_source=source)
         if count_only:
@@ -472,14 +476,88 @@ def queue(cur, body, *, count_only=False):
         key = spectrum_lane(meta)
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
+    if body.get("lane") == "all":
+        return mixed_queue(cur, body, count_only=count_only, management=management)
     key, lane = lane_for(body)
-    psf_mode = body.get("sublime3c_psf_morphology", "all")
-    if not isinstance(psf_mode, str) or psf_mode not in morphology.MODES:
-        raise ReviewError("Choose a valid SUBLIME3C PSF morphology filter.")
+    return queue_in_lane(cur, body, key, lane, count_only=count_only)
+
+
+def mixed_queue(cur, body, *, count_only, management):
+    lanes = {key: lane for key, lane in LANES.items() if management or not lane.get("private_rls")}
+    if count_only:
+        return {"total": sum(queue_in_lane(cur, body, key, lane, count_only=True, mixed=True)["total"]
+                             for key, lane in lanes.items())}
+    order = queue_order(body)
+    limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
+    band = queue_snr_band(body)
+    min_snr, max_snr = snr_bounds(body, "snr", "spectrum median S/N")
+    after = body.get("after")
+    priority_cursor = plain_cursor = None
+    if after not in (None, 0):
+        if order in metrics.PRIORITY_ORDERS:
+            priority_cursor = priority_queue_cursor(after, order, mixed=True)
+        else:
+            keys = {"moca_oid", "moca_specid"}
+            if order.startswith("spt_"):
+                keys.add("spectral_type_number")
+            if not isinstance(after, dict) or set(after) != keys:
+                raise ReviewError("Invalid mixed-lane queue cursor. Reload the queue.")
+            plain_cursor = {
+                "moca_oid": integer(after["moca_oid"], "Queue cursor object ID"),
+                "moca_specid": integer(after["moca_specid"], "Queue cursor spectrum ID"),
+            }
+            if "spectral_type_number" in after:
+                value = after["spectral_type_number"]
+                plain_cursor["sort_spt"] = None if value is None else bounded_float(
+                    value, "Queue cursor spectral type", -100, 100)
+
+    # Rank together so a high-S/N spectrum always precedes spectra in lower bins,
+    # even when the spectra come from different lanes or belong to the same object.
+    candidates = []
+    selection = {**body, "after": None}
+    for key, lane in lanes.items():
+        candidates.extend(queue_in_lane(cur, selection, key, lane, mixed=True))
+    if plain_cursor is not None:
+        after_key = metrics.plain_key(plain_cursor, order)
+        candidates = [row for row in candidates if metrics.plain_key(row, order) > after_key]
+
+    records = metrics.page(cur, candidates, minimum=min_snr, maximum=max_snr,
+                           wavelength_range=SNR_WAVELENGTH_RANGES[band], order=order,
+                           cursor=priority_cursor, limit=limit, read=rows)
+    if records:
+        ids = [row["moca_specid"] for row in records]
+        details = rows(cur, f"""SELECT s.moca_specid,mo.designation,s.median_snr_per_pix
+            FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
+            WHERE s.moca_specid IN ({','.join(['%s'] * len(ids))})""", tuple(ids))
+        by_id = {row["moca_specid"]: row for row in details}
+        for row in records:
+            row.update(by_id.get(row["moca_specid"], {}))
+    result = queue_result(records, order, limit, mixed=True)
+    result["lane"] = "all"
+    return result
+
+
+def queue_order(body):
     order = body.get("queue_order", "oid_asc")
     orders = metrics.PRIORITY_ORDERS | {"spt_desc", "spt_asc", "oid_asc", "oid_desc"}
     if not isinstance(order, str) or order not in orders:
         raise ReviewError("Choose a valid queue order.")
+    return order
+
+
+def queue_snr_band(body):
+    band = body.get("snr_wavelength_range", "all")
+    if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
+        raise ReviewError("Choose a valid spectrum S/N wavelength range.")
+    return band
+
+
+def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
+    adopted_column = adopted_spt_column(body.get("adopted_spt_source", "private"))
+    psf_mode = body.get("sublime3c_psf_morphology", "all")
+    if not isinstance(psf_mode, str) or psf_mode not in morphology.MODES:
+        raise ReviewError("Choose a valid SUBLIME3C PSF morphology filter.")
+    order = queue_order(body)
     cnn_source = body.get("cnn_priority_source", "combined")
     if cnn_source not in ("combined", "spectral", "sublime2"):
         raise ReviewError("Choose combined, spectral or SUBLIME2 CNN priority.")
@@ -504,13 +582,21 @@ def queue(cur, body, *, count_only=False):
         else:
             cursor_oid = integer(after, "Queue cursor", 0)
     limit = None if count_only else integer(body.get("limit", 100), "Queue batch size", 1, 500)
-    pending = boolean(body.get("pending_only"), True)
+    classification = body.get("vetting_classification")
+    if classification not in (None, "") and (
+        not isinstance(classification, str) or classification not in dict(CLASSIFICATIONS)
+    ):
+        raise ReviewError("Choose a valid current spectral vetting classification.")
+    pending = boolean(body.get("pending_only"), not classification)
     missing = body.get("missing_vetting", "lane" if pending else "all")
     if not isinstance(missing, str) or missing not in MISSING_VETTING_MODES:
         raise ReviewError("Choose a valid missing spectral-vetting scope.")
     active_only = missing != "all"
     conditions = ["mo.ignored=0"]
     params = [lane["pack"]]
+    if classification:
+        conditions.append("v.classification=%s")
+        params.append(classification)
     adopted_join = ""
     type_projection = ""
     if type_order and not count_only:
@@ -665,9 +751,7 @@ def queue(cur, body, *, count_only=False):
                           f" AND fit.calculation_method IN ({methods}) AND fit.ignored=0 ORDER BY fit.id DESC LIMIT 1)<=%s")
         params.extend(lane["methods"])
         params.append(bounded_float(body["max_reduced_chi2"], "Maximum stored reduced chi squared", 0, 1e9))
-    band = body.get("snr_wavelength_range", "all")
-    if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
-        raise ReviewError("Choose a valid spectrum S/N wavelength range.")
+    band = queue_snr_band(body)
     min_snr, max_snr = snr_bounds(body, "snr", "spectrum median S/N")
     adopted_conditions = []
     if body.get("min_sptn") not in (None, ""):
@@ -694,7 +778,8 @@ def queue(cur, body, *, count_only=False):
             AND (known.is_public=1 OR known.public_adopted=1 OR known.calculation_method IS NULL OR known.calculation_method NOT IN
                 ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
         )""")
-    conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
+    if not mixed:
+        conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
     selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
@@ -703,18 +788,19 @@ def queue(cur, body, *, count_only=False):
     """
     params = [*source_params, *params]
     projection = "s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification" + type_projection
+    if mixed and not count_only:
+        metadata = f"s.moca_oid,s.moca_specid,v.classification,'{key}' AS lane" + type_projection
+        candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
+        set_combined_priority(candidates, order, cnn_source)
+        return candidates
     if min_snr is not None or max_snr is not None or rank_pixels:
         # Finish catalog/quality selection before touching pixels. Keeping these
         # as separate read-only statements prevents derived-CTE expansion and
         # repeated selection inside MariaDB's window-ranking query.
         metadata = "s.moca_specid" if count_only else "s.moca_oid,s.moca_specid" + type_projection
         candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
-        if rank_pixels and cnn_order and cnn_source == "combined":
-            for row in candidates:
-                combined = combined_cnn_probability(row.pop("sort_spectral_cnn_probability"),
-                                                    row.pop("sort_catalog_cnn_probability"))
-                row["sort_cnn_probability"] = combined
-                row["sort_cnn_bin"] = 0 if combined is not None and combined >= 0.8 else 1
+        if rank_pixels:
+            set_combined_priority(candidates, order, cnn_source)
         wavelength_range = SNR_WAVELENGTH_RANGES[band]
         if count_only:
             eligible = metrics.passing_snr(cur, [row['moca_specid'] for row in candidates],
@@ -740,19 +826,36 @@ def queue(cur, body, *, count_only=False):
 
         records = rows(cur, f"SELECT {projection} {selection} ORDER BY {order_oid} LIMIT %s",
                        (*params, limit + 1))
+    return queue_result(records, order, limit)
+
+
+def set_combined_priority(candidates, order, cnn_source):
+    if order not in metrics.CNN_ORDERS or cnn_source != "combined":
+        return
+    for row in candidates:
+        combined = combined_cnn_probability(row.pop("sort_spectral_cnn_probability"),
+                                            row.pop("sort_catalog_cnn_probability"))
+        row["sort_cnn_probability"] = combined
+        row["sort_cnn_bin"] = 0 if combined is not None and combined >= 0.8 else 1
+
+
+def queue_result(records, order, limit, *, mixed=False):
     next_after = None
     if len(records) >= limit:
         last = records[limit - 1]
-        if priority_order:
+        if order in metrics.PRIORITY_ORDERS:
             next_after = {"moca_oid": last["moca_oid"],
                           "spectral_subtype": last["sort_subtype"], "snr_1_2": last["sort_snr_1_2"]}
-            if cnn_order:
+            if order in metrics.CNN_ORDERS:
                 next_after["cnn_bin"] = last["sort_cnn_bin"]
-            if galactic_order:
+            if order in metrics.GALACTIC_ORDERS:
                 next_after["galactic_bin"] = last["sort_galactic_bin"]
+        elif order.startswith("spt_"):
+            next_after = {"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
         else:
-            next_after = ({"moca_oid": last["moca_oid"], "spectral_type_number": last["sort_spt"]}
-                          if type_order else last["moca_oid"])
+            next_after = {"moca_oid": last["moca_oid"]} if mixed else last["moca_oid"]
+        if mixed:
+            next_after["moca_specid"] = last["moca_specid"]
     return {"items": records[:limit], "has_more": len(records) > limit, "queue_filter_version": QUEUE_FILTER_VERSION,
             "next_after": next_after}
 
@@ -1098,7 +1201,13 @@ def api(operation):
                     result = {"items": [{"moca_oid": 1001, "moca_specid": specid, "designation": "Demonstration 1001"}],
                               "lane": None, "read_only": True, "has_more": False, "next_after": None}
                 else:
-                    result = {"items": [{"moca_oid": n, "moca_specid": n + 10000, "designation": f"Demonstration {n}"} for n in range(1001, 1007)], "has_more": False, "next_after": None}
+                    items = [{"moca_oid": n, "moca_specid": n + 10000, "designation": f"Demonstration {n}"}
+                             for n in range(1001, 1007)]
+                    if body.get("lane") == "all":
+                        demo_lanes = ("spiff", "spiffstacker", "sublimeaperture")
+                        for index, item in enumerate(items):
+                            item["lane"] = demo_lanes[index % len(demo_lanes)]
+                    result = {"items": items, "has_more": False, "next_after": None}
             else:
                 result = demo_item(body)
         else:
@@ -1110,7 +1219,7 @@ def api(operation):
                     result = {"role": auth["user"], "can_write": auth["user"] == "management",
                               "lanes": LANES, "classifications": CLASSIFICATIONS}
                 elif operation in {"queue", "queue-count"}:
-                    result = queue(cur, body, count_only=operation == "queue-count")
+                    result = queue(cur, body, count_only=operation == "queue-count", management=auth["user"] == "management")
                 elif operation == "analyze":
                     result = analyze(cur, body)
                 elif operation == "motion-context":
