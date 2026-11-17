@@ -3,7 +3,7 @@ const {test}=require('node:test');
 const {classify,annotate,groups,definitions,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point}=require('../mocaviz/static/sublime_findings.js');
 const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star'];
 test('every accepted review in any reduction qualifies at the requested motion boundaries',()=>{
-  const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed'],[null,'no_motion_vetting'],[undefined,'no_motion_vetting'],[NaN,'no_motion_vetting'],[Infinity,'no_motion_vetting']];
+  const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed']];
   for(const lane of ['spiff','spiffstacker','sublimeaperture'])
     for(const quality of accepted)
       for(const [motion,expected] of boundaries)
@@ -25,18 +25,24 @@ test('unreviewed and other spectral labels remain Others, even with clear motion
   assert.equal(classify({spiff_quality:'bad',spiffstacker_quality:' CONTAMINATED_UCD ',sublimeaperture_quality:'bad',motion:5}),'confirmed');
   assert.equal(classify({spiff_quality:'good',motion_class:'clear motion'}),'others');
 });
-test('unvetted motion is shown separately regardless of publication or claim',()=>{
-  for(const membership of [{},{known:true},{known_candidate:true},{smdet:true}]){
-    assert.equal(classify({...membership,motion:null,motion_class:null}),'no_motion_vetting');
-    assert.equal(classify({...membership,motion:'',motion_class:''}),'no_motion_vetting');
-  }
+test('unvetted motion separates good and good candidate reviews across all reductions',()=>{
+  for(const membership of [{},{known:true},{known_candidate:true},{smdet:true}])
+    for(const lane of ['spiff','spiffstacker','sublimeaperture'])
+      for(const motion of [null,undefined,'',NaN,Infinity])
+        for(const quality of accepted){
+          const expected=quality==='good_candidate'?'good_candidate_no_motion':'good_no_motion';
+          assert.equal(classify({...membership,motion,motion_class:'',[lane+'_quality']:quality}),expected);
+        }
+  assert.equal(classify({spiff_quality:' GOOD_CANDIDATE ',sublimeaperture_quality:' GOOD '}),'good_no_motion');
+  assert.equal(classify({spiff_quality:'bad'}),'others');
+  assert.equal(classify({known:true}),'others');
 });
 test('each filtered object belongs to exactly one class and all plots use the class color',()=>{
-  const rows=[{known:true,motion:0},{known_candidate:true,motion:0},{smdet:true,motion:0},{spiff_quality:'good',motion:6},{spiffstacker_quality:'good_candidate',motion:3},{sublimeaperture_quality:'peculiar_ucd',motion:2},{motion:null},{motion:6}].map((r,i)=>annotate({...r,moca_oid:i+1}));
-  assert.equal(new Set(definitions.map(d=>d.color)).size,8);
+  const rows=[{known:true,motion:0},{known_candidate:true,motion:0},{smdet:true,motion:0},{spiff_quality:'good',motion:6},{spiffstacker_quality:'good_candidate',motion:3},{sublimeaperture_quality:'peculiar_ucd',motion:2},{spiff_quality:'good',motion:null},{spiff_quality:'good_candidate',motion:null},{motion:6}].map((r,i)=>annotate({...r,moca_oid:i+1}));
+  assert.equal(new Set(definitions.map(d=>d.color)).size,9);
   const traces=groups(rows,(data,name,color)=>({name,marker:{color},ids:data.map(r=>r.moca_oid)}));
-  assert.deepEqual(traces.flatMap(t=>t.ids).sort(),[1,2,3,4,5,6,7,8]);
-  assert.equal(traces.length,8);
+  assert.deepEqual(traces.flatMap(t=>t.ids).sort(),[1,2,3,4,5,6,7,8,9]);
+  assert.equal(traces.length,9);
   for(const [i,trace] of traces.entries()) {
     assert.equal(trace.name,definitions[i].label);
     assert.equal(trace.marker.color,definitions[i].color);

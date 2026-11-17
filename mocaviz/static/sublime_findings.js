@@ -1,7 +1,9 @@
 /* SUBLIME findings atlas. Credentials and scientific data stay in tab memory. */
 const FindingClasses = (() => {
   'use strict';
-  const accepted = new Set(['good', 'good_candidate', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
+  const spectralLanes = ['spiffstacker', 'spiff', 'sublimeaperture'];
+  const goodReviews = new Set(['good', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
+  const accepted = new Set([...goodReviews, 'good_candidate']);
   const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
   const definitions = [
     {key:'known', label:'Known UCDs', color:'#bc7a3d', detail:'Published spectroscopic status, including confirmed duplicate links, with a stored WiseView motion review.'},
@@ -10,7 +12,8 @@ const FindingClasses = (() => {
     {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'. WiseView score ≥ 5. Excludes known and claimed objects.'},
     {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'. WiseView score ≥ 3 and < 5. Excludes known and claimed objects.'},
     {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'. WiseView score from 1 through 2 inclusive. Excludes known and claimed objects.'},
-    {key:'no_motion_vetting', label:'No motion vetting', color:'#656b76', detail:'No stored WiseView motion score or review label.'},
+    {key:'good_no_motion', label:'Good spectra, no motion vetting', color:'#416a91', noMotion:true, detail:'At least one good, contaminated_ucd, peculiar_ucd or good_plus_star spectral review. No stored WiseView motion score or review label.'},
+    {key:'good_candidate_no_motion', label:'Good candidate spectra, no motion vetting', color:'#886b4a', noMotion:true, detail:'At least one good_candidate spectral review. Good spectra take precedence. No stored WiseView motion score or review label.'},
     {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including nonqualifying reviews.'},
   ];
   function motionScore(row) {
@@ -18,11 +21,16 @@ const FindingClasses = (() => {
   }
   function classify(row) {
     const score=motionScore(row);
-    if(!Number.isFinite(score) && !String(row.motion_class??'').trim()) return 'no_motion_vetting';
+    const qualities=spectralLanes.map(lane=>String(row[lane+'_quality']??'').trim().toLowerCase());
+    if(!Number.isFinite(score) && !String(row.motion_class??'').trim()){
+      if(qualities.some(quality=>goodReviews.has(quality))) return 'good_no_motion';
+      if(qualities.includes('good_candidate')) return 'good_candidate_no_motion';
+      return 'others';
+    }
     if(row.known) return 'known';
     if(row.known_candidate) return 'known_candidate';
     if(row.byw || row.byw_claim || row.yadu || row.azul || row.smdet) return 'claimed';
-    const qualifies=['spiffstacker','spiff','sublimeaperture'].some(lane=>accepted.has(String(row[lane+'_quality']??'').trim().toLowerCase()));
+    const qualifies=qualities.some(quality=>accepted.has(quality));
     if(!qualifies || !Number.isFinite(score)) return 'others';
     if(score>=5) return 'confirmed';
     if(score>=3) return 'candidate';
@@ -31,7 +39,7 @@ const FindingClasses = (() => {
   }
   function isConfirmed(row,standard='good') {
     const score=motionScore(row);
-    return Number.isFinite(score) && score>=5 && ['spiffstacker','spiff','sublimeaperture'].some(lane=>{
+    return Number.isFinite(score) && score>=5 && spectralLanes.some(lane=>{
       const quality=String(row[lane+'_quality']??'').trim().toLowerCase();
       return accepted.has(quality) && (standard==='good_candidate' || quality!=='good_candidate');
     });
@@ -274,24 +282,27 @@ function renderCharts(){
  })),l);
  $('sublime2-detection-snr-note').textContent=`${num(detected.length)} SUBLIME2 objects · ${num(rows.filter(r=>r.sublime2&&finite(r.spt)).length-detections.length)} missing detection S/N · SUBLIME2 catalog measurement · log y-axis${detections.length>detected.length?' · '+num(detections.length-detected.length)+' nonpositive values omitted':''}`;
  const scored=typed.filter(r=>finite(FindingClasses.motionScore(r)));
- const unvetted=typed.filter(r=>r.plot_class==='no_motion_vetting');
+ const plottedClasses=new Set(typed.map(r=>r.plot_class));
+ const unvettedClasses=classDefinitions.filter(def=>def.noMotion&&plottedClasses.has(def.key));
+ const unvettedRows=new Map();
  l=spectralAxis(baseLayout('Spectral type','WiseView motion score'));l.yaxis.dtick=1;
- let unvettedRow;
- if(unvetted.length){
+ if(unvettedClasses.length){
   const low=Math.floor(scored.reduce((min,r)=>Math.min(min,FindingClasses.motionScore(r)),-1));
   const high=Math.ceil(scored.reduce((max,r)=>Math.max(max,FindingClasses.motionScore(r)),6));
-  // Reserve a labeled display row below the numeric scores for objects without vetting.
-  unvettedRow=low-1;
   const scoreTicks=Array.from({length:high-low+1},(_,i)=>low+i);
-  Object.assign(l.yaxis,{tickmode:'array',tickvals:[unvettedRow,...scoreTicks],
-   ticktext:['No motion vetting',...scoreTicks.map(String)]});
+  const unvettedTicks=unvettedClasses.slice().reverse();
+  unvettedTicks.forEach((def,i)=>unvettedRows.set(def.key,low-unvettedTicks.length+i));
+  Object.assign(l.yaxis,{tickmode:'array',tickvals:[...unvettedRows.values(),...scoreTicks],
+   ticktext:[...unvettedTicks.map(def=>def.label),...scoreTicks.map(String)]});
  }
- const motionRows=[...scored,...unvetted];
- const motionTraces=groups(motionRows,(d,n,c)=>d[0]?.plot_class==='no_motion_vetting'
-  ?spectralScatterTrace(d,()=>unvettedRow,n,c,{
+ const motionRows=[...scored,...typed.filter(r=>unvettedRows.has(r.plot_class))];
+ const motionTraces=groups(motionRows,(d,n,c)=>{
+  const band=unvettedRows.get(d[0]?.plot_class);
+  if(band===undefined)return spectralScatterTrace(d,FindingClasses.motionScore,n,c);
+  return spectralScatterTrace(d,()=>band,n,c,{
    hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<extra>'+n+'</extra>'
-  })
-  :spectralScatterTrace(d,FindingClasses.motionScore,n,c));
+  });
+ });
  emptyNote(l,motionRows.length);plot('motion',motionTraces,l);
  const astrometryNote=hasAstrometryPlots?undefined:'Restart the Findings Dashboard service to load astrometry data.';
  const withProperMotion=typed.filter(r=>finite(r.pmtot_masyr));

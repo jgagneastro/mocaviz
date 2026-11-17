@@ -158,8 +158,13 @@ node scripts/chromium_probe.mjs --url 'http://127.0.0.1:8901/?mock=1' --wait-js 
 ## Plot color classes
 
 All overview plots use the same mutually exclusive categories. Objects without
-a WiseView motion score or review label are shown as **No motion vetting** (slate),
-including in a labeled row below the numeric scores in the motion-score plot.
+a WiseView motion score or review label are shown as **Good spectra, no motion
+vetting** if any lane has a good-family review. **Good candidate spectra, no
+motion vetting** applies if at least one lane has a good-candidate review.
+A good-family review takes precedence when both are present. The motion-score
+plot gives each class its own row below the numeric scores. Objects without
+a qualifying spectral review fall into **Others**.
+
 Objects with a motion review use these classes in order:
 
 1. **Known UCDs** (ochre): the existing published-spectroscopic status,

@@ -28,7 +28,10 @@ await page.route('**/api/findings/*',async route=>{
   if(op==='load' && response.ok()){
    assert.equal(body.filters.min_motion,undefined,'Default minimum motion is disabled');
    const json=await response.json();
-   Object.assign(json.rows[0],{motion:null,motion_class:null});
+   for(const [index,quality] of ['good','good_candidate'].entries()){
+    Object.assign(json.rows[index],{motion:null,motion_class:null,
+     spiff_quality:quality,spiffstacker_quality:null,sublimeaperture_quality:null});
+   }
    return await route.fulfill({status:response.status(),json});
   }
   await route.fulfill({response});
@@ -51,9 +54,17 @@ try{
  assert.equal(await page.locator('input[name="min_motion"]').inputValue(),'');
  assert.equal(await page.locator('.sample-metrics .metric').count(),3);
  assert.equal(await page.getByText('With absolute W2',{exact:true}).count(),0);
- await page.waitForFunction(()=>['histogram','motion','cmd'].every(id=>
-  document.getElementById(id)?.data?.some(trace=>trace.name==='No motion vetting'&&trace.showlegend)));
- assert.ok(await page.locator('#motion').evaluate(plot=>plot.layout.yaxis.ticktext.includes('No motion vetting')));
+ const unvetted=['Good spectra, no motion vetting','Good candidate spectra, no motion vetting'];
+ await page.waitForFunction(names=>['histogram','motion','cmd'].every(id=>
+  names.every(name=>document.getElementById(id)?.data?.some(trace=>trace.name===name&&trace.showlegend))),unvetted);
+ const motionBands=await page.locator('#motion').evaluate((plot,names)=>names.map(name=>{
+  const trace=plot.data.find(trace=>trace.name===name);
+  const tick=plot.layout.yaxis.ticktext.indexOf(name);
+  return {y:trace.y[0],tick:plot.layout.yaxis.tickvals[tick]};
+ }),unvetted);
+ assert.equal(motionBands[0].y,motionBands[0].tick);
+ assert.equal(motionBands[1].y,motionBands[1].tick);
+ assert(motionBands[0].y>motionBands[1].y);
 
  // The catalog and S/N histogram are available before diagnostics are requested.
  await page.waitForFunction(()=>document.getElementById('snr-histogram')?.layout?.yaxis.type==='log');
