@@ -9,16 +9,27 @@ const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 await page.emulateMedia({reducedMotion:'no-preference'});
 const errors=[],controls=new Set();
-let closing=false,loadControl=null,diagnosticControl=null,failLoad=false,failDiagnostic=false,diagnosticRequests=0;
+let closing=false,loadControl=null,diagnosticControl=null,failLoad=false,failDiagnostic=false,diagnosticRequests=0,loadRequests=0,countsRequests=0;
 function gate(){let release;const promise=new Promise(resolve=>{release=resolve;});const control={promise,release,retired:false};controls.add(control);return control;}
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/findings/*',async route=>{
  const op=new URL(route.request().url()).pathname.split('/').at(-1);
  const control=op==='load'?loadControl:op==='diagnostics'?diagnosticControl:null;
  if(op==='diagnostics')diagnosticRequests++;
+ if(op==='load')loadRequests++;
  try{
   const body=route.request().postDataJSON();
   assert.equal(body.mock,true,'Browser checks must never query the live database');
+  if(op==='counts'){
+   countsRequests++;
+   assert.deepEqual(body.filters.sources,['sublime2']);
+   assert.equal(body.filters.min_spt,20,'Only applied filters are used for counting');
+   const [before,second]=await page.evaluate(()=>window.SublimeFindings.rows.slice(0,2).map(r=>r.moca_oid));
+   return await route.fulfill({json:{ok:true,elapsed:.15,groups:[
+    {oids:[before,second,999999],motion:null,spiff_quality:'good_candidate'},
+    {oids:[999998],known:true,motion:5},
+   ]}});
+  }
   if((op==='load'&&failLoad)||(op==='diagnostics'&&failDiagnostic)){
    if(op==='load')failLoad=false;else failDiagnostic=false;
    return await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({ok:false,error:'Synthetic refresh failure'})});
@@ -56,15 +67,37 @@ try{
  assert.equal(await page.getByText('With absolute W2',{exact:true}).count(),0);
  const unvetted=['Good spectra, no motion vetting','Good candidate spectra, no motion vetting'];
  await page.waitForFunction(names=>['histogram','motion','cmd'].every(id=>
-  names.every(name=>document.getElementById(id)?.data?.some(trace=>trace.name===name&&trace.showlegend))),unvetted);
+  names.every(name=>document.getElementById(id)?.data?.some(trace=>(trace.name===name||trace.name.startsWith(name+' ('))&&trace.showlegend))),unvetted);
  const motionBands=await page.locator('#motion').evaluate((plot,names)=>names.map(name=>{
-  const trace=plot.data.find(trace=>trace.name===name);
+  const trace=plot.data.find(trace=>trace.name.startsWith(name+' ('));
   const tick=plot.layout.yaxis.ticktext.indexOf(name);
   return {y:trace.y[0],tick:plot.layout.yaxis.tickvals[tick]};
  }),unvetted);
  assert.equal(motionBands[0].y,motionBands[0].tick);
  assert.equal(motionBands[1].y,motionBands[1].tick);
  assert(motionBands[0].y>motionBands[1].y);
+
+ // Recount a changed sample without moving points, recoloring or clearing zoom.
+ const sky=page.locator('#sky');
+ await sky.locator('.legend').waitFor();
+ const getTraces=()=>sky.evaluate(el=>el.data.map(t=>[t.x,t.y,t.marker.color,t.visible]));
+ await page.evaluate(()=>Plotly.relayout(document.getElementById('sky'),{'xaxis.range':[280,230]}));
+ const originalTraces=await getTraces();
+ const beforeCount=loadRequests;
+ await page.locator('input[name=min_spt]').fill('21');
+ await page.locator('#refresh-counts').click();
+ await page.waitForFunction(()=>document.querySelector('#counts-status').textContent.includes('Counts updated'));
+ assert.equal(countsRequests,1);
+ assert.equal(loadRequests,beforeCount);
+ assert.equal(await page.locator('#count-total').textContent(),'4');
+ assert.equal(await page.locator('#count-known').textContent(),'1');
+ assert.equal(await page.locator('#class-count-good_candidate_no_motion').textContent(),'3');
+ await page.waitForFunction(()=>document.getElementById('sky').data.some(t=>
+    t.name==='Good candidate spectra, no motion vetting (2)'));
+ assert.deepEqual(await getTraces(),originalTraces);
+ assert.deepEqual(await sky.evaluate(el=>el.layout.xaxis.range),[280,230]);
+ assert.equal(await page.evaluate(()=>window.SublimeFindings.rows.length),count);
+ await page.locator('input[name=min_spt]').fill('20');
 
  // The catalog and S/N histogram are available before diagnostics are requested.
  await page.waitForFunction(()=>document.getElementById('snr-histogram')?.layout?.yaxis.type==='log');
@@ -128,7 +161,7 @@ try{
  }
  if(screenshots)await page.locator('#histogram').screenshot({path:screenshots+'/histogram-legend.png'});
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({ok:true,checks:['catalog busy','log-log S/N histogram','lazy diagnostics and retry','catalog failure and retry','superseded request','histogram legend geometry'],legendChecks},null,2));
+ console.log(JSON.stringify({ok:true,checks:['catalog busy','counts-only refresh preserves traces and zoom','log-log S/N histogram','lazy diagnostics and retry','catalog failure and retry','superseded request','histogram legend geometry'],legendChecks},null,2));
 }finally{
  closing=true;for(const control of controls)control.release();await browser.close();
 }

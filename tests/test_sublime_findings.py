@@ -30,6 +30,39 @@ class FindingsTests(unittest.TestCase):
             self.assertEqual([r['spt'] for r in data['rows']],sorted([r['spt'] for r in data['rows']],reverse=True))
             conn.assert_not_called();auth.assert_not_called()
 
+    def test_count_refresh_returns_only_memberships_and_uses_read_only_selection(self):
+        objects=[{'moca_oid':1,'known':True,'motion':5,'spiff_quality':'good'},
+                 {'moca_oid':2,'yadu':True,'motion':5},
+                 {'moca_oid':3,'byw_claim':True,'motion':5}]
+        with patch.object(sf.sr,'credentials'),patch.object(sf.sr,'connection') as connection, \
+             patch.object(sf,'count_rows',return_value=objects) as select,patch.object(sf,'load') as load:
+            cur=MagicMock()
+            connection.return_value.__enter__.return_value=(None,cur)
+            reply=self.client.post('/api/findings/counts',json={'filters':{'sources':['sublime3c']}})
+            self.assertEqual(reply.status_code,200)
+            cur.execute.assert_called_once_with('START TRANSACTION READ ONLY')
+            self.assertEqual(select.call_args.args[1]['sources'],['sublime3c'])
+            load.assert_not_called()
+        groups=reply.get_json()['groups']
+        self.assertEqual([group['oids'] for group in groups],[[1],[2,3]])
+        self.assertTrue(groups[0]['known'])
+        self.assertTrue(groups[1]['byw'])
+        self.assertNotIn('rows',reply.get_json())
+
+    def test_count_path_only_loads_photometry_needed_by_applied_cuts(self):
+        rows=[{'moca_oid':1},{'moca_oid':2},{'moca_oid':3}]
+        p=[{'moca_oid':1,'parallax_mas':10,'parallax_mas_unc':1},
+           {'moca_oid':2,'parallax_mas':10,'parallax_mas_unc':3}]
+        w=[{'moca_oid':1,'magnitude':13},{'moca_oid':1,'magnitude':20},
+           {'moca_oid':2,'magnitude':15},{'moca_oid':3,'magnitude':13}]
+        with patch.object(sf,'adopted_parallaxes',return_value=p) as parallax, \
+             patch.object(sf,'w2_measurements',return_value=w) as w2:
+            self.assertEqual(sf.count_photometry(None,rows,sf.parse_filters({})),rows)
+            parallax.assert_not_called();w2.assert_not_called()
+            filters=sf.parse_filters({'min_parallax_snr':5,'max_w2':15})
+            self.assertEqual([row['moca_oid'] for row in sf.count_photometry(None,rows,filters)],[1])
+            self.assertTrue(w2.call_args.kwargs['measured_only'])
+
     def test_missing_credentials_rejected(self):
         self.assertEqual(self.client.post('/api/findings/load',json={'filters':{}}).status_code,403)
 

@@ -121,11 +121,13 @@ const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',sublime3c:'SUBLIME3C'
 const spt=v=>!finite(Number(v))||v==null?'—':(v<0?'K'+fmt(10+Number(v),1):v<10?'M'+fmt(v,1):v<20?'L'+fmt(v-10,1):v<30?'T'+fmt(v-20,1):'Y'+fmt(v-30,1)).replace('.0','');
 const ticks=Array.from({length:9},(_,i)=>i*5-5),ticktext=ticks.map(spt);
 const classDefinitions=FindingClasses.definitions;
+const classLabels=new Map(classDefinitions.map(({key,label})=>[key,label]));
 const url=new URL(location.href), params=new URLSearchParams(url.search), fragment=new URLSearchParams(location.hash.slice(1));
 const mock=params.get('mock')==='1';
 const getAuth=(keys)=>{for(const key of keys){const v=fragment.get(key)??params.get(key);if(v!==null)return v;}return '';};
 const auth={'X-MOCA-User':getAuth(['user','username']),'X-MOCA-Password':getAuth(['pwd','password']),'X-MOCA-Database':getAuth(['dbase','db','database'])};
 let rows=[],byId=new Map(),filters={},dataGeneration=0,loadController=null,tab='overview',flipPage=0,objectPage=0,flipGeneration=0,flipController=null;
+let countsController=null, refreshedClasses=null, countsAvailable=false;
 let hasAstrometryPlots=false,hasTrigonometricPhotometry=false;
 let inspectorGeneration=0,inspectController=null,current=null,cutouts=[],cutIndex=0;
 const fitCache=new Map();
@@ -167,6 +169,7 @@ function showRefreshState(state,title,detail){
  $('refresh-state-title').textContent=title;$('refresh-state-detail').textContent=detail;
  $('refresh-state-icon').textContent=busy?'':state==='done'?'✓':'!';
  $('refresh').disabled=busy;$('refresh').setAttribute('aria-busy',String(busy));
+ setCountsButton();
  $('refresh-button-label').textContent=busy?'Refreshing…':'Refresh data';
  updateRefreshElapsed();
  if(!busy){clearInterval(refreshClock);refreshClock=null;}
@@ -177,8 +180,54 @@ function startRefresh(){
  refreshClock=setInterval(updateRefreshElapsed,1000);
 }
 function purgePlots(root){for(const el of root.querySelectorAll('.js-plotly-plot'))Plotly.purge(el);}
+function setCountsButton(){
+ $('refresh-counts').disabled=!countsAvailable||$('refresh').disabled||Boolean(countsController);
+ $('refresh-counts').setAttribute('aria-busy',String(Boolean(countsController)));
+}
+function renderCounts(classes,known){
+ const totals=new Map();
+ for(const key of classes.values())totals.set(key,(totals.get(key)||0)+1);
+ for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(totals.get(def.key)||0);
+ $('count-total').textContent=num(classes.size);
+ $('count-known').textContent=num(known);
+ $('count-new').textContent=num(classes.size-known);
+}
+async function refreshCounts(){
+ if($('refresh-counts').disabled)return;
+ const controller=new AbortController(),generation=catalogGeneration,status=$('counts-status');
+ countsController=controller;setCountsButton();
+ status.hidden=false;status.textContent='Refreshing counts…';
+ try{
+  const result=await api('counts',{filters},controller.signal);
+  if(countsController!==controller||catalogGeneration!==generation)return;
+  const classes=new Map();
+  let known=0;
+  for(const group of result.groups){
+   const key=FindingClasses.classify(group);
+   if(group.known)known+=group.oids.length;
+   for(const oid of group.oids)classes.set(oid,key);
+  }
+  refreshedClasses=classes;renderCounts(classes,known);
+  for(const chart of document.querySelectorAll('#view-overview .js-plotly-plot')){
+   const names=[],indices=[];
+   const totals=legendCounts(chart.data);
+   for(const [index,trace] of chart.data.entries()){
+    if(!isClassScatter(trace))continue;
+    const name=legendName(trace,totals);
+    if(trace.name!==name){names.push(name);indices.push(index);}
+   }
+   if(indices.length)void Plotly.restyle(chart,{name:names},indices);
+  }
+  status.textContent=`Counts updated in ${fmt(result.elapsed,1)} s. Plot legends count targets from the loaded charts using current classifications.`;
+ }catch(e){
+  if(e.name!=='AbortError'&&countsController===controller)status.textContent='Could not refresh counts. '+e.message;
+ }finally{
+  if(countsController===controller){countsController=null;setCountsButton();}
+ }
+}
 async function load(){
  const f=readFilters();if(!f.sources.length){++dataGeneration;loadController?.abort();diagnosticController?.abort();showError('Select at least one catalog.');showRefreshState('error','Refresh not started','Select at least one catalog.');return;}
+ countsController?.abort();countsController=null;$('counts-status').hidden=true;
  const seq=++dataGeneration;diagnosticController?.abort();loadController?.abort();loadController=new AbortController();flipController?.abort();closeInspector();startRefresh();
  $('apply').disabled=false;$('download').disabled=true;$('error').hidden=true;$('status').textContent='Querying MOCAdb and loading the selected sample… You can change cuts and Apply again while this loads.';
  const timer=setInterval(()=>{if(seq===dataGeneration)$('status').textContent='Still loading: catalog selection, review flags, and photometry. You can change cuts and Apply again; previous plots stay labeled until the new sample is ready.';},15000);
@@ -193,8 +242,9 @@ async function load(){
   rows=result.rows.map(FindingClasses.annotate);filters=f;byId=new Map(rows.map(r=>[r.moca_oid,r]));fitCache.clear();flipPage=0;objectPage=0;resetDuplicates();resetCompleteness();
   $('download').disabled=false; $('status').textContent=`${num(rows.length)} unique objects · ${num(result.preliminary)} passed initial type/catalog cuts · loaded in ${fmt(result.elapsed,1)} s${mock?' · synthetic demo':''}`;
   $('dirty').textContent='Filters applied. Blank cuts are disabled.';$('loaded-at').textContent='Updated '+new Date(result.loaded_at*1000).toLocaleString();
-  for(const def of classDefinitions)$('class-count-'+def.key).textContent=num(rows.filter(r=>r.plot_class===def.key).length);
-  $('count-total').textContent=num(rows.length);$('count-known').textContent=num(rows.filter(r=>r.known).length);$('count-new').textContent=num(rows.filter(r=>!r.known).length);
+  countsAvailable=result.counts_version===1;
+  refreshedClasses=null;
+  renderCounts(new Map(rows.map(r=>[r.moca_oid,r.plot_class])),rows.filter(r=>r.known).length);
   catalogGeneration=seq;diagnosticsAvailable=result.spectral_diagnostics_version===1;
   clearTimeout(diagnosticRenderTimer);diagnosticRenderTimer=null;
   for(const id of diagnosticPlots){
@@ -212,7 +262,30 @@ async function load(){
 }
 function baseLayout(xlabel,ylabel){const axis={showgrid:true,gridcolor:'#e7ede8',showline:true,mirror:true,linecolor:'#48635d',linewidth:1.5,ticks:'outside',tickfont:{size:11},zeroline:false,automargin:true};return {paper_bgcolor:'#fff',plot_bgcolor:'#fff',font:{family:'DM Sans, system-ui, sans-serif',size:11,color:'#36534b'},margin:{l:62,r:21,t:24,b:57},xaxis:{...axis,title:{text:xlabel,standoff:12}},yaxis:{...axis,title:{text:ylabel,standoff:10}},legend:{orientation:'h',x:0,y:1.13,font:{size:10}},hovermode:'closest',uirevision:JSON.stringify(filters)};}
 const plotConfig={responsive:true,displaylogo:false,modeBarButtonsToRemove:['select2d','lasso2d'],toImageButtonOptions:{format:'png',scale:2}};
-function plot(id,traces,layout,clickable=true){const el=$(id);Plotly.react(el,traces,layout,plotConfig).then(()=>{el.removeAllListeners('plotly_click');if(clickable)el.on('plotly_click',event=>{const id=event.points?.[0]?.customdata?.[0];if(id&&byId.has(id))openInspector(byId.get(id));});});}
+function isClassScatter(trace){
+ return (trace.type==='scatter'||trace.type==='scattergl')&&classLabels.has(trace.meta?.plot_class);
+}
+function legendCounts(traces){
+ const counts=new Map(),seen=new Set();
+ for(const trace of traces){
+  if(!isClassScatter(trace))continue;
+  for(const [oid] of trace.customdata||[]){
+   if(seen.has(oid))continue;
+   seen.add(oid);
+   const key=refreshedClasses?refreshedClasses.get(oid):trace.meta.plot_class;
+   if(key)counts.set(key,(counts.get(key)||0)+1);
+  }
+ }
+ return counts;
+}
+function legendName(trace,counts){
+ const key=trace.meta.plot_class;
+ return `${classLabels.get(key)} (${num(counts.get(key)||0)})`;
+}
+function plot(id,traces,layout,clickable=true){
+ const el=$(id),counts=legendCounts(traces);
+ for(const trace of traces)if(isClassScatter(trace))trace.name=legendName(trace,counts);
+ Plotly.react(el,traces,layout,plotConfig).then(()=>{el.removeAllListeners('plotly_click');if(clickable)el.on('plotly_click',event=>{const id=event.points?.[0]?.customdata?.[0];if(id&&byId.has(id))openInspector(byId.get(id));});});}
 function spectralAxis(layout){layout.xaxis.tickmode='array';layout.xaxis.tickvals=ticks;layout.xaxis.ticktext=ticktext;return layout;}
 function confirmationStandard(){return $('confirmation-standard').value;}
 function isConfirmed(row){return FindingClasses.isConfirmed(row,confirmationStandard());}
@@ -858,7 +931,7 @@ for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-con
  setFilters(cuts);load();
 };
 $('preset-sublime3c').onclick=()=>{setFilters({...defaults,sources:['sublime3c'],spt_source:'sublime3c',quality_any:'any'});load();};
-$('refresh').onclick=load;$('download').onclick=exportCSV;
+$('refresh').onclick=load;$('refresh-counts').onclick=refreshCounts;$('download').onclick=exportCSV;
 for(const [id,known] of [['preset-new','no'],['preset-known','yes'],['preset-all','either']])$(id).onclick=()=>{const f=readFilters();f.known=known;f.known_candidate=known==='no'?'no':'either';if(known==='yes'){f.spt_source='published';f.min_spt=10;f.quality_any='any';}else if(f.spt_source==='published')f.spt_source='best';setFilters(f);load();};
 $('copy-cuts').onclick=async()=>{try{await navigator.clipboard.writeText(safeLink(readFilters()));$('copy-cuts').textContent='Filter link copied ✓';setTimeout(()=>$('copy-cuts').textContent='Copy filter link',2000);}catch{$('status').textContent='Could not copy automatically. Filter link: '+safeLink(readFilters());}};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));

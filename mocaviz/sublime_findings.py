@@ -237,7 +237,7 @@ def reviewed_candidate_sql(f):
     return ' UNION '.join(seeds)
 
 
-def selected_sql(f, candidate_ids=None):
+def selected_sql(f, candidate_ids=None, *, counts_only=False):
     """Retrieve ranked types and provenance for the requested catalog sample."""
     bounded = candidate_ids is not None
     pass_only = f['sublime3c_pass_only']
@@ -361,7 +361,7 @@ def selected_sql(f, candidate_ids=None):
             params.extend(classes)
         if 'none' in f['cnn_classes']:terms.append('p2.visual_nn_classification IS NULL')
         where.append(exempt('('+' OR '.join(terms)+')', 'detection'))
-    sql = '''SELECT mo.moca_oid,mo.designation,
+    projection = '''mo.moca_oid,mo.designation,
         CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.ra_deg,mo.ra) ELSE mo.ra END AS ra,
         CASE WHEN mo.designation LIKE 'SUBLIME3C %%' THEN COALESCE(p3.dec_deg,mo.`dec`) ELSE mo.`dec` END AS `dec`,mo.is_public,
         ''' + spt + ''' AS spt,''' + ','.join(type_cols) + ''',
@@ -375,6 +375,10 @@ def selected_sql(f, candidate_ids=None):
         p2.detection_snr AS sublime2_detection_snr,
         p2.visual_nn_good_probability AS cnn,p2.visual_nn_classification AS cnn_class,
         p2.autotype_reduced_chi2 AS chi2
+        '''
+    if counts_only:
+        projection = "mo.moca_oid,tc.spectral_type_number AS published_candidate_spt"
+    sql = "SELECT " + projection + '''
         FROM ''' + origin + ' ' + preselect + ' ' + sample_join + '''
         LEFT JOIN pcat_sublime_candidates p1 ON p1.id=(SELECT MAX(id) FROM pcat_sublime_candidates WHERE moca_oid=mo.moca_oid)
         LEFT JOIN pcat_sublime_candidates_v2 p2 ON p2.id=(SELECT MAX(id) FROM pcat_sublime_candidates_v2 WHERE moca_oid=mo.moca_oid)
@@ -398,11 +402,16 @@ def preferred_spectrum_lane(row):
                default=None)
 
 
-def enrich(cur, rows):
-    """Bound queries to selected IDs. Every reduction lane and provenance stays distinct."""
+def enrich(cur, rows, *, count_filters=None):
+    """Bound queries to selected IDs. Query only fields used by the count filters when supplied."""
+    full = count_filters is None
+    need_cutouts = full or count_filters['min_cutout'] is not None or count_filters['cutout_classes']
+    snr_lanes = LANES if full or count_filters['quality_any'] in ALL_QUALITY else (
+        (count_filters['snr_lane'],) if any(count_filters[key] is not None for key in ('min_snr', 'max_snr')) else ())
     by_oid = {r['moca_oid']: r for r in rows}
-    for start in range(0, len(rows), 1000):
-        chunk = rows[start:start+1000]
+    batch_size = 1000 if full else 4000
+    for start in range(0, len(rows), batch_size):
+        chunk = rows[start:start+batch_size]
         ids = tuple(r['moca_oid'] for r in chunk)
         ph = ','.join(['%s']*len(ids))
         for r in chunk:
@@ -411,6 +420,8 @@ def enrich(cur, rows):
                      cutout_count=0, motion=None, motion_class=None, pmtot_masyr=None)
         tables = {'redmovers':'pcat_catwise2020_red_movers','byw':'pcat_byw_mar9_2026',
                   'yadu':'pcat_kirkpatrick_yadu_2026_claim','azul':'pcat_azul_byw_sample_jul16_2026'}
+        if not full:
+            del tables['redmovers']
         for field, table in tables.items():
             for r in fetch(cur, 'SELECT DISTINCT moca_oid FROM `' + table + '` WHERE moca_oid IN (' + ph + ')', ids):
                 by_oid[r['moca_oid']][field] = True
@@ -431,17 +442,20 @@ def enrich(cur, rows):
             r['known_candidate'] = not r['known'] and r.get('published_candidate_spt') is not None and r['published_candidate_spt'] >= 0
         for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_wiseview_visual_vetting WHERE moca_oid IN (' + ph + ')', ids):
             by_oid[r['moca_oid']].update(motion=r['classification_integer'],motion_class=r['classification'])
-        for r in fetch(cur, 'SELECT id,moca_oid,pmtot_masyr FROM data_proper_motions WHERE moca_oid IN (' + ph + ')'
-                       ' AND adopted=1 AND ignored=0 AND pmtot_masyr IS NOT NULL', ids):
-            by_oid[r['moca_oid']].update(proper_motion_id=r['id'], pmtot_masyr=r['pmtot_masyr'])
-        for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_spherex_cutout_visual_vetting WHERE moca_oid IN (' + ph + ') ORDER BY id', ids):
-            target=by_oid[r['moca_oid']]
-            target['cutout_count'] += 1
-            target['cutout_scores'].append(r['classification_integer'])
-            target['cutout_classes'].append(r['classification'])
+        if full:
+            for r in fetch(cur, 'SELECT id,moca_oid,pmtot_masyr FROM data_proper_motions WHERE moca_oid IN (' + ph + ')'
+                           ' AND adopted=1 AND ignored=0 AND pmtot_masyr IS NOT NULL', ids):
+                by_oid[r['moca_oid']].update(proper_motion_id=r['id'], pmtot_masyr=r['pmtot_masyr'])
+        if need_cutouts:
+            for r in fetch(cur, 'SELECT moca_oid,classification_integer,classification FROM pcat_spherex_cutout_visual_vetting WHERE moca_oid IN (' + ph + ') ORDER BY id', ids):
+                target=by_oid[r['moca_oid']]
+                target['cutout_count'] += 1
+                target['cutout_scores'].append(r['classification_integer'])
+                target['cutout_classes'].append(r['classification'])
         for lane, cfg in LANE_CONFIG.items():
             for r in fetch(cur, 'SELECT moca_oid,classification FROM `' + cfg['table'] + '` WHERE moca_oid IN (' + ph + ')', ids):
                 by_oid[r['moca_oid']][lane+'_quality'] = r['classification']
+            if lane not in snr_lanes:continue
             for r in fetch(cur, '''SELECT s.moca_oid,s.moca_specid,s.median_snr_per_pix,s.ignored FROM moca_spectra s JOIN
                 (SELECT moca_oid,COALESCE(MAX(CASE WHEN ignored=0 THEN moca_specid END),MAX(moca_specid)) AS moca_specid
                  FROM moca_spectra WHERE moca_oid IN (''' + ph + ''') AND moca_specpackid=%s GROUP BY moca_oid) latest
@@ -450,8 +464,9 @@ def enrich(cur, rows):
                 by_oid[r['moca_oid']][lane+'_ignored'] = bool(r['ignored'])
                 if not r['ignored']:
                     by_oid[r['moca_oid']][lane+'_snr'] = r['median_snr_per_pix']
-    for row in rows:
-        row['preferred_spectrum_lane'] = preferred_spectrum_lane(row)
+    if full:
+        for row in rows:
+            row['preferred_spectrum_lane'] = preferred_spectrum_lane(row)
     return rows
 
 
@@ -526,12 +541,58 @@ def trigonometric_magnitudes(row):
     return row
 
 
+def adopted_parallaxes(cur, ids, ph):
+    return fetch(cur, 'SELECT id,moca_oid,parallax_mas,parallax_mas_unc FROM data_parallaxes WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND parallax_mas>0',ids)
+
+
+def w2_measurements(cur, ids, ph, *, measured_only=False):
+    selection = "p.is_synthetic=0" if measured_only else """(p.is_synthetic=0 OR
+        (p.is_synthetic=1 AND ((s.moca_specpackid IN (55,62,76) AND s.ignored=0)
+          OR (p.moca_specid IS NULL AND p.calculation_method='spherex_w2_synth'))))"""
+    columns = "p.moca_oid,p.magnitude"
+    join = ""
+    if not measured_only:
+        columns = "p.id," + columns + ",p.magnitude_unc,p.is_synthetic,p.moca_specid,p.calculation_method,p.origin,s.moca_specpackid"
+        join = "LEFT JOIN moca_spectra s ON s.moca_specid=p.moca_specid"
+    return fetch(cur, "SELECT "+columns+" FROM data_photometry p "+join+"""
+        WHERE p.moca_oid IN ("""+ph+""") AND p.system_band_simple='W2' AND p.ignored=0 AND p.magnitude IS NOT NULL
+        AND """+selection+""" ORDER BY p.adopted_simpleband DESC,p.adopted DESC,p.id DESC""", ids)
+
+
+def passes_photometry(row, f):
+    p, pu = row.get('parallax'), row.get('parallax_unc')
+    row['parallax_snr'] = float(p)/float(pu) if p and pu and pu>0 else None
+    if f['min_parallax_snr'] is not None and (row['parallax_snr'] is None or row['parallax_snr']<f['min_parallax_snr']):
+        return False
+    w2 = row.get('w2')
+    return not any(f[key] is not None and (w2 is None or (w2<f[key] if key=='min_w2' else w2>f[key]))
+                   for key in ('min_w2', 'max_w2'))
+
+
+def count_photometry(cur, rows, f):
+    parallax_cut = f['min_parallax_snr'] is not None
+    w2_cut = f['min_w2'] is not None or f['max_w2'] is not None
+    if not (parallax_cut or w2_cut):
+        return rows
+    by_oid = {row['moca_oid']: row for row in rows}
+    for start in range(0, len(rows), 1000):
+        ids = tuple(row['moca_oid'] for row in rows[start:start+1000])
+        ph = ','.join(['%s']*len(ids))
+        if parallax_cut:
+            for p in adopted_parallaxes(cur, ids, ph):
+                by_oid[p['moca_oid']].update(parallax=p['parallax_mas'], parallax_unc=p['parallax_mas_unc'])
+        if w2_cut:
+            for p in w2_measurements(cur, ids, ph, measured_only=True):
+                by_oid[p['moca_oid']].setdefault('w2', p['magnitude'])
+    return [row for row in rows if passes_photometry(row, f)]
+
+
 def photometry(cur, rows, f):
     by_oid={r['moca_oid']:r for r in rows}
     for start in range(0,len(rows),1000):
         chunk=rows[start:start+1000]
         ids=tuple(r['moca_oid'] for r in chunk); ph=','.join(['%s']*len(ids))
-        for r in fetch(cur, 'SELECT id,moca_oid,parallax_mas,parallax_mas_unc FROM data_parallaxes WHERE moca_oid IN ('+ph+') AND adopted=1 AND ignored=0 AND parallax_mas>0',ids):
+        for r in adopted_parallaxes(cur, ids, ph):
             by_oid[r['moca_oid']].update(parallax_id=r['id'],parallax=r['parallax_mas'],parallax_unc=r['parallax_mas_unc'],
                  distance_pc=1000/float(r['parallax_mas']),distance_kind='parallax')
         for r in fetch(cur, 'SELECT id,moca_oid,distance_pc,distance_pc_unc,photometric_estimate,parallax_id FROM data_distances'
@@ -564,11 +625,7 @@ def photometry(cur, rows, f):
                 by_oid[measurement['moca_oid']].update(gaia_g=measurement['phot_g_mean_mag'], gaia_g_unc=error,
                     gaia_g_catalog_id=measurement['id'], gaia_g_source_id=measurement['source_id'],
                     gaia_g_psid='gaiadr3_gmag', gaia_g_source='cat_gaiadr3')
-        data=fetch(cur, '''SELECT p.id,p.moca_oid,p.magnitude,p.magnitude_unc,p.is_synthetic,p.moca_specid,p.calculation_method,p.origin,s.moca_specpackid
-            FROM data_photometry p LEFT JOIN moca_spectra s ON s.moca_specid=p.moca_specid
-            WHERE p.moca_oid IN ('''+ph+''') AND p.system_band_simple='W2' AND p.ignored=0 AND p.magnitude IS NOT NULL
-            AND (p.is_synthetic=0 OR (p.is_synthetic=1 AND ((s.moca_specpackid IN (55,62,76) AND s.ignored=0) OR (p.moca_specid IS NULL AND p.calculation_method='spherex_w2_synth'))))
-            ORDER BY p.adopted_simpleband DESC,p.adopted DESC,p.id DESC''',ids)
+        data=w2_measurements(cur,ids,ph)
         for p in data:
             obj=by_oid[p['moca_oid']]
             key='synthetic_w2' if p['is_synthetic'] else 'w2'
@@ -584,9 +641,7 @@ def photometry(cur, rows, f):
         r['samples']=[s for s in (*SOURCES,'other') if r.get(s)]
         r['spt_source']=r['best_spt_source'] if f['spt_source']=='best' else f['spt_source']
         p,pu=r.get('parallax'),r.get('parallax_unc')
-        r['parallax_snr']=float(p)/float(pu) if p and pu and pu>0 else None
-        if f['min_parallax_snr'] is not None and (r['parallax_snr'] is None or r['parallax_snr']<f['min_parallax_snr']): continue
-        if any(f[k] is not None and (r.get('w2') is None or (r['w2']<f[k] if k=='min_w2' else r['w2']>f[k])) for k in ('min_w2','max_w2')): continue
+        if not passes_photometry(r, f):continue
         trigonometric_magnitudes(r)
         d=r.get('distance_pc')
         for key in ('w2','synthetic_w2'):
@@ -602,7 +657,7 @@ def photometry(cur, rows, f):
     return result
 
 
-def selected_rows(cur, f):
+def selected_rows(cur, f, *, counts_only=False):
     seed_sql = reviewed_candidate_sql(f)
     if seed_sql is None:
         batches = (None,)
@@ -612,7 +667,7 @@ def selected_rows(cur, f):
         batches = (ids[start:start+2000] for start in range(0,len(ids),2000))
     rows = []
     for batch in batches:
-        sql,params=selected_sql(f,batch)
+        sql,params=selected_sql(f,batch,counts_only=True) if counts_only else selected_sql(f,batch)
         rows.extend(fetch(cur,sql,params))
         if len(rows)>MAX_OBJECTS:
             raise sr.ReviewError('More than 100,000 objects pass the initial sample/type cuts. Raise the minimum spectral type or select fewer samples; no partial dashboard was produced.',422)
@@ -627,6 +682,27 @@ def load(cur,f):
     rows=photometry(cur,rows,f)
     rows.sort(key=lambda r:(r['spt'] is None,-float(r['spt'] or 0),r['moca_oid']))
     return rows,preliminary
+
+
+def count_rows(cur, f):
+    rows = list({r['moca_oid']: r for r in selected_rows(cur, f, counts_only=True)}.values())
+    eligible = [r for r in enrich(cur, rows, count_filters=f) if passes(r, f)]
+    return count_photometry(cur, eligible, f)
+
+
+def count_groups(rows):
+    # Group IDs by the inputs to the existing browser classifier, so a quick
+    # refresh uses exactly the same labels and precedence as a full load.
+    tags = ('known', 'known_candidate', 'byw', 'motion', 'motion_class',
+            *(lane+'_quality' for lane in LANES))
+    groups = {}
+    for row in rows:
+        key = (bool(row.get('known')), bool(row.get('known_candidate')),
+               any(row.get(flag) for flag in ('byw', 'byw_claim', 'yadu', 'azul', 'smdet')),
+               row.get('motion'), row.get('motion_class'),
+               *(row.get(lane+'_quality') for lane in LANES))
+        groups.setdefault(key, []).append(row['moca_oid'])
+    return [{**dict(zip(tags, flags)), 'oids': ids} for flags, ids in groups.items()]
 
 
 def demo_rows(f):
@@ -727,7 +803,7 @@ def plotly_asset():
 @findings.post('/api/findings/<operation>')
 def api(operation):
     try:
-        if operation not in ('load','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions','diagnostics','completeness'):raise sr.ReviewError('Unknown operation.',404)
+        if operation not in ('load','counts','spectra','cutouts','survey','duplicate-matches','declare-duplicate','spectrum-positions','diagnostics','completeness'):raise sr.ReviewError('Unknown operation.',404)
         if request.content_length and request.content_length>32768:raise sr.ReviewError('Request too large.',413)
         if not request.is_json:raise sr.ReviewError('Provide JSON.',415)
         body=request.get_json()
@@ -820,6 +896,16 @@ def api(operation):
                     cache=diagnostics.DiagnosticCache(auth['database']+':'+auth['user']) if request.blueprint=='sublime_findings' else None
                     result=diagnostics.load(cur,items,cache)
             return jsonify(sr.clean({'ok':True,'items':result}))
+        if operation=='counts':
+            f=parse_filters(body.get('filters',{}))
+            if mock:
+                rows=demo_rows(f)
+            else:
+                with sr.connection(sr.credentials()) as (_,cur):
+                    cur.execute('START TRANSACTION READ ONLY')
+                    rows=count_rows(cur,f)
+            return jsonify(sr.clean({'ok':True,'groups':count_groups(rows),
+                                     'elapsed':time.monotonic()-started}))
         if operation=='load':
             f=parse_filters(body.get('filters',{}))
             if mock:rows=demo_rows(f);preliminary=len(rows)
@@ -828,7 +914,7 @@ def api(operation):
                     cur.execute('START TRANSACTION READ ONLY')
                     rows,preliminary=load(cur,f)
             return jsonify(sr.clean({'ok':True,'rows':rows,'preliminary':preliminary,'elapsed':time.monotonic()-started,
-                                     'mock':mock,'loaded_at':time.time(),'complete':True,'known_source_version':1,'quality_definition_version':2,
+                                     'mock':mock,'loaded_at':time.time(),'complete':True,'counts_version':1,'known_source_version':1,'quality_definition_version':2,
                                      'sublime3c_sample_version':1,'other_sample_version':1,'astrometry_plot_version':1,'type_priority_version':1,'spectral_diagnostics_version':1,'trigonometric_photometry_version':1}))
         items=body.get('items')
         if not isinstance(items,list) or len(items)>10:raise sr.ReviewError('Request up to ten spectra.')
