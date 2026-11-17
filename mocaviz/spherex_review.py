@@ -33,7 +33,8 @@ from .spherex_cnn_metadata import parse_comments, probability
 from .spherex_autotype_core import (
     DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
 )
-from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, SELECTION_VERSION, fit_spectrum_rows as native_fit_spectrum_rows
+from .spherex_fit import is_native_cube, spectrum_fit
+from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, SELECTION_VERSION
 
 review = Blueprint("spherex_review", __name__)
 STATIC = Path(__file__).resolve().parent / "static"
@@ -155,17 +156,6 @@ def bounded_float(value, name, low, high):
         return number
     except (TypeError, ValueError):
         raise ReviewError(f"{name} must be between {low} and {high}.") from None
-
-
-def is_native_cube(meta):
-    return (meta.get("moca_specpackid") == 76 and
-            meta.get("data_reduction_pipeline") == "SUBLIME3C native DR1 cube aperture extraction")
-
-
-def spectrum_fit(meta, spectrum, templates, options):
-    if is_native_cube(meta):
-        return native_fit_spectrum_rows(spectrum, templates, options)
-    return fit_spectrum(spectrum, templates, options)
 
 
 def data_fingerprint(meta, spectrum, templates):
