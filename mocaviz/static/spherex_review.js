@@ -12,7 +12,8 @@
   let queueLane = "spiffstacker", queueRequest = {}, nextAfter = null, hasMore = false;
   let draining = false, closed = false, busyUndo = false, loading = false, lastClass = "good";
   let plotShown = false;
-  const motionReview = window.SpherexMotionReview.create({api, writable, base, demo});
+  const motionReview = window.SpherexMotionReview.create({api, writable, base, demo,
+    preload: window.__spherexNativeVetting === true});
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
   const LOOKAHEAD = 50, FIT_CACHE_LIMIT = LOOKAHEAD + 14;
@@ -341,7 +342,7 @@
         for (const job of jobs) {
           if (job.state === "failed") hidden.add(key(job.item, job.lane));
         }
-        resetAnalysis(); items = []; current = null; index = -1; generation++;
+        resetAnalysis(); motionReview.clear(); items = []; current = null; index = -1; generation++;
         hasMore = false; nextAfter = null;
         $("queue-info").textContent = "";
         $("queue-total").textContent = "";
@@ -445,9 +446,10 @@
     const gen = ++generation;
     cancelQueuedAnalysis();
     const fitOptions = options();
-    current = null; motionReview.clear();
+    current = null;
     const visible = visibleIndices();
     if (!visible.length) {
+      motionReview.clear();
       index = -1;
       clearTarget();
       $("object-title").textContent = items.length ? "Queue complete" : "No matching spectra";
@@ -458,7 +460,8 @@
       updateControls(); return;
     }
     index = visible.includes(nextIndex) ? nextIndex : (visible.find((v) => v >= nextIndex) ?? visible.at(-1));
-    const item = items[index];
+    const item = items[index], upcoming = upcomingItems();
+    motionReview.clear(refresh ? [] : [item, ...upcoming]);
     $("object-title").textContent = item.designation || "moca_oid=" + item.moca_oid;
     $("object-meta").textContent = "";
     $("position").textContent = (visible.indexOf(index) + 1) + " / " + visible.length + " remaining in loaded queue";
@@ -483,9 +486,12 @@
         await show(index + 1);
         return;
       }
-      current = data; render(data); motionReview.show(data); status(data.warning || "Ready to review."); updateControls();
-      for (const upcoming of upcomingItems())
-        analysis(upcoming, queueLane, fitOptions, false, true).catch(() => {});
+      current = data; render(data);
+      motionReview.show(data, upcoming, async candidate =>
+        (await analysis(candidate, queueLane, fitOptions, false, true)).object);
+      status(data.warning || "Ready to review."); updateControls();
+      for (const candidate of upcoming)
+        analysis(candidate, queueLane, fitOptions, false, true).catch(() => {});
       updateCacheStatus();
     } catch (e) {
       if (gen !== generation || closed) return;
