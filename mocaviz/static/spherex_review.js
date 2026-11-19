@@ -275,6 +275,14 @@
   let otherSampleFitMinimum = $("current-fit-sptn").value;
   let otherSampleFitGap = $("current-fit-gap").value;
   let otherSampleSptSource = $("adopted-spt-source").value;
+  function sublime4SampleDefaults() {
+    // The SUBLIME2 image classifier and legacy stored-fit defaults can
+    // otherwise exclude every new spectrum before the reviewer fits it.
+    for (const id of ["cnn-probability", "max-chi2"]) {
+      const field = $(id);
+      if (field.value === field.defaultValue) field.value = "";
+    }
+  }
   $("review-sample").addEventListener("change", () => {
     const vetting = $("missing-vetting");
     if ($("review-sample").value === "public-ucd" && previousSample !== "public-ucd") {
@@ -285,6 +293,12 @@
     } else if ($("review-sample").value !== "public-ucd" && previousSample === "public-ucd") {
       vetting.value = otherSampleVetting;
       $("adopted-spt-source").value = otherSampleSptSource;
+    }
+    if ($("review-sample").value === "sublime4") {
+      $("lane").value = "sublimeaperture";
+      $("lane").dispatchEvent(new Event("change"));
+      $("review-sample").value = "sublime4";
+      sublime4SampleDefaults();
     }
     if ($("review-sample").value === "sublime3c" && previousSample !== "sublime3c") {
       otherSampleFitMinimum = $("current-fit-sptn").value;
@@ -856,6 +870,10 @@
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
     if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");
     if (params.has("min_wiseview_score")) $("wiseview-score").value = params.get("min_wiseview_score");
+    if ($("review-sample").value === "sublime4") {
+      sublime4SampleDefaults();
+      if (params.has("max_reduced_chi2")) $("max-chi2").value = params.get("max_reduced_chi2");
+    }
     updateControls();
     try {
       if (auth.host !== "mocadb.ca" || auth.port !== "3306") throw new Error("These tools connect only to mocadb.ca:3306.");

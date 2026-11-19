@@ -89,6 +89,7 @@ def cube_pass_clause(column):
 ADOPTED_SPT_COLUMNS = {"private": "adopted", "public": "public_adopted"}
 REVIEW_SAMPLES = {
     "sublime3c": "pcat_sublime_candidates_v3c",
+    "sublime4": "pcat_sublime_candidates_v4",
     "sublime2": "pcat_sublime_candidates_v2",
     "sublime1": "pcat_sublime_candidates",
     "catwiseredmovers": "pcat_catwise2020_red_movers",
@@ -549,6 +550,16 @@ def queue_snr_band(body):
     return band
 
 
+def sublime4_aperture_exists(alias):
+    # A reprocessed benchmark spectrum gets an immutable revision. Select the
+    # exact currently published bytes for this candidate and OID.
+    return f"""EXISTS (SELECT 1 FROM pcat_sublime_candidates_v4 c4
+        WHERE c4.moca_oid={alias}.moca_oid
+        AND {alias}.spectrum_name IN (CONCAT('SUBLIME4_',c4.id,'_DR1_QR3'),
+            CONCAT('SUBLIME4_',c4.id,'_DR1_QR3_',LEFT(SHA2(c4.spectrum_json,256),16)))
+        AND LOCATE(SHA2(c4.spectrum_json,256),{alias}.comments)>0)"""
+
+
 def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     adopted_column = adopted_spt_column(body.get("adopted_spt_source", "private"))
     psf_mode = body.get("sublime3c_psf_morphology", "all")
@@ -729,6 +740,11 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         else:
             spectrum_source += f" JOIN ({catalog}) {alias} ON {alias}.moca_oid=s.moca_oid"
         source_params.extend(catalog_params)
+    # Package 76 also contains earlier survey reductions of the same objects.
+    # Resolve the native spectrum by its candidate ID, even for a known OID.
+    native_four = sample == "sublime4" and key == "sublimeaperture"
+    if native_four:
+        conditions.append(sublime4_aperture_exists("s"))
     if sample == "sublime3c" and (psf_mode != "all" or high_priority):
         spectrum_source += " " + morphology.join_sql()
         if psf_mode != "all":
@@ -785,7 +801,12 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
                 ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
         )""")
     if not mixed:
-        conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid AND newer.moca_specpackid=s.moca_specpackid AND newer.moca_specid>s.moca_specid" + (" AND newer.ignored=0)" if active_only else ")"))
+        newer = ["newer.moca_oid=s.moca_oid", "newer.moca_specpackid=s.moca_specpackid", "newer.moca_specid>s.moca_specid"]
+        if native_four:
+            newer.append(sublime4_aperture_exists("newer"))
+        if active_only:
+            newer.append("newer.ignored=0")
+        conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE " + " AND ".join(newer) + ")")
     selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
         LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
