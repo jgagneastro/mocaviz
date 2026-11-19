@@ -31,7 +31,7 @@ from . import spherex_morphology as morphology
 from .spherex_cnn_metadata import parse_comments, probability
 
 from .spherex_autotype_core import (
-    DEFAULT_OPTIONS, _build_autotype_spectral_type_db_values, fit_spectrum,
+    DEFAULT_OPTIONS, FIT_VERSION, _build_autotype_spectral_type_db_values, fit_spectrum,
 )
 from .spherex_fit import is_native_cube, spectrum_fit
 from .spherex_native_fit import VERSION as NATIVE_FIT_VERSION, SELECTION_VERSION
@@ -167,8 +167,8 @@ def bounded_float(value, name, low, high):
 
 
 def data_fingerprint(meta, spectrum, templates):
-    return fingerprint([spectrum, templates, NATIVE_FIT_VERSION] if is_native_cube(meta)
-                       else [spectrum, templates])
+    version = NATIVE_FIT_VERSION if is_native_cube(meta) else FIT_VERSION
+    return fingerprint([spectrum, templates, version])
 
 
 def fit_options(body):

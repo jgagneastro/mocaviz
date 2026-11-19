@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pymysql
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
@@ -361,7 +362,7 @@ def make_item(lane="spiffstacker"):
         {"moca_specid": 11001, "ignored": 0, "modified_timestamp": "2026-09-26T00:00:00"}
     ]}
     item["revision"] = review.fingerprint(item["state"])
-    item["data_revision"] = review.fingerprint([item["raw_spectrum"], []])
+    item["data_revision"] = review.data_fingerprint(item["object"], item["raw_spectrum"], [])
     return item
 
 
@@ -647,18 +648,18 @@ class FitTests(unittest.TestCase):
         self.assertEqual([v["label"] for v in item["fit"]["overlays"]],
                          [v["display_type"] for v in item["fit"]["matches"][:10]])
 
-    def test_template_curves_match_png_cubic_interpolation(self):
-        from scipy.interpolate import UnivariateSpline
-        item = make_item()
-        for overlay, match in zip(item["fit"]["overlays"], item["fit"]["matches"]):
-            self.assertEqual(len(overlay["curve_wavelength_um"]), 1000)
-            expected = UnivariateSpline(overlay["wavelength_um"], overlay["flux"], s=0)
-            np.testing.assert_allclose(overlay["curve_flux"], expected(overlay["curve_wavelength_um"]), atol=0)
-            self.assertEqual(overlay["display_reduced_chi2"], match["robust_reduced_chi2_10pct_cap"])
+    def test_overlay_uses_the_fitted_flux_density_interpolation(self):
+        for overlay in make_item()["fit"]["overlays"]:
+            w, f, dense = (np.array(overlay[key]) for key in ("wavelength_um", "flux", "curve_wavelength_um"))
+            np.testing.assert_allclose(overlay["curve_flux"], np.interp(dense, w, f * w**2) / dense**2, atol=0)
 
-    def test_short_template_curve_keeps_desktop_line_fallback(self):
-        w, f = np.array([1., 2., 3.]), np.array([3., 2., 1.])
-        self.assertEqual(core._template_plot_curve(w, f), (w.tolist(), f.tolist()))
+    def test_signed_points_and_no_extrapolation(self):
+        data = pd.DataFrame(dict(wavelength_angstrom=[1., 2., 3.], flux_flambda=[-1., 0., 1.],
+                                 flux_flambda_unc=[1., 1., 1.]))
+        self.assertEqual(core._clean_comparison(data).flux_flambda.tolist(), [-1., 0., 1.])
+        projected = core._interpolate_model_flux(np.array([1., 3.]), np.array([2., 2. / 9]),
+                                                 np.array([.5, 2., 4.]))
+        np.testing.assert_allclose(projected, [np.nan, .5, np.nan])
 
     def test_empty_spectrum_gives_a_reviewable_warning(self):
         with self.assertRaisesRegex(ValueError, "No spectral data"):

@@ -19,7 +19,7 @@ def item_for(lane):
 
 def prepare(item,classification,action='classify'):
     item['revision']=sr.fingerprint(item['state'])
-    item['data_revision']=sr.fingerprint([item['raw_spectrum'],[]])
+    item['data_revision']=sr.data_fingerprint(item['object'],item['raw_spectrum'],[])
     body=dict(lane=item['lane'],moca_oid=1001,moca_specid=11001,action=action,
               classification=classification,revision=item['revision'],data_revision=item['data_revision'],
               is_public=0,rls='gagne',allow_replace=True)

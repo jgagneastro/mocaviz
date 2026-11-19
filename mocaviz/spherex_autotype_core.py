@@ -13,9 +13,8 @@ from .spherex_cnn_metadata import append_comments
 
 import numpy as np
 import pandas as pd
-from scipy.interpolate import UnivariateSpline
 
-MAX_TEMPLATE_DIST_ANGSTROM = 100.0
+FIT_VERSION = "signed_common_fnu_chi2_v1"
 
 
 MIN_MATCH_POINTS = 3
@@ -48,27 +47,19 @@ def _clean_comparison(df: pd.DataFrame) -> pd.DataFrame:
     out = out.dropna(subset=["wavelength_angstrom", "flux_flambda", "flux_flambda_unc"])
     out = out[np.isfinite(out["wavelength_angstrom"])]
     out = out[np.isfinite(out["flux_flambda"]) & np.isfinite(out["flux_flambda_unc"])]
-    out = out[(out["flux_flambda"] > 0) & (out["flux_flambda_unc"] > 0)]
+    out = out[(out["wavelength_angstrom"] > 0) & (out["flux_flambda_unc"] > 0)]
     out = out.sort_values("wavelength_angstrom")
     return out.reset_index(drop=True)
 
 
-def _nearest_model_flux(
-    model_w: np.ndarray, model_f: np.ndarray, data_w: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    idx = np.searchsorted(model_w, data_w)
-    idx = np.clip(idx, 1, len(model_w) - 1)
+def _interpolate_model_flux(model_w, model_f, data_w):
+    """Interpolate in F_nu at measured wavelengths without extrapolation."""
+    return np.interp(data_w, model_w, model_f * model_w**2, left=np.nan, right=np.nan) / data_w**2
 
-    left = idx - 1
-    right = idx
-    dist_left = np.abs(model_w[left] - data_w)
-    dist_right = np.abs(model_w[right] - data_w)
 
-    use_right = dist_right < dist_left
-    best_idx = np.where(use_right, right, left)
-    best_dist = np.where(use_right, dist_right, dist_left)
-    best_flux = model_f[best_idx]
-    return best_flux, best_dist
+def _common_template_bounds(templates):
+    return (max(t["wavelength_angstrom"][0] for t in templates.values()),
+            min(t["wavelength_angstrom"][-1] for t in templates.values()))
 
 
 def _rolling_median_centered(values: np.ndarray, window: int) -> np.ndarray:
@@ -109,6 +100,7 @@ def _flag_residual_outliers_bestfit(
     *,
     min_sigma_cut: float = 5.0,
     robust_z_cut: float = 5.0,
+    bounds=None,
 ) -> tuple[np.ndarray, float]:
     """Method 2: flag outliers in |residual|/error distribution for best-fit template."""
     data_w = comp_df["wavelength_angstrom"].to_numpy(dtype=float)
@@ -117,8 +109,10 @@ def _flag_residual_outliers_bestfit(
     model_w = template["wavelength_angstrom"].astype(float)
     model_f = template["flux_flambda"].astype(float)
 
-    mflux, dist = _nearest_model_flux(model_w, model_f, data_w)
-    ok = dist <= MAX_TEMPLATE_DIST_ANGSTROM
+    mflux = _interpolate_model_flux(model_w, model_f, data_w)
+    ok = np.isfinite(mflux)
+    if bounds is not None:
+        ok &= (data_w >= bounds[0]) & (data_w <= bounds[1])
     flags = np.zeros(len(data_w), dtype=bool)
     if not np.any(ok):
         return flags, float(min_sigma_cut)
@@ -186,8 +180,8 @@ def _compute_chi2(
             "reduced_chi2_10pct_cap": None,
         }
 
-    mflux, dist = _nearest_model_flux(model_w, model_f, data_w)
-    ok = dist <= MAX_TEMPLATE_DIST_ANGSTROM
+    mflux = _interpolate_model_flux(model_w, model_f, data_w)
+    ok = np.isfinite(mflux)
     if not np.any(ok):
         return {
             "n_used": 0,
@@ -207,13 +201,8 @@ def _compute_chi2(
     d = data_f[ok]
     e = data_e[ok]
     m = mflux[ok]
-    med_flux = float(np.nanmedian(d))
-    if not np.isfinite(med_flux) or med_flux <= 0:
-        med_flux = float(np.nanmedian(data_f[np.isfinite(data_f) & (data_f > 0)]))
-    if not np.isfinite(med_flux) or med_flux <= 0:
-        med_flux = 0.0
-    # Prevent near-zero flux points from getting unrealistically tiny sigma floors.
-    d_for_floor = np.maximum(d, MIN_SIGMA_FLOOR_MEDIAN_FLUX_FRAC * med_flux)
+    med_flux = float(np.median(np.abs(d)))
+    d_for_floor = np.maximum(np.abs(d), MIN_SIGMA_FLOOR_MEDIAN_FLUX_FRAC * med_flux)
 
     # Use the same 10%-of-flux uncertainty floor for scale fitting as for scoring.
     sigma_eff = np.maximum(e, 0.1 * d_for_floor)
@@ -264,12 +253,8 @@ def _compute_chi2(
         e = e[keep_idx]
         m = m[keep_idx]
         n_used = len(d)
-        med_flux = float(np.nanmedian(d))
-        if not np.isfinite(med_flux) or med_flux <= 0:
-            med_flux = float(np.nanmedian(data_f[np.isfinite(data_f) & (data_f > 0)]))
-        if not np.isfinite(med_flux) or med_flux <= 0:
-            med_flux = 0.0
-        d_for_floor = np.maximum(d, MIN_SIGMA_FLOOR_MEDIAN_FLUX_FRAC * med_flux)
+        med_flux = float(np.median(np.abs(d)))
+        d_for_floor = np.maximum(np.abs(d), MIN_SIGMA_FLOOR_MEDIAN_FLUX_FRAC * med_flux)
         sigma_eff = np.maximum(e, 0.1 * d_for_floor)
         weights = 1.0 / (sigma_eff * sigma_eff)
         med_w = float(np.nanmedian(weights[np.isfinite(weights) & (weights > 0)]))
@@ -377,6 +362,8 @@ def _autotype(
     nonfield_odds_k: float,
     nonfield_extreme_odds_k: float,
 ) -> pd.DataFrame:
+    lo, hi = _common_template_bounds(templates)
+    comp_df = comp_df[comp_df["wavelength_angstrom"].between(lo, hi)]
     data_w = comp_df["wavelength_angstrom"].to_numpy(dtype=float)
     data_f = comp_df["flux_flambda"].to_numpy(dtype=float)
     data_e = comp_df["flux_flambda_unc"].to_numpy(dtype=float)
@@ -402,7 +389,7 @@ def _autotype(
         robust_score_chi2 = result.get("robust_chi2_raw_10pct_cap")
         if robust_score_chi2 is None:
             robust_score_chi2 = result.get("chi2_raw_10pct_cap")
-        if robust_score_chi2 is not None:
+        if robust_score_chi2 is not None and result["scale_s"] > 0:
             score = float(robust_score_chi2) + float(penalty)
         rows.append(
             {
@@ -412,6 +399,7 @@ def _autotype(
                 "grid_type": t.get("grid_type"),
                 "selection_penalty": float(penalty),
                 "selection_score": score,
+                "fit_version": FIT_VERSION,
                 **result,
             }
         )
@@ -494,6 +482,8 @@ def _build_autotype_spectral_type_db_values(
         f"red_chi2_raw_10pct={_fmt2(red_chi2_raw_10pct)}; "
         f"pec_metric={_fmt2(pec_ratio)}"
     )
+    if best_row.get("fit_version") == FIT_VERSION:
+        comments += f"; fit_version={FIT_VERSION}"
     if provenance_note:
         comments = f"{comments}; {str(provenance_note).strip()}"
     cnn_provenance = cnn_result if isinstance(cnn_result, dict) else {}
@@ -603,16 +593,8 @@ DEFAULT_OPTIONS = {
 
 
 def _template_plot_curve(wavelength_um, flux):
-    """The PNG's s=0 cubic template curve, returned as numbers, never an image."""
-    if len(wavelength_um) < 4:
-        return wavelength_um.tolist(), flux.tolist()
-    try:
-        spline = UnivariateSpline(wavelength_um, flux, s=0)
-        dense = np.linspace(np.min(wavelength_um), np.max(wavelength_um), 1000)
-        return dense.tolist(), spline(dense).tolist()
-    except (ValueError, TypeError):
-        # Match the desktop plot's straight-line fallback for short/duplicate grids.
-        return wavelength_um.tolist(), flux.tolist()
+    dense = np.linspace(wavelength_um.min(), wavelength_um.max(), 1000)
+    return dense.tolist(), _interpolate_model_flux(wavelength_um, flux, dense).tolist()
 
 
 def fit_spectrum(rows, template_rows, options=None):
@@ -622,7 +604,7 @@ def fit_spectrum(rows, template_rows, options=None):
     options = {**DEFAULT_OPTIONS, **(options or {})}
     comp = _clean_comparison(pd.DataFrame(rows))
     if len(comp) < MIN_MATCH_POINTS:
-        raise ValueError("Not enough positive, finite spectral points with uncertainties.")
+        raise ValueError("Not enough finite spectral points with uncertainties.")
     templates = {}
     for row in template_rows:
         tid = int(row["moca_spherex_template_id"])
@@ -655,7 +637,7 @@ def fit_spectrum(rows, template_rows, options=None):
         best.spectral_type, best.spectral_type_number, best.red_chi2_10pct)
     if "pec" not in label.lower():
         bad_residual, _ = _flag_residual_outliers_bestfit(
-            fit, best, templates[int(best.moca_spherex_template_id)])
+            fit, best, templates[int(best.moca_spherex_template_id)], bounds=_common_template_bounds(templates))
     bad = bad_error | bad_residual
     final = calculate(fit[~bad].reset_index(drop=True)) if (~bad).sum() >= MIN_MATCH_POINTS else first
     finite = final[final.selection_score.notna()]

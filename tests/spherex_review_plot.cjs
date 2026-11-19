@@ -32,6 +32,17 @@ test("all three matches are stacked, visible, and styled like the PNG", () => {
   assert.equal(plot.layout.yaxis.showline, true);
 });
 
+test("signed fits display negative measurements in each template row", () => {
+  const data = fixture();
+  data.fit.best = {fit_version: "signed_common_fnu_chi2_v1"};
+  const rows = byRole(figure(data, "signed"), "data");
+  assert.ok(rows.every(row => row.customdata.includes(-2)));
+  data.fit.spectrum.flux[3] = -1000;
+  const clipped = figure(data, "signed").traces.filter(row => row.name === "Below displayed range");
+  assert.equal(clipped.length, 3);
+  assert.deepEqual(clipped[0].customdata, [-1000]);
+});
+
 test("template-based limits ignore outliers and match the desktop padding", () => {
   const plot = figure(fixture(), "42");
   close(plot.layout.yaxis.range[0], 0.67); close(plot.layout.yaxis.range[1], 7.93);

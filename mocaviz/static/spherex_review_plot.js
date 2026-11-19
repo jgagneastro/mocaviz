@@ -33,11 +33,14 @@
     // The default PNG uses the scaled template span, never a data outlier, for spacing.
     const templateBounds = overlays.map((o) => extent(o.flux));
     const baseSpan = Math.max(0, ...templateBounds.map(([a, b]) => b - a)) || dataSpan;
-    const offset = 1.15 * baseSpan, freeSpace = offset - baseSpan;
+    const signed = !data.stackLanes && fit?.best?.fit_version === "signed_common_fnu_chi2_v1";
+    const floor = signed ? Math.max(-baseSpan, Math.min(0, dataBounds[0])) : 0;
+    const freeSpace = 0.15 * baseSpan, offset = baseSpan + freeSpace - floor;
     const shifts = overlays.map((_, i) => (overlays.length - 1 - i) * offset);
     let yBounds = overlays.length ? extent(templateBounds.flatMap(([a, b], i) =>
       [a + shifts[i], b + shifts[i]])) : extent(spectrum.flux.flatMap((f, i) =>
       finite(f) ? [f - (spectrum.error[i] || 0), f + (spectrum.error[i] || 0)] : []));
+    if (floor < 0) yBounds[0] = Math.min(yBounds[0], floor);
     const rowBounds = [];
     let laneGap = 0;
     if (data.stackLanes && overlays.length) {
@@ -95,10 +98,19 @@
 
     for (let i = 0; i < Math.max(1, overlays.length); i++) {
       const overlay = overlays[i], shift = shifts[i] || 0;
-      const [lower, upper] = rowBounds[i] || [overlay ? shift : -Infinity, overlay && i > 0 ? shift + offset : Infinity];
+      const [lower, upper] = rowBounds[i] || [overlay ? shift + floor : -Infinity, overlay && i > 0 ? shift + floor + offset : Infinity];
       // Draw flagged points behind the unflagged measurements, as in the PNG.
       points(true, shift, lower, upper, i);
       points(false, shift, lower, upper, i);
+      if (signed && overlay) {
+        const clipped = spectrum.flux.map((f, k) => finite(f) && !spectrum.flagged[k] && f < floor ? k : -1).filter(k => k >= 0);
+        if (clipped.length) traces.push({
+          type: "scatter", mode: "markers", showlegend: false, name: "Below displayed range",
+          x: clipped.map(k => spectrum.wavelength_um[k]), y: clipped.map(() => lower / unit),
+          customdata: clipped.map(k => spectrum.flux[k]), marker: {symbol: "triangle-down", size: pt(5, 4), color: "#666"},
+          hovertemplate: "Fλ: %{customdata:.4g}<extra>Below displayed range</extra>",
+        });
+      }
       const baseline = (rowBounds[i]?.[0] ?? shift) / unit;
       shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: baseline, y1: baseline,
         layer: "below", line: {color: "rgba(185,217,247,0.9)", width: pt(0.9, 0.7)}});
