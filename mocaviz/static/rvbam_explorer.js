@@ -2369,7 +2369,12 @@ function renderRvbamPayloadTable(payloads, samplingRun, segment) {
   ];
   const segmentHtml = segmentRows.length ? simpleTable(segmentRows, [["key", "Selected Window"], ["value", "Value"]], "rvb-detail-table") : '<div class="rvb-empty-detail">No selected-window metadata</div>';
   const samplingHtml = runRows.length ? simpleTable(runRows, [["key", "Sampling Run"], ["value", "Value"]], "rvb-detail-table") : '<div class="rvb-empty-detail">No sampling-run metadata</div>';
-  const payloadHtml = payloads.length ? simpleTable(payloads, payloadColumns, "rvb-detail-table") : '<div class="rvb-empty-detail">No payload metadata</div>';
+  const emptyPayloadMessage = rvbState.segmentDetail?.meta?.payload_archive_available === false
+    ? "Posterior samples are available in local MOCAviz with the PEGIII archive mounted."
+    : "No payload metadata for this segment";
+  const payloadHtml = payloads.length
+    ? simpleTable(payloads, payloadColumns, "rvb-detail-table")
+    : `<div class="rvb-empty-detail">${emptyPayloadMessage}</div>`;
   rvbEl["rvb-payload-table"].innerHTML = `${segmentHtml}${samplingHtml}${payloadHtml}`;
 }
 

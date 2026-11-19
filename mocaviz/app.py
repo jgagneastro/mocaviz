@@ -15,11 +15,12 @@ import time
 import traceback
 import types
 import zlib
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
 from statistics import NormalDist
 from threading import Event, Lock
@@ -27,6 +28,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import quote_plus
 
 from mocaviz.astrometry_jobs import FitJobs, FitControl, FitBusy, FitLimitReached, current_control
+from mocaviz.rvbam_payload_archive import PAYLOAD_COLUMNS, PayloadArchive
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -50,7 +52,7 @@ for _BANYAN_SIGMA_SRC in _BANYAN_SIGMA_SRC_CANDIDATES:
 
 import numpy as np
 import pandas as pd
-from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, g, has_request_context, jsonify, redirect, request, send_from_directory
 from sqlalchemy import bindparam, create_engine, text
 
 
@@ -153,6 +155,14 @@ _ENCODED_RESPONSE_CACHE_LOCK = Lock()
 _ENCODED_RESPONSE_INFLIGHT: dict[str, Event] = {}
 
 
+def _is_local_rvbam_api_request() -> bool:
+    return (
+        (request.endpoint or "").startswith("rvbam_explorer_")
+        and request.path.startswith(("/api/", "/js/api/"))
+        and _is_local_app_request()
+    )
+
+
 def _is_cacheable_api_request() -> bool:
     return (
         request.method == "GET"
@@ -160,6 +170,7 @@ def _is_cacheable_api_request() -> bool:
         and request.blueprint not in {"spectrum_compare", "spectrum_compare_compat"}
         and request.blueprint not in {"spherex_review", "spherex_review_compat"}
         and not request.path.startswith(("/api/astrometry/fit/jobs", "/js/api/astrometry/fit/jobs"))
+        and not _is_local_rvbam_api_request()
         and ENCODED_RESPONSE_CACHE_SECONDS > 0
         and (request.path.startswith("/api/") or request.path.startswith("/js/api/"))
     )
@@ -268,6 +279,8 @@ def _release_encoded_response_inflight(cache_key: str) -> None:
 @app.after_request
 def _optimize_http_response(response: Response) -> Response:
     if request.path.startswith(("/api/astrometry/fit/jobs", "/js/api/astrometry/fit/jobs")):
+        response.headers["Cache-Control"] = "no-store"
+    if _is_local_rvbam_api_request():
         response.headers["Cache-Control"] = "no-store"
     if (
         request.method == "GET"
@@ -24467,7 +24480,6 @@ RVBAM_REQUIRED_TABLES = (
     "pcat_rv_sampling_segments",
     "pcat_sampling_runs",
     "pcat_sampling_parameters",
-    "pcat_sampling_payloads",
 )
 RVBAM_RV_CONTENT_MODEL_POINTS = int(os.environ.get("RVBAM_RV_CONTENT_MODEL_POINTS", "2048"))
 RVBAM_RV_CONTENT_OUTLIER_FRACTION = 5.0 / 113.0
@@ -24622,8 +24634,42 @@ def _prepare_rvbam_imports() -> None:
         exec(compile(source, str(path), "exec"), module.__dict__)
 
 
+def _rvbam_local_payload_archive() -> PayloadArchive | None:
+    if sys.platform != "darwin" or not has_request_context() or not _is_local_app_request():
+        return None
+    if any(request.headers.get(name) for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host")):
+        return None
+    try:
+        if not ip_address(request.remote_addr or "").is_loopback:
+            return None
+    except ValueError:
+        return None
+    if "rvbam_payload_archive" not in g:
+        g.rvbam_payload_archive = PayloadArchive.open()
+    return g.rvbam_payload_archive
+
+
+def _rvbam_payload_metadata(run_ids, columns=PAYLOAD_COLUMNS):
+    archive = _rvbam_local_payload_archive()
+    if archive is None:
+        return []
+    try:
+        return archive.metadata(run_ids, columns)
+    except (OSError, ValueError, TypeError) as exc:
+        app.logger.warning("RVBAM archive metadata unavailable: %s", exc)
+        return []
+
+
+def _rvbam_missing_chain_message() -> str:
+    if _rvbam_local_payload_archive() is None:
+        return "Posterior samples are available in local MOCAviz with the PEGIII archive mounted."
+    return "No posterior chains found for this segment in the local archive."
+
+
 def _rvbam_cache_key(args: dict[str, Any], *parts: Any) -> str:
-    return "|".join([_spt_db_cache_key(args), "rvbam-explorer", *[str(part) for part in parts]])
+    archive = _rvbam_local_payload_archive()
+    revision = archive.revision if archive is not None else ""
+    return "|".join([_spt_db_cache_key(args), "rvbam-explorer", revision, *map(str, parts)])
 
 
 def _rvbam_int_arg(args: dict[str, Any], *keys: str) -> int | None:
@@ -26763,7 +26809,7 @@ def _rvbam_segment_summaries_from_db(
             COUNT(*) AS segment_count,
             COUNT(CASE WHEN s.rv_kms IS NOT NULL THEN 1 ELSE NULL END) AS available_segment_count,
             SUM(CASE WHEN s.moca_sample_run_id IS NOT NULL THEN 1 ELSE 0 END) AS sample_segment_count,
-            COUNT(DISTINCT CASE WHEN pl.moca_payload_id IS NOT NULL THEN s.moca_rv_sampling_segment_id ELSE NULL END) AS payload_segment_count,
+            0 AS payload_segment_count,
             MIN(s.wv_min) AS wv_min,
             MAX(s.wv_max) AS wv_max,
             AVG(s.rv_kms) AS rv_mean_kms,
@@ -26772,9 +26818,6 @@ def _rvbam_segment_summaries_from_db(
             MAX(s.created_timestamp) AS latest_segment_created_timestamp,
             MAX(s.modified_timestamp) AS latest_segment_modified_timestamp
         FROM pcat_rv_sampling_segments s
-        LEFT JOIN pcat_sampling_payloads pl
-            ON pl.moca_sample_run_id = s.moca_sample_run_id
-            AND pl.payload_kind = 'chains'
         WHERE s.moca_rv_sample_run_id IN ({", ".join(placeholders)})
             {ignored_clause}
         GROUP BY s.moca_rv_sample_run_id
@@ -26786,6 +26829,26 @@ def _rvbam_segment_summaries_from_db(
         except (TypeError, ValueError):
             continue
         summaries[key] = row
+    if summaries and _rvbam_local_payload_archive() is not None:
+        segments = _records(_read_sql(conn, f"""
+            SELECT s.moca_rv_sample_run_id, s.moca_sample_run_id
+            FROM pcat_rv_sampling_segments s
+            WHERE s.moca_rv_sample_run_id IN ({", ".join(placeholders)})
+                AND s.moca_sample_run_id IS NOT NULL
+                {ignored_clause}
+        """, params))
+        chains = {
+            row["moca_sample_run_id"]
+            for row in _rvbam_payload_metadata(
+                (segment["moca_sample_run_id"] for segment in segments),
+                ("moca_sample_run_id", "payload_kind", "ignored"),
+            )
+            if row["payload_kind"] == "chains" and not row["ignored"]
+        }
+        counts = Counter(segment["moca_rv_sample_run_id"] for segment in segments
+                         if segment["moca_sample_run_id"] in chains)
+        for run_id, count in counts.items():
+            summaries[run_id]["payload_segment_count"] = count
     return summaries
 
 
@@ -28174,10 +28237,10 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 fig.corner_url,
                 COALESCE(params.param_count, 0) AS param_count,
                 COALESCE(params.free_param_count, 0) AS free_param_count,
-                COALESCE(payloads.payload_count, 0) AS payload_count,
-                COALESCE(payloads.chain_payloads, 0) AS chain_payloads,
-                COALESCE(payloads.lnp_payloads, 0) AS lnp_payloads,
-                payloads.total_stored_samples,
+                0 AS payload_count,
+                0 AS chain_payloads,
+                0 AS lnp_payloads,
+                NULL AS total_stored_samples,
                 {", ".join(rv_content_select)}
             FROM pcat_rv_sampling_segments s
             LEFT JOIN pcat_sampling_runs sr
@@ -28203,17 +28266,6 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
                 GROUP BY moca_sample_run_id
             ) params
                 ON params.moca_sample_run_id = s.moca_sample_run_id
-            LEFT JOIN (
-                SELECT
-                    moca_sample_run_id,
-                    COUNT(*) AS payload_count,
-                    SUM(CASE WHEN payload_kind = 'chains' THEN 1 ELSE 0 END) AS chain_payloads,
-                    SUM(CASE WHEN payload_kind = 'lnp' THEN 1 ELSE 0 END) AS lnp_payloads,
-                    SUM(COALESCE(n_stored_samples, 0)) AS total_stored_samples
-                FROM pcat_sampling_payloads
-                GROUP BY moca_sample_run_id
-            ) payloads
-                ON payloads.moca_sample_run_id = s.moca_sample_run_id
             WHERE s.moca_rv_sample_run_id = :run_id
                 {ignored_clause}
             ORDER BY s.order_number, s.window_number, s.segment_number, s.wv_min, s.moca_rv_sampling_segment_id
@@ -28221,6 +28273,22 @@ def _load_rvbam_run_from_db(args: dict[str, Any], run_id: int) -> dict[str, Any]
         rv_content_meta = _rvbam_rv_content_db_meta(segments, missing_rv_content_columns)
         literature_rv = _rvbam_literature_rv_from_db(conn, args, run.get("moca_oid"))
         spectrum = _rvbam_spectrum_from_db(conn, run.get("moca_specid"))
+
+    grouped_payloads = {}
+    for row in _rvbam_payload_metadata(
+        (segment.get("moca_sample_run_id") for segment in segments),
+        ("moca_sample_run_id", "payload_kind", "n_stored_samples"),
+    ):
+        grouped_payloads.setdefault(row["moca_sample_run_id"], []).append(row)
+    for segment in segments:
+        local_payloads = grouped_payloads.get(segment.get("moca_sample_run_id"))
+        if local_payloads:
+            segment.update(
+                payload_count=len(local_payloads),
+                chain_payloads=sum(row["payload_kind"] == "chains" for row in local_payloads),
+                lnp_payloads=sum(row["payload_kind"] == "lnp" for row in local_payloads),
+                total_stored_samples=sum(row["n_stored_samples"] or 0 for row in local_payloads),
+            )
 
     timestamp_summary = _rvbam_segment_timestamp_summary(segments)
     run.update(timestamp_summary)
@@ -28545,34 +28613,10 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
             WHERE moca_sample_run_id = :sample_run_id
             ORDER BY param_index, param_name
         """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
-        payloads = _records(_read_sql(conn, """
-            SELECT
-                moca_payload_id,
-                moca_sample_run_id,
-                moca_sampling_parameter_id,
-                payload_kind,
-                payload_subkind,
-                dtype,
-                compression,
-                order_comment,
-                n_dim,
-                dim1,
-                dim2,
-                dim3,
-                dim4,
-                burnin_iterations,
-                thinning_interval,
-                n_stored_samples,
-                series_count,
-                origin,
-                rls,
-                is_public,
-                ignored,
-                comments
-            FROM pcat_sampling_payloads
-            WHERE moca_sample_run_id = :sample_run_id
-            ORDER BY payload_kind, payload_subkind, moca_payload_id
-        """, {"sample_run_id": int(sample_run_id)})) if sample_run_id is not None else []
+        payloads = sorted(
+            _rvbam_payload_metadata([sample_run_id]),
+            key=lambda row: (row["payload_kind"], row["payload_subkind"] or "", row["moca_payload_id"]),
+        )
         images = _rvbam_segment_images(conn, row.get("moca_fsid"))
         rv_content_meta = _rvbam_rv_content_db_meta([row], missing_rv_content_columns)
 
@@ -28625,6 +28669,7 @@ def _load_rvbam_segment_from_db(args: dict[str, Any], segment_id: int) -> dict[s
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "parameter_count": len(parameters),
             "payload_count": len(payloads),
+            "payload_archive_available": _rvbam_local_payload_archive() is not None,
             "private_db": _is_private_db(args),
             "rv_content_diagnostics": rv_content_meta,
         },
@@ -28670,6 +28715,7 @@ def _rvbam_payload_shape(row: dict[str, Any]) -> tuple[int, ...]:
 def _rvbam_array_cache_key(row: dict[str, Any]) -> str:
     return "|".join([
         "payload",
+        getattr(_rvbam_local_payload_archive(), "revision", ""),
         str(row.get("moca_payload_id")),
         str(row.get("modified_timestamp") or ""),
         str(row.get("dtype") or ""),
@@ -28730,88 +28776,29 @@ def _decode_rvbam_payload_array(row: dict[str, Any]) -> np.ndarray:
     return array
 
 
-def _rvbam_fetch_chain_payload(conn, sample_run_id: int) -> dict[str, Any] | None:
-    row = conn.execute(text("""
-        SELECT
-            moca_payload_id,
-            moca_sample_run_id,
-            moca_sampling_parameter_id,
-            payload_kind,
-            payload_subkind,
-            dtype,
-            compression,
-            order_comment,
-            n_dim,
-            dim1,
-            dim2,
-            dim3,
-            dim4,
-            burnin_iterations,
-            thinning_interval,
-            n_stored_samples,
-            series_count,
-            modified_timestamp,
-            payload
-        FROM pcat_sampling_payloads
-        WHERE moca_sample_run_id = :sample_run_id
-            AND payload_kind = 'chains'
-            AND COALESCE(ignored, 0) = 0
-        ORDER BY
-            CASE WHEN payload_subkind = 'posterior' THEN 0 ELSE 1 END,
-            moca_payload_id
-        LIMIT 1
-    """), {"sample_run_id": int(sample_run_id)}).mappings().first()
-    return dict(row) if row is not None else None
+def _rvbam_fetch_chain_payload(sample_run_id: int) -> dict[str, Any] | None:
+    archive = _rvbam_local_payload_archive()
+    if archive is None:
+        return None
+    try:
+        return archive.chain(sample_run_id)
+    except (OSError, ValueError, TypeError) as exc:
+        app.logger.warning("RVBAM archive chain unavailable: %s", exc)
+        return None
 
 
-def _rvbam_fetch_vector_payload(conn, sample_run_id: int, payload_terms: tuple[str, ...]) -> dict[str, Any] | None:
-    terms = tuple(str(term).lower() for term in payload_terms)
-    row = conn.execute(text("""
-        SELECT
-            moca_payload_id,
-            moca_sample_run_id,
-            moca_sampling_parameter_id,
-            payload_kind,
-            payload_subkind,
-            dtype,
-            compression,
-            order_comment,
-            n_dim,
-            dim1,
-            dim2,
-            dim3,
-            dim4,
-            burnin_iterations,
-            thinning_interval,
-            n_stored_samples,
-            series_count,
-            modified_timestamp,
-            payload
-        FROM pcat_sampling_payloads
-        WHERE moca_sample_run_id = :sample_run_id
-            AND COALESCE(ignored, 0) = 0
-            AND (
-                LOWER(COALESCE(payload_kind, '')) IN :terms
-                OR LOWER(COALESCE(payload_subkind, '')) IN :terms
-                OR LOWER(COALESCE(order_comment, '')) IN :terms
-            )
-        ORDER BY
-            CASE
-                WHEN LOWER(COALESCE(payload_subkind, '')) IN :terms THEN 0
-                WHEN LOWER(COALESCE(payload_kind, '')) IN :terms THEN 1
-                ELSE 2
-            END,
-            moca_payload_id
-        LIMIT 1
-    """).bindparams(bindparam("terms", expanding=True)), {
-        "sample_run_id": int(sample_run_id),
-        "terms": terms,
-    }).mappings().first()
-    return dict(row) if row is not None else None
+def _rvbam_fetch_vector_payload(sample_run_id: int, payload_terms: tuple[str, ...]) -> dict[str, Any] | None:
+    archive = _rvbam_local_payload_archive()
+    if archive is None:
+        return None
+    try:
+        return archive.vector(sample_run_id, payload_terms)
+    except (OSError, ValueError, TypeError) as exc:
+        app.logger.warning("RVBAM archive vector unavailable: %s", exc)
+        return None
 
 
 def _rvbam_corner_weights(
-    conn,
     sample_run_id: int,
     sample_count: int,
     live_points: Any = None,
@@ -28820,7 +28807,7 @@ def _rvbam_corner_weights(
     if sample_count <= 0:
         return np.array([], dtype=float), meta
 
-    weights_payload = _rvbam_fetch_vector_payload(conn, sample_run_id, (
+    weights_payload = _rvbam_fetch_vector_payload(sample_run_id, (
         "weights",
         "weight",
         "posterior_weights",
@@ -28840,7 +28827,7 @@ def _rvbam_corner_weights(
         except Exception as exc:
             meta["weights_payload_error"] = f"{type(exc).__name__}: {exc}"
 
-    logl_payload = _rvbam_fetch_vector_payload(conn, sample_run_id, (
+    logl_payload = _rvbam_fetch_vector_payload(sample_run_id, (
         "logl",
         "lnp",
         "log_likelihood",
@@ -29289,7 +29276,7 @@ def _load_rvbam_posterior_from_db(args: dict[str, Any], segment_id: int) -> dict
                 AND COALESCE(ignored, 0) = 0
             ORDER BY param_index, param_name
         """, {"sample_run_id": sample_run_id})))
-        chain_payload = _rvbam_fetch_chain_payload(conn, sample_run_id)
+        chain_payload = _rvbam_fetch_chain_payload(sample_run_id)
         if chain_payload is None:
             return {
                 "segment": segment,
@@ -29314,7 +29301,7 @@ def _load_rvbam_posterior_from_db(args: dict[str, Any], segment_id: int) -> dict
                     "returned_sample_count": 0,
                     "max_points": max_points,
                     "private_db": _is_private_db(args),
-                    "message": "No posterior chains payload found for this segment.",
+                    "message": _rvbam_missing_chain_message(),
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
@@ -29468,7 +29455,7 @@ def _load_rvbam_rebuilt_corner_from_db(args: dict[str, Any], segment_id: int) ->
                 AND COALESCE(ignored, 0) = 0
             ORDER BY param_index, param_name
         """, {"sample_run_id": sample_run_id})))
-        chain_payload = _rvbam_fetch_chain_payload(conn, sample_run_id)
+        chain_payload = _rvbam_fetch_chain_payload(sample_run_id)
         sampling_rows = _records(_read_sql(conn, """
             SELECT n_walkers
             FROM pcat_sampling_runs
@@ -29486,13 +29473,12 @@ def _load_rvbam_rebuilt_corner_from_db(args: dict[str, Any], segment_id: int) ->
                     "sample_count": 0,
                     "returned_sample_count": 0,
                     "private_db": _is_private_db(args),
-                    "message": "No posterior chains payload found for this segment.",
+                    "message": _rvbam_missing_chain_message(),
                 },
                 "cache": {"hit": False, "ttl_seconds": CACHE_SECONDS},
             }
         live_points = sampling_rows[0].get("n_walkers") if sampling_rows else None
         weights, weights_meta = _rvbam_corner_weights(
-            conn,
             sample_run_id,
             int(chain_payload.get("n_stored_samples") or 0),
             live_points=live_points,
@@ -29792,7 +29778,7 @@ def _load_rvbam_global_corner_from_db(args: dict[str, Any], run_id: int) -> dict
                     AND COALESCE(ignored, 0) = 0
                 ORDER BY param_index, param_name
             """, {"sample_run_id": int(sample_run_id)})))
-            chain_payload = _rvbam_fetch_chain_payload(conn, int(sample_run_id))
+            chain_payload = _rvbam_fetch_chain_payload(int(sample_run_id))
             if chain_payload is None:
                 skipped_segments.append({"segment_id": segment_id, "reason": "missing chains payload"})
                 continue
@@ -29803,7 +29789,6 @@ def _load_rvbam_global_corner_from_db(args: dict[str, Any], run_id: int) -> dict
                     skipped_segments.append({"segment_id": segment_id, "reason": "empty chains payload"})
                     continue
                 weights, weights_meta = _rvbam_corner_weights(
-                    conn,
                     int(sample_run_id),
                     int(chain_payload.get("n_stored_samples") or 0),
                     live_points=segment.get("n_walkers"),
