@@ -4417,6 +4417,14 @@ def _spt_merge_scaled_composite(
     return pd.DataFrame(rows).sort_values("wv", kind="mergesort").reset_index(drop=True)
 
 
+def _spt_comparison_is_spherex(comparison: Mapping[str, Any]) -> bool:
+    sources = comparison["comparison_sources"]
+    return bool(sources) and all(
+        str(source.get("moca_instid") or "").strip().lower() == "spherex"
+        for source in sources
+    )
+
+
 def _spt_comparison_from_payloads(
     payloads: Sequence[Mapping[str, Any]],
     bins_per_micron: int,
@@ -6066,7 +6074,7 @@ def _precompute_spt_comparison(
     cloud_key = f"{int(cloud_correction)}|{int(cloud_alpha_fixed)}|{float(cloud_alpha):.6g}|{float(cloud_lambda0):.6g}"
     only_key = "" if only_standard_specid is None else str(int(only_standard_specid))
     specid_key = ",".join(str(specid) for specid in requested_specids)
-    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|{SPT_LOG_WAVELENGTH_OVERLAP_VERSION}|source:{standards_source}|field:{int(only_field_objects)}|specids:{specid_key}|{bins}|{norm_key}|overlap:{min_log_wavelength_overlap_percent:.6g}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
+    cache_key = f"{_spt_db_cache_key(args)}|compare|{SPT_RESOLUTION_MATCH_VERSION}|{SPT_LOG_WAVELENGTH_OVERLAP_VERSION}|spherex-display-v1|source:{standards_source}|field:{int(only_field_objects)}|specids:{specid_key}|{bins}|{norm_key}|overlap:{min_log_wavelength_overlap_percent:.6g}|{int(deredden)}|{fixed_key}|cloud|{cloud_key}|only|{only_key}"
     now = time.time()
     cached = _page_payload_cache_get(
         _SPT_COMPARE_CACHE,
@@ -6117,10 +6125,7 @@ def _precompute_spt_comparison(
         raise ValueError("Selected comparison spectrum has no usable data in the normalization regions")
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
-    lowres_comparison = (
-        _spt_float(comparison_input.get("average_resolving_power")) is not None
-        and float(comparison_input.get("average_resolving_power")) < 100
-    )
+    lowres_comparison = _spt_comparison_is_spherex(comparison_input)
 
     comparison_regions = _spt_comparison_regions(comparison_df, norm_regions_param, cloud_lambda0)
     grid_raw_by_specid: dict[int, pd.DataFrame] = {}
@@ -6711,10 +6716,7 @@ def _mock_spt_compare(
     comparison_df = _spt_process_spectrum(comparison_raw, bins_per_micron=bins, norm_regions_param=norm_regions_param)
     comparison_df["esp_calc"] = _spt_prepare_errors(comparison_df["spn"], comparison_df.get("espn"))
     common_wv = np.sort(comparison_df["wv"].dropna().unique())
-    lowres_comparison = (
-        _spt_float(comparison_input.get("average_resolving_power")) is not None
-        and float(comparison_input.get("average_resolving_power")) < 100
-    )
+    lowres_comparison = _spt_comparison_is_spherex(comparison_input)
     results = []
     if only_standard_specid is not None:
         grid_data = grid_data[pd.to_numeric(grid_data["moca_specid"], errors="coerce") == int(only_standard_specid)].copy()

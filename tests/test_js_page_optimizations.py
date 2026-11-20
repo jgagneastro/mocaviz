@@ -1069,6 +1069,31 @@ class JsPageOptimizationTests(unittest.TestCase):
         self.assertEqual(payload["comparisonMetadata"]["moca_oid"], 990602)
         self.assertTrue(any(row.get("source_specids") == "450,451" for row in payload["comparison"]))
 
+    def test_spectral_typing_prepares_low_resolution_display_only_for_spherex(self):
+        original = app_module._mock_spt_spectrum_payload
+
+        def spectrum(specid):
+            payload = original(specid)
+            # Deliberately put the instruments on opposite sides of the old cutoff.
+            spherex = specid == 450
+            payload["metadata"]["moca_instid"] = "SPHEREx" if spherex else "NIRSPEC"
+            payload["meta"]["average_resolving_power"] = 200.0 if spherex else 30.0
+            return payload
+
+        with patch.object(app_module, "_mock_spt_spectrum_payload", side_effect=spectrum):
+            for specids, expected in (([450], True), ([451], False), ([450, 451], False)):
+                with self.subTest(specids=specids):
+                    response = self.client.post(
+                        "/api/spectral-typing/compare?mock=1",
+                        json={"specids": specids, "standard_specid": 800001},
+                    )
+                    payload = decoded_json(response)
+                    self.assertTrue(payload["ok"], payload.get("error"))
+                    self.assertTrue(payload["entries"])
+                    self.assertTrue(all(
+                        bool(entry.get("spectrum_display")) == expected for entry in payload["entries"]
+                    ))
+
     def test_spectral_typing_composite_search_is_scoped_and_excludes_selected_specids(self):
         payload = decoded_json(self.client.get(
             "/api/spectral-typing/search?mock=1&moca_oid=990602&exclude_specids=450"

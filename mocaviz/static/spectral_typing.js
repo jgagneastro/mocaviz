@@ -1377,9 +1377,7 @@ function renderSpectrumPlot(payload, entry) {
   const allred = sptEl["spt-allred"].checked;
   const standardColor = allred ? sptStandardRed : sptStandardPalette[Math.abs(sptState.currentIndex) % sptStandardPalette.length];
   const standardName = `Std. ${entry.spectral_type || ""}`.trim();
-  const lowres = finiteNumber(payload.meta?.average_resolving_power)
-    && payload.meta.average_resolving_power < 100
-    && !sptEl["spt-disable-lowres"].checked;
+  const lowres = comparisonUsesLowresDisplay(payload) && !sptEl["spt-disable-lowres"].checked;
   const standardLineColor = lowres ? mixHexColorWithWhite(standardColor, 0.4) : standardColor;
   const standardCurveRows = lowres && Array.isArray(entry.spectrum_display) && entry.spectrum_display.length
     ? entry.spectrum_display
@@ -1764,18 +1762,22 @@ function updateChi2RankButtons() {
   sptEl["spt-next-worse-chi2"].disabled = !ranking.length || currentRank === ranking.length - 1;
 }
 
+function comparisonUsesLowresDisplay(payload) {
+  const sources = payload?.comparisonSources?.length
+    ? payload.comparisonSources
+    : [payload?.comparisonMetadata];
+  return sources.every((source) => String(source?.moca_instid ?? "").trim().toLowerCase() === "spherex");
+}
+
 function updateLowResControl(payload = sptState.comparePayload) {
   const checkbox = sptEl["spt-disable-lowres"];
   if (!checkbox) return;
-  const averageResolvingPower = Number(payload?.meta?.average_resolving_power);
-  const canUseLowResMode = Number.isFinite(averageResolvingPower) && averageResolvingPower < 100;
+  const canUseLowResMode = comparisonUsesLowresDisplay(payload);
   checkbox.disabled = !canUseLowResMode;
   checkbox.closest(".checkline")?.classList.toggle("is-disabled", !canUseLowResMode);
   checkbox.closest(".checkline")?.setAttribute(
     "title",
-    canUseLowResMode
-      ? `Low-resolution display mode is active for this spectrum (average R ${averageResolvingPower.toFixed(0)}).`
-      : "This spectrum is not low-resolution enough for low-resolution display mode."
+    "Low-resolution display mode is available for SPHEREx spectra."
   );
   if (!canUseLowResMode) checkbox.checked = false;
 }

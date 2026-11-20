@@ -3,8 +3,6 @@ const speDefaultNorm = "0.95-1.35";
 const speDefaultBinsPerMicron = 0;
 const speDefaultDisplayBinsPerMicron = 200;
 const speDefaultShowFeatures = true;
-const speDefaultPixPerResolutionElement = 2.2;
-const speLowResolutionResolvingPowerPerPixelThreshold = 45;
 const speSpeedOfLight = 299792458.0;
 const speColors = ["#377EB8", "#E41A1C", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3"];
 
@@ -896,7 +894,6 @@ function processSpectraPayload() {
     const effectiveAverageResolvingPower = finite(displayAverageResolvingPower)
       ? displayAverageResolvingPower
       : storedAverageResolvingPower;
-    const lowresResolvingPowerPerPixel = spectrumLowresResolvingPowerPerPixel(spectrum);
     return {
       specid: Number(spectrum.moca_specid),
       metadata,
@@ -906,10 +903,9 @@ function processSpectraPayload() {
       points,
       ignoredPoints,
       displayResolutionDecreased: spectraDisplayResolutionDecreased(),
-      lowRes: finite(lowresResolvingPowerPerPixel) && lowresResolvingPowerPerPixel < speLowResolutionResolvingPowerPerPixelThreshold,
+      lowRes: spectrumUsesLowresDisplay(spectrum),
       averageResolvingPower: effectiveAverageResolvingPower,
       storedAverageResolvingPower,
-      lowresResolvingPowerPerPixel,
       color,
     };
   });
@@ -2273,40 +2269,8 @@ function wavelengthMicron(value) {
   return lam > 100 ? lam * 1e-4 : lam;
 }
 
-function firstFiniteNumber(...values) {
-  for (const value of values) {
-    if (finite(value)) return Number(value);
-  }
-  return null;
-}
-
-function spectrumLowresResolvingPowerPerPixel(spectrum) {
-  const storedMetric = firstFiniteNumber(
-    spectrum?.meta?.lowres_resolving_power_per_pixel,
-    spectrum?.meta?.resolving_power_per_pixel
-  );
-  if (finite(storedMetric)) return storedMetric;
-  const medianResolvingPower = firstFiniteNumber(
-    spectrum?.meta?.median_spectral_resolving_power,
-    spectrum?.metadata?.median_spectral_resolving_power,
-    spectrum?.meta?.stored_average_resolving_power
-  );
-  if (!finite(medianResolvingPower)) return null;
-  const storedPixPerResElement = firstFiniteNumber(
-    spectrum?.meta?.pix_per_res_element,
-    spectrum?.metadata?.pix_per_res_element
-  );
-  const pixPerResElement = finite(storedPixPerResElement)
-    ? storedPixPerResElement
-    : speDefaultPixPerResolutionElement;
-  if (!finite(pixPerResElement) || pixPerResElement <= 0) return null;
-  return medianResolvingPower / pixPerResElement;
-}
-
 function spectrumUsesLowresDisplay(spectrum) {
-  const resolvingPowerPerPixel = spectrumLowresResolvingPowerPerPixel(spectrum);
-  return finite(resolvingPowerPerPixel)
-    && resolvingPowerPerPixel < speLowResolutionResolvingPowerPerPixelThreshold;
+  return String(spectrum?.metadata?.moca_instid ?? "").trim().toLowerCase() === "spherex";
 }
 
 function parseNormRange(raw) {
