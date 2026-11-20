@@ -14,6 +14,22 @@ function fixture() {
 const close = (a, b) => assert(Math.abs(a - b) < 1e-12, a + " != " + b);
 const byRole = (plot, role) => plot.traces.filter((t) => t.meta.role === role);
 
+test("MOSHPIT displays each measured channel at its signed flux in every comparison", () => {
+  const data = fixture();
+  data.lane = "moshpit";
+  const plot = figure(data, "native");
+  const [low, high] = plot.layout.yaxis.range;
+  const rows = byRole(plot, "data");
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    assert.deepEqual(row.x, [1, 3, 4]);
+    assert.deepEqual(row.customdata, [2, 100, -2]);
+    assert(row.y.every(y => y > low && y < high));
+    const zero = plot.layout.shapes[row.meta.rank].y0;
+    assert.deepEqual(row.y.map(y => Math.round(y - zero)), [2, 100, -2]);
+  }
+});
+
 test("all three matches are stacked, visible, and styled like the PNG", () => {
   const plot = figure(fixture(), "42");
   assert.equal(byRole(plot, "template-curve").length, 3);

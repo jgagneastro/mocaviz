@@ -18,7 +18,9 @@ class CandidateInputTests(unittest.TestCase):
         self.db.create_function("SHA2", 2, lambda s, bits: hashlib.sha256(s.encode()).hexdigest())
         import zlib
         self.db.create_function("COMPRESS", 1, lambda s: len(s).to_bytes(4, "little")+zlib.compress(s.encode()))
-        self.db.create_function("JSON_VALUE", 2, lambda s,k: json.loads(s).get(k[2:]))
+        self.db.create_function("CONCAT", 2, lambda a,b: a+str(b))
+        self.db.create_function("JSON_VALUE", 2, lambda s,k: self.db.execute(
+            "SELECT json_extract(?,?) AS value", (s,k)).fetchone()["value"])
         self.db.executescript("""
             CREATE TABLE pcat_moshpit_candidates(id INTEGER PRIMARY KEY,source_key TEXT,origin TEXT,moca_oid INTEGER,
                 ra_deg REAL,dec_deg REAL,spectral_type TEXT,selection_route TEXT,median_snr REAL,p_accept REAL,
@@ -46,6 +48,8 @@ class CandidateInputTests(unittest.TestCase):
             [(1,"mp:A","moshpit/native_dr1",None,product,None), (2,"mp:B","moshpit/native_dr1",42,product,None),
              (3,"mp:C","moshpit/native_dr1",42,product,"good"), (4,"mp:D","injection",None,product,None),
              (5,"mp:E","moshpit/native_dr1",None,None,None)])
+        self.db.execute("UPDATE pcat_moshpit_candidates SET review_history=? WHERE id=1",
+                        (json.dumps([{"lane":"identity","moshpit_number":9}]),))
         self.db.commit()
 
         class Cursor:
@@ -88,10 +92,15 @@ class CandidateInputTests(unittest.TestCase):
         self.assertEqual(self.api("queue",{**base,"candidate_id":3}).get_json()["items"][0]["candidate_id"],3)
         self.assertEqual(self.api("queue",base,"collaborators").status_code,403)
         self.assertEqual(self.api("queue",{**base,"mock":True}).status_code,403)
-        for cid, name in ((1, "mp:A"),(2, "Known L dwarf")):
+        named = self.api("queue",{**base,"moshpit_number":9}).get_json()["items"]
+        self.assertEqual([(i["candidate_id"], i["designation"]) for i in named], [(1,"MOSHPIT 9")])
+        self.assertEqual(self.api("queue-count",{**base,"moshpit_number":1}).get_json()["total"],0)
+        for cid, name in ((1, "MOSHPIT 9"),(2, "MOSHPIT 2")):
             item = self.api("analyze", {"lane":"moshpit","candidate_id":cid}).get_json()
             self.assertTrue(item["ok"], item)
             self.assertEqual(item["object"]["designation"],name)
+            self.assertEqual(item["object"].get("object_designation"),"Known L dwarf" if cid == 2 else None)
+            self.assertEqual((item["object"]["n_measured_channels"],item["object"]["n_total_channels"]), (15,16))
             self.assertIsNone(item["object"]["moca_specid"])
             self.assertEqual(item["fit"]["fit_version"], "native_signed_student4_v1")
             self.assertEqual(len(item["raw_spectrum"]), 15)
@@ -117,7 +126,7 @@ class CandidateInputTests(unittest.TestCase):
         row = self.db.execute("SELECT * FROM pcat_moshpit_candidates WHERE id=1").fetchone()
         self.assertIsNone(row["spectral_review"])
         self.assertEqual(row["moca_oid"],42)
-        self.assertEqual([v["lane"] for v in json.loads(row["review_history"])],["spectral","cutout","spectral"])
+        self.assertEqual([v["lane"] for v in json.loads(row["review_history"])],["identity","spectral","cutout","spectral"])
         self.assertEqual(self.api("undo",{"receipt":submitted["undo_receipt"]}).status_code,409)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM moca_changelog").fetchone()["n"],2)
 

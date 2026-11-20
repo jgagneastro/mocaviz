@@ -43,7 +43,19 @@
     if (floor < 0) yBounds[0] = Math.min(yBounds[0], floor);
     const rowBounds = [];
     let laneGap = 0;
-    if (data.stackLanes && overlays.length) {
+    if (data.lane === "moshpit" && overlays.length) {
+      // Every measured signed flux stays visible in each native template comparison.
+      const curves = extent(overlays.flatMap(o => [...o.flux, ...(o.curve_flux || [])]));
+      const low = Math.min(0, dataBounds[0], curves[0]);
+      const high = Math.max(0, dataBounds[1], curves[1]);
+      const span = high - low || dataSpan;
+      laneGap = 0.15 * span;
+      for (let i = 0; i < overlays.length; i++) {
+        shifts[i] = (overlays.length - 1 - i) * (span + laneGap);
+        rowBounds[i] = [low + shifts[i] - laneGap / 2, high + shifts[i] + laneGap / 2];
+      }
+      yBounds = [rowBounds[rowBounds.length - 1][0], rowBounds[0][1]];
+    } else if (data.stackLanes && overlays.length) {
       // Each reduction can have its own flux baseline and range. Give each
       // measured spectrum room rather than clipping it to a template's span.
       const bounds = spectra.map((v, i) => extent([
@@ -111,7 +123,7 @@
           hovertemplate: "Fλ: %{customdata:.4g}<extra>Below displayed range</extra>",
         });
       }
-      const baseline = (rowBounds[i]?.[0] ?? shift) / unit;
+      const baseline = (data.lane === "moshpit" ? shift : rowBounds[i]?.[0] ?? shift) / unit;
       shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: baseline, y1: baseline,
         layer: "below", line: {color: "rgba(185,217,247,0.9)", width: pt(0.9, 0.7)}});
       if (!overlay) continue;

@@ -48,10 +48,10 @@ def snapshot(cur, oid, lock=False):
 
 def target(cur, body, *, lock=False):
     if body.get("lane") == "moshpit":
-        from .spherex_moshpit_queue import TABLE as candidate_table, READY
+        from .spherex_moshpit_queue import TABLE as candidate_table, READY, DESIGNATION
         cid = sr.integer(body.get("candidate_id"), "MOSHPIT candidate ID")
         records = sr.rows(cur, f"""SELECT c.id AS candidate_id,c.moca_oid,c.ra_deg AS ra,c.dec_deg AS `dec`,
-            c.source_key AS designation FROM {candidate_table} c WHERE c.id=%s AND {READY}"""
+            {DESIGNATION} AS designation FROM {candidate_table} c WHERE c.id=%s AND {READY}"""
             + (" FOR UPDATE" if lock else ""), (cid,))
         if not records:
             raise sr.ReviewError("MOSHPIT candidate unavailable.", 404)

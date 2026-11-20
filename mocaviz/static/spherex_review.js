@@ -266,7 +266,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
-    if (request.lane === "moshpit") return 24;
+    if (request.lane === "moshpit") return 25;
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
     if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
@@ -372,8 +372,12 @@
         const specid = $("specid").value.trim();
         const sublime2Cuts = ["all", "sublime2", "moshpit"].includes($("review-sample").value);
         const native = $("review-sample").value === "moshpit";
-        const candidateId = native && $("moshpit-candidate").value;
-        const request = candidateId ? {lane:"moshpit", review_sample:"moshpit", candidate_id:candidateId,
+        const candidateId = native && $("moshpit-candidate").value.trim();
+        const surveyName = candidateId && /^MOSHPIT\s+([1-9]\d*)$/i.exec(candidateId);
+        if (candidateId && !surveyName && !/^[1-9]\d*$/.test(candidateId))
+          throw new Error("Enter a survey name such as MOSHPIT 1 or a numeric candidate ID.");
+        const request = candidateId ? {lane:"moshpit", review_sample:"moshpit",
+          ...(surveyName ? {moshpit_number:surveyName[1]} : {candidate_id:candidateId}),
           adopted_spt_source:$("adopted-spt-source").value, limit:1} :
           !native && specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
@@ -602,7 +606,9 @@
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
     if (data.lane === "moshpit") {
       const oid = obj.moca_oid == null ? "awaiting OID" : "OID " + obj.moca_oid;
-      $("object-meta").textContent = "MOSHPIT candidate " + obj.candidate_id + " · " + obj.source_key + " · " + oid +
+      const counterpart = obj.object_designation && obj.object_designation !== obj.designation ? obj.object_designation + " · " : "";
+      $("object-meta").textContent = counterpart + oid + " · " + obj.n_measured_channels + "/" + obj.n_total_channels +
+        " channels measured" +
         " · survey fit " + obj.selection_type + " · " + obj.selection_route + " · median S/N " +
         (Number.isFinite(obj.median_snr_per_pix) ? obj.median_snr_per_pix.toFixed(1) : "—");
     }
@@ -632,7 +638,7 @@
       $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
     }
     if (fit?.fit_version === "native_signed_student4_v1")
-      $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
+      $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels used in fit · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
     const morphology = obj.sublime3c_morphology;
     if (morphology) {
       const priority = {priority_high_motion_v1: "high", priority_normal_motion_v1: "normal"}[morphology.review_priority];
@@ -730,7 +736,7 @@
             }
             const recovery = retry ? "Queued at the end for one automatic retry." :
               "Result kept in this tab. Use Retry failed to submit it again.";
-            const identity = job.lane === "moshpit" ? "MOSHPIT candidate " + job.item.candidate_id : "moca_oid=" + job.item.moca_oid;
+            const identity = job.lane === "moshpit" ? job.item.designation : "moca_oid=" + job.item.moca_oid;
             job.errorMessage = "Submission for " + identity + " failed. " + recovery + "\n" + e.message;
             job.errorExpiresAt = Date.now() + 20000;
             error(job.errorMessage, job);
@@ -928,8 +934,9 @@
     }
     if (["private", "public"].includes(params.get("adopted_spt_source")))
       $("adopted-spt-source").value = params.get("adopted_spt_source");
-    if (params.get("lane") === "moshpit" || params.has("moshpit_candidate_id")) $("review-sample").value = "moshpit";
+    if (params.get("lane") === "moshpit" || params.has("moshpit_candidate_id") || params.has("moshpit_number")) $("review-sample").value = "moshpit";
     if (params.has("moshpit_candidate_id")) $("moshpit-candidate").value = params.get("moshpit_candidate_id");
+    else if (params.has("moshpit_number")) $("moshpit-candidate").value = "MOSHPIT " + params.get("moshpit_number");
     if ($("review-sample").value === "moshpit") {
       // An explicit MOSHPIT shortcut opens the survey. Interactive source switches retain all entered cuts.
       for (const [query, id] of Object.entries({min_abs_galactic_latitude:"galactic-latitude",

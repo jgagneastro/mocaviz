@@ -13,6 +13,9 @@ from . import spherex_queue_metrics as metrics
 from . import spherex_review as review
 
 TABLE = "pcat_moshpit_candidates"
+# The historical name reservation is the first identity record. Later candidates use their ID.
+NUMBER = "COALESCE(CAST(JSON_VALUE(c.review_history,'$[0].moshpit_number') AS UNSIGNED),c.id)"
+DESIGNATION = f"CONCAT('MOSHPIT ',{NUMBER})"
 READY = "c.origin='moshpit/native_dr1' AND c.spectrum_json IS NOT NULL"
 # Cache only summary numbers. A changed native spectrum gets a new digest.
 _summaries = OrderedDict()
@@ -113,10 +116,16 @@ def vetting_conditions(body, where, params):
 def queue(cur, body, count_only):
     if body.get("moca_specid") not in (None, ""):
         raise review.ReviewError("Use the MOSHPIT candidate ID for a native spectrum.")
-    base = "c.id AS candidate_id,c.moca_oid,c.source_key AS designation,c.ra_deg AS ra,c.dec_deg AS `dec`"
-    if body.get("candidate_id") not in (None, ""):
-        cid = review.integer(body["candidate_id"], "MOSHPIT candidate ID")
-        records = review.rows(cur, f"SELECT {base} FROM {TABLE} c WHERE {READY} AND c.id=%s", (cid,))
+    base = f"c.id AS candidate_id,c.moca_oid,{DESIGNATION} AS designation,c.ra_deg AS ra,c.dec_deg AS `dec`"
+    direct_id = body.get("candidate_id")
+    number = body.get("moshpit_number")
+    if direct_id not in (None, "") or number not in (None, ""):
+        if number not in (None, "") and direct_id not in (None, ""):
+            raise review.ReviewError("Choose one MOSHPIT name or candidate ID.")
+        by_name = number not in (None, "")
+        value = review.integer(number if by_name else direct_id, "MOSHPIT number" if by_name else "Candidate ID")
+        column = NUMBER if by_name else "c.id"
+        records = review.rows(cur, f"SELECT {base} FROM {TABLE} c WHERE {READY} AND {column}=%s", (value,))
         return (
             {"total": len(records)}
             if count_only

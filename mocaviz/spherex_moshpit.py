@@ -8,7 +8,7 @@ from uuid import uuid4
 from . import spherex_review as review
 from .spherex_native_fit import fit_spectrum_rows
 
-from .spherex_moshpit_queue import TABLE, READY, queue
+from .spherex_moshpit_queue import TABLE, READY, DESIGNATION, queue
 
 
 def requested(body):
@@ -46,7 +46,7 @@ def candidate(cur, cid, *, spectrum=False, lock=False):
     # Keep the write lock on the candidate alone. An OID assignment can arrive during a review.
     fields = ",c.spectrum_json,c.moca_oid,c.ra_deg,c.dec_deg,c.median_snr,c.selection_route,c.spectral_type,c.p_accept" if spectrum else ""
     found = review.rows(cur, f"""
-        SELECT c.id,c.source_key,c.spectral_review,c.review_history,SHA2(c.spectrum_json,256) AS data_revision{fields}
+        SELECT c.id,{DESIGNATION} AS designation,c.source_key,c.spectral_review,c.review_history,SHA2(c.spectrum_json,256) AS data_revision{fields}
         FROM {TABLE} c WHERE c.id=%s AND {READY}""" + (" FOR UPDATE" if lock else ""), (cid,))
     if not found:
         raise review.ReviewError("MOSHPIT candidate spectrum unavailable.", 404)
@@ -56,25 +56,24 @@ def candidate(cur, cid, *, spectrum=False, lock=False):
 def analyze(cur, body):
     row = candidate(cur, review.integer(body.get("candidate_id"), "MOSHPIT candidate ID"), spectrum=True)
     try:
-        spectrum = spectral_rows(json.loads(row["spectrum_json"]))
+        product = json.loads(row["spectrum_json"])
+        spectrum = spectral_rows(product)
     except json.JSONDecodeError:
         raise review.ReviewError("The MOSHPIT spectrum contains invalid JSON.", 422) from None
     _, revision = review_state(row)
     source = body.get("adopted_spt_source", "private")
     objects = []
-    name = row["source_key"]
     if row["moca_oid"] is not None:
         column = review.adopted_spt_column("private" if source == "survey" else source)
-        objects = review.rows(cur, f"""SELECT mo.designation,
+        objects = review.rows(cur, f"""SELECT mo.designation AS object_designation,
             COALESCE(NULLIF(TRIM(t.spectral_type),''),NULLIF(TRIM(t.complete_spectral_type),'')) AS adopted_spectral_type,
             COALESCE(NULLIF(TRIM(t.moca_pid),''),NULLIF(TRIM(t.origin),'')) AS adopted_spectral_type_reference
             FROM moca_objects mo LEFT JOIN data_spectral_types t ON t.id=(SELECT MAX(a.id)
                 FROM data_spectral_types a WHERE a.moca_oid=mo.moca_oid AND a.{column}=1 AND a.ignored=0)
             WHERE mo.moca_oid=%s AND mo.ignored=0""", (row["moca_oid"],))
-        if objects and objects[0]["designation"]:
-            name = objects[0]["designation"]
     meta = {"candidate_id": row["id"], "moca_oid": row["moca_oid"], "moca_specid": None,
-            "designation": name, "ra": row["ra_deg"], "dec": row["dec_deg"], "object_origin": "MOSHPIT native DR1",
+            "designation": row["designation"], "n_measured_channels": sum(not p["ignored"] for p in spectrum),
+            "n_total_channels": len(product["wavelength_um"]), "ra": row["ra_deg"], "dec": row["dec_deg"], "object_origin": "MOSHPIT native DR1",
             "source_key": row["source_key"], "selection_route": row["selection_route"], "selection_type": row["spectral_type"],
             "median_snr_per_pix": row["median_snr"], "spectral_cnn_probability": row["p_accept"]}
     if objects:
