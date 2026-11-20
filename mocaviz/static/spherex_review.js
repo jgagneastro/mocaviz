@@ -18,7 +18,7 @@
     "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "vetting-classification",
     "wiseview-score", "no-wiseview-score", "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude",
     "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids",
-    "moshpit-candidate", "moshpit-vetting", "moshpit-oids"];
+    "moshpit-candidate", "moshpit-oids"];
   let updatePresetButtons;
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
@@ -170,7 +170,10 @@
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
     const nativeInput = sample === "moshpit";
-    $("catalog-spectrum-lookup").hidden = $("catalog-queue-filters").hidden = nativeInput;
+    $("catalog-spectrum-lookup").hidden = nativeInput;
+    const surveyType = $("adopted-spt-source").querySelector('[value="survey"]');
+    if (!nativeInput && $("adopted-spt-source").value === "survey") $("adopted-spt-source").value = "private";
+    surveyType.hidden = surveyType.disabled = !nativeInput;
     $("moshpit-filters").hidden = !nativeInput;
     const nativeReview = current ? current.lane === "moshpit" : nativeInput;
     $("catalog-review-visibility").hidden = $("catalog-review-effects").hidden = nativeReview;
@@ -180,13 +183,13 @@
     $("sublime3c-psf-morphology").disabled ||= sample !== "sublime3c";
     if (sample !== cnnFilterSample) {
       catalogCnnBySample.set(cnnFilterSample, $("cnn-probability").value);
-      $("cnn-probability").value = catalogCnnBySample.get(sample) ?? (["all", "sublime2"].includes(sample) ? "0.8" : "");
+      if (sample !== "moshpit" && cnnFilterSample !== "moshpit") $("cnn-probability").value = catalogCnnBySample.get(sample) ?? (["all", "sublime2"].includes(sample) ? "0.8" : "");
       cnnFilterSample = sample;
     }
-    const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
+    const sublime2Cuts = ["all", "sublime2", "moshpit"].includes($("review-sample").value);
     $("sublime2-cuts").hidden = !sublime2Cuts;
     $("sublime2-cuts-hint").textContent = sublime2Cuts ?
-      "SUBLIME2 detection cut applies to All objects and SUBLIME2." :
+      "An enabled SUBLIME2 detection cut requires a matching catalog entry." :
       "SUBLIME2 detection cut is not applied to this sample.";
     for (const field of ["sublime2-snr", "max-sublime2-snr"]) $(field).disabled ||= !sublime2Cuts;
     $("wiseview-score").disabled ||= $("no-wiseview-score").checked;
@@ -263,7 +266,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
-    if (request.lane === "moshpit") return 23;
+    if (request.lane === "moshpit") return 24;
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
     if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
@@ -367,11 +370,12 @@
     try {
       if (!more) {
         const specid = $("specid").value.trim();
-        const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
-        const request = $("review-sample").value === "moshpit" ? {
-          lane: "moshpit", review_sample: "moshpit", candidate_id: $("moshpit-candidate").value || null,
-          pending_only: $("moshpit-vetting").value === "pending", oid_status: $("moshpit-oids").value, limit: batchSize(),
-        } : specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
+        const sublime2Cuts = ["all", "sublime2", "moshpit"].includes($("review-sample").value);
+        const native = $("review-sample").value === "moshpit";
+        const candidateId = native && $("moshpit-candidate").value;
+        const request = candidateId ? {lane:"moshpit", review_sample:"moshpit", candidate_id:candidateId,
+          adopted_spt_source:$("adopted-spt-source").value, limit:1} :
+          !native && specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
             vetting_classification: $("vetting-classification").value || null,
@@ -396,6 +400,7 @@
             min_current_fit_gap: $("current-fit-gap").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
+        if (native && !candidateId) request.oid_status = $("moshpit-oids").value;
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         if (request.min_current_fit_sptn != null && (!Number.isFinite(Number(request.min_current_fit_sptn)) ||
@@ -558,10 +563,8 @@
         return;
       }
       current = data; render(data);
-      if (data.lane !== "moshpit") {
-        motionReview.show(data, upcoming, async candidate =>
-          (await analysis(candidate, fitOptions, false, true)).object);
-      }
+      motionReview.show(data, upcoming, async candidate =>
+        (await analysis(candidate, fitOptions, false, true)).object);
       status(data.warning || "Ready to review."); updateControls();
       for (const candidate of upcoming)
         analysis(candidate, fitOptions, false, true).catch(() => {});
@@ -841,6 +844,8 @@
       $("replace").checked = preset.replace === true;
       if (!Object.hasOwn(preset, "vetting-classification")) $("vetting-classification").value = "";
       const sample = $("review-sample").value;
+      if (sample === "moshpit" && preset["moshpit-vetting"])
+        $("missing-vetting").value = preset["moshpit-vetting"] === "pending" ? "lane" : "all";
       selectMoshpitSource();
       cnnFilterSample = previousSample = sample;
       catalogCnnBySample.set(sample, $("cnn-probability").value);
@@ -925,7 +930,15 @@
       $("adopted-spt-source").value = params.get("adopted_spt_source");
     if (params.get("lane") === "moshpit" || params.has("moshpit_candidate_id")) $("review-sample").value = "moshpit";
     if (params.has("moshpit_candidate_id")) $("moshpit-candidate").value = params.get("moshpit_candidate_id");
-    if (location.pathname.endsWith("spherex-autotype")) $("moshpit-vetting").value = "all";
+    if ($("review-sample").value === "moshpit") {
+      // An explicit MOSHPIT shortcut opens the survey. Interactive source switches retain all entered cuts.
+      for (const [query, id] of Object.entries({min_abs_galactic_latitude:"galactic-latitude",
+          min_sublime2_snr:"sublime2-snr", min_cnn_probability:"cnn-probability", min_snr:"snr", max_reduced_chi2:"max-chi2"})) {
+        if (!params.has(query)) $(id).value = "";
+      }
+      if (params.get("adopted_spt_source") === "survey") $("adopted-spt-source").value = "survey";
+      if (!params.has("missing_vetting")) $("missing-vetting").value = "lane";
+    }
     selectMoshpitSource();
     previousSample = $("review-sample").value;
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
@@ -939,7 +952,7 @@
     try {
       if (auth.host !== "mocadb.ca" || auth.port !== "3306") throw new Error("These tools connect only to mocadb.ca:3306.");
       context = await api("context");
-      const nativeAvailable = context.can_write && (context.queue_filter_version ?? 0) >= 23;
+      const nativeAvailable = context.can_write && (context.queue_filter_version ?? 0) >= 24;
       for (const option of document.querySelectorAll('option[value="moshpit"]'))
         option.hidden = option.disabled = !nativeAvailable;
       if ($("review-sample").value === "moshpit" && !nativeAvailable)

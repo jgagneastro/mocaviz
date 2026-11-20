@@ -8,43 +8,11 @@ from uuid import uuid4
 from . import spherex_review as review
 from .spherex_native_fit import fit_spectrum_rows
 
-TABLE = "pcat_moshpit_candidates"
-READY = "c.origin='moshpit/native_dr1' AND c.spectrum_json IS NOT NULL"
+from .spherex_moshpit_queue import TABLE, READY, queue
 
 
 def requested(body):
     return body.get("lane") == "moshpit" or body.get("review_sample") == "moshpit"
-
-
-def queue(cur, body, count_only):
-    conditions, params = [READY], []
-    if body.get("moca_specid") is not None:
-        raise review.ReviewError("Use the MOSHPIT candidate ID for a native spectrum.")
-    cid = body.get("candidate_id")
-    if cid not in (None, ""):
-        conditions.append("c.id=%s")
-        params.append(review.integer(cid, "MOSHPIT candidate ID"))
-    else:
-        if review.boolean(body.get("pending_only"), True):
-            conditions.append("c.spectral_review IS NULL")
-        oid_status = body.get("oid_status", "all")
-        if oid_status not in ("all", "assigned", "unassigned"):
-            raise review.ReviewError("Choose a supported MOSHPIT OID filter.")
-        if oid_status != "all":
-            conditions.append("c.moca_oid IS " + ("NOT NULL" if oid_status == "assigned" else "NULL"))
-    where = " AND ".join(conditions)
-    if count_only:
-        cur.execute(f"SELECT COUNT(*) AS total FROM {TABLE} c WHERE {where}", params)
-        return cur.fetchone()
-    after = review.integer(body.get("after") or 0, "Candidate cursor", 0)
-    limit = review.integer(body.get("limit", 100), "Queue batch size", 1, 500)
-    records = review.rows(cur, f"""
-        SELECT c.id AS candidate_id, c.moca_oid, c.source_key AS designation
-        FROM {TABLE} c WHERE {where} AND c.id>%s ORDER BY c.id LIMIT %s
-    """, (*params, after, limit + 1))
-    more = len(records) > limit
-    return {"lane": "moshpit", "items": records[:limit], "has_more": more,
-            "next_after": records[limit - 1]["candidate_id"] if more else None}
 
 
 def spectral_rows(product):
@@ -92,15 +60,25 @@ def analyze(cur, body):
     except json.JSONDecodeError:
         raise review.ReviewError("The MOSHPIT spectrum contains invalid JSON.", 422) from None
     _, revision = review_state(row)
+    source = body.get("adopted_spt_source", "private")
+    objects = []
     name = row["source_key"]
     if row["moca_oid"] is not None:
-        objects = review.rows(cur, "SELECT designation FROM moca_objects WHERE moca_oid=%s AND ignored=0", (row["moca_oid"],))
+        column = review.adopted_spt_column("private" if source == "survey" else source)
+        objects = review.rows(cur, f"""SELECT mo.designation,
+            COALESCE(NULLIF(TRIM(t.spectral_type),''),NULLIF(TRIM(t.complete_spectral_type),'')) AS adopted_spectral_type,
+            COALESCE(NULLIF(TRIM(t.moca_pid),''),NULLIF(TRIM(t.origin),'')) AS adopted_spectral_type_reference
+            FROM moca_objects mo LEFT JOIN data_spectral_types t ON t.id=(SELECT MAX(a.id)
+                FROM data_spectral_types a WHERE a.moca_oid=mo.moca_oid AND a.{column}=1 AND a.ignored=0)
+            WHERE mo.moca_oid=%s AND mo.ignored=0""", (row["moca_oid"],))
         if objects and objects[0]["designation"]:
             name = objects[0]["designation"]
     meta = {"candidate_id": row["id"], "moca_oid": row["moca_oid"], "moca_specid": None,
             "designation": name, "ra": row["ra_deg"], "dec": row["dec_deg"], "object_origin": "MOSHPIT native DR1",
             "source_key": row["source_key"], "selection_route": row["selection_route"], "selection_type": row["spectral_type"],
             "median_snr_per_pix": row["median_snr"], "spectral_cnn_probability": row["p_accept"]}
+    if objects:
+        meta.update(objects[0], adopted_spt_source="private" if source == "survey" else source)
     options = review.fit_options(body)
     templates = review.template_rows(cur)
     try:

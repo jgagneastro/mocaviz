@@ -77,7 +77,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 23
+QUEUE_FILTER_VERSION = 24
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 
@@ -556,6 +556,15 @@ def queue_snr_band(body):
     return band
 
 
+def exclude_known_sql(oid):
+    return f"""NOT EXISTS (
+            SELECT 1 FROM data_spectral_types known WHERE known.moca_oid={oid}
+            AND known.ignored=0 AND known.photometric_estimate=0 AND known.spectral_type_number>=0
+            AND (known.is_public=1 OR known.public_adopted=1 OR known.calculation_method IS NULL OR known.calculation_method NOT IN
+                ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
+        )"""
+
+
 def sublime4_aperture_exists(alias):
     # A reprocessed benchmark spectrum gets an immutable revision. Select the
     # exact currently published bytes for this candidate and OID.
@@ -800,12 +809,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     if boolean(body.get("exclude_duplicates")):
         conditions.append("NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting duplicate WHERE duplicate.potential_duplicated_moca_oid=s.moca_oid AND duplicate.classification='y')")
     if boolean(body.get("no_known")):
-        conditions.append("""NOT EXISTS (
-            SELECT 1 FROM data_spectral_types known WHERE known.moca_oid=s.moca_oid
-            AND known.ignored=0 AND known.photometric_estimate=0 AND known.spectral_type_number>=0
-            AND (known.is_public=1 OR known.public_adopted=1 OR known.calculation_method IS NULL OR known.calculation_method NOT IN
-                ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype'))
-        )""")
+        conditions.append(exclude_known_sql("s.moca_oid"))
     if not mixed:
         newer = ["newer.moca_oid=s.moca_oid", "newer.moca_specpackid=s.moca_specpackid", "newer.moca_specid>s.moca_specid"]
         if native_four:

@@ -208,6 +208,25 @@ async function checkBridge() {
   assert.equal(resumed, 1);
 }
 
+function checkUnassignedCandidates() {
+  const {view, get, advance, ready} = fixture();
+  const candidate = id => ({lane:'moshpit',read_only:false,
+    object:{candidate_id:id,moca_oid:null,moca_specid:null,ra:100+id,dec:20}});
+  view.show(candidate(1)); advance(300);
+  const first = get('motion-frame');
+  ready(first);
+  view.show(candidate(2)); advance(300);
+  const next = get('motion-frame');
+  assert.equal(coordinate(first),101);
+  assert.equal(coordinate(next),102);
+  assert.notEqual(token(first),token(next));
+  ready(first);
+  assert.equal(get('motion-status').textContent,'Loading WiseView cutout…');
+  ready(next);
+  assert.equal(get('motion-status').textContent,'WiseView loaded.');
+  assert.equal(get('motion-save').disabled,true);
+}
+
 async function checkQueuedCoordinates() {
   const {view, advance, ready, frames} = fixture(true);
   const pending = [];
@@ -228,6 +247,7 @@ async function checkQueuedCoordinates() {
 
 (async () => {
   checkCurrentLifecycle();
+  checkUnassignedCandidates();
   checkSequentialLoading();
   checkCaps();
   await checkBridge();

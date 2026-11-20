@@ -27,8 +27,8 @@
   <script defer src="static/spherex_review_plot.js?v=20261103-single-lane"></script>
   <script defer src="static/review_presets.js?v=4"></script>
   <link rel="stylesheet" href="static/spherex_motion.css?v=20261115-motion-v1">
-  <script defer src="static/spherex_motion.js?v=20261117-motion-score-six"></script>
-  <script defer src="static/spherex_review.js?v=20261120-moshpit"></script>
+  <script defer src="static/spherex_motion.js?v=20261120-moshpit-motion"></script>
+  <script defer src="static/spherex_review.js?v=20261120-shared-filters"></script>
 </head>
 <body>
   <header>
@@ -68,7 +68,7 @@
         <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime3c">SUBLIME3C</option><option value="sublime4">SUBLIME4</option><option value="moshpit" hidden disabled>MOSHPIT</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
         <div id="moshpit-filters" hidden>
           <label>MOSHPIT candidate ID<input id="moshpit-candidate" type="number" min="1" step="1" placeholder="All candidates"></label>
-          <label>Spectral review<select id="moshpit-vetting"><option value="pending">Unreviewed</option><option value="all">All candidates</option></select></label>
+          <small>MOSHPIT covers |b| ≤ 5°. An absolute-latitude minimum above 5° excludes the survey. The stored χ² cut uses the archived survey template.</small>
           <label>OID assignment<select id="moshpit-oids"><option value="all">All candidates</option><option value="unassigned">Awaiting OID</option><option value="assigned">Assigned OID</option></select></label>
         </div>
         <div id="catalog-queue-filters">
@@ -85,9 +85,9 @@
           </select></label>
           <small>Optional image-shape filter, separate from spectral selection. Passing means a measured PSF pass in the deep or very-red map. Undefined includes missing or inconclusive measurements. Uses this native cube detection; other lanes use the latest active native cube detection for the object. Reload the queue to apply.</small>
         </div>
-        <label>Adopted SPT source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option></select></label>
+        <label>Spectral type source<select id="adopted-spt-source"><option value="private" selected>Private-adopted</option><option value="public">Public-adopted</option><option value="survey" hidden disabled>MOSHPIT survey fit</option></select></label>
         <small>Used for type filtering, queue order and the SPT beside the object name. Public UCD candidates automatically selects public. Load a queue to apply changes.</small>
-        <label>Queue order<select id="queue-order"><option value="gal_cnn_snr_bin_spt" selected>Latitude → CNN → S/N bin ↓ → type ↓</option><option value="snr_bin_spt">S/N bin ↓ → type ↓</option><option value="gal_cnn_spt_snr">Latitude → CNN → type ↓ → S/N ↓</option><option value="cnn_spt_snr">CNN → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest adopted type</option><option value="spt_asc">Earliest → latest adopted type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
+        <label>Queue order<select id="queue-order"><option value="gal_cnn_snr_bin_spt" selected>Latitude → CNN → S/N bin ↓ → type ↓</option><option value="snr_bin_spt">S/N bin ↓ → type ↓</option><option value="gal_cnn_spt_snr">Latitude → CNN → type ↓ → S/N ↓</option><option value="cnn_spt_snr">CNN → rounded subtype ↓ → S/N ↓</option><option value="spt_desc">Exact latest → earliest type</option><option value="spt_asc">Earliest → latest type</option><option value="oid_asc">Object ID: ascending</option><option value="oid_desc">Object ID: descending</option></select></label>
         <label>CNN priority source<select id="cnn-priority-source"><option value="combined" selected>Mean of available CNN probabilities</option><option value="spectral">Spectral autotype CNN</option><option value="sublime2">SUBLIME2 catalog CNN</option></select></label>
         <small>Default CNN priority averages the spectral and SUBLIME2 catalog probabilities when both exist, otherwise uses the available one. Both missing stays in the lower-priority bin.</small>
         <small>First |gb| &gt;15°, then 10° &lt; |gb| ≤15°, then |gb| ≤10°; unavailable latitude last. Within each band: selected CNN P(good) ≥80% first, then &lt;80% or unavailable; then one-unit bins of median spectrum S/N/pix at 1–2 µm, highest first. Within each S/N bin, later rounded adopted subtypes come first, followed by exact S/N to break ties. Missing S/N sorts last in its CNN bin, and missing types sort last in their S/N bin. The minimum-latitude filter still applies. The S/N-bin-only order skips latitude and CNN grouping.</small>
@@ -110,8 +110,8 @@
         </div>
         <label>Stored autotype reduced χ² ≤<input id="max-chi2" title="Latest stored fit for this spectrum; prefers robust 10% capped reduced chi squared, then capped, then raw." type="number" min="0" step="any" value="1.5" placeholder="Any"></label>
         <small>Spectrum cuts use the selected reduction lane. Blank = no cut; missing values fail enabled cuts.</small>
-        <label><span tabindex="0" title="Uses the selected private- or public-adopted spectral type, excluding ignored rows.">Adopted type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
-        <small>The adopted type is stored for the object; it can differ from this spectrum's current fit.</small>
+        <label><span tabindex="0" title="Uses the selected spectral type source.">Selected type ≥ ⓘ</span><input id="sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
+        <small>A private- or public-adopted type belongs to the object. The MOSHPIT survey fit also covers candidates awaiting an OID.</small>
         <label>Current fitted type ≥<input id="current-fit-sptn" type="number" min="-60" max="40" step="0.5" placeholder="10 = L0"></label>
         <small>Checked against the best fit shown in the plot, using the current template-fit settings. Earlier or unavailable fits are skipped without saving a vetting. Blank allows all. Direct spectrum-ID loads bypass queue cuts.</small>
         <label>Native DR1 early/late fit separation ≥<input id="current-fit-gap" type="number" step="any" placeholder="2 for SUBLIME3C"></label>

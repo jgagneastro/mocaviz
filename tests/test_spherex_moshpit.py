@@ -16,6 +16,9 @@ class CandidateInputTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.row_factory = lambda cur, row: dict(zip((col[0] for col in cur.description), row))
         self.db.create_function("SHA2", 2, lambda s, bits: hashlib.sha256(s.encode()).hexdigest())
+        import zlib
+        self.db.create_function("COMPRESS", 1, lambda s: len(s).to_bytes(4, "little")+zlib.compress(s.encode()))
+        self.db.create_function("JSON_VALUE", 2, lambda s,k: json.loads(s).get(k[2:]))
         self.db.executescript("""
             CREATE TABLE pcat_moshpit_candidates(id INTEGER PRIMARY KEY,source_key TEXT,origin TEXT,moca_oid INTEGER,
                 ra_deg REAL,dec_deg REAL,spectral_type TEXT,selection_route TEXT,median_snr REAL,p_accept REAL,
@@ -23,9 +26,22 @@ class CandidateInputTests(unittest.TestCase):
             CREATE TABLE moca_changelog(user TEXT,modified_tables TEXT,nrows_modified INTEGER,user_description TEXT,is_public INTEGER,rls TEXT);
             CREATE TABLE moca_objects(moca_oid INTEGER,designation TEXT,ignored INTEGER);
             INSERT INTO moca_objects VALUES(42,'Known L dwarf',0);
+            CREATE TABLE data_spectral_types(id INTEGER,moca_oid INTEGER,spectral_type TEXT,complete_spectral_type TEXT,moca_pid TEXT,origin TEXT,adopted INTEGER,public_adopted INTEGER,ignored INTEGER,spectral_type_number REAL,photometric_estimate INTEGER,is_public INTEGER,calculation_method TEXT);
+            INSERT INTO data_spectral_types VALUES(1,42,'L3','L3','Ref1','test',1,0,0,13,0,1,NULL);
+            CREATE TABLE moca_spherex_templates(moca_spherex_template_id INTEGER,spectral_type_number REAL,spectral_type TEXT);
+            INSERT INTO moca_spherex_templates VALUES(1,13,'L3');
+            CREATE TABLE pcat_sublime_candidates_v2(moca_oid INTEGER,detection_snr REAL,visual_nn_good_probability REAL);
+            INSERT INTO pcat_sublime_candidates_v2 VALUES(42,9,.7);
+            CREATE TABLE pcat_wiseview_visual_vetting(id INTEGER,moca_oid INTEGER,classification TEXT,classification_integer REAL,comments TEXT,reviewer TEXT,ra_deg REAL,dec_deg REAL,wiseview_url TEXT,source_table TEXT,origin TEXT,modified_timestamp TEXT);
+            INSERT INTO pcat_wiseview_visual_vetting(id,moca_oid,classification_integer) VALUES(1,42,5);
+            CREATE TABLE pcat_duplicated_vetting(potential_duplicated_moca_oid INTEGER,classification TEXT);
+            CREATE TABLE pcat_spherex_visual_vetting(moca_oid INTEGER,classification TEXT);
+            CREATE TABLE pcat_spherex_spiffstacker_visual_vetting(moca_oid INTEGER,classification TEXT);
+            CREATE TABLE pcat_spherex_sublimeaperture_visual_vetting(moca_oid INTEGER,classification TEXT);
+            INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(42,'good');
         """)
         wave = [1 + x / 8 for x in range(16)]
-        product = json.dumps({"wavelength_um": wave, "flux_ujy": [-1, None] + [4 + i for i in range(14)], "error_ujy": [1] * 16})
+        product = json.dumps({"wavelength_um": wave, "flux_ujy": [-1, None] + [4 + i for i in range(14)], "error_ujy": [1] * 16, "template_id":1, "template_ujy":[-1,None]+[4+i for i in range(14)]})
         self.db.executemany("INSERT INTO pcat_moshpit_candidates VALUES(?,?,?, ?,20,30,'L3','catalog_first',7,.91,?,?,NULL)",
             [(1,"mp:A","moshpit/native_dr1",None,product,None), (2,"mp:B","moshpit/native_dr1",42,product,None),
              (3,"mp:C","moshpit/native_dr1",42,product,"good"), (4,"mp:D","injection",None,product,None),
@@ -104,3 +120,54 @@ class CandidateInputTests(unittest.TestCase):
         self.assertEqual([v["lane"] for v in json.loads(row["review_history"])],["spectral","cutout","spectral"])
         self.assertEqual(self.api("undo",{"receipt":submitted["undo_receipt"]}).status_code,409)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM moca_changelog").fetchone()["n"],2)
+
+    def test_shared_filters_and_all_orders(self):
+        base = {"lane":"moshpit","missing_vetting":"all","limit":1}
+        for order in sorted(review.metrics.PRIORITY_ORDERS | {"oid_asc","oid_desc","spt_asc","spt_desc"}):
+            q = dict(base, queue_order=order)
+            ids = []
+            while True:
+                page = self.api("queue",q).get_json()
+                self.assertTrue(page["ok"],page)
+                ids.extend(r["candidate_id"] for r in page["items"])
+                if not page["has_more"]:
+                    break
+                q["after"] = page["next_after"]
+            self.assertEqual(sorted(ids), [1,2,3])
+            if order in ("oid_asc","oid_desc","spt_asc","spt_desc"):
+                self.assertEqual(ids, [2,3,1])
+        for opts, expected in [
+            ({"min_sptn":10},2), ({"adopted_spt_source":"public","min_sptn":10},0),
+            ({"adopted_spt_source":"survey","min_sptn":10},3),
+            ({"min_spectral_cnn_probability":.95},0), ({"moca_oids":[42]},2),
+            ({"adopted_spt_moca_pids":["Ref1"]},2), ({"no_known":True},1),
+            ({"no_wiseview_score":True},1), ({"min_wiseview_score":5},2),
+            ({"exclude_duplicates":True},3), ({"vetting_classification":"good"},1),
+            ({"missing_vetting":"both"},1), ({"missing_vetting":"viable_elsewhere"},1),
+            ({"min_abs_galactic_latitude":88},0),
+            ({"snr_wavelength_range":"4-5","min_snr":0},0),
+            ({"snr_wavelength_range":"1-2.5","max_snr":0},0),
+            ({"min_snr":3,"max_snr":20,"snr_wavelength_range":"1-2.5"},3),
+            ({"max_reduced_chi2":1},3), ({"min_sublime2_snr":8,"min_cnn_probability":.5},2),
+        ]:
+            with self.subTest(opts=opts):
+                q = {**base, **opts, "queue_order":"snr_bin_spt","limit":10}
+                self.assertEqual(self.api("queue-count",q).get_json()["total"],expected)
+                self.assertEqual(len(self.api("queue",q).get_json()["items"]),expected)
+        bypass = {**base,"candidate_id":1,"min_snr":10000,"oid_status":"assigned"}
+        self.assertEqual(self.api("queue",bypass).get_json()["items"][0]["candidate_id"],1)
+
+    def test_motion_requires_current_oid_and_uses_candidate_position(self):
+        base = {"lane":"moshpit","candidate_id":2,"moca_oid":42}
+        context = self.api("motion-context",base).get_json()
+        self.assertEqual(context["object"]["ra"],20)
+        self.assertIsNone(context["object"]["moca_specid"])
+        body = {**base,"classification":context["choices"][0]["key"],"revision":context["revision"],"allow_replace":True}
+        plan = self.api("motion-preview", body).get_json()["plan"]
+        self.assertEqual(plan["row"]["source_table"],"pcat_moshpit_candidates")
+        self.assertEqual(plan["object"]["candidate_id"],2)
+        self.assertEqual(self.api("motion-context",{**base,"moca_oid":24}).status_code,409)
+        unlinked = {"lane":"moshpit","candidate_id":1,"moca_oid":None}
+        preview = self.api("motion-context", unlinked).get_json()
+        self.assertEqual(preview["object"]["dec"],30)
+        self.assertEqual(self.api("motion-preview",{**body,**unlinked,"revision":preview["revision"]}).status_code,409)

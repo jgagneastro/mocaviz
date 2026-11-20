@@ -46,7 +46,19 @@ def snapshot(cur, oid, lock=False):
     return sr.clean(rows[0]) if rows else None
 
 
-def target(cur, body):
+def target(cur, body, *, lock=False):
+    if body.get("lane") == "moshpit":
+        from .spherex_moshpit_queue import TABLE as candidate_table, READY
+        cid = sr.integer(body.get("candidate_id"), "MOSHPIT candidate ID")
+        records = sr.rows(cur, f"""SELECT c.id AS candidate_id,c.moca_oid,c.ra_deg AS ra,c.dec_deg AS `dec`,
+            c.source_key AS designation FROM {candidate_table} c WHERE c.id=%s AND {READY}"""
+            + (" FOR UPDATE" if lock else ""), (cid,))
+        if not records:
+            raise sr.ReviewError("MOSHPIT candidate unavailable.", 404)
+        obj = records[0]
+        if obj["moca_oid"] != body.get("moca_oid"):
+            raise sr.ReviewError("The candidate's OID changed. Reload the spectrum.", 409)
+        return {**obj, "lane":"moshpit", "moca_specid":None}
     lane_key, lane = sr.lane_for(body)
     oid = sr.integer(body.get("moca_oid"), "moca_oid")
     specid = sr.integer(body.get("moca_specid"), "moca_specid")
@@ -83,7 +95,7 @@ def choices():
 
 def context(cur, body):
     obj = target(cur, body)
-    state = snapshot(cur, obj["moca_oid"])
+    state = snapshot(cur, obj["moca_oid"]) if obj["moca_oid"] is not None else None
     return {
         "object": obj,
         "review": state,
@@ -103,6 +115,8 @@ def text_field(body, name, limit):
 def prepare(cur, auth, body):
     sr.require_management(auth)
     item = context(cur, body)
+    if item["object"]["moca_oid"] is None:
+        raise sr.ReviewError("This candidate awaits an OID for its object-level motion review.", 409)
     if body.get("revision") != item["revision"]:
         raise sr.ReviewError(
             "The position or motion review changed. Reload motion before saving.", 409
@@ -128,10 +142,12 @@ def prepare(cur, auth, body):
         "ra_deg": obj["ra"],
         "dec_deg": obj["dec"],
         "wiseview_url": wiseview_url(obj["ra"], obj["dec"]),
-        "source_table": "moca_spectra",
+        "source_table": "pcat_moshpit_candidates" if obj["lane"] == "moshpit" else "moca_spectra",
         "origin": "mocaviz/spherex_motion.py: human review; lane=%s; moca_specid=%s"
         % (obj["lane"], obj["moca_specid"]),
     }
+    if obj["lane"] == "moshpit":
+        row["origin"] = f"mocaviz/spherex_motion.py: human review; MOSHPIT candidate={obj['candidate_id']}"
     plan = {"version": VERSION, "object": obj, "revision": item["revision"], "row": row}
     return {
         "dry_run": True,
@@ -170,7 +186,7 @@ def submit(conn, cur, auth, body):
         raise sr.ReviewError("Motion policy changed; reload motion before saving.", 409)
     obj = plan["object"]
     sr.lock_object(cur, obj["moca_oid"])
-    current = target(cur, obj)
+    current = target(cur, obj, lock=True)
     before = snapshot(cur, obj["moca_oid"], lock=True)
     if revision(current, before) != plan["revision"]:
         raise sr.ReviewError(

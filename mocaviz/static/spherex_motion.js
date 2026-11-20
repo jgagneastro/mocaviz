@@ -3,7 +3,7 @@
   'use strict';
   const MAX_TARGETS = 50, MAX_BYTES = 1_000_000_000, FRAME_OVERHEAD = 16 * 1024 ** 2;
   const LOAD_TIMEOUT = 30000;
-  const key = object => object.moca_oid + ":" + object.moca_specid;
+  const key = object => object.candidate_id != null ? 'moshpit:' + object.candidate_id : object.moca_oid + ':' + object.moca_specid;
   const hasCoordinates = object => Number.isFinite(object?.ra) && Number.isFinite(object?.dec);
   window.SpherexMotionReview = {create({api, writable, base, demo, preload = false}) {
     const $ = id => document.getElementById(id);
@@ -14,8 +14,7 @@
     const panel = $('motion-panel'), template = $('motion-frame');
     const classification = $('motion-classification'), scoreSix = $('motion-score-six');
     const sixChoice = () => context?.choices?.find(choice => choice.score === 6);
-    const same = object => current && Number(current.object.moca_oid) === Number(object.moca_oid) &&
-      Number(current.object.moca_specid) === Number(object.moca_specid);
+    const same = object => current && key(current.object) === key(object) && current.object.moca_oid === object.moca_oid;
     function update() {
       const ready = !!context && !busy && !closed && writable() && !current?.read_only;
       $('motion-save').disabled = !ready || !$('motion-classification').value ||
@@ -188,13 +187,13 @@
       void preloadNext();
     });
     async function refreshContext() {
-      if (!current || current.read_only || closed) return;
+      if (!current || current.read_only || current.object.moca_oid == null || closed) return;
       const gen = generation, item = current;
       context = null; update();
       $('motion-stored').textContent = 'Loading existing motion review…';
       try {
         const result = await api('motion-context', {lane:item.lane,
-          moca_oid:item.object.moca_oid, moca_specid:item.object.moca_specid});
+          moca_oid:item.object.moca_oid, moca_specid:item.object.moca_specid, candidate_id:item.object.candidate_id});
         if (gen !== generation || closed) return;
         if (result.motion_policy_version !== 1 || !same(result.object))
           throw new Error('Motion response does not match this spectrum. Reload the reviewer.');
@@ -217,8 +216,9 @@
       if (closed || same(data.object)) return;
       if (current) clear([data.object, ...next]);
       current = data; upcoming = next; resolveObject = lookup; panel.hidden = false;
-      $('motion-target').textContent = (data.object.designation || 'Object') + ' · OID ' + data.object.moca_oid;
-      if (data.read_only) $('motion-stored').textContent = 'Read-only spectrum; motion submissions are disabled.';
+      $('motion-target').textContent = (data.object.designation || 'Object') + (data.object.moca_oid == null ? ' · awaiting OID' : ' · OID ' + data.object.moca_oid);
+      if (data.object.moca_oid == null) $('motion-stored').textContent = 'An OID is required to save an object-level motion score.';
+      else if (data.read_only) $('motion-stored').textContent = 'Read-only spectrum; motion submissions are disabled.';
       if (cache.has(key(data.object))) loadFrame();
       else scheduleFrame();
       void refreshContext(); update();

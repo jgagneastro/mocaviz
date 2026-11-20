@@ -67,6 +67,10 @@ In Vetting or SPHEREx Autotype, choose **MOSHPIT** under **Review sample** and s
 
 The private management connection reads signed measurements and uncertainties directly from `pcat_moshpit_candidates.spectrum_json`. The queue includes detections awaiting OIDs and can filter on OID assignment or pending spectral review. The header shows the campaign type and selection route beside the independent native DR1 template fit. Quality decisions and undo use the candidate ID and update its `spectral_review` and `review_history`. The object-report shortcut becomes available once the watcher assigns an OID.
 
+MOSHPIT uses the shared S/N bands, all queue orders, classification filters and current-fit cuts. Select **MOSHPIT survey fit** as the spectral type source to order or filter candidates before an adopted object type exists. The ordering S/N is the signed median at 1–2 µm. The stored χ² cut evaluates the archived survey template with the native reviewer's 10% uncertainty floor and 5σ cap. Object-level constraints use the linked OID. The latitude filter uses the candidate coordinates. Choosing another input keeps the shared controls visible.
+
+The embedded WiseView animation uses the MOSHPIT coordinates for every candidate. Object-level motion scores use the existing WiseView review once an OID has been assigned.
+
 ## Workflows and data
 
 | Lane | Reduced spectrum pack | Vetting table | Autotype calculation method |

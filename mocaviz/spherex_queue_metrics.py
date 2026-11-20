@@ -84,7 +84,7 @@ def coarse_key(row, order):
     return key if order == SNR_BIN_ORDER else key + descending(row['sort_subtype'])
 
 
-def priority_key(row, order):
+def priority_rank(row, order):
     snr = row.get('sort_snr_1_2')
     key = coarse_key(row, order)
     if order in (SNR_BIN_ORDER, SNR_TYPE_ORDER):
@@ -92,7 +92,11 @@ def priority_key(row, order):
         # same bin from the cursor's median when paging.
         key += descending(floor(snr) if snr is not None else None)
         key += descending(row['sort_subtype'])
-    return key + descending(snr) + (row['moca_oid'], row.get('moca_specid', 0))
+    return key + descending(snr)
+
+
+def priority_key(row, order):
+    return priority_rank(row, order) + (row['moca_oid'], row.get('moca_specid', 0))
 
 
 def plain_key(row, order):
