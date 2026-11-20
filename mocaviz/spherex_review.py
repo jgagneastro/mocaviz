@@ -77,7 +77,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 22
+QUEUE_FILTER_VERSION = 23
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 
@@ -327,6 +327,12 @@ def dataset(cur, lane, oid, specid, *, adopted_spt_source="private"):
         SELECT id AS data_spectra_id, wavelength_angstrom, flux_flambda, flux_flambda_unc, ignored
         FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom, id LIMIT 10001
     """, (specid,))
+    if len(spectrum) > 10000:
+        raise ReviewError("The spectrum exceeds this interactive tool's size limit.")
+    return meta, spectrum, template_rows(cur)
+
+
+def template_rows(cur):
     templates = rows(cur, """
         SELECT t.moca_spherex_template_id, t.spectral_type, t.spectral_type_number, t.grid_type,
                dt.wavelength_angstrom, dt.flux_flambda
@@ -337,9 +343,9 @@ def dataset(cur, lane, oid, specid, *, adopted_spt_source="private"):
           AND t.spectral_type IS NOT NULL AND t.spectral_type_number IS NOT NULL
         ORDER BY t.moca_spherex_template_id, dt.wavelength_angstrom LIMIT 200001
     """)
-    if len(spectrum) > 10000 or len(templates) > 200000:
+    if len(templates) > 200000:
         raise ReviewError("The spectrum/template grid exceeds this interactive tool's size limit.")
-    return meta, spectrum, templates
+    return templates
 
 
 def stored_spectral_cnn(state, specid):
@@ -1045,6 +1051,9 @@ def submit(conn, cur, auth, body):
     plan = unseal(auth, body.get("receipt"), "plan")
     if plan.get("write_policy_version") != WRITE_POLICY_VERSION:
         raise ReviewError("The classification flag policy changed. Reload this object and preview it again.", 409)
+    if plan.get("lane") == "moshpit":
+        from .spherex_moshpit import apply_review
+        return apply_review(conn, cur, auth, plan)
     _, lane = lane_for(plan)
     oid, specid = plan["moca_oid"], plan["moca_specid"]
     lock_object(cur, oid)
@@ -1097,6 +1106,9 @@ def submit(conn, cur, auth, body):
 
 def undo(conn, cur, auth, body):
     saved = unseal(auth, body.get("receipt"), "undo")
+    if saved.get("lane") == "moshpit":
+        from .spherex_moshpit import apply_review
+        return apply_review(conn, cur, auth, saved, undo=True)
     _, lane = lane_for(saved)
     oid, specid = saved["moca_oid"], saved["moca_specid"]
     lock_object(cur, oid)
@@ -1195,7 +1207,7 @@ def motion_frame():
 
 @review.post("/api/spherex-review/<operation>")
 def api(operation):
-    from . import spherex_motion as motion
+    from . import spherex_moshpit as moshpit, spherex_motion as motion
     motion_writes = {"motion-preview", "motion-submit", "motion-undo"}
     try:
         if not request.is_json:
@@ -1213,6 +1225,8 @@ def api(operation):
         if operation not in {"context", "queue", "queue-count", "analyze", "preview", "submit", "undo", "motion-context", *motion_writes}:
             raise ReviewError("Unknown review operation.", 404)
         if mock:
+            if moshpit.requested(body):
+                raise ReviewError("MOSHPIT spectra require the private reviewer.", 403)
             if operation in {"preview", "submit", "undo", *motion_writes}:
                 raise ReviewError("Demo results cannot be written to MOCAdb.", 403)
             if operation == "context":
@@ -1239,12 +1253,21 @@ def api(operation):
                 result = demo_item(body)
         else:
             auth = credentials()
+            native_input = moshpit.requested(body)
+            if native_input and auth["user"] != "management":
+                raise ReviewError("MOSHPIT spectra require management access.", 403)
             if operation in {"preview", "submit", "undo", *motion_writes}:
                 require_management(auth)
             with connection(auth) as (conn, cur):
                 if operation == "context":
                     result = {"role": auth["user"], "can_write": auth["user"] == "management",
                               "lanes": LANES, "classifications": CLASSIFICATIONS}
+                elif native_input and operation in {"queue", "queue-count"}:
+                    result = moshpit.queue(cur, body, operation == "queue-count")
+                elif native_input and operation == "analyze":
+                    result = moshpit.analyze(cur, body)
+                elif native_input and operation == "preview":
+                    result = moshpit.prepare(cur, auth, body)
                 elif operation in {"queue", "queue-count"}:
                     result = queue(cur, body, count_only=operation == "queue-count", management=auth["user"] == "management")
                 elif operation == "analyze":

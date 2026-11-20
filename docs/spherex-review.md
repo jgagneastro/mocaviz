@@ -61,6 +61,12 @@ Refitting remains available, but classification, write previews, saving spectral
 types and flagging pixels are disabled. The server rejects write previews for
 these spectra and continues to verify package membership on submission and undo.
 
+## MOSHPIT candidate input
+
+In Vetting or SPHEREx Autotype, choose **MOSHPIT** under **Review sample** and select **Load spectrum / queue**. The reduction selector also accepts **MOSHPIT native DR1**. The deep link is `/spherex-autotype?review_sample=moshpit`. To open one detection, use its **MOSHPIT candidate ID** or append `&moshpit_candidate_id=ID`.
+
+The private management connection reads signed measurements and uncertainties directly from `pcat_moshpit_candidates.spectrum_json`. The queue includes detections awaiting OIDs and can filter on OID assignment or pending spectral review. The header shows the campaign type and selection route beside the independent native DR1 template fit. Quality decisions and undo use the candidate ID and update its `spectral_review` and `review_history`. The object-report shortcut becomes available once the watcher assigns an OID.
+
 ## Workflows and data
 
 | Lane | Reduced spectrum pack | Vetting table | Autotype calculation method |

@@ -17,7 +17,8 @@
   const queueFilterFields = ["lane", "review-sample", "sublime3c-selection-pass", "sublime3c-priority-high", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids",
     "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "vetting-classification",
     "wiseview-score", "no-wiseview-score", "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude",
-    "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids"];
+    "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids",
+    "moshpit-candidate", "moshpit-vetting", "moshpit-oids"];
   let updatePresetButtons;
   let cnnFilterSample = "all";
   const catalogCnnBySample = new Map();
@@ -44,8 +45,11 @@
         try {
           const data = await api("analyze", {...job.item, lane: job.lane, options: job.options,
             adopted_spt_source: job.adoptedSptSource});
-          if (Number(data.object?.moca_specid) !== Number(job.item.moca_specid) ||
-              Number(data.object?.moca_oid) !== Number(job.item.moca_oid) ||
+          const sameSpectrum = job.lane === "moshpit"
+            ? data.lane === "moshpit" && data.object?.candidate_id === job.item.candidate_id
+            : Number(data.object?.moca_specid) === Number(job.item.moca_specid) &&
+              Number(data.object?.moca_oid) === Number(job.item.moca_oid);
+          if (!sameSpectrum ||
               (job.item.lane && data.lane !== job.lane) ||
               typeof data.read_only !== "boolean" || !Object.hasOwn(data.object, "spectral_cnn_probability")) {
             throw new Error("The server returned a different spectrum or an outdated response. " +
@@ -83,7 +87,9 @@
       if (!other) status("Submission for moca_oid=" + job.item.moca_oid + " saved.");
     }
   }
-  function key(item, lane = item.lane ?? queueLane) { return lane + ":" + item.moca_oid + ":" + item.moca_specid; }
+  function key(item, lane = item.lane ?? queueLane) {
+    return lane === "moshpit" ? "moshpit:" + item.candidate_id : lane + ":" + item.moca_oid + ":" + item.moca_specid;
+  }
   function pendingCount() { return jobs.filter((j) => ["queued", "submitting"].includes(j.state)).length; }
   function failedCount() { return jobs.filter(job => job.state === "failed").length; }
   function moveToSubmissionTail(job) {
@@ -131,6 +137,24 @@
   function policyReady() { return (context?.write_policy_version ?? 0) >= 1; }
   function writable() { return Boolean(policyReady() && context?.can_write && $("write-enabled").checked && !closed && !busyUndo); }
   function canReview() { return Boolean(current && !current.read_only); }
+  let catalogLane = $("lane").value;
+  function selectMoshpitSource() {
+    const native = $("review-sample").value === "moshpit";
+    if (native && $("lane").value !== "moshpit") {
+      catalogLane = $("lane").value;
+      $("lane").value = "moshpit";
+    } else if (!native && $("lane").value === "moshpit") {
+      $("lane").value = catalogLane;
+    }
+  }
+  $("lane").addEventListener("change", () => {
+    const native = $("lane").value === "moshpit";
+    if (native !== ($("review-sample").value === "moshpit")) {
+      $("review-sample").value = native ? "moshpit" : "all";
+      $("review-sample").dispatchEvent(new Event("change"));
+    }
+    if (!native) catalogLane = $("lane").value;
+  });
   function updateControls() {
     const pending = pendingCount();
     updateUploadStatus();
@@ -145,6 +169,11 @@
       $(name).disabled = closed || busyUndo || loading || pending > 0;
     $("sample-hint").hidden = $("review-sample").value !== "public-ucd";
     const sample = $("review-sample").value;
+    const nativeInput = sample === "moshpit";
+    $("catalog-spectrum-lookup").hidden = $("catalog-queue-filters").hidden = nativeInput;
+    $("moshpit-filters").hidden = !nativeInput;
+    const nativeReview = current ? current.lane === "moshpit" : nativeInput;
+    $("catalog-review-visibility").hidden = $("catalog-review-effects").hidden = nativeReview;
     $("sublime3c-selection-controls").hidden = sample !== "sublime3c";
     $("sublime3c-selection-pass").disabled ||= sample !== "sublime3c";
     $("sublime3c-priority-high").disabled ||= sample !== "sublime3c";
@@ -166,19 +195,20 @@
     if (current?.read_only) $("write-enabled").checked = false;
     $("write-enabled").disabled = !context?.can_write || !policyReady() || current?.read_only || closed;
     $("preview").disabled = !context?.can_write || !policyReady() || !canReview() || closed;
-    $("save-type").disabled = !writable() || !canReview() || !current?.fit;
-    $("bad-pixels").disabled = !writable() || !canReview() || !current?.fit?.bad_pixel_ids?.length;
+    $("save-type").disabled = current?.lane === "moshpit" || !writable() || !canReview() || !current?.fit;
+    $("bad-pixels").disabled = current?.lane === "moshpit" || !writable() || !canReview() || !current?.fit?.bad_pixel_ids?.length;
     $("undo").disabled = !history.length || busyUndo || loading || closed;
     $("refit").disabled = !current || loading || closed;
     for (const name of ["first", "previous", "next", "last"]) $(name).disabled = loading || closed;
     $("retry").disabled = !writable() || failed === 0;
-    $("report").disabled = !current || closed;
+    $("report").disabled = !current?.object.moca_oid || closed;
     $("wiseview").disabled = !current || !Number.isFinite(current.object.ra) || !Number.isFinite(current.object.dec) || closed;
     document.querySelectorAll("#classifications button").forEach((b) => {
       b.disabled = !writable() || !canReview() || hidden.has(key(current.object, current.lane));
     });
     $("write-hint").textContent = demo ? "Demonstration only — database writes are disabled." :
       context?.can_write && !policyReady() ? "Restart the review service and reload to enable automatic photometric/ignored flags." :
+      current?.lane === "moshpit" ? "Spectral quality is saved on this MOSHPIT candidate. Undo restores its previous label." :
       current?.read_only ? "Read-only spectrum: outside SPIFF, SPIFFStacker and SUBLIMEaperture. Template fitting is available; database writes are disabled." :
       writable() ? "Choose a quality label to submit and advance immediately. Undo restores the last decision." :
       context?.can_write ? "Enable submissions to classify. Preview is available without enabling writes." :
@@ -233,6 +263,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
+    if (request.lane === "moshpit") return 23;
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
     if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
@@ -315,6 +346,7 @@
       $("current-fit-sptn").value = otherSampleFitMinimum;
       $("current-fit-gap").value = otherSampleFitGap;
     }
+    selectMoshpitSource();
     previousSample = $("review-sample").value;
     updateControls();
   });
@@ -336,7 +368,10 @@
       if (!more) {
         const specid = $("specid").value.trim();
         const sublime2Cuts = ["all", "sublime2"].includes($("review-sample").value);
-        const request = specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
+        const request = $("review-sample").value === "moshpit" ? {
+          lane: "moshpit", review_sample: "moshpit", candidate_id: $("moshpit-candidate").value || null,
+          pending_only: $("moshpit-vetting").value === "pending", oid_status: $("moshpit-oids").value, limit: batchSize(),
+        } : specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
             vetting_classification: $("vetting-classification").value || null,
@@ -368,7 +403,7 @@
           throw new Error("Current fitted type must be a number from -60 to 40.");
         if (request.min_current_fit_gap != null && !Number.isFinite(Number(request.min_current_fit_gap)))
           throw new Error("Native DR1 fit separation must be a finite number.");
-        queueLane = $("lane").value;
+        queueLane = request.lane || $("lane").value;
         queueRequest = request; autoNextAttempt = null;
         hidden.clear(); fitHidden.clear();
         for (const job of jobs) {
@@ -407,7 +442,7 @@
         autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
       $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
         (data.read_only ? " · read only" : " · " + queueLane) :
-        items.length + (queueLane === "all" ? " spectra loaded" : " objects loaded") +
+        items.length + (queueLane === "moshpit" ? " candidates loaded" : queueLane === "all" ? " spectra loaded" : " objects loaded") +
           (hasMore ? " · more available" : " · end of queue");
       if (!more && !queueRequest.moca_specid && (data.queue_filter_version ?? 0) >= 3) {
         void showQueueTotal(queueRequest);
@@ -523,8 +558,10 @@
         return;
       }
       current = data; render(data);
-      motionReview.show(data, upcoming, async candidate =>
-        (await analysis(candidate, fitOptions, false, true)).object);
+      if (data.lane !== "moshpit") {
+        motionReview.show(data, upcoming, async candidate =>
+          (await analysis(candidate, fitOptions, false, true)).object);
+      }
       status(data.warning || "Ready to review."); updateControls();
       for (const candidate of upcoming)
         analysis(candidate, fitOptions, false, true).catch(() => {});
@@ -560,6 +597,12 @@
     const source = data.read_only ? "Read only · package=" + (obj.moca_specpackid ?? "none") : data.lane;
     $("object-meta").textContent = source + " · moca_oid=" + obj.moca_oid + " · spectrum=" + obj.moca_specid +
       " · S/N=" + Number(obj.median_snr_per_pix || 0).toFixed(1) + (obj.ignored ? " · spectrum currently ignored" : "");
+    if (data.lane === "moshpit") {
+      const oid = obj.moca_oid == null ? "awaiting OID" : "OID " + obj.moca_oid;
+      $("object-meta").textContent = "MOSHPIT candidate " + obj.candidate_id + " · " + obj.source_key + " · " + oid +
+        " · survey fit " + obj.selection_type + " · " + obj.selection_route + " · median S/N " +
+        (Number.isFinite(obj.median_snr_per_pix) ? obj.median_snr_per_pix.toFixed(1) : "—");
+    }
     const finite = (value) => typeof value === "number" && Number.isFinite(value);
     const probability = obj.spectral_cnn_probability;
     const chi2 = [fit?.overlays?.[0]?.display_reduced_chi2, fit?.best?.robust_reduced_chi2_10pct_cap,
@@ -578,7 +621,13 @@
     catalogCNN.title = "Highest SUBLIME2 catalog CNN good probability for this object; independent of spectral autotype CNN.";
     catalogCNN.textContent = "SUBLIME2 CNN P=" + (finite(obj.sublime2_cnn_probability) && obj.sublime2_cnn_probability >= 0 && obj.sublime2_cnn_probability <= 1 ?
       (100 * obj.sublime2_cnn_probability).toFixed(1) + "%" : "—");
-    $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
+    if (data.lane === "moshpit") {
+      cnn.title = "Stored MOSHPIT CNN acceptance for this candidate spectrum";
+      cnn.textContent = "MOSHPIT CNN acceptance=" + (finite(probability) ? (100 * probability).toFixed(1) + "%" : "—");
+      $("object-meta").append(" · ", cnn, " · ", fitQuality);
+    } else {
+      $("object-meta").append(" · ", cnn, " · ", catalogCNN, " · ", fitQuality);
+    }
     if (fit?.fit_version === "native_signed_student4_v1")
       $("object-meta").append(" · Native DR1 fit · " + fit.best.n_used + " channels · early/late separation=" + (finite(fit.delta_early_minus_late) ? fit.delta_early_minus_late.toFixed(2) : "—"));
     const morphology = obj.sublime3c_morphology;
@@ -627,7 +676,7 @@
     updateUploadStatus();
   }
   function decisionBody(item, action, classification) {
-    return {lane: item.lane, moca_oid: item.object.moca_oid, moca_specid: item.object.moca_specid,
+    return {lane: item.lane, candidate_id: item.object.candidate_id, moca_oid: item.object.moca_oid, moca_specid: item.object.moca_specid,
       options: item.fit?.options || options(), revision: item.revision, data_revision: item.data_revision,
       action, classification, is_public: Number($("visibility").value), rls: $("rls").value,
       sources: $("sources").value, allow_replace: $("replace").checked};
@@ -635,7 +684,7 @@
   async function preview(action = "upsert_spt") {
     if (!canReview() || !context?.can_write || !policyReady()) return;
     try {
-      const result = await api("preview", decisionBody(current, action, lastClass));
+      const result = await api("preview", decisionBody(current, current.lane === "moshpit" ? "classify" : action, lastClass));
       $("preview-output").textContent = JSON.stringify({row_counts: result.row_counts,
         operations: result.plan.operations, warning: result.warning}, null, 2);
       $("preview-panel").open = true; status("Preview only — no database changes.");
@@ -678,7 +727,8 @@
             }
             const recovery = retry ? "Queued at the end for one automatic retry." :
               "Result kept in this tab. Use Retry failed to submit it again.";
-            job.errorMessage = "Submission for moca_oid=" + job.item.moca_oid + " failed. " + recovery + "\n" + e.message;
+            const identity = job.lane === "moshpit" ? "MOSHPIT candidate " + job.item.candidate_id : "moca_oid=" + job.item.moca_oid;
+            job.errorMessage = "Submission for " + identity + " failed. " + recovery + "\n" + e.message;
             job.errorExpiresAt = Date.now() + 20000;
             error(job.errorMessage, job);
           } finally {
@@ -705,7 +755,9 @@
       else if (!items.some((i) => key(i) === key(job.item))) items.push(job.item);
       // Undo can change pixels and adopted-type metadata for this object.
       for (const [fitKey, fit] of cache) {
-        if (Number(fit.item.moca_oid) === Number(job.item.moca_oid)) cache.delete(fitKey);
+        const sameTarget = job.lane === "moshpit" ? key(fit.item, fit.lane) === key(job.item, job.lane) :
+          Number(fit.item.moca_oid) === Number(job.item.moca_oid);
+        if (sameTarget) cache.delete(fitKey);
       }
       await show(items.findIndex((i) => key(i) === key(job.item)));
       status("Last decision undone.");
@@ -740,7 +792,7 @@
     plotShown = false; updateUploadStatus();
   }
   function openReport() {
-    if (current) window.open("https://mocadb.ca/search/results?search-query=" +
+    if (current?.object.moca_oid) window.open("https://mocadb.ca/search/results?search-query=" +
       encodeURIComponent("oid(" + current.object.moca_oid + ")") + "&search-type=star", "_blank", "noopener,noreferrer");
   }
   function openWiseView() {
@@ -789,6 +841,7 @@
       $("replace").checked = preset.replace === true;
       if (!Object.hasOwn(preset, "vetting-classification")) $("vetting-classification").value = "";
       const sample = $("review-sample").value;
+      selectMoshpitSource();
       cnnFilterSample = previousSample = sample;
       catalogCnnBySample.set(sample, $("cnn-probability").value);
       if (sample !== "public-ucd") {
@@ -801,6 +854,9 @@
     },
   });
   $("load").onclick = () => loadQueue(); $("more").onclick = () => loadQueue(true);
+  $("moshpit-candidate").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
+  });
   $("specid").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); loadQueue(); }
   });
@@ -813,7 +869,8 @@
   $("quit").onclick = quit; $("retry").onclick = retryFailed; $("preview").onclick = () => preview();
   $("save-type").onclick = () => enqueue("upsert_spt"); $("bad-pixels").onclick = () => enqueue("bad_pixels");
   $("write-enabled").onchange = () => {
-    if ($("write-enabled").checked && !confirm("Enable database submissions? Quality labels update visual vetting and photometric/ignored flags. Good and candidate classes reactivate this lane's autotypes and spectra; rejected classes ignore both. New spectral types use the selected visibility and RLS. Undo is available within this tab."))
+    if ($("write-enabled").checked && !confirm($("review-sample").value === "moshpit"
+      ? "Enable MOSHPIT candidate spectral classifications for this tab?" : "Enable database submissions? Quality labels update visual vetting and photometric/ignored flags. Good and candidate classes reactivate this lane's autotypes and spectra; rejected classes ignore both. New spectral types use the selected visibility and RLS. Undo is available within this tab."))
       $("write-enabled").checked = false;
     updateControls();
   };
@@ -866,6 +923,10 @@
     }
     if (["private", "public"].includes(params.get("adopted_spt_source")))
       $("adopted-spt-source").value = params.get("adopted_spt_source");
+    if (params.get("lane") === "moshpit" || params.has("moshpit_candidate_id")) $("review-sample").value = "moshpit";
+    if (params.has("moshpit_candidate_id")) $("moshpit-candidate").value = params.get("moshpit_candidate_id");
+    if (location.pathname.endsWith("spherex-autotype")) $("moshpit-vetting").value = "all";
+    selectMoshpitSource();
     previousSample = $("review-sample").value;
     if (location.pathname.endsWith("spherex-autotype")) $("missing-vetting").value = "all";
     if (params.has("missing_vetting")) $("missing-vetting").value = params.get("missing_vetting");
@@ -878,6 +939,11 @@
     try {
       if (auth.host !== "mocadb.ca" || auth.port !== "3306") throw new Error("These tools connect only to mocadb.ca:3306.");
       context = await api("context");
+      const nativeAvailable = context.can_write && (context.queue_filter_version ?? 0) >= 23;
+      for (const option of document.querySelectorAll('option[value="moshpit"]'))
+        option.hidden = option.disabled = !nativeAvailable;
+      if ($("review-sample").value === "moshpit" && !nativeAvailable)
+        throw new Error("MOSHPIT requires the current reviewer and its management connection.");
       if ((context.queue_filter_version ?? 0) < 14 && !params.has("queue_order") &&
           $("queue-order").value === "gal_cnn_snr_bin_spt") {
         // Keep fresh loads usable if the static page is newer than the running worker.
