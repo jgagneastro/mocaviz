@@ -226,6 +226,21 @@ class FilterSelectionTests(unittest.TestCase):
             self.assertEqual(self.oids(moca_oids=[1],min_snr=minimum,snr_wavelength_range=band),expected)
         self.assertEqual(self.oids(moca_oids=[2],min_snr=0,snr_wavelength_range='4-5'),[])
 
+    def test_minimum_usable_points_uses_its_own_inclusive_band(self):
+        self.db.execute('UPDATE data_spectra SET flux_flambda=9 WHERE moca_specid=101')
+        self.db.executemany('INSERT INTO data_spectra VALUES(?,?,?,?,?)', [
+            (101,20000,-1,1,0),(101,30000,0,1,0),(102,25000,2,1,0),
+            (102,23000,2,0,0),(102,27000,2,1,1),(102,29000,None,1,0),
+        ])
+        cuts = dict(moca_oids=[1,2], min_spectrum_points=2, point_wavelength_range='2-3',
+                    min_snr=2, snr_wavelength_range='1-2.5')
+        for lane in ('spiffstacker','all'):
+            for order in ('oid_asc','snr_bin_spt'):
+                request = dict(cuts, lane=lane, queue_order=order)
+                self.assertEqual(self.oids(**request), [1])
+                self.assertEqual(sr.queue(self.cur, request, count_only=True), {'total':1})
+        self.assertEqual(self.oids(**{**cuts, 'snr_wavelength_range':'2-3'}), [])
+
     def test_chi2_uses_latest_exact_spectrum_and_metric_priority(self):
         self.assertEqual(self.oids(moca_oids=[1],max_reduced_chi2=1.5),[1])
         self.assertEqual(self.oids(moca_oids=[1],max_reduced_chi2=1.49),[])
@@ -515,6 +530,8 @@ class FilterSelectionTests(unittest.TestCase):
     def test_invalid_inputs_rejected_before_database_execution(self):
         invalid=[{'review_sample':[]},{'review_sample':'unsafe'},{'snr_wavelength_range':[]},
                  {'snr_wavelength_range':'0-100'},{'queue_order':'spt; DROP'},
+                 {'point_wavelength_range':[]},{'point_wavelength_range':'invalid'},
+                 *[{'min_spectrum_points':v} for v in (True,0,-2,1.5,'nan')],
                  {'queue_order':'spt_desc','after':123},{'no_wiseview_score':'yes'},
                  {'exclude_duplicates':[]},{'min_cnn_probability':1.01},{'min_spectral_cnn_probability':1.01},{'cnn_priority_source':'bad'},{'min_abs_galactic_latitude':91}]
         invalid += [{key:value} for key in ('min_snr','min_sublime2_snr','min_cnn_probability','min_spectral_cnn_probability','min_abs_galactic_latitude','max_reduced_chi2')

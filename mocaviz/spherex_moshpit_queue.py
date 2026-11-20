@@ -79,6 +79,7 @@ def spectrum_summary(raw, grid, options):
         standard["best"]["spectral_type_number"],
         current["best"]["spectral_type_number"],
         current["delta_early_minus_late"],
+        {band: len(snr) for band, snr in bands.items()},
     )
 
 
@@ -289,6 +290,7 @@ def queue(cur, body, count_only):
     )
     low, high = review.snr_bounds(body, "snr", "spectrum median S/N")
     band = review.queue_snr_band(body)
+    min_points, point_band = review.queue_point_cut(body)
     chi = body.get("max_reduced_chi2")
     chi = (
         review.bounded_float(chi, "Maximum stored reduced chi squared", 0, 1e9)
@@ -322,11 +324,12 @@ def queue(cur, body, count_only):
         value = stats.get(row["candidate_id"])
         if value is None:
             continue
-        snrs, reduced, standard_type, current_type, gap = value
+        snrs, reduced, standard_type, current_type, gap, point_counts = value
         snr = snrs[band]
         if (
             standard_type < MIN_MAIN_TYPE or current_type < minimum
             or (gap_min is not None and (gap is None or gap < gap_min))
+            or (min_points is not None and point_counts[point_band] < min_points)
             or (low is not None and (snr is None or snr < low))
             or (high is not None and (snr is None or snr > high))
             or (chi is not None and (reduced is None or reduced > chi))

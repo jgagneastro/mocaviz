@@ -39,6 +39,10 @@ def passing_snr(cur, specids, minimum, wavelength_range, read, *, maximum=None):
              {failing_edge}(CASE WHEN {snr}{failing_op}%s THEN {snr} END))/2.0{passing_op}%s))""")
         thresholds.extend([threshold] * 5)
 
+    return matching_pixels(cur, specids, wavelength_range, " AND ".join(cuts), thresholds, read)
+
+
+def matching_pixels(cur, specids, wavelength_range, having, thresholds, read):
     passing = set()
     for batch in chunks(specids):
         conditions = ['d.moca_specid IN ('+','.join(['%s']*len(batch))+')',
@@ -51,9 +55,17 @@ def passing_snr(cur, specids, minimum, wavelength_range, read, *, maximum=None):
             params.extend((low*10000, high*10000))
         sql = f"""SELECT d.moca_specid FROM data_spectra d
             WHERE {' AND '.join(conditions)} GROUP BY d.moca_specid
-            HAVING {' AND '.join(cuts)}"""
+            HAVING {having}"""
         passing.update(row['moca_specid'] for row in read(cur, sql, (*params, *thresholds)))
     return passing
+
+
+def eligible_ids(cur, specids, minimum, wavelength_range, read, *,
+                 maximum=None, min_points=None, point_range=None):
+    if min_points is not None:
+        passing = matching_pixels(cur, specids, point_range, "COUNT(*) >= %s", (min_points,), read)
+        specids = [sid for sid in specids if sid in passing]
+    return passing_snr(cur, specids, minimum, wavelength_range, read, maximum=maximum)
 
 
 def ordering_snr(cur, specids, read):
@@ -108,7 +120,8 @@ def plain_key(row, order):
     return (-oid if order == 'oid_desc' else oid, specid)
 
 
-def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read, maximum=None):
+def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, read,
+         maximum=None, min_points=None, point_range=None):
     priority = order in PRIORITY_ORDERS
     after_key = None
     if priority:
@@ -133,7 +146,8 @@ def page(cur, candidates, *, minimum, wavelength_range, order, cursor, limit, re
     selected=[]
     for group in groups:
         ids=[row['moca_specid'] for row in group]
-        eligible=passing_snr(cur,ids,minimum,wavelength_range,read,maximum=maximum)
+        eligible = eligible_ids(cur, ids, minimum, wavelength_range, read,
+                                maximum=maximum, min_points=min_points, point_range=point_range)
         group=[row for row in group if row['moca_specid'] in eligible]
         snr=ordering_snr(cur,[row['moca_specid'] for row in group],read) if priority else {}
         for row in group:row['sort_snr_1_2']=snr.get(row['moca_specid'])

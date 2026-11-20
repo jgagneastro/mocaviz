@@ -201,6 +201,9 @@ class CandidateInputTests(unittest.TestCase):
             ({"exclude_duplicates":True},3), ({"vetting_classification":"good"},2),
             ({"missing_vetting":"both"},1), ({"missing_vetting":"viable_elsewhere"},0),
             ({"min_abs_galactic_latitude":88},0),
+            ({"point_wavelength_range":"2-3","min_spectrum_points":8},3),
+            ({"point_wavelength_range":"2-3","min_spectrum_points":9},0),
+            ({"point_wavelength_range":"4-5","min_spectrum_points":1},0),
             ({"snr_wavelength_range":"4-5","min_snr":0},0),
             ({"snr_wavelength_range":"1-2.5","max_snr":0},0),
             ({"min_snr":3,"max_snr":20,"snr_wavelength_range":"1-2.5"},3),
@@ -210,7 +213,7 @@ class CandidateInputTests(unittest.TestCase):
                 q = {**base, **opts, "queue_order":"snr_bin_spt","limit":10}
                 self.assertEqual(self.api("queue-count",q).get_json()["total"],expected)
                 self.assertEqual(len(self.api("queue",q).get_json()["items"]),expected)
-        bypass = {**base,"candidate_id":1,"min_snr":10000,"oid_status":"assigned"}
+        bypass = {**base,"candidate_id":1,"min_snr":10000,"min_spectrum_points":300,"oid_status":"assigned"}
         self.assertEqual(self.api("queue",bypass).get_json()["items"][0]["candidate_id"],1)
 
 

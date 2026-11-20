@@ -17,7 +17,7 @@
   const queueFilterFields = ["lane", "review-sample", "sublime3c-selection-pass", "sublime3c-priority-high", "sublime3c-psf-morphology", "adopted-spt-source", "adopted-spt-moca-pids",
     "queue-order", "cnn-priority-source", "spectral-cnn-probability", "batch-size", "missing-vetting", "vetting-classification",
     "wiseview-score", "no-wiseview-score", "sublime2-snr", "max-sublime2-snr", "cnn-probability", "galactic-latitude",
-    "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids",
+    "min-spectrum-points", "point-wavelength-range", "snr-wavelength-range", "snr", "max-snr", "max-chi2", "sptn", "current-fit-sptn", "current-fit-gap", "no-known", "exclude-duplicates", "oids",
     "moshpit-candidate", "moshpit-oids"];
   let updatePresetButtons;
   let cnnFilterSample = "all";
@@ -271,6 +271,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
+    if (request.min_spectrum_points != null || request.snr_wavelength_range === "2-3") return 28;
     const apertureInput = ["sublimeaperture", "moshpit", "all"].includes(request.lane);
     const allThreeMissing = request.missing_vetting === "both";
     if (!request.moca_specid && !request.candidate_id && !request.moshpit_number &&
@@ -399,6 +400,8 @@
             min_cnn_probability: $("cnn-probability").value || null,
             min_abs_galactic_latitude: $("galactic-latitude").value || null,
             max_reduced_chi2: $("max-chi2").value || null,
+            min_spectrum_points: $("min-spectrum-points").value || null,
+            point_wavelength_range: $("point-wavelength-range").value,
             snr_wavelength_range: $("snr-wavelength-range").value,
             min_snr: $("snr").value || null, max_snr: $("max-snr").value || null,
             min_sptn: $("sptn").value || null,
@@ -410,6 +413,9 @@
           request.oid_status = $("moshpit-oids").value;
           request.options = options();
         }
+        if (request.min_spectrum_points != null &&
+            (!Number.isSafeInteger(Number(request.min_spectrum_points)) || Number(request.min_spectrum_points) < 1))
+          throw new Error("Minimum spectrum data points must be a positive whole number.");
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         if (request.min_current_fit_sptn != null && (!Number.isFinite(Number(request.min_current_fit_sptn)) ||
@@ -874,6 +880,8 @@
     newestFirst: true,
     apply(datasetName, preset) {
       $("replace").checked = preset.replace === true;
+      if (!Object.hasOwn(preset, "min-spectrum-points")) $("min-spectrum-points").value = "";
+      if (!Object.hasOwn(preset, "point-wavelength-range")) $("point-wavelength-range").value = "all";
       if (!Object.hasOwn(preset, "vetting-classification")) $("vetting-classification").value = "";
       const sample = $("review-sample").value;
       if (sample === "moshpit" && preset["moshpit-vetting"])
@@ -949,6 +957,7 @@
       min_cnn_probability: "cnn-probability", min_abs_galactic_latitude: "galactic-latitude",
       max_reduced_chi2: "max-chi2", snr_wavelength_range: "snr-wavelength-range",
       max_snr: "max-snr", max_sublime2_snr: "max-sublime2-snr",
+      min_spectrum_points: "min-spectrum-points", point_wavelength_range: "point-wavelength-range",
       adopted_spt_moca_pids: "adopted-spt-moca-pids"})) {
       if (params.has(param)) $(id).value = params.get(param);
     }

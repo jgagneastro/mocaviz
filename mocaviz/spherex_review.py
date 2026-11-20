@@ -77,7 +77,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 27
+QUEUE_FILTER_VERSION = 28
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 
@@ -95,7 +95,7 @@ REVIEW_SAMPLES = {
     "catwiseredmovers": "pcat_catwise2020_red_movers",
 }
 SNR_WAVELENGTH_RANGES = {"all": None, "1-5": (1, 5), "1-2.5": (1, 2.5),
-                         "2.5-4": (2.5, 4), "4-5": (4, 5)}
+                         "2-3": (2, 3), "2.5-4": (2.5, 4), "4-5": (4, 5)}
 MISSING_VETTING_MODES = {"all", "lane", "spiff", "spiffstacker", "either", "both", "viable_elsewhere"}
 MAX_BODY = 256 * 1024
 
@@ -494,6 +494,7 @@ def mixed_queue(cur, body, *, count_only, management):
     order = queue_order(body)
     limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
     band = queue_snr_band(body)
+    min_points, point_band = queue_point_cut(body)
     min_snr, max_snr = snr_bounds(body, "snr", "spectrum median S/N")
     after = body.get("after")
     priority_cursor = plain_cursor = None
@@ -527,7 +528,8 @@ def mixed_queue(cur, body, *, count_only, management):
 
     records = metrics.page(cur, candidates, minimum=min_snr, maximum=max_snr,
                            wavelength_range=SNR_WAVELENGTH_RANGES[band], order=order,
-                           cursor=priority_cursor, limit=limit, read=rows)
+                           cursor=priority_cursor, limit=limit, read=rows,
+                           min_points=min_points, point_range=SNR_WAVELENGTH_RANGES[point_band])
     if records:
         ids = [row["moca_specid"] for row in records]
         details = rows(cur, f"""SELECT s.moca_specid,mo.designation,s.median_snr_per_pix
@@ -554,6 +556,18 @@ def queue_snr_band(body):
     if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
         raise ReviewError("Choose a valid spectrum S/N wavelength range.")
     return band
+
+
+def queue_point_cut(body):
+    band = body.get("point_wavelength_range", "all")
+    if not isinstance(band, str) or band not in SNR_WAVELENGTH_RANGES:
+        raise ReviewError("Choose a valid data-point wavelength range.")
+    minimum = body.get("min_spectrum_points")
+    if minimum not in (None, ""):
+        minimum = integer(minimum, "Minimum spectrum data points")
+    else:
+        minimum = None
+    return minimum, band
 
 
 def exclude_known_sql(oid):
@@ -832,6 +846,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         params.extend(lane["methods"])
         params.append(bounded_float(body["max_reduced_chi2"], "Maximum stored reduced chi squared", 0, 1e9))
     band = queue_snr_band(body)
+    min_points, point_band = queue_point_cut(body)
     min_snr, max_snr = snr_bounds(body, "snr", "spectrum median S/N")
     adopted_conditions = []
     if body.get("min_sptn") not in (None, ""):
@@ -873,7 +888,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         candidates = rows(cur, f"SELECT {metadata} {selection}", tuple(params))
         set_combined_priority(candidates, order, cnn_source)
         return candidates
-    if min_snr is not None or max_snr is not None or rank_pixels:
+    if min_snr is not None or max_snr is not None or min_points is not None or rank_pixels:
         # Finish catalog/quality selection before touching pixels. Keeping these
         # as separate read-only statements prevents derived-CTE expansion and
         # repeated selection inside MariaDB's window-ranking query.
@@ -882,12 +897,13 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         if rank_pixels:
             set_combined_priority(candidates, order, cnn_source)
         wavelength_range = SNR_WAVELENGTH_RANGES[band]
+        point_range = SNR_WAVELENGTH_RANGES[point_band]
         if count_only:
-            eligible = metrics.passing_snr(cur, [row['moca_specid'] for row in candidates],
-                min_snr, wavelength_range, rows, maximum=max_snr)
+            eligible = metrics.eligible_ids(cur, [row['moca_specid'] for row in candidates],
+                min_snr, wavelength_range, rows, maximum=max_snr, min_points=min_points, point_range=point_range)
             return {"total": len(eligible)}
         records = metrics.page(cur, candidates, minimum=min_snr, maximum=max_snr, wavelength_range=wavelength_range,
-            order=order, cursor=priority_cursor, limit=limit, read=rows)
+            order=order, cursor=priority_cursor, limit=limit, read=rows, min_points=min_points, point_range=point_range)
         if records:
             ids = [row['moca_specid'] for row in records]
             details = rows(cur, f"""SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification
