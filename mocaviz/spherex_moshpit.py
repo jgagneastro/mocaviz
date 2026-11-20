@@ -23,6 +23,9 @@ def review_state(row):
 def candidate(cur, cid, *, spectrum=False, lock=False):
     # Keep the write lock on the candidate alone. An OID assignment can arrive during a review.
     fields = ",JSON_EXTRACT(c.evidence_json,'$.chosen_fit') AS selection_evidence,c.spectrum_json,c.moca_oid,c.ra_deg,c.dec_deg,c.median_snr,c.selection_route,c.spectral_type,c.p_accept" if spectrum else ""
+    if spectrum:
+        missing, _ = review.aperture_review_clause("c.moca_oid", candidate_column="c.spectral_review")
+        fields += f",NOT {missing} AS aperture_reviewed"
     found = review.rows(cur, f"""
         SELECT c.id,{DESIGNATION} AS designation,c.source_key,c.spectral_review,c.review_history,SHA2(c.spectrum_json,256) AS data_revision{fields}
         FROM {TABLE} c WHERE c.id=%s AND {READY}""" + (" FOR UPDATE" if lock else ""), (cid,))
@@ -75,7 +78,8 @@ def analyze(cur, body):
         fit, warning = None, str(exc)
         meta["main_queue_type_eligible"] = False
     return {"lane": "moshpit", "read_only": False, "object": meta, "fit": fit, "raw_spectrum": spectrum,
-            "state": {"spectral_review": row["spectral_review"]}, "warning": warning,
+            "state": {"spectral_review": row["spectral_review"], "aperture_reviewed": bool(row["aperture_reviewed"])},
+            "warning": warning,
             "revision": revision, "data_revision": row["data_revision"]}
 
 

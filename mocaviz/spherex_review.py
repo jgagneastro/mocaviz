@@ -77,7 +77,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 26
+QUEUE_FILTER_VERSION = 27
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 
@@ -565,6 +565,42 @@ def exclude_known_sql(oid):
         )"""
 
 
+def aperture_review_queries(oid=None, labels=()):
+    """Select reviewed OIDs from each table in the SUBLIME aperture lane."""
+    sources = (
+        (LANES["sublimeaperture"]["table"], "classification", ""),
+        (REVIEW_SAMPLES["sublime4"], "spectral_review", ""),
+        ("pcat_moshpit_candidates", "spectral_review", "origin='moshpit/native_dr1'"),
+    )
+    result = []
+    for table, column, origin in sources:
+        conditions = [origin] if origin else []
+        if oid is not None:
+            conditions.append(f"moca_oid={oid}")
+        if labels:
+            conditions.append(f"{column} IN ({','.join(['%s'] * len(labels))})")
+        elif column == "spectral_review":
+            # A candidate row exists before its first review. A dedicated vetting row already counts.
+            conditions.append("spectral_review IS NOT NULL")
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        result.append(f"SELECT moca_oid FROM {table}{where}")
+    return result
+
+
+def aperture_review_clause(oid, classification=None, *, candidate_column=None):
+    """SQL and parameters for a missing review or a matching label in the aperture family."""
+    labels = (classification,) if classification else ()
+    queries = aperture_review_queries(oid, labels)
+    operator, joiner = ("EXISTS", " OR ") if labels else ("NOT EXISTS", " AND ")
+    checks = [f"{operator} ({query})" for query in queries]
+    params = list(labels) * len(queries)
+    if candidate_column:
+        # A MOSHPIT spectrum can receive a review before its OID is assigned.
+        checks.append(f"{candidate_column} = %s" if labels else f"{candidate_column} IS NULL")
+        params.extend(labels)
+    return "(" + joiner.join(checks) + ")", params
+
+
 def sublime4_aperture_exists(alias):
     # A reprocessed benchmark spectrum gets an immutable revision. Select the
     # exact currently published bytes for this candidate and OID.
@@ -618,8 +654,13 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     conditions = ["mo.ignored=0"]
     params = [lane["pack"]]
     if classification:
-        conditions.append("v.classification=%s")
-        params.append(classification)
+        if key == "sublimeaperture":
+            clause, values = aperture_review_clause("s.moca_oid", classification)
+            conditions.append(clause)
+            params.extend(values)
+        else:
+            conditions.append("v.classification=%s")
+            params.append(classification)
     adopted_join = ""
     type_projection = ""
     if type_order and not count_only:
@@ -670,7 +711,10 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     if active_only:
         conditions.append("s.ignored=0")
     if missing in {"lane", "viable_elsewhere"}:
-        conditions.append("v.moca_oid IS NULL")
+        if key == "sublimeaperture":
+            conditions.append(aperture_review_clause("s.moca_oid")[0])
+        else:
+            conditions.append("v.moca_oid IS NULL")
     elif missing != "all":
         absent = {key: f"NOT EXISTS (SELECT 1 FROM {LANES[key]['table']} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
                   for key in ("spiff", "spiffstacker")}
@@ -679,11 +723,8 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         else:
             operator = "OR" if missing == "either" else "AND"
             clauses = [absent['spiff'], absent['spiffstacker']]
-            # AND checks every original lane, including package 76 used by SUBLIME3C.
-            # The explicitly named SPIFF/Stacker OR retains its pair scope.
             if missing == "both":
-                clauses.append("NOT EXISTS (SELECT 1 FROM " + LANES['sublimeaperture']['table'] +
-                               " missing_aperture WHERE missing_aperture.moca_oid=s.moca_oid)")
+                clauses.append(aperture_review_clause("s.moca_oid")[0])
             conditions.append("(" + (" " + operator + " ").join(clauses) + ")")
     spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
     source_params = []
@@ -691,8 +732,10 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         placeholders = ",".join(["%s"] * len(VIABLE_OTHER_LANE))
         matches = [
             f"SELECT moca_oid FROM {other['table']} WHERE classification IN ({placeholders})"
-            for other_key, other in LANES.items() if other_key != key
+            for other_key, other in LANES.items() if other_key not in (key, "sublimeaperture")
         ]
+        if key != "sublimeaperture":
+            matches.extend(aperture_review_queries(labels=VIABLE_OTHER_LANE))
         # Start with viable reviews to avoid scanning spectra for unrelated objects.
         candidates = " UNION ".join(matches)
         spectrum_source = f"({candidates}) viable JOIN moca_spectra s ON s.moca_oid=viable.moca_oid"

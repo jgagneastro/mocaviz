@@ -32,6 +32,7 @@ class CandidateInputTests(unittest.TestCase):
             INSERT INTO data_spectral_types VALUES(1,42,'L3','L3','Ref1','test',1,0,0,13,0,1,NULL);
             CREATE TABLE moca_spherex_templates(moca_spherex_template_id INTEGER,spectral_type_number REAL,spectral_type TEXT);
             INSERT INTO moca_spherex_templates VALUES(1,13,'L3');
+            CREATE TABLE pcat_sublime_candidates_v4(moca_oid INTEGER,spectral_review TEXT,cutout_review TEXT,motion_review TEXT);
             CREATE TABLE pcat_sublime_candidates_v2(moca_oid INTEGER,detection_snr REAL,visual_nn_good_probability REAL);
             INSERT INTO pcat_sublime_candidates_v2 VALUES(42,9,.7);
             CREATE TABLE pcat_wiseview_visual_vetting(id INTEGER,moca_oid INTEGER,classification TEXT,classification_integer REAL,comments TEXT,reviewer TEXT,ra_deg REAL,dec_deg REAL,wiseview_url TEXT,source_table TEXT,origin TEXT,modified_timestamp TEXT);
@@ -83,6 +84,7 @@ class CandidateInputTests(unittest.TestCase):
             headers={"X-MOCA-User":role, "X-MOCA-Password":"unit-test", "X-MOCA-Database":review.PRIVATE_DB})
 
     def test_native_queue_pages_count_identity_and_units(self):
+        self.db.execute("UPDATE pcat_moshpit_candidates SET moca_oid=NULL WHERE id=3")
         base = {"review_sample":"moshpit", "limit":1}
         first = self.api("queue",base).get_json()
         self.assertEqual(first["items"][0]["candidate_id"],1)
@@ -132,6 +134,49 @@ class CandidateInputTests(unittest.TestCase):
         self.assertEqual(self.api("undo",{"receipt":submitted["undo_receipt"]}).status_code,409)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM moca_changelog").fetchone()["n"],2)
 
+    def test_missing_aperture_reviews_follow_oid_and_unassigned_candidate(self):
+        self.db.execute("DELETE FROM pcat_spherex_spiffstacker_visual_vetting")
+        base = {"lane": "moshpit", "missing_vetting": "both", "queue_order": "oid_asc"}
+
+        def check(expected, **cuts):
+            body = {**base, **cuts}
+            page = self.api("queue", body).get_json()
+            self.assertTrue(page["ok"], page)
+            self.assertCountEqual([item["candidate_id"] for item in page["items"]], expected)
+            self.assertEqual(self.api("queue-count", body).get_json()["total"], len(expected))
+
+        # Only one of the two detections of OID 42 was reviewed.
+        check([1])
+        check([1], missing_vetting="lane")
+        check([1, 2, 3], missing_vetting="all")
+        check([3], candidate_id=3)
+        check([2, 3], missing_vetting="all", vetting_classification="good")
+        state = self.api("analyze", {"lane": "moshpit", "candidate_id": 2}).get_json()["state"]
+        self.assertIsNone(state["spectral_review"])
+        self.assertTrue(state["aperture_reviewed"])
+        item = self.api("analyze", {"lane": "moshpit", "candidate_id": 3}).get_json()
+        preview = self.api("preview", {"lane": "moshpit", "candidate_id": 3, "action": "classify",
+                                       "classification": "bad", "revision": item["revision"],
+                                       "data_revision": item["data_revision"]})
+        self.assertEqual(preview.status_code, 409)
+        self.assertIn("replacement", preview.get_json()["error"])
+
+        # Unassigned candidates share no identity, even when both have a NULL OID.
+        self.db.execute("UPDATE pcat_moshpit_candidates SET moca_oid=NULL WHERE id=3")
+        self.db.execute("INSERT INTO pcat_sublime_candidates_v4 VALUES(42,NULL,'good','good')")
+        check([1, 2])
+        check([3], missing_vetting="all", vetting_classification="good")
+        self.db.execute("UPDATE pcat_sublime_candidates_v4 SET spectral_review='good_candidate'")
+        check([1])
+        check([2], missing_vetting="all", vetting_classification="good_candidate")
+        check([], missing_vetting="viable_elsewhere")
+        self.db.execute("UPDATE pcat_sublime_candidates_v4 SET spectral_review=NULL")
+        self.db.execute("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES(42,NULL)")
+        check([1])
+        self.db.execute("DELETE FROM pcat_spherex_sublimeaperture_visual_vetting")
+        self.db.execute("INSERT INTO pcat_spherex_visual_vetting VALUES(42,'good')")
+        check([2], missing_vetting="viable_elsewhere")
+
     def test_shared_filters_and_all_orders(self):
         base = {"lane":"moshpit","missing_vetting":"all","limit":1}
         for order in sorted(review.metrics.PRIORITY_ORDERS | {"oid_asc","oid_desc","spt_asc","spt_desc"}):
@@ -153,8 +198,8 @@ class CandidateInputTests(unittest.TestCase):
             ({"min_spectral_cnn_probability":.95},0), ({"moca_oids":[42]},2),
             ({"adopted_spt_moca_pids":["Ref1"]},2), ({"no_known":True},1),
             ({"no_wiseview_score":True},1), ({"min_wiseview_score":5},2),
-            ({"exclude_duplicates":True},3), ({"vetting_classification":"good"},1),
-            ({"missing_vetting":"both"},1), ({"missing_vetting":"viable_elsewhere"},1),
+            ({"exclude_duplicates":True},3), ({"vetting_classification":"good"},2),
+            ({"missing_vetting":"both"},1), ({"missing_vetting":"viable_elsewhere"},0),
             ({"min_abs_galactic_latitude":88},0),
             ({"snr_wavelength_range":"4-5","min_snr":0},0),
             ({"snr_wavelength_range":"1-2.5","max_snr":0},0),
@@ -213,6 +258,7 @@ class CandidateInputTests(unittest.TestCase):
         self.assertEqual(self.api("queue-count", base).get_json()["total"], 0)
 
     def test_custom_priors_cannot_override_main_queue_membership(self):
+        self.db.execute("UPDATE pcat_moshpit_candidates SET moca_oid=NULL WHERE id=3")
         flux = [1 + 0.04 * (k - 7.5) / 7.5 for k in range(16)]
         for row in self.templates:
             w = row["wavelength_angstrom"] / 1e4

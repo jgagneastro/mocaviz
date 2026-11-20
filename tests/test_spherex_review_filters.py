@@ -23,6 +23,8 @@ class FilterSelectionTests(unittest.TestCase):
             CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER,median_snr_per_pix REAL);
             CREATE TABLE data_spectra(moca_specid INTEGER,wavelength_angstrom REAL,flux_flambda REAL,flux_flambda_unc REAL,ignored INTEGER);
             CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specid INTEGER,calculation_method TEXT,comments TEXT,ignored INTEGER,adopted INTEGER,public_adopted INTEGER,photometric_estimate INTEGER,spectral_type_number REAL,is_public INTEGER DEFAULT 0);
+            CREATE TABLE pcat_sublime_candidates_v4(moca_oid INTEGER,spectral_review TEXT);
+            CREATE TABLE pcat_moshpit_candidates(moca_oid INTEGER,spectral_review TEXT,origin TEXT);
             CREATE TABLE pcat_sublime_candidates_v2(moca_oid INTEGER,detection_snr REAL,visual_nn_good_probability REAL);
             CREATE TABLE pcat_sublime_candidates(moca_oid INTEGER);
             CREATE TABLE pcat_catwise2020_red_movers(moca_oid INTEGER);

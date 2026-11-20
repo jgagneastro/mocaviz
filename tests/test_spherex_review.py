@@ -135,7 +135,8 @@ class ReviewTests(unittest.TestCase):
         sql, params = cursor.execute.call_args.args
         self.assertIn("pcat_spherex_sublimeaperture_visual_vetting", sql)
         self.assertIn("mo.ignored=0", sql)
-        self.assertIn("v.moca_oid IS NULL", sql)
+        self.assertIn("pcat_moshpit_candidates", sql)
+        self.assertIn("pcat_sublime_candidates_v4", sql)
         self.assertIn(100, params)
         with self.assertRaises(review.ReviewError):
             review.queue(cursor, {"lane": "x; DROP TABLE moca_spectra"})
@@ -194,6 +195,8 @@ class QueueSelectionTests(unittest.TestCase):
         self.db.row_factory = sqlite3.Row
         self.db.execute("CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,ignored INTEGER,designation TEXT)")
         self.db.execute("CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER,median_snr_per_pix REAL)")
+        self.db.execute("CREATE TABLE pcat_sublime_candidates_v4(moca_oid INTEGER,spectral_review TEXT)")
+        self.db.execute("CREATE TABLE pcat_moshpit_candidates(moca_oid INTEGER,spectral_review TEXT,origin TEXT)")
         self.db.execute("CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INTEGER PRIMARY KEY,classification_integer REAL)")
         for lane in review.LANES.values():
             self.db.execute("CREATE TABLE " + lane["table"] + "(moca_oid INTEGER PRIMARY KEY,classification TEXT)")
@@ -276,6 +279,27 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids("either"), [1, 2, 3, 6, 11, 13])
         self.assertEqual(self.oids("lane"), [1, 2, 6, 11, 13])
         self.assertEqual(self.db.total_changes, before)
+
+    def test_native_and_published_reviews_share_one_aperture_lane(self):
+        oids = [1, 6, 11, 13]
+        self.db.executemany("INSERT INTO moca_spectra VALUES(?,?,76,0,10)",
+                            [(3000 + oid, oid) for oid in oids])
+        self.db.executemany("INSERT INTO pcat_sublime_candidates_v4 VALUES(?,?)",
+                            [(1, "good_candidate"), (13, None)])
+        self.db.executemany("INSERT INTO pcat_moshpit_candidates VALUES(?,?,'moshpit/native_dr1')",
+                            [(6, "good_candidate"), (6, "good_candidate"), (None, "good_candidate")])
+        self.db.execute("INSERT INTO pcat_moshpit_candidates VALUES(13,'good','injection')")
+        self.db.execute("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES(11,'bad')")
+        for lane in ("spiff", "spiffstacker", "sublimeaperture"):
+            filters = {"lane": lane, "moca_oids": oids, "missing_vetting": "both"}
+            self.assertEqual([v["moca_oid"] for v in review.queue(self.cur, filters)["items"]], [13])
+            self.assertEqual(review.queue(self.cur, filters, count_only=True), {"total": 1})
+        self.assertEqual(self.oids("lane", lane="sublimeaperture", moca_oids=oids), [13])
+        self.assertEqual(self.oids("all", lane="sublimeaperture", moca_oids=oids,
+                                   vetting_classification="good_candidate"), [1, 6])
+        self.assertEqual(self.oids("viable_elsewhere", lane="spiff", moca_oids=oids), [1, 6])
+        self.assertEqual(self.oids("viable_elsewhere", lane="sublimeaperture", moca_oids=oids), [])
+        self.assertEqual(self.oids("either", lane="spiffstacker", moca_oids=oids), oids)
 
     def test_inclusive_motion_score_and_missing_motion_rows(self):
         self.assertEqual(self.oids("either",6),[1,2,11,13])

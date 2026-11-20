@@ -90,11 +90,16 @@ optional and inclusive. The URL parameters are `max_snr` and `max_sublime2_snr`.
 
 **Missing spectral vetting** defaults to the selected reduction lane on the
 review page, and to **No restriction** on the autotype page. Other choices are
-SPIFF, SPIFFStacker, **either missing** (OR), **both missing** (AND), and
+SPIFF, SPIFFStacker, **either missing** (OR), **all three lanes missing** (AND), and
 **Unreviewed here · viable elsewhere**.
-The AND scope checks SPIFF, SPIFFStacker and SUBLIME aperture (including SUBLIME3C); any existing classification excludes the object. The OR scope still checks the explicitly named SPIFF/SPIFFStacker pair.
-“Missing” means no row in the corresponding visual-vetting table, regardless
-of the class stored in any existing row. A missing-vetting filter selects
+**All three lanes missing** checks SPIFF, SPIFFStacker and the SUBLIME aperture family.
+The aperture family covers every SUBLIME version (including SUBLIME3C and SUBLIME4) and MOSHPIT.
+The reviewer looks for a saved spectral decision in the shared aperture table and in the SUBLIME4 and MOSHPIT candidate tables.
+Detections with the same MOCAdb OID share their aperture review status. A MOSHPIT candidate awaiting an OID uses its own review.
+The selected-lane and viable-elsewhere filters use this same definition. A classification filter matches any saved family label for that OID.
+Each spectral decision is saved on the record being reviewed.
+The OR option checks the explicitly named SPIFF/SPIFFStacker pair.
+A dedicated visual-vetting row counts regardless of its label. A native candidate row counts once its spectral-review field has a value. A missing-vetting filter selects
 non-ignored spectra, taking the latest active spectrum in the chosen reduction
 lane. **No restriction** retains the previous include-reviewed behavior,
 including ignored spectra. The API's existing `pending_only` option remains

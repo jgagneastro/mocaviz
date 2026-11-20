@@ -271,13 +271,17 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
+    const apertureInput = ["sublimeaperture", "moshpit", "all"].includes(request.lane);
+    const allThreeMissing = request.missing_vetting === "both";
+    if (!request.moca_specid && !request.candidate_id && !request.moshpit_number &&
+        (allThreeMissing || request.missing_vetting === "viable_elsewhere" ||
+         (apertureInput && (request.missing_vetting === "lane" || request.vetting_classification)))) return 27;
     if (request.lane === "moshpit") return 26;
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
     if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
     if (request.queue_order === "snr_bin_spt") return 19;
     if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all") return 18;
-    if (request.missing_vetting === "both") return 16;
     if (request.queue_order === "gal_cnn_snr_bin_spt") return 14;
     if (request.max_snr != null || request.max_sublime2_snr != null) return 12;
     if (request.cnn_priority_source === "combined" && ["gal_cnn_spt_snr", "cnn_spt_snr"].includes(request.queue_order)) return 11;
@@ -289,7 +293,6 @@
         !["all", "public-ucd"].includes(request.review_sample) ||
         ["min_sublime2_snr", "min_cnn_probability", "min_abs_galactic_latitude", "max_reduced_chi2", "min_snr"].some((name) => request[name] != null)) return 5;
     if (request.public_ucd_only) return 4;
-    if (request.missing_vetting === "viable_elsewhere") return 2;
     return request.min_wiseview_score !== null || !["lane", "all"].includes(request.missing_vetting) ? 1 : 0;
   }
   async function showQueueTotal(request) {
@@ -297,14 +300,8 @@
     label.textContent = "Counting all matches…";
     try {
       const {total, queue_filter_version} = await api("queue-count", request);
-      if (request.missing_vetting === "both" && (queue_filter_version ?? 0) < 16)
-        throw new Error("The review service needs to be restarted to include SUBLIME aperture vettings.");
-      if (request.sublime3c_psf_morphology && request.sublime3c_psf_morphology !== "all" && (queue_filter_version ?? 0) < 18)
-        throw new Error("The review service needs to be restarted to count PSF morphology passes.");
-      if ((request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) && (queue_filter_version ?? 0) < 22)
-        throw new Error("The review service needs to be restarted to count updated-selection passes.");
-      if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
-        throw new Error("The review service needs to be restarted to count these S/N filters.");
+      if ((queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
+        throw new Error("The review service needs to be restarted to count these queue filters.");
       if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + ((request.lane !== "moshpit" && (request.min_current_fit_sptn != null || request.min_current_fit_gap != null)) ? " database matches before current-fit cut" : " total matches at load");
     } catch {
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
@@ -563,6 +560,13 @@
       const data = await analysis(item, fitOptions, refresh);
       if (gen !== generation || closed) return;
       const mainMoshpit = isMainMoshpit(queueRequest);
+      if (mainMoshpit && ["lane", "both", "viable_elsewhere"].includes(queueRequest.missing_vetting) &&
+          data.state?.aperture_reviewed) {
+        hidden.add(key(item));
+        clearFit();
+        await show(index + 1);
+        return;
+      }
       const minimum = mainMoshpit ? Math.max(10, Number(queueRequest.min_current_fit_sptn || 0)) : queueRequest.min_current_fit_sptn;
       const fittedType = data.fit?.best?.spectral_type_number;
       const gapMinimum = queueRequest.min_current_fit_gap;

@@ -28,7 +28,7 @@
   <script defer src="static/review_presets.js?v=4"></script>
   <link rel="stylesheet" href="static/spherex_motion.css?v=20261115-motion-v1">
   <script defer src="static/spherex_motion.js?v=20261120-moshpit-motion"></script>
-  <script defer src="static/spherex_review.js?v=20261120-moshpit-l0"></script>
+  <script defer src="static/spherex_review.js?v=20261120-aperture-family"></script>
 </head>
 <body>
   <header>
@@ -121,9 +121,9 @@
         <label>Adopted-type moca_pid(s)<textarea id="adopted-spt-moca-pids" rows="2" placeholder="e.g. Ref2020, Ref2025"></textarea></label>
         <small>Match any listed publication ID on the selected adopted SPT. Separate values with commas, spaces or new lines; blank allows all.</small>
         <label>Missing spectral vetting<select id="missing-vetting"><option value="lane" selected>Selected reduction lane</option><option value="viable_elsewhere">Unreviewed here · viable elsewhere</option><option value="spiff">SPIFF</option><option value="spiffstacker">SPIFFStacker</option><option value="either">SPIFF or SPIFFStacker missing (OR)</option><option value="both">All three lanes missing (AND)</option><option value="all">No restriction (include reviewed)</option></select></label>
-        <small>All three checks SPIFF, SPIFFStacker and SUBLIME aperture, including SUBLIME3C.</small>
+        <small>The three lanes are SPIFF, SPIFFStacker and SUBLIME aperture. SUBLIME aperture covers every SUBLIME version (including SUBLIME3C and SUBLIME4) and MOSHPIT.</small>
         <label>Current spectral vetting<select id="vetting-classification"><option value="">Any classification</option></select></label>
-        <small>Matches the stored classification in each spectrum’s own reduction lane.</small>
+        <small>Matches a saved label in the selected lane. For SUBLIME aperture and MOSHPIT, any matching spectral review for that OID counts.</small>
         <label class="check"><input id="no-wiseview-score" type="checkbox">Only objects without WiseView scores</label>
         <label>WiseView score ≥<input id="wiseview-score" type="number" min="-1" max="6" step="any" placeholder="Any"></label>
         <small>Without scores includes missing reviews and blank scores. A score of zero counts as scored.</small>

@@ -122,29 +122,33 @@ def vetting_conditions(body, where, params):
     if classification:
         if not isinstance(classification, str) or classification not in dict(review.CLASSIFICATIONS):
             raise review.ReviewError("Choose a valid current spectral vetting classification.")
-        where.append("c.spectral_review=%s")
-        params.append(classification)
+        clause, values = review.aperture_review_clause(
+            "c.moca_oid", classification, candidate_column="c.spectral_review"
+        )
+        where.append(clause)
+        params.extend(values)
     missing = body.get(
         "missing_vetting", "lane" if review.boolean(body.get("pending_only"), not classification) else "all"
     )
     if not isinstance(missing, str) or missing not in review.MISSING_VETTING_MODES:
         raise review.ReviewError("Choose a valid missing spectral-vetting scope.")
-    if missing in ("lane", "viable_elsewhere"):
-        where.append("c.spectral_review IS NULL")
-    legacy = ("spiff", "spiffstacker", "sublimeaperture")
+    if missing in ("lane", "viable_elsewhere", "both"):
+        missing_aperture, _ = review.aperture_review_clause("c.moca_oid", candidate_column="c.spectral_review")
+        where.append(missing_aperture)
+    pair = ("spiff", "spiffstacker")
     if missing == "viable_elsewhere":
         viable = ",".join(["%s"] * len(review.VIABLE_OTHER_LANE))
         where.append(
             "("
             + " OR ".join(
                 f"EXISTS (SELECT 1 FROM {review.LANES[k]['table']} v WHERE v.moca_oid=c.moca_oid AND v.classification IN ({viable}))"
-                for k in legacy
+                for k in pair
             )
             + ")"
         )
-        params.extend(review.VIABLE_OTHER_LANE * len(legacy))
-    elif missing in (*legacy[:2], "both", "either"):
-        keys = (missing,) if missing in legacy[:2] else legacy if missing == "both" else legacy[:2]
+        params.extend(review.VIABLE_OTHER_LANE * len(pair))
+    elif missing in (*pair, "both", "either"):
+        keys = (missing,) if missing in pair else pair
         operator = " OR " if missing == "either" else " AND "
         where.append(
             "("
