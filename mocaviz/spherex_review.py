@@ -77,7 +77,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 25
+QUEUE_FILTER_VERSION = 26
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 

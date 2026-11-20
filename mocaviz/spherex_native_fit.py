@@ -77,6 +77,12 @@ class NativeTemplateGrid:
         self.maximum = min(t["wave"][-1] for t in self.templates)
         if self.minimum >= self.maximum:
             raise ValueError("Templates have no common wavelength coverage")
+        self._type_numbers = np.asarray([t["spectral_type_number"] for t in self.templates], float)
+        grids = [str(t.get("grid_type") or "").strip().lower() for t in self.templates]
+        self._prior_groups = np.array([
+            0 if grid == "field" else 2 if grid in {"extreme subdwarfs", "extremely low gravity"} else 1
+            for grid in grids
+        ])
         self._cache = {}
 
     def project(self, wave):
@@ -93,7 +99,7 @@ class NativeTemplateGrid:
             )
         return self._cache[key]
 
-    def fit(self, wave, flux, error, ignored=None, options=None):
+    def fit(self, wave, flux, error, ignored=None, options=None, *, ranking_only=False):
         options = options or {}
         wave, flux, error = [np.asarray(a, dtype=float) for a in (wave, flux, error)]
         if wave.ndim != 1 or wave.shape != flux.shape or wave.shape != error.shape:
@@ -151,18 +157,25 @@ class NativeTemplateGrid:
         a = np.where(choose, solutions[1][0], solutions[0][0])
         residual = np.where(choose[:, None], solutions[1][1], solutions[0][1])
         loss = np.minimum(solutions[0][2], solutions[1][2])
+        odds = [1.0, options.get("nonfield_odds_k", 500.0), options.get("nonfield_extreme_odds_k", 500000.0)]
+        penalties = (2 * np.log(np.asarray(odds, float)))[self._prior_groups]
+        scores = loss + penalties
+        positive = np.flatnonzero(a > 0)
+        if not len(positive):
+            raise ValueError("No positive-amplitude template fit")
+        ranked = positive[np.lexsort((self._type_numbers[positive], scores[positive]))]
+        late = ranked[self._type_numbers[ranked] >= 10]
+        early = ranked[self._type_numbers[ranked] < 10]
+        gap = float(scores[early[0]] - scores[late[0]]) if len(early) and len(late) else None
+        if ranking_only:
+            return {
+                "best": {"spectral_type_number": float(self._type_numbers[ranked[0]])},
+                "delta_early_minus_late": gap,
+            }
         records = []
         cap = float(options.get("chi2_sigma_cap", 5.0)) ** 2
-        for i, t in enumerate(self.templates):
-            grid = str(t.get("grid_type") or "").strip().lower()
-            odds = (
-                1
-                if grid == "field"
-                else options.get("nonfield_extreme_odds_k", 500000.0)
-                if grid in {"extreme subdwarfs", "extremely low gravity"}
-                else options.get("nonfield_odds_k", 500.0)
-            )
-            penalty = 2 * np.log(float(odds))
+        for i in ranked:
+            t = self.templates[i]
             terms = residual[i] ** 2
             red = w >= 14000
             record = {
@@ -173,8 +186,8 @@ class NativeTemplateGrid:
                 "grid_type": t.get("grid_type"),
                 "n_used": int(use.sum()),
                 "scale_s": float(a[i] * norm / model_norm[i]),
-                "selection_score": float(loss[i] + penalty) if a[i] > 0 else None,
-                "selection_penalty": float(penalty),
+                "selection_score": float(scores[i]),
+                "selection_penalty": float(penalties[i]),
                 "chi2_raw": float(terms.sum()),
                 "reduced_chi2": float(terms.mean()),
                 "chi2_raw_10pct": float(terms.sum()),
@@ -193,33 +206,18 @@ class NativeTemplateGrid:
                 "objective": "Student-t deviance, nu=4, plus template prior penalty",
             }
             records.append(record)
-        records = sorted(
-            (r for r in records if r["selection_score"] is not None),
-            key=lambda r: (r["selection_score"], r["spectral_type_number"]),
-        )
-        if not records:
-            raise ValueError("No positive-amplitude template fit")
-        best = records[0]
-        late = next((r for r in records if r["spectral_type_number"] >= 10), None)
-        early = next((r for r in records if r["spectral_type_number"] < 10), None)
         return {
-            "best": best,
+            "best": records[0],
             "matches": records,
             "used": use,
             "n_available_in_template_range": int(common.sum()),
-            "delta_early_minus_late": early["selection_score"] - late["selection_score"]
-            if early and late
-            else None,
+            "delta_early_minus_late": gap,
             "fit_version": VERSION,
         }
 
 
-def fit_spectrum_rows(rows, template_rows, options=None):
-    """JSON-ready reviewer adapter; same numeric fit as the cube classifier.
-
-    Only saved ignored pixels are marked as bad. The robust objective does not
-    invent automatic bad-pixel writes or use the legacy drop-worst setting.
-    """
+def fit_rows_on_grid(rows, grid, options=None, *, ranking_only=False):
+    """Fit the same measured rows for queue selection and the plotted spectrum."""
     if not rows:
         raise ValueError("No spectral data points are available")
     rows = sorted(rows, key=lambda r: float(r["wavelength_angstrom"] or 0))
@@ -228,8 +226,20 @@ def fit_spectrum_rows(rows, template_rows, options=None):
         for key in ("wavelength_angstrom", "flux_flambda", "flux_flambda_unc")
     ]
     ignored = np.asarray([bool(r.get("ignored")) for r in rows])
-    grid = NativeTemplateGrid(template_rows)
-    fit = grid.fit(wave, flux, error, ignored, options)
+    fit = grid.fit(wave, flux, error, ignored, options, ranking_only=ranking_only)
+    return fit, wave, flux, error, ignored
+
+
+def fit_spectrum_rows(rows, template_rows, options=None):
+    """Build reviewer overlays for the signed native-grid fit."""
+    if not rows:
+        raise ValueError("No spectral data points are available")
+    grid = (
+        template_rows
+        if isinstance(template_rows, NativeTemplateGrid)
+        else NativeTemplateGrid(template_rows)
+    )
+    fit, wave, flux, error, ignored = fit_rows_on_grid(rows, grid, options)
     overlays = []
     for match in fit["matches"][:10]:
         template = next(

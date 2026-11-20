@@ -50,6 +50,7 @@ class CandidateInputTests(unittest.TestCase):
              (5,"mp:E","moshpit/native_dr1",None,None,None)])
         self.db.execute("UPDATE pcat_moshpit_candidates SET review_history=? WHERE id=1",
                         (json.dumps([{"lane":"identity","moshpit_number":9}]),))
+        self.db.execute("ALTER TABLE pcat_moshpit_candidates ADD COLUMN evidence_json TEXT")
         self.db.commit()
 
         class Cursor:
@@ -69,6 +70,7 @@ class CandidateInputTests(unittest.TestCase):
         templates = [{"moca_spherex_template_id": i, "spectral_type": name, "spectral_type_number": num, "grid_type": "field",
                       "wavelength_angstrom": w * 1e4, "flux_flambda": (k + 1 if i == 1 else 17 - k) / w**2}
                      for i, name, num in [(1,"L3",13), (2,"M6",6)] for k, w in enumerate(wave)]
+        self.templates = templates
         grid_patch = patch.object(review, "template_rows", return_value=templates)
         grid_patch.start()
         self.addCleanup(grid_patch.stop)
@@ -165,6 +167,68 @@ class CandidateInputTests(unittest.TestCase):
                 self.assertEqual(len(self.api("queue",q).get_json()["items"]),expected)
         bypass = {**base,"candidate_id":1,"min_snr":10000,"oid_status":"assigned"}
         self.assertEqual(self.api("queue",bypass).get_json()["items"][0]["candidate_id"],1)
+
+
+    def set_product(self, cid, flux):
+        product = {"wavelength_um": [1 + k / 8 for k in range(16)],
+                   "flux_ujy": flux, "error_ujy": [0.02] * 16}
+        self.db.execute("UPDATE pcat_moshpit_candidates SET spectrum_json=? WHERE id=?",
+                        (json.dumps(product), cid))
+
+    def test_main_queue_uses_shared_fit_before_count_sort_and_paging(self):
+        for row in self.templates:
+            late = row["moca_spherex_template_id"] == 1
+            row.update(spectral_type="L0" if late else "K0", spectral_type_number=10 if late else -10)
+        rising = [k + 1 for k in range(16)]
+        self.set_product(1, [17 - k for k in range(16)])
+        self.set_product(2, rising)
+        self.set_product(3, [None] * 16)
+        evidence = {"chosen_fit": {"primary": True, "eligible_sublime4": False, "sublime4_type": "K0"}}
+        self.db.execute("UPDATE pcat_moshpit_candidates SET evidence_json=? WHERE id=1", (json.dumps(evidence),))
+        base = {"lane": "moshpit", "missing_vetting": "all", "limit": 1}
+        for filters in ({}, {"min_current_fit_sptn": -10}, {"min_current_fit_sptn": 10, "queue_order": "oid_desc"}):
+            page = self.api("queue", {**base, **filters}).get_json()
+            self.assertEqual([v["candidate_id"] for v in page["items"]], [2])
+            self.assertFalse(page["has_more"])
+            self.assertEqual(self.api("queue-count", {**base, **filters}).get_json()["total"], 1)
+        for filters in ({"min_current_fit_sptn": 10.5}, {"min_current_fit_gap": 10000}):
+            self.assertEqual(self.api("queue-count", {**base, **filters}).get_json()["total"], 0)
+        direct = self.api("queue", {**base, "moshpit_number": 9}).get_json()
+        self.assertEqual(direct["items"][0]["candidate_id"], 1)
+        self.assertEqual(self.api("queue-count", {**base, "candidate_id": 1}).get_json()["total"], 1)
+        early = self.api("analyze", {**base, "candidate_id": 1}).get_json()
+        self.assertEqual(early["fit"]["best"]["spectral_type"], "K0")
+        self.assertFalse(early["object"]["main_queue_type_eligible"])
+        self.assertEqual(early["object"]["selection_type"], "L3")
+        self.assertTrue(early["object"]["selection_checks"]["primary"])
+        self.assertFalse(early["object"]["selection_checks"]["eligible_sublime4"])
+        unfit = self.api("analyze", {**base, "candidate_id": 3}).get_json()
+        self.assertFalse(unfit["object"]["main_queue_type_eligible"])
+        self.assertIsNone(unfit["fit"])
+        self.set_product(1, rising)
+        self.assertEqual(self.api("queue-count", base).get_json()["total"], 2)
+        for row in self.templates:
+            if row["moca_spherex_template_id"] == 1:
+                row.update(spectral_type="M9", spectral_type_number=9)
+        self.assertEqual(self.api("queue-count", base).get_json()["total"], 0)
+
+    def test_custom_priors_cannot_override_main_queue_membership(self):
+        flux = [1 + 0.04 * (k - 7.5) / 7.5 for k in range(16)]
+        for row in self.templates:
+            w = row["wavelength_angstrom"] / 1e4
+            late = row["moca_spherex_template_id"] == 1
+            row.update(spectral_type="sdL0" if late else "K0", spectral_type_number=10 if late else -10,
+                       grid_type="subdwarfs" if late else "field",
+                       flux_flambda=(flux[round((w - 1) * 8)] if late else 1) / w ** 2)
+        self.set_product(2, flux)
+        base = {"lane": "moshpit", "moca_oids": [42], "pending_only": True}
+        custom = {"options": {"nonfield_odds_k": 1, "nonfield_extreme_odds_k": 1}}
+        for opts, label in (({}, "K0"), (custom, "sdL0")):
+            data = self.api("analyze", {**base, **opts, "candidate_id": 2}).get_json()
+            self.assertEqual(data["fit"]["best"]["spectral_type"], label)
+            self.assertFalse(data["object"]["main_queue_type_eligible"])
+            self.assertEqual(self.api("queue-count", {**base, **opts}).get_json()["total"], 0)
+            self.assertEqual(self.api("queue", {**base, **opts}).get_json()["items"], [])
 
     def test_motion_requires_current_oid_and_uses_candidate_position(self):
         base = {"lane":"moshpit","candidate_id":2,"moca_oid":42}

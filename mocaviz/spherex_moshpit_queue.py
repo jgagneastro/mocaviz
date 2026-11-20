@@ -9,6 +9,7 @@ from threading import Lock
 
 from astropy.coordinates import SkyCoord
 
+from .spherex_native_fit import NativeTemplateGrid, VERSION, fit_rows_on_grid
 from . import spherex_queue_metrics as metrics
 from . import spherex_review as review
 
@@ -17,13 +18,47 @@ TABLE = "pcat_moshpit_candidates"
 NUMBER = "COALESCE(CAST(JSON_VALUE(c.review_history,'$[0].moshpit_number') AS UNSIGNED),c.id)"
 DESIGNATION = f"CONCAT('MOSHPIT ',{NUMBER})"
 READY = "c.origin='moshpit/native_dr1' AND c.spectrum_json IS NOT NULL"
+MIN_MAIN_TYPE = 10.0  # L0 on the shared spectral-type scale.
 # Cache only summary numbers. A changed native spectrum gets a new digest.
 _summaries = OrderedDict()
 _cache_lock = Lock()
 
 
-def spectrum_summary(raw):
-    product = json.loads(raw)
+def spectral_rows(product):
+    try:
+        wave, flux, error = (product[k] for k in ("wavelength_um", "flux_ujy", "error_ujy"))
+        if not all(isinstance(v, list) for v in (wave, flux, error)) or not (len(wave) == len(flux) == len(error)):
+            raise ValueError()
+        spectrum = []
+        for w, f, e in zip(wave, flux, error):
+            if w is None or f is None or not math.isfinite(w) or w <= 0 or not math.isfinite(f):
+                continue
+            angstrom = w * 1e4
+            # A microjansky converted to W m^-2 Angstrom^-1.
+            conversion = 2.99792458e-14 / angstrom**2
+            valid_error = e is not None and math.isfinite(e) and e > 0
+            spectrum.append({"wavelength_angstrom": angstrom,
+                             "flux_flambda": f * conversion, "flux_flambda_unc": e * conversion if valid_error else None,
+                             "ignored": int(not valid_error)})
+        return spectrum
+    except (TypeError, KeyError, ValueError, OverflowError):
+        raise review.ReviewError("The MOSHPIT spectrum contains invalid channel arrays.", 422) from None
+
+
+def custom_priors(options):
+    # The sigma cap is a displayed diagnostic. Only these odds change native template ranking.
+    return any(options[k] != review.DEFAULT_OPTIONS[k] for k in ("nonfield_odds_k", "nonfield_extreme_odds_k"))
+
+
+def spectrum_summary(raw, grid, options):
+    try:
+        product = json.loads(raw)
+        rows = spectral_rows(product)
+        standard = fit_rows_on_grid(rows, grid, ranking_only=True)[0]
+        current = fit_rows_on_grid(rows, grid, options, ranking_only=True)[0] if custom_priors(options) else standard
+    except (ValueError, review.ReviewError):
+        # No valid shared fit means this spectrum cannot enter the main queue.
+        return None
     bands = {key: [] for key in (*review.SNR_WAVELENGTH_RANGES, "1-2")}
     bounds = {**review.SNR_WAVELENGTH_RANGES, "1-2": (1, 2)}
     terms = []
@@ -41,19 +76,27 @@ def spectrum_summary(raw):
     return (
         {band: median(snr) if snr else None for band, snr in bands.items()},
         sum(terms) / len(terms) if terms else None,
+        standard["best"]["spectral_type_number"],
+        current["best"]["spectral_type_number"],
+        current["delta_early_minus_late"],
     )
 
 
-def summaries(cur, candidates):
+def summaries(cur, candidates, options):
+    if not candidates:
+        return {}
+    templates = review.template_rows(cur)
+    policy = (VERSION, review.fingerprint(templates), options["nonfield_odds_k"], options["nonfield_extreme_odds_k"])
     result, missing = {}, []
     with _cache_lock:
         for row in candidates:
-            key = (row["candidate_id"], row["digest"])
+            key = (row["candidate_id"], row["digest"], policy)
             if key in _summaries:
                 result[key[0]] = _summaries[key]
                 _summaries.move_to_end(key)
             else:
                 missing.append(key[0])
+    grid = NativeTemplateGrid(templates) if missing else None
     for start in range(0, len(missing), 256):
         ids = missing[start : start + 256]
         # MariaDB prefixes COMPRESS() results with a four-byte length.
@@ -64,9 +107,9 @@ def summaries(cur, candidates):
             + ")"
         )
         for row in review.rows(cur, query, tuple(ids)):
-            value = spectrum_summary(zlib.decompress(row["packed"][4:]))
+            value = spectrum_summary(zlib.decompress(row["packed"][4:]), grid, options)
             with _cache_lock:
-                key = (row["id"], row["digest"])
+                key = (row["id"], row["digest"], policy)
                 _summaries[key] = result[row["id"]] = value
                 _summaries.move_to_end(key)
                 if len(_summaries) > 65536:
@@ -248,12 +291,19 @@ def queue(cur, body, count_only):
         if chi not in (None, "")
         else None
     )
-    need_stats = priority or any(x is not None for x in (chi, low, high))
-    if need_stats:
-        fields.append("SHA2(c.spectrum_json,256) AS digest")
+    minimum = body.get("min_current_fit_sptn")
+    minimum = (
+        max(MIN_MAIN_TYPE, review.bounded_float(minimum, "Current fitted type", -60, 40))
+        if minimum not in (None, "") else MIN_MAIN_TYPE
+    )
+    gap_min = body.get("min_current_fit_gap")
+    if gap_min not in (None, ""):
+        gap_min = review.bounded_float(gap_min, "Current fit separation", -math.inf, math.inf)
+    else:
+        gap_min = None
+    options = review.fit_options(body)
+    fields.append("SHA2(c.spectrum_json,256) AS digest")
     selection = f" FROM {TABLE} c " + " ".join(joins) + " WHERE " + " AND ".join(where)
-    if count_only and not need_stats and lat is None:
-        return review.rows(cur, "SELECT COUNT(*) AS total" + selection, tuple(params))[0]
     records = review.rows(cur, "SELECT " + ",".join(fields) + selection, tuple(params))
     if records and (lat is not None or (priority and order in metrics.GALACTIC_ORDERS)):
         coords = SkyCoord([r["ra"] for r in records], [r["dec"] for r in records], unit="deg")
@@ -262,21 +312,25 @@ def queue(cur, body, count_only):
             row["sort_galactic_bin"] = 0 if b > 15 else 1 if b > 10 else 2
         if lat is not None:
             records = [r for r in records if r["abs_b"] >= lat]
-    if need_stats:
-        stats = summaries(cur, records)
-        eligible = []
-        for row in records:
-            snrs, reduced = stats[row["candidate_id"]]
-            snr = snrs[band]
-            if (
-                (low is not None and (snr is None or snr < low))
-                or (high is not None and (snr is None or snr > high))
-                or (chi is not None and (reduced is None or reduced > chi))
-            ):
-                continue
-            row["sort_snr_1_2"] = snrs["1-2"]
-            eligible.append(row)
-        records = eligible
+    stats = summaries(cur, records, options)
+    eligible = []
+    for row in records:
+        value = stats.get(row["candidate_id"])
+        if value is None:
+            continue
+        snrs, reduced, standard_type, current_type, gap = value
+        snr = snrs[band]
+        if (
+            standard_type < MIN_MAIN_TYPE or current_type < minimum
+            or (gap_min is not None and (gap is None or gap < gap_min))
+            or (low is not None and (snr is None or snr < low))
+            or (high is not None and (snr is None or snr > high))
+            or (chi is not None and (reduced is None or reduced > chi))
+        ):
+            continue
+        row["sort_snr_1_2"] = snrs["1-2"]
+        eligible.append(row)
+    records = eligible
     if count_only:
         return {"total": len(records)}
     for row in records:

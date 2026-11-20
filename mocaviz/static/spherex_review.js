@@ -219,10 +219,15 @@
     motionReview.update();
     scheduleAutoNextBatch();
   }
+  function isMainMoshpit(request) {
+    return request.lane === "moshpit" && !request.candidate_id && !request.moshpit_number;
+  }
   async function api(operation, body = {}, suppliedController = null) {
     const controller = suppliedController || new AbortController();
     controllers.add(controller);
-    const timeout = setTimeout(() => controller.abort(), 90000);
+    // A cold campaign queue fits all selected spectra. Quit can cancel the request.
+    const campaignFit = isMainMoshpit(body) && (operation === "queue" || operation === "queue-count");
+    const timeout = campaignFit ? null : setTimeout(() => controller.abort(), 90000);
     try {
       const url = new URL("api/spherex-review/" + operation, base);
       // URL-supplied credentials travel in headers, never repeated API URLs.
@@ -266,7 +271,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
-    if (request.lane === "moshpit") return 25;
+    if (request.lane === "moshpit") return 26;
     if (request.moca_specid) return request.adopted_spt_source === "public" ? 9 : 0;
     if (request.sublime3c_selection_pass_only || request.sublime3c_priority_high_only) return 22;
     if (request.lane === "all" || request.vetting_classification) return 21;
@@ -300,7 +305,7 @@
         throw new Error("The review service needs to be restarted to count updated-selection passes.");
       if ((request.max_snr != null || request.max_sublime2_snr != null) && (queue_filter_version ?? 0) < 12)
         throw new Error("The review service needs to be restarted to count these S/N filters.");
-      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + ((request.min_current_fit_sptn != null || request.min_current_fit_gap != null) ? " database matches before current-fit cut" : " total matches at load");
+      if (!closed && queueRequest === request) label.textContent = total.toLocaleString() + ((request.lane !== "moshpit" && (request.min_current_fit_sptn != null || request.min_current_fit_gap != null)) ? " database matches before current-fit cut" : " total matches at load");
     } catch {
       if (!closed && queueRequest === request) label.textContent = "Total match count unavailable";
     }
@@ -404,7 +409,10 @@
             min_current_fit_gap: $("current-fit-gap").value || null,
             exclude_duplicates: $("exclude-duplicates").checked,
             no_known: $("no-known").checked, public_ucd_only: $("review-sample").value === "public-ucd", limit: batchSize()};
-        if (native && !candidateId) request.oid_status = $("moshpit-oids").value;
+        if (native && !candidateId) {
+          request.oid_status = $("moshpit-oids").value;
+          request.options = options();
+        }
         if ((context?.queue_filter_version ?? 0) < requiredQueueFilterVersion(request))
           throw new Error("The review service needs to be restarted to enable these queue filters. No queue was loaded.");
         if (request.min_current_fit_sptn != null && (!Number.isFinite(Number(request.min_current_fit_sptn)) ||
@@ -429,7 +437,8 @@
       const requestBody = {...queueRequest, after: more ? nextAfter : 0};
       if (!queueRequest.moca_specid) requestBody.limit = batchSize();
       loading = true; updateControls();
-      status(automatic ? "Loading next batch automatically…" : "Loading spectra from MOCAdb…");
+      status(automatic ? "Loading next batch automatically…" : isMainMoshpit(queueRequest)
+        ? "Checking shared L0+ fits for the MOSHPIT queue…" : "Loading spectra from MOCAdb…");
       const data = await api("queue", requestBody);
       if (closed) return;
       if ((data.queue_filter_version ?? 0) < requiredQueueFilterVersion(queueRequest))
@@ -553,13 +562,14 @@
     try {
       const data = await analysis(item, fitOptions, refresh);
       if (gen !== generation || closed) return;
-      const minimum = queueRequest.min_current_fit_sptn;
+      const mainMoshpit = isMainMoshpit(queueRequest);
+      const minimum = mainMoshpit ? Math.max(10, Number(queueRequest.min_current_fit_sptn || 0)) : queueRequest.min_current_fit_sptn;
       const fittedType = data.fit?.best?.spectral_type_number;
       const gapMinimum = queueRequest.min_current_fit_gap;
       const gap = data.fit?.delta_early_minus_late;
       const failsGap = data.fit?.fit_version === "native_signed_student4_v1" && gapMinimum != null && gapMinimum !== "" &&
         (typeof gap !== "number" || !Number.isFinite(gap) || gap < Number(gapMinimum));
-      if (failsGap || (minimum != null && minimum !== "" &&
+      if ((mainMoshpit && !data.object.main_queue_type_eligible) || failsGap || (minimum != null && minimum !== "" &&
           (typeof fittedType !== "number" || !Number.isFinite(fittedType) || fittedType < Number(minimum)))) {
         fitHidden.add(key(item));
         clearFit(); updateControls();
@@ -609,8 +619,20 @@
       const counterpart = obj.object_designation && obj.object_designation !== obj.designation ? obj.object_designation + " · " : "";
       $("object-meta").textContent = counterpart + oid + " · " + obj.n_measured_channels + "/" + obj.n_total_channels +
         " channels measured" +
-        " · survey fit " + obj.selection_type + " · " + obj.selection_route + " · median S/N " +
+        " · selection template " + obj.selection_type + " · " + obj.selection_route + " · median S/N " +
         (Number.isFinite(obj.median_snr_per_pix) ? obj.median_snr_per_pix.toFixed(1) : "—");
+      const check = obj.selection_checks;
+      if (check) {
+        const repeatTests = [check.primary && "primary", check.empirical_pass && "empirical"].filter(Boolean);
+        if (repeatTests.length) $("object-meta").append(" · MOSHPIT repeat test passed (" + repeatTests.join(", ") + ")");
+        if (check.sublime4_type) {
+          const decision = check.sublime4_channel ? "passed " + check.sublime4_channel +
+            (check.eligible_sublime4 === false ? ", failed repeat check" : "") :
+            check.eligible_sublime4 === false ? "failed selection" : "decision unavailable";
+          $("object-meta").append(" · Archived SUBLIME4 fit " + check.sublime4_type + " (" + decision + ")");
+        }
+      }
+      if (obj.main_queue_type_eligible === false) $("object-meta").append(" · Outside the shared L0+ main queue");
     }
     const finite = (value) => typeof value === "number" && Number.isFinite(value);
     const probability = obj.spectral_cnn_probability;
@@ -631,7 +653,7 @@
     catalogCNN.textContent = "SUBLIME2 CNN P=" + (finite(obj.sublime2_cnn_probability) && obj.sublime2_cnn_probability >= 0 && obj.sublime2_cnn_probability <= 1 ?
       (100 * obj.sublime2_cnn_probability).toFixed(1) + "%" : "—");
     if (data.lane === "moshpit") {
-      cnn.title = "Stored MOSHPIT CNN acceptance for this candidate spectrum";
+      cnn.title = "Spectral-quality acceptance from the shared CNN on the archived channel grid. MOSHPIT repeat selection can pass independently.";
       cnn.textContent = "MOSHPIT CNN acceptance=" + (finite(probability) ? (100 * probability).toFixed(1) + "%" : "—");
       $("object-meta").append(" · ", cnn, " · ", fitQuality);
     } else {

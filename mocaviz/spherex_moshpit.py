@@ -1,39 +1,17 @@
 """MOSHPIT candidate spectra for the standard SPHEREx reviewer."""
 
 import json
-import math
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from . import spherex_review as review
-from .spherex_native_fit import fit_spectrum_rows
+from .spherex_native_fit import NativeTemplateGrid, fit_rows_on_grid, fit_spectrum_rows
 
-from .spherex_moshpit_queue import TABLE, READY, DESIGNATION, queue
+from .spherex_moshpit_queue import DESIGNATION, MIN_MAIN_TYPE, READY, TABLE, custom_priors, queue, spectral_rows
 
 
 def requested(body):
     return body.get("lane") == "moshpit" or body.get("review_sample") == "moshpit"
-
-
-def spectral_rows(product):
-    try:
-        wave, flux, error = (product[k] for k in ("wavelength_um", "flux_ujy", "error_ujy"))
-        if not all(isinstance(v, list) for v in (wave, flux, error)) or not (len(wave) == len(flux) == len(error)):
-            raise ValueError()
-        spectrum = []
-        for w, f, e in zip(wave, flux, error):
-            if w is None or f is None or not math.isfinite(w) or w <= 0 or not math.isfinite(f):
-                continue
-            angstrom = w * 1e4
-            # A microjansky converted to W m^-2 Angstrom^-1.
-            conversion = 2.99792458e-14 / angstrom**2
-            valid_error = e is not None and math.isfinite(e) and e > 0
-            spectrum.append({"wavelength_angstrom": angstrom,
-                             "flux_flambda": f * conversion, "flux_flambda_unc": e * conversion if valid_error else None,
-                             "ignored": int(not valid_error)})
-        return spectrum
-    except (TypeError, KeyError, ValueError, OverflowError):
-        raise review.ReviewError("The MOSHPIT spectrum contains invalid channel arrays.", 422) from None
 
 
 def review_state(row):
@@ -44,7 +22,7 @@ def review_state(row):
 
 def candidate(cur, cid, *, spectrum=False, lock=False):
     # Keep the write lock on the candidate alone. An OID assignment can arrive during a review.
-    fields = ",c.spectrum_json,c.moca_oid,c.ra_deg,c.dec_deg,c.median_snr,c.selection_route,c.spectral_type,c.p_accept" if spectrum else ""
+    fields = ",JSON_EXTRACT(c.evidence_json,'$.chosen_fit') AS selection_evidence,c.spectrum_json,c.moca_oid,c.ra_deg,c.dec_deg,c.median_snr,c.selection_route,c.spectral_type,c.p_accept" if spectrum else ""
     found = review.rows(cur, f"""
         SELECT c.id,{DESIGNATION} AS designation,c.source_key,c.spectral_review,c.review_history,SHA2(c.spectrum_json,256) AS data_revision{fields}
         FROM {TABLE} c WHERE c.id=%s AND {READY}""" + (" FOR UPDATE" if lock else ""), (cid,))
@@ -78,12 +56,24 @@ def analyze(cur, body):
             "median_snr_per_pix": row["median_snr"], "spectral_cnn_probability": row["p_accept"]}
     if objects:
         meta.update(objects[0], adopted_spt_source="private" if source == "survey" else source)
+    evidence = json.loads(row["selection_evidence"] or "null")
+    if isinstance(evidence, dict):
+        meta["selection_checks"] = {key: evidence.get(key) for key in (
+            "primary", "empirical_pass", "eligible_sublime4", "sublime4_channel", "sublime4_type",
+            "delta", "empirical_delta", "delta_first", "delta_last",
+        )}
     options = review.fit_options(body)
     templates = review.template_rows(cur)
     try:
-        fit, warning = fit_spectrum_rows(spectrum, templates, options), None
+        grid = NativeTemplateGrid(templates)
+        fit, warning = fit_spectrum_rows(spectrum, grid, options), None
+        standard = (
+            fit_rows_on_grid(spectrum, grid, ranking_only=True)[0] if custom_priors(options) else fit
+        )
+        meta["main_queue_type_eligible"] = standard["best"]["spectral_type_number"] >= MIN_MAIN_TYPE
     except ValueError as exc:
         fit, warning = None, str(exc)
+        meta["main_queue_type_eligible"] = False
     return {"lane": "moshpit", "read_only": False, "object": meta, "fit": fit, "raw_spectrum": spectrum,
             "state": {"spectral_review": row["spectral_review"]}, "warning": warning,
             "revision": revision, "data_revision": row["data_revision"]}
