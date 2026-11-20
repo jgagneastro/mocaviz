@@ -244,7 +244,7 @@
         </thead>
         <tbody>
           <tr><td><code>moca_oid</code>, <code>oid</code></td><td>Numeric MOCA OID</td><td>Loads that object. Defaults to <code>602</code>.</td></tr>
-          <tr><td><code>missions</code></td><td>Comma-separated mission labels</td><td>Shows only those mission traces.</td></tr>
+          <tr><td><code>missions</code></td><td>Comma-separated mission labels</td><td>Shows only those mission traces. unTimely is unchecked by default.</td></tr>
           <tr><td><code>calibration_methods</code></td><td>Comma-separated method labels</td><td>Shows only rows with accepted calibration methods. Use <code>__none__</code> for rows without a stored method.</td></tr>
           <tr><td><code>subtract_pm</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted proper motion from the plotted offsets.</td></tr>
           <tr><td><code>subtract_plx</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Subtracts the adopted parallax motion from the plotted offsets.</td></tr>
@@ -254,7 +254,7 @@
           <tr><td><code>display_merged</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Includes merged astrometry rows where <code>single_epoch=0</code>.</td></tr>
           <tr><td><code>display_reference</code></td><td><code>0</code> disables it</td><td>Shows the adopted reference astrometry as a star by default.</td></tr>
           <tr><td><code>adjust_ref</code></td><td><code>0</code> disables it</td><td>Uses adjusted reference astrometry by default.</td></tr>
-          <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated rows, or missions explicitly marked as display-ready, by default.</td></tr>
+          <tr><td><code>only_recalibrated</code></td><td><code>0</code> disables it</td><td>Uses recalibrated or display-ready measurements by default. 2MASS requires a calibration method on each measurement.</td></tr>
           <tr><td><code>revert_raw</code></td><td><code>1</code>, <code>true</code>, or <code>yes</code></td><td>Uses raw, non-recalibrated astrometry when calibration offsets exist.</td></tr>
           <tr><td><code>fit_method</code></td><td><code>scipy</code> or <code>ultranest</code></td><td>Selects the server-side fit method.</td></tr>
           <tr><td><code>fit_outlier_mixture</code></td><td><code>0</code> disables it</td><td>Uses a Gaussian moving-source likelihood plus a Student-t measurement-failure component, and activates a distinct stationary-source component only when supported by multiple separated measurements.</td></tr>
@@ -276,6 +276,6 @@
     </footer>
   </div>
   <script src="static/export_utils.js?v=exports-20260512"></script>
-    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b-fit-progress-20261026a-bands-20261107a-missions-20261109a-survey-offsets-20261109b"></script>
+    <script src="static/astrometry.js?v=api-routing-20260710a-robust-fit-20260721a-management-20261021b-fit-progress-20261026a-bands-20261107a-missions-20261109a-survey-offsets-20261109b-2mass-untimely-defaults"></script>
 </body>
 </html>

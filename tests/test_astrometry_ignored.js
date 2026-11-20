@@ -62,7 +62,7 @@ test('mission-band filters separate releases and exclude rows from fits and expo
   assert.equal(f.run('prepareAstrometryRows().rows.length'), 5);
 });
 
-test('mission defaults prefer usable unWISEMotion and the highest numbered release of the exact mission', () => {
+test('mission defaults exclude unTimely and prefer the highest numbered release of the exact mission', () => {
   const f = fixture();
   const dataset = (id, name, release, fields = {}) => ({
     ...f.rows[0], id, mission: name + ' ' + release, mission_name: name, data_release: release, ...fields,
@@ -79,6 +79,8 @@ test('mission defaults prefer usable unWISEMotion and the highest numbered relea
     dataset(9, 'VHS Deep', 'DR1'),
     dataset(10, 'vhs', 'DR3'),
     dataset(11, 'VHS', 'DR2PLUS'),
+    dataset(12, 'WISE', 'unTimely W1'),
+    dataset(13, 'unTimely', '2024'),
   ];
   f.run('normalizeAstrometryMissions(payload); initializeMissionSelection()');
   const selected = () => plain(f.run('[...atmState.selectedMissions].sort()'));
@@ -88,10 +90,18 @@ test('mission defaults prefer usable unWISEMotion and the highest numbered relea
   f.context.payload.rows[1].ignored = 1;
   f.context.payload.rows[2].ignored = 1;
   f.run('initializeMissionSelection()');
-  assert.ok(selected().includes('WISE unTimely'));
+  assert.ok(!selected().some(mission => /untimely/i.test(mission)));
+
+  f.context.payload.rows = [f.context.payload.rows[0]];
+  f.run('normalizeAstrometryMissions(payload); initializeMissionSelection()');
+  assert.deepEqual(selected(), []);
+  f.run('initializeMissionSelection(true)');
+  assert.deepEqual(selected(), ['WISE unTimely']);
+
+  f.context.payload.rows.push(dataset(2, 'WISE', 'unWISEMotion W1'), dataset(4, 'VHS', 'DR6'));
+  f.run('normalizeAstrometryMissions(payload)');
 
   f.run(`atmState.initialMissions = ['VHS DR6', 'WISE unTimely']; initializeMissionSelection();`);
-  f.context.payload.rows[1].ignored = 0;
   f.run('initializeMissionSelection()');
   assert.deepEqual(selected(), ['VHS DR6', 'WISE unTimely']);
 });
@@ -157,6 +167,33 @@ test('ignored rows never enter client fits, requests, fit counts, or fitted curv
   f.run('atmState.fitResult = computeAstrometryFit("pm", prepareAstrometryRows())');
   const curve = plain(f.run('buildAstrometryFitCurve(atmState.fitResult, prepareAstrometryRows())'));
   assert.ok(Math.max(...curve.x) < 2020);
+});
+
+test('recalibrated-only astrometry requires a calibration method for each 2MASS row', () => {
+  const f = fixture();
+  const raw = {...f.rows[0], id:10, mission:'2MASS PSC', mission_name:'2MASS',
+    data_release:'PSC', include_in_recalibrated_display:1, calibration_method:null};
+  const merged = {...raw, id:11, single_epoch:0, calibration_method:' '};
+  const calibrated = {...raw, id:12, calibration_method:'gaiadr3_offset_py'};
+  f.rows[1].include_in_recalibrated_display = 1;
+  f.context.payload.rows = [raw, merged, calibrated, f.rows[1], f.rows[2]];
+  f.run(`
+    atmEl['atm-only-recalibrated'].checked = true;
+    atmEl['atm-display-merged'].checked = true;
+    normalizeAstrometryMissions(payload);
+    initializeMissionSelection();
+    initializeCalibrationMethodSelection();
+  `);
+  const ids = () => plain(f.run('prepareAstrometryRows().rows.map(row => row.id)'));
+  assert.deepEqual(ids(), [12, 2]);
+  assert.deepEqual(plain(f.run('buildAstrometryFitRequest("pm", prepareAstrometryRows()).rows.map(row => row.id)')), [12, 2]);
+
+  f.context.payload.rows = [raw, merged, f.rows[2]];
+  assert.deepEqual(ids(), [3]);
+  assert.equal(f.run('prepareAstrometryRows().usedFallbackRecalibration'), true);
+
+  f.run("atmEl['atm-only-recalibrated'].checked = false");
+  assert.deepEqual(ids(), [10, 11, 3]);
 });
 
 test('ignored calibrated rows do not suppress the fallback to active uncalibrated measurements', () => {

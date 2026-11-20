@@ -854,7 +854,6 @@ function defaultAstrometryMissions(available) {
   const releases = new Map();
   const latestRelease = new Map();
   const unTimelyMissions = new Set();
-  let hasUnwiseMotion = false;
   for (const row of atmState.payload?.rows || []) {
     const name = row.mission_name?.trim();
     const release = row.data_release?.trim();
@@ -866,14 +865,13 @@ function defaultAstrometryMissions(available) {
       releases.set(row.mission, { name, number });
       if (usable) latestRelease.set(name, Math.max(number, latestRelease.get(name) ?? -Infinity));
     }
-    if (name === "WISE") {
-      if (/^untimely$/i.test(release)) unTimelyMissions.add(row.mission);
-      if (usable && /^unwisemotion(?: W[12])?$/i.test(release)) hasUnwiseMotion = true;
+    if (/^untimely\b/i.test(release ?? "") || /^untimely\b/i.test(name ?? "")) {
+      unTimelyMissions.add(row.mission);
     }
   }
   return new Set([...available].filter((mission) => {
     const dr = releases.get(mission);
-    return !(dr && dr.number < latestRelease.get(dr.name)) && !(hasUnwiseMotion && unTimelyMissions.has(mission));
+    return !(dr && dr.number < latestRelease.get(dr.name)) && !unTimelyMissions.has(mission);
   }));
 }
 
@@ -1084,11 +1082,17 @@ function prepareAstrometryRows() {
   const payload = atmState.payload;
   const allRows = (payload.rows || []).map((row) => ({ ...row }));
   const displayMerged = atmEl["atm-display-merged"].checked;
-  const recalFiltered = atmEl["atm-only-recalibrated"].checked
-    ? allRows.filter((row) => row.calibration_method || Number(row.include_in_recalibrated_display) === 1 || (displayMerged && Number(row.single_epoch) === 0))
-    : allRows;
+  const onlyRecalibrated = atmEl["atm-only-recalibrated"].checked;
+  // Even the fallback to uncalibrated measurements requires row-level calibration for 2MASS.
+  const eligibleRows = onlyRecalibrated ? allRows.filter((row) => {
+    const mission = row.mission_name?.trim() || row.mission?.trim() || "";
+    return !/^2mass(?:\s|$)/i.test(mission) || astrometryCalibrationMethodKey(row) !== atmNoCalibrationMethodKey;
+  }) : allRows;
+  const recalFiltered = onlyRecalibrated
+    ? eligibleRows.filter((row) => row.calibration_method || Number(row.include_in_recalibrated_display) === 1 || (displayMerged && Number(row.single_epoch) === 0))
+    : eligibleRows;
   const hasRecalibratedActiveRows = recalFiltered.some((row) => !isIgnoredAstrometryRow(row));
-  const baseRows = hasRecalibratedActiveRows ? recalFiltered : allRows;
+  const baseRows = hasRecalibratedActiveRows ? recalFiltered : eligibleRows;
   const calibrationOptions = astrometryCalibrationMethodOptions(allRows);
   const selectedCalibrationMethods = new Set([...atmState.selectedCalibrationMethods].map((method) => astrometryCalibrationMethodKey(method)));
   const calibrationRows = selectedCalibrationMethods.size
@@ -1280,7 +1284,7 @@ function prepareAstrometryRows() {
       rejected: calibrationOptions.filter((method) => !selectedCalibrationMethods.has(method.value)),
       filteredOutCount: baseRows.length - calibrationRows.length,
     },
-    usedFallbackRecalibration: atmEl["atm-only-recalibrated"].checked && !hasRecalibratedActiveRows && allRows.some((row) => !isIgnoredAstrometryRow(row)),
+    usedFallbackRecalibration: onlyRecalibrated && !hasRecalibratedActiveRows && eligibleRows.some((row) => !isIgnoredAstrometryRow(row)),
   };
 }
 
@@ -2812,7 +2816,7 @@ function astrometrySummaryTextLine(label, value) {
 function astrometryCalibrationMethodDescription(value) {
   const method = astrometryCalibrationMethodKey(value);
   if (method === atmNoCalibrationMethodKey) {
-    return "No data_equatorial_coordinates.calibration_method value is stored for these rows. They are not tagged with a detection-level recalibration branch; if shown while the recalibrated-only option is enabled, they survived through mission-level include_in_recalibrated_display, merged-row display, or the no-recalibrated-rows fallback.";
+    return "No data_equatorial_coordinates.calibration_method value is stored for these rows. They are not tagged with a detection-level recalibration branch; if shown while the recalibrated-only option is enabled, they survived through mission-level include_in_recalibrated_display, merged-row display, or the fallback for eligible missions with no recalibrated rows.";
   }
   if (atmCalibrationMethodDescriptions[method]) return atmCalibrationMethodDescriptions[method];
   const legacyMethod = method.endsWith("_py") ? method.slice(0, -3) : method;
@@ -3023,7 +3027,7 @@ function renderAstrometrySummary(prepared) {
   const manualRejectedCount = astrometryManualRejectedRows(prepared).length;
   const ignoredCount = rows.filter(isIgnoredAstrometryRow).length;
   const duplicateCount = prepared.rows.filter((row) => asBool(row.auto_duplicate)).length;
-  const recalcNote = prepared.usedFallbackRecalibration ? " Recalibrated-only filter had no rows, so all rows are shown." : "";
+  const recalcNote = prepared.usedFallbackRecalibration ? " No recalibrated or display-ready rows were available, so eligible uncalibrated rows are shown." : "";
   const fit = atmState.fitResult;
   const fittedCoordinate = astrometryFittedCoordinate(fit, prepared);
   const calibrationSummary = astrometryCalibrationSummaryMarkup(prepared);
