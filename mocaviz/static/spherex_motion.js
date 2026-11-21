@@ -12,6 +12,7 @@
     let upcoming = [], resolveObject, resolving = null, preloading = null, budgetReached = false;
     const cache = new Map(), skipped = new Set();
     const panel = $('motion-panel'), template = $('motion-frame');
+    const epochs = window.MoshpitEpochCharts?.create();
     const classification = $('motion-classification'), scoreSix = $('motion-score-six');
     const sixChoice = () => context?.choices?.find(choice => choice.score === 6);
     const same = object => current && key(current.object) === key(object) && current.object.moca_oid === object.moca_oid;
@@ -39,6 +40,7 @@
     }
     function clear(keep = []) {
       ++generation;
+      epochs?.clear();
       clearTimeout(loadTimer);
       discard(active);
       const keys = new Set(keep.map(key));
@@ -65,13 +67,14 @@
       const {ra, dec} = object;
       const url = new URL('spherex-review-wiseview', base);
       url.searchParams.set('frame', token);
+      if (object.candidate_id != null && epochs?.local) url.searchParams.set('comparison', '1');
       if (background) url.searchParams.set('preload', '1');
       url.hash = new URLSearchParams({ra, dec, size:30, band:3, speed:500, minbright:-50,
         maxbright:500, window:5, diff_window:1, linear:1, color:'', zoom:40, border:0,
         gaia:1, invert:1, maxdyr:1, scandir:0, neowise:0, diff:0,
         outer_epochs:1, unique_window:1, smooth_scan:0, shift:0, pmra:0, pmdec:0});
       node.src = url.href;
-      panel.append(node);
+      $('wiseview-cutout').append(node);
       return entry;
     }
     function resume(entry) {
@@ -216,6 +219,7 @@
       if (closed || same(data.object)) return;
       if (current) clear([data.object, ...next]);
       current = data; upcoming = next; resolveObject = lookup; panel.hidden = false;
+      epochs?.show(data);
       $('motion-target').textContent = (data.object.designation || 'Object') + (data.object.moca_oid == null ? ' · awaiting OID' : ' · OID ' + data.object.moca_oid);
       if (data.object.moca_oid == null) $('motion-stored').textContent = 'An OID is required to save an object-level motion score.';
       else if (data.read_only) $('motion-stored').textContent = 'Read-only spectrum; motion submissions are disabled.';
@@ -260,7 +264,7 @@
       update();
     };
     $('motion-save').onclick = save; $('motion-undo').onclick = undo;
-    $('motion-reload').onclick = () => { loadFrame(0, true); void refreshContext(); };
+    $('motion-reload').onclick = () => { if (current) epochs?.show(current); loadFrame(0, true); void refreshContext(); };
     $('motion-classification').onchange = $('motion-replace').onchange = update;
     $('motion-autoload').onchange = () => {
       if (!$('motion-autoload').checked) {

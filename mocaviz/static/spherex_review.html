@@ -26,8 +26,9 @@
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261120-moshpit-channels"></script>
   <script defer src="static/review_presets.js?v=4"></script>
-  <link rel="stylesheet" href="static/spherex_motion.css?v=20261115-motion-v1">
-  <script defer src="static/spherex_motion.js?v=20261120-moshpit-motion"></script>
+  <link rel="stylesheet" href="static/spherex_motion.css?v=20261121-epoch-charts">
+  <script defer src="static/spherex_moshpit_epochs.js?v=2"></script>
+  <script defer src="static/spherex_motion.js?v=20261121-epoch-charts"></script>
   <script defer src="static/spherex_review.js?v=20261120-point-coverage"></script>
 </head>
 <body>
@@ -199,7 +200,24 @@
           <p id="motion-last-action" role="status" aria-live="polite"></p>
           <label class="motion-check"><input id="motion-autoload" type="checkbox" checked>Automatically load WiseView for the displayed spectrum</label>
           <p id="motion-status" role="status"></p>
-          <iframe id="motion-frame" title="WiseView animation at the current object's coordinates" sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
+          <div id="motion-images" class="motion-images">
+            <div id="wiseview-cutout" class="wiseview-cutout">
+              <iframe id="motion-frame" title="WiseView animation at the current object's coordinates" sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
+            </div>
+            <section id="moshpit-epochs" aria-labelledby="epoch-title" hidden>
+              <div class="epoch-heading"><h4 id="epoch-title">unWISE epoch differences</h4>
+                <div class="epoch-actions"><button id="epoch-enlarge" type="button" hidden>Full size [Alt+I]</button>
+                  <button id="epoch-references" type="button">Reference dwarfs [Alt+K]</button></div></div>
+              <p id="epoch-status" role="status"></p>
+              <img id="epoch-chart" alt="" hidden>
+            </section>
+          </div>
+          <dialog id="epoch-dialog" aria-labelledby="epoch-full-title">
+            <div class="epoch-heading"><h3 id="epoch-full-title"></h3><button id="epoch-close" type="button" autofocus>Close [Esc]</button></div>
+            <label id="epoch-reference-picker" hidden>Known Galactic-plane dwarf <select id="epoch-reference-choice"></select></label>
+            <p id="epoch-reference-status" role="status"></p>
+            <div class="epoch-scroll"><img id="epoch-full" alt=""></div>
+          </dialog>
         </section></div>
         <section class="decisions"><h2>Visual quality</h2><div id="classifications"></div><small id="write-hint">Management URL credentials are required for database submissions.</small></section>
       </div>
