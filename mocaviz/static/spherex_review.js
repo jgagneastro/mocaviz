@@ -134,7 +134,7 @@
     return {drop_worst_n: Number($("drop").value), chi2_sigma_cap: Number($("cap").value),
       nonfield_odds_k: Number($("odds").value), nonfield_extreme_odds_k: Number($("extreme").value)};
   }
-  function policyReady() { return (context?.write_policy_version ?? 0) >= 1; }
+  function policyReady() { return (context?.write_policy_version ?? 0) >= 2; }
   function writable() { return Boolean(policyReady() && context?.can_write && $("write-enabled").checked && !closed && !busyUndo); }
   function canReview() { return Boolean(current && !current.read_only); }
   let catalogLane = $("lane").value;
@@ -271,6 +271,7 @@
     throw new Error("Enter a positive integer spectrum ID or a URL containing specid.");
   }
   function requiredQueueFilterVersion(request) {
+    if (request.review_sample === "unresolved") return 29;
     if (request.min_spectrum_points != null || request.snr_wavelength_range === "2-3") return 28;
     const apertureInput = ["sublimeaperture", "moshpit", "all"].includes(request.lane);
     const allThreeMissing = request.missing_vetting === "both";
@@ -383,6 +384,7 @@
           ...(surveyName ? {moshpit_number:surveyName[1]} : {candidate_id:candidateId}),
           adopted_spt_source:$("adopted-spt-source").value, limit:1} :
           !native && specid ? {moca_specid: spectrumId(specid), adopted_spt_source: $("adopted-spt-source").value} :
+          $("review-sample").value === "unresolved" ? {review_sample: "unresolved", lane: $("lane").value, limit: batchSize()} :
           {lane: $("lane").value, moca_oids: ids(), pending_only: $("missing-vetting").value !== "all",
             missing_vetting: $("missing-vetting").value,
             vetting_classification: $("vetting-classification").value || null,
@@ -463,7 +465,7 @@
         autoNextAttempt = {request: queueRequest, cursor: JSON.stringify(nextAfter)};
       $("queue-info").textContent = queueRequest.moca_specid ? "Spectrum " + queueRequest.moca_specid +
         (data.read_only ? " · read only" : " · " + queueLane) :
-        items.length + (queueLane === "moshpit" ? " candidates loaded" : queueLane === "all" ? " spectra loaded" : " objects loaded") +
+        items.length + (queueLane === "moshpit" ? " candidates loaded" : " spectra loaded") +
           (hasMore ? " · more available" : " · end of queue");
       if (!more && !queueRequest.moca_specid && (data.queue_filter_version ?? 0) >= 3) {
         void showQueueTotal(queueRequest);

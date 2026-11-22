@@ -29,6 +29,8 @@ class MorphologyTests(unittest.TestCase):
         self.db.execute("INSERT INTO moca_spectra VALUES(96,6,76,0,5,'SUBLIME3C_s3c_2_6_DR1_cube',?)",(psf.PIPELINE,))
         # OID membership alone is insufficient: the exact detection is missing.
         self.db.execute("UPDATE moca_spectra SET spectrum_name='unmatched' WHERE moca_specid=107")
+        self.db.execute("ALTER TABLE pcat_sublime_candidates_v3c ADD COLUMN visual_nn_classification TEXT")
+        self.db.execute("ALTER TABLE pcat_sublime_candidates_v3c ADD COLUMN visual_nn_good_probability REAL")
         outer=self
         class Cursor:
             def execute(self,sql,params):
@@ -49,7 +51,7 @@ class MorphologyTests(unittest.TestCase):
 
     def test_categories_partition_queue_and_count_without_writes(self):
         before=self.db.total_changes
-        groups={"all":[1,2,3,4,5,6,7],"pass":[1],"fail":[2,6],"undefined":[3,4,5,7],"not_pass":[2,3,4,5,6,7]}
+        groups={"all":[1,2,3,4,5,6,6,7],"pass":[1,6],"fail":[2,6],"undefined":[3,4,5,7],"not_pass":[2,3,4,5,6,7]}
         for mode,expected in groups.items():
             self.assertEqual(self.oids(mode),expected)
             self.assertEqual(sr.queue(self.cur,self.body(mode),count_only=True),{"total":len(expected)})
@@ -86,9 +88,9 @@ class MorphologyTests(unittest.TestCase):
 
     def test_spectral_and_shape_pass_must_belong_to_same_detection(self):
         self.db.execute("UPDATE pcat_sublime_candidates_v3c SET status='AUTO_SELECTION_FAIL' WHERE id=1")
-        self.db.execute("INSERT INTO pcat_sublime_candidates_v3c VALUES(10,1,'s3c:2:1',?,'fail',0,'shape_v1',NULL)",(sr.SUBLIME3C_SELECTION_PREFIX,))
-        self.assertEqual(self.oids('pass'),[1])
-        self.assertEqual(self.oids('pass',sublime3c_selection_pass_only=True),[])
+        self.db.execute("INSERT INTO pcat_sublime_candidates_v3c VALUES(10,1,'s3c:2:1',?,'fail',0,'shape_v1',NULL,NULL,NULL)",(sr.SUBLIME3C_SELECTION_PREFIX,))
+        self.assertEqual(self.oids('pass'),[1,6])
+        self.assertEqual(self.oids('pass',sublime3c_selection_pass_only=True),[6])
 
     def test_invalid_modes_fail_before_database_and_other_samples_unaffected(self):
         for value in (None,True,[],{},"bad","pass' OR 1=1"):
@@ -103,5 +105,5 @@ class MorphologyTests(unittest.TestCase):
         info=psf.metadata(self.cur,104,sr.rows)
         self.assertEqual(info['status'],'undefined');self.assertEqual(info['bands'],{})
         self.db.execute("UPDATE pcat_sublime_candidates_v3c SET psf_morphology_status='unexpected',psf_point_source_pass=1 WHERE id=1")
-        self.assertEqual(self.oids('pass'),[])
+        self.assertEqual(self.oids('pass'),[6])
         self.assertEqual(psf.metadata(self.cur,101,sr.rows)['status'],'undefined')

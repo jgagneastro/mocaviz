@@ -19,6 +19,7 @@ class FilterSelectionTests(unittest.TestCase):
         self.db.create_function('REGEXP_SUBSTR', 2, regex_substr)
         self.db.create_function('SUBSTRING_INDEX', 3, substring_index)
         self.db.executescript('''
+            CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,review_kind TEXT);
             CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,ignored INTEGER,designation TEXT);
             CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER,median_snr_per_pix REAL);
             CREATE TABLE data_spectra(moca_specid INTEGER,wavelength_angstrom REAL,flux_flambda REAL,flux_flambda_unc REAL,ignored INTEGER);
@@ -74,6 +75,9 @@ class FilterSelectionTests(unittest.TestCase):
             ('sublimeaperture', [(5,'good')]),
         ]:
             self.db.executemany(f"INSERT INTO {sr.LANES[key]['table']} VALUES(?,?)", reviews)
+        self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews VALUES(?,?,'quality')",
+                            [(201,"good_candidate"),(202,"good_candidate"),(204,"good_candidate"),
+                             (105,"good_candidate"),(103,"good_candidate"),(104,"good_candidate"),(203,"good")])
         cuts = dict(lane='all', vetting_classification='good_candidate', min_sptn=10,
                     min_wiseview_score=5, limit=1)
         self.assertEqual(sr.queue(self.cur, cuts, count_only=True), {'total': 4})
@@ -95,7 +99,7 @@ class FilterSelectionTests(unittest.TestCase):
                 self.assertEqual([row['moca_specid'] for row in records], expected)
                 self.assertEqual({row['lane'] for row in records}, {'spiffstacker', 'spiff'})
                 self.assertTrue(all(row['classification'] == 'good_candidate' for row in records))
-        self.assertEqual(self.oids(**{**cuts, 'lane': 'spiff', 'limit': 100}), [2,5])
+        self.assertEqual(self.oids(**{**cuts, 'lane': 'spiff', 'limit': 100}), [2,5,5])
 
     def test_invalid_current_vetting_filter_is_rejected_before_sql(self):
         cursor = MagicMock()
@@ -273,7 +277,7 @@ class FilterSelectionTests(unittest.TestCase):
         first=self.queue(queue_order='spt_desc',limit=2)
         self.db.execute("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(6,'good')")
         self.assertEqual(self.oids(queue_order='spt_desc',after=first['next_after']),[3,5,7,2,4])
-        self.assertEqual(self.oids(queue_order='spt_desc',after={'moca_oid':4,'spectral_type_number':None}),[])
+        self.assertEqual(self.oids(queue_order='spt_desc',after={'moca_oid':4,'moca_specid':104,'spectral_type_number':None}),[])
 
     def test_count_uses_all_cuts_but_ignores_pagination(self):
         cuts=dict(review_sample='sublime2',min_sublime2_snr=7,min_cnn_probability=.8,
@@ -321,10 +325,11 @@ class FilterSelectionTests(unittest.TestCase):
                 actual.extend(r['moca_oid'] for r in result['items'])
                 if not result['has_more']:break
                 after=result['next_after']
-                self.assertEqual(set(after),{'moca_oid','cnn_bin','spectral_subtype','snr_1_2'})
+                self.assertEqual(set(after),{'moca_specid','moca_oid','cnn_bin','spectral_subtype','snr_1_2'})
             self.assertEqual(actual,expected)
         first=self.queue(queue_order='cnn_spt_snr',limit=2)
         self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,'good')",[(4,),(2,)])
+        self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews VALUES(?,'good','quality')",[(100+oid,) for oid, in [(4,),(2,)]])
         self.assertEqual(self.oids(queue_order='cnn_spt_snr',after=first['next_after']),[5,1,3,7,6])
         self.assertEqual(sr.queue(self.cur,{'queue_order':'cnn_spt_snr','after':first['next_after']},count_only=True),{'total':5})
 
@@ -357,7 +362,7 @@ class FilterSelectionTests(unittest.TestCase):
             self.assertNotIn('BETWEEN 10000 AND 20000',sql)
 
     def test_invalid_priority_cursors_never_execute_sql(self):
-        valid={'moca_oid':1,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
+        valid={'moca_specid':101,'moca_oid':1,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
         invalid=[{}, {'moca_oid':1,'spectral_type_number':20},
                  *[{**valid,'cnn_bin':v} for v in (True,2,-1,'0 OR 1=1')],
                  *[{**valid,'snr_1_2':v} for v in (True,'nan','inf','1 OR 1=1')],
@@ -426,7 +431,7 @@ class FilterSelectionTests(unittest.TestCase):
             if not page['has_more']:
                 break
             after = page['next_after']
-            self.assertEqual(set(after), {'moca_oid', 'spectral_subtype', 'snr_1_2'})
+            self.assertEqual(set(after), {'moca_specid','moca_oid', 'spectral_subtype', 'snr_1_2'})
         self.assertEqual(actual, expected)
 
     def test_latitude_priority_pagination_and_count_cross_all_bands(self):
@@ -438,10 +443,11 @@ class FilterSelectionTests(unittest.TestCase):
                 actual.extend(r['moca_oid'] for r in page['items'])
                 if not page['has_more']:break
                 after=page['next_after']
-                self.assertEqual(set(after),{'moca_oid','galactic_bin','cnn_bin','spectral_subtype','snr_1_2'})
+                self.assertEqual(set(after),{'moca_specid','moca_oid','galactic_bin','cnn_bin','spectral_subtype','snr_1_2'})
             self.assertEqual(actual,expected)
         first=self.queue(queue_order='gal_cnn_spt_snr',limit=2)
         self.db.executemany("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES(?,'good')",[(1,),(6,)])
+        self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews VALUES(?,'good','quality')",[(100+oid,) for oid, in [(1,),(6,)]])
         self.assertEqual(self.oids(queue_order='gal_cnn_spt_snr',after=first['next_after']),[2,3,4,7,5])
         self.assertEqual(sr.queue(self.cur,{'queue_order':'gal_cnn_spt_snr','after':first['next_after']},count_only=True),{'total':5})
         cur=MagicMock();cur.fetchall.return_value=[{'total':5}]
@@ -451,7 +457,7 @@ class FilterSelectionTests(unittest.TestCase):
         self.assertNotIn('data_spectra d',sql)
 
     def test_latitude_cursor_validation_and_previous_order_compatibility(self):
-        valid={'moca_oid':1,'galactic_bin':0,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
+        valid={'moca_specid':101,'moca_oid':1,'galactic_bin':0,'cnn_bin':0,'spectral_subtype':20,'snr_1_2':2}
         for value in (True,-1,4,'nan','1 OR 1=1'):
             cur=MagicMock()
             with self.subTest(value=value):

@@ -66,7 +66,7 @@
         <small>A spectrum ID loads that exact spectrum, bypassing queue filters. Other packages can be viewed and fitted, with database writes disabled. Clear this field to load a queue.</small>
         </div>
         <label>Reduction lane<select id="lane"><option value="all">All</option><option value="spiff">SPIFF</option><option value="spiffstacker" selected>SPIFFStacker</option><option value="sublimeaperture">SUBLIMEaperture</option><option value="moshpit" hidden disabled>MOSHPIT native DR1</option></select></label>
-        <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime3c">SUBLIME3C</option><option value="sublime4">SUBLIME4</option><option value="moshpit" hidden disabled>MOSHPIT</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option></select></label>
+        <label>Review sample<select id="review-sample"><option value="all">All objects</option><option value="sublime2">SUBLIME2</option><option value="catwiseredmovers">CatWISE red movers</option><option value="sublime3c">SUBLIME3C</option><option value="sublime4">SUBLIME4</option><option value="moshpit" hidden disabled>MOSHPIT</option><option value="sublime1">SUBLIME1</option><option value="public-ucd">Public UCD candidates</option><option value="unresolved">Unresolved historical reviews (lane only)</option></select></label>
         <div id="moshpit-filters" hidden>
           <small>The main queue requires a shared best fit of L0 or later. A direct lookup opens any detection.</small>
           <label>MOSHPIT name or candidate ID<input id="moshpit-candidate" type="text" placeholder="e.g. MOSHPIT 1"></label>
@@ -157,7 +157,7 @@
         </div>
         <label>Vetting source<input id="sources" value="mocaviz" maxlength="255"></label>
         <label class="check"><input id="replace" type="checkbox">Allow replacing stored results</label>
-        <p id="catalog-review-effects" class="hint">Quality decisions preserve existing fits and apply photometric/ignored flags automatically. Good and candidate classes reactivate autotypes and spectra in this lane; rejected classes ignore both. The explicit “Save type” action replaces the autotype fit.</p>
+        <p id="catalog-review-effects" class="hint">Quality decisions preserve existing fits and apply photometric/ignored flags automatically. Good and candidate classes reactivate the displayed spectrum and its autotypes. Rejected classes ignore that extraction and its autotypes. The explicit “Save type” action replaces the autotype fit.</p>
         <button id="preview">Preview write [Alt+P]</button>
         <button id="save-type" disabled>Save type [Alt+S]</button>
         <button id="bad-pixels" disabled>Flag bad pixels [Alt+B]</button>

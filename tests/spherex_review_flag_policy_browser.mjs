@@ -4,7 +4,7 @@ import {chromium} from 'playwright';
 const origin=process.argv[2]||'http://127.0.0.1:8061';
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage(),errors=[];
-let version=0;
+let version=1;
 page.on('pageerror',error=>errors.push(error.message));
 await page.route('**/api/spherex-review/*',async route=>{
   const op=new URL(route.request().url()).pathname.split('/').at(-1),body=route.request().postDataJSON();
@@ -19,12 +19,12 @@ try{
   await page.goto(url);await page.waitForFunction(()=>!document.querySelector('#load').disabled);
   assert(await page.locator('#write-enabled').isDisabled());
   assert.match(await page.locator('#write-hint').innerText(),/Restart.*automatic/);
-  version=1;await page.reload();await page.waitForFunction(()=>!document.querySelector('#load').disabled);
+  version=2;await page.reload();await page.waitForFunction(()=>!document.querySelector('#load').disabled);
   assert(await page.locator('#write-enabled').isEnabled());
   assert.equal(await page.locator('[data-classification=giant]').getAttribute('class'),'reject');
   for(const label of ['good','good_candidate','good_plus_star','incomplete_but_promising','weird'])
     assert.equal(await page.locator(`[data-classification=${label}]`).getAttribute('class'),'usable');
-  assert.match(await page.locator('#write-settings .hint').innerText(),/reactivate autotypes and spectra/);
+  assert.match(await page.locator('#write-settings .hint').innerText(),/reactivate the displayed spectrum/);
   assert.deepEqual(errors,[]);
   console.log('Automatic flag policy: stale-service write guard, updated instructions and giant/accepted button states passed.');
 }finally{await page.unrouteAll({behavior:'ignoreErrors'});await browser.close();}

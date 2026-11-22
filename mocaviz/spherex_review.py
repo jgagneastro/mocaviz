@@ -69,7 +69,8 @@ VIABLE_OTHER_LANE = (
 USABLE = set(VIABLE_OTHER_LANE)
 NONPHOTOMETRIC_CLASSES = {"good", "peculiar_ucd", "contaminated_ucd", "good_reddened", "good_plus_star"}
 PHOTOMETRIC_CLASSES = {"good_candidate", "incomplete_but_promising", "weird"}
-WRITE_POLICY_VERSION = 1
+WRITE_POLICY_VERSION = 2
+SPECTRUM_REVIEWS = "pcat_spherex_spectrum_reviews"
 SPT_FIELDS = (
     "moca_oid", "moca_specid", "moca_instid", "spectral_type", "complete_spectral_type",
     "spectral_type_number", "spectral_type_unc", "spectral_class", "quality_flag",
@@ -77,7 +78,7 @@ SPT_FIELDS = (
     "origin", "calculation_method", "suffix", "gravity_class", "ignored", "is_public",
     "rls", "comments",
 )
-QUEUE_FILTER_VERSION = 28
+QUEUE_FILTER_VERSION = 29
 SUBLIME3C_SELECTION_PREFIX = "AUTO_SELECTION_PASS[native_nir_snr22_v1];"
 SUBLIME3C_STRONG_T_PREFIX = "AUTO_SELECTION_PASS[native_nir_strongT_v1];"
 
@@ -273,13 +274,19 @@ def rows(cur, sql, params=()):
     return list(cur.fetchall())
 
 
-def snapshot(cur, lane, oid, *, lock=False):
+def snapshot(cur, lane, oid, *, lock=False, specid=None):
     suffix = " FOR UPDATE" if lock else ""
-    vet = rows(cur, f"SELECT id, classification, sources, modified_timestamp FROM {lane['table']} WHERE moca_oid=%s" + suffix, (oid,))
-    fields = ", ".join(f"\x60{key}\x60" for key in SPT_FIELDS)
+    if specid is None:
+        raise ReviewError("A spectrum ID is required for a review.")
+    vet = rows(cur, f"SELECT id, classification, sources, modified_timestamp FROM {SPECTRUM_REVIEWS} "
+               "WHERE moca_specid=%s AND review_kind='quality'" + suffix, (specid,))
+    fields = ", ".join(f"`{key}`" for key in SPT_FIELDS)
     placeholders = ",".join(["%s"] * len(lane["methods"]))
-    spt = rows(cur, f"SELECT id, {fields}, modified_timestamp FROM data_spectral_types WHERE moca_oid=%s AND calculation_method IN ({placeholders}) ORDER BY id" + suffix, (oid, *lane["methods"]))
-    spectra = rows(cur, "SELECT moca_specid, ignored, modified_timestamp FROM moca_spectra WHERE moca_oid=%s AND moca_specpackid=%s ORDER BY moca_specid" + suffix, (oid, lane["pack"]))
+    spt = rows(cur, f"SELECT id, {fields}, modified_timestamp FROM data_spectral_types "
+               f"WHERE moca_oid=%s AND moca_specid=%s AND calculation_method IN ({placeholders}) ORDER BY id" + suffix,
+               (oid, specid, *lane["methods"]))
+    spectra = rows(cur, "SELECT moca_specid, ignored, modified_timestamp FROM moca_spectra "
+                   "WHERE moca_oid=%s AND moca_specpackid=%s AND moca_specid=%s" + suffix, (oid, lane["pack"], specid))
     return clean({"vet": vet, "spt": spt, "spectra": spectra})
 
 
@@ -386,7 +393,7 @@ def analyze(cur, body):
     adopted_spt_column(source)
     meta, spectrum, templates = dataset(cur, lane, oid, specid, adopted_spt_source=source)
     key = spectrum_lane(meta)
-    state = snapshot(cur, LANES[key], meta["moca_oid"]) if key else {"vet": [], "spt": [], "spectra": [meta]}
+    state = snapshot(cur, LANES[key], meta["moca_oid"], specid=specid) if key else {"vet": [], "spt": [], "spectra": [meta]}
     meta.update(stored_spectral_cnn(state, specid))
     meta["sublime3c_morphology"] = morphology.metadata(cur, specid, rows)
     options = fit_options(body)
@@ -480,6 +487,26 @@ def queue(cur, body, *, count_only=False, management=False):
         key = spectrum_lane(meta)
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
+    if body.get("review_sample") == "unresolved":
+        selected = body.get("lane", "all")
+        allowed = {key: lane["pack"] for key, lane in LANES.items() if management or not lane.get("private_rls")}
+        if selected != "all" and selected not in allowed:
+            raise ReviewError("Choose an available review lane.")
+        packs = list(allowed.values()) if selected == "all" else [allowed[selected]]
+        slots = ",".join(["%s"] * len(packs))
+        source = f" FROM spherex_review_revet_queue q JOIN moca_objects o USING(moca_oid) WHERE q.moca_specpackid IN ({slots})"
+        if count_only:
+            return rows(cur, "SELECT COUNT(*) AS total" + source, tuple(packs))[0]
+        after = integer(body.get("after") or 0, "Previous spectrum ID", 0)
+        limit = integer(body.get("limit", 100), "Queue batch size", 1, 500)
+        records = rows(cur, "SELECT q.moca_oid,q.moca_specid,q.moca_specpackid,o.designation" + source
+                       + " AND q.moca_specid>%s ORDER BY q.moca_specid LIMIT %s", (*packs,after,limit+1))
+        names = {pack: name for name, pack in allowed.items()}
+        for row in records:
+            row["lane"] = names[row["moca_specpackid"]]
+        return {"items": records[:limit], "has_more": len(records)>limit,
+                "next_after": records[limit-1]["moca_specid"] if len(records)>limit else None,
+                "queue_filter_version": QUEUE_FILTER_VERSION, "lane": selected}
     if body.get("lane") == "all":
         return mixed_queue(cur, body, count_only=count_only, management=management)
     key, lane = lane_for(body)
@@ -643,17 +670,20 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     cursor_oid = 0
     cursor_spt = None
     priority_cursor = None
+    cursor_specid = 0
     if after not in (None, 0):
         if priority_order:
-            priority_cursor = priority_queue_cursor(after, order)
-        elif type_order:
-            if not isinstance(after, dict) or set(after) != {"moca_oid", "spectral_type_number"}:
-                raise ReviewError("Invalid spectral-type queue cursor. Reload the queue.")
-            cursor_oid = integer(after["moca_oid"], "Queue cursor object ID")
-            if after["spectral_type_number"] is not None:
-                cursor_spt = bounded_float(after["spectral_type_number"], "Queue cursor spectral type", -100, 100)
+            priority_cursor = priority_queue_cursor(after, order, mixed=True)
         else:
-            cursor_oid = integer(after, "Queue cursor", 0)
+            fields = {"moca_oid", "moca_specid"}
+            if type_order:
+                fields.add("spectral_type_number")
+            if not isinstance(after, dict) or set(after) != fields:
+                raise ReviewError("Reload the queue to use spectrum-specific pagination.")
+            cursor_oid = integer(after["moca_oid"], "Queue cursor object ID")
+            cursor_specid = integer(after["moca_specid"], "Queue cursor spectrum ID")
+            if type_order and after["spectral_type_number"] is not None:
+                cursor_spt = bounded_float(after["spectral_type_number"], "Queue cursor spectral type", -100, 100)
     limit = None if count_only else integer(body.get("limit", 100), "Queue batch size", 1, 500)
     classification = body.get("vetting_classification")
     if classification not in (None, "") and (
@@ -668,13 +698,8 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     conditions = ["mo.ignored=0"]
     params = [lane["pack"]]
     if classification:
-        if key == "sublimeaperture":
-            clause, values = aperture_review_clause("s.moca_oid", classification)
-            conditions.append(clause)
-            params.extend(values)
-        else:
-            conditions.append("v.classification=%s")
-            params.append(classification)
+        conditions.append("v.classification=%s")
+        params.append(classification)
     adopted_join = ""
     type_projection = ""
     if type_order and not count_only:
@@ -705,16 +730,17 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
                     AND g.gb BETWEEN -90 AND 90),3) AS sort_galactic_bin"""
         if cursor_oid:
             if cursor_spt is None:
-                conditions.append("adopted.spectral_type_number IS NULL AND s.moca_oid>%s")
-                params.append(cursor_oid)
+                conditions.append("adopted.spectral_type_number IS NULL AND (s.moca_oid,s.moca_specid)>(%s,%s)")
+                params.extend((cursor_oid,cursor_specid))
             else:
                 comparison = "<" if order == "spt_desc" else ">"
                 conditions.append("(adopted.spectral_type_number IS NULL OR adopted.spectral_type_number" + comparison +
-                                  "%s OR (adopted.spectral_type_number=%s AND s.moca_oid>%s))")
-                params.extend((cursor_spt, cursor_spt, cursor_oid))
+                                  "%s OR (adopted.spectral_type_number=%s AND (s.moca_oid,s.moca_specid)>(%s,%s)))")
+                params.extend((cursor_spt,cursor_spt,cursor_oid,cursor_specid))
     elif cursor_oid:
-        conditions.append("s.moca_oid" + ("<" if order == "oid_desc" else ">") + "%s")
-        params.append(cursor_oid)
+        op = "<" if order == "oid_desc" else ">"
+        conditions.append(f"(s.moca_oid{op}%s OR (s.moca_oid=%s AND s.moca_specid>%s))")
+        params.extend((cursor_oid,cursor_oid,cursor_specid))
     if boolean(body.get("public_ucd_only")) or body.get("review_sample") == "public-ucd":
         conditions.append("""EXISTS (
             SELECT 1 FROM data_spectral_types candidate
@@ -725,20 +751,19 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     if active_only:
         conditions.append("s.ignored=0")
     if missing in {"lane", "viable_elsewhere"}:
-        if key == "sublimeaperture":
-            conditions.append(aperture_review_clause("s.moca_oid")[0])
-        else:
-            conditions.append("v.moca_oid IS NULL")
+        conditions.append("v.moca_specid IS NULL")
     elif missing != "all":
         absent = {key: f"NOT EXISTS (SELECT 1 FROM {LANES[key]['table']} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
                   for key in ("spiff", "spiffstacker")}
+        if key in absent:
+            absent[key] = "v.moca_specid IS NULL"
         if missing in absent:
             conditions.append(absent[missing])
         else:
             operator = "OR" if missing == "either" else "AND"
             clauses = [absent['spiff'], absent['spiffstacker']]
             if missing == "both":
-                clauses.append(aperture_review_clause("s.moca_oid")[0])
+                clauses.append("v.moca_specid IS NULL" if key == "sublimeaperture" else aperture_review_clause("s.moca_oid")[0])
             conditions.append("(" + (" " + operator + " ").join(clauses) + ")")
     spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
     source_params = []
@@ -868,16 +893,9 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         conditions.append("NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting duplicate WHERE duplicate.potential_duplicated_moca_oid=s.moca_oid AND duplicate.classification='y')")
     if boolean(body.get("no_known")):
         conditions.append(exclude_known_sql("s.moca_oid"))
-    if not mixed:
-        newer = ["newer.moca_oid=s.moca_oid", "newer.moca_specpackid=s.moca_specpackid", "newer.moca_specid>s.moca_specid"]
-        if native_four:
-            newer.append(sublime4_aperture_exists("newer"))
-        if active_only:
-            newer.append("newer.ignored=0")
-        conditions.append("NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE " + " AND ".join(newer) + ")")
     selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-        LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
+        LEFT JOIN {SPECTRUM_REVIEWS} v ON v.moca_specid=s.moca_specid AND v.review_kind='quality'
         {adopted_join}
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
     """
@@ -908,7 +926,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
             ids = [row['moca_specid'] for row in records]
             details = rows(cur, f"""SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification
                 FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-                LEFT JOIN {lane['table']} v ON v.moca_oid=s.moca_oid
+                LEFT JOIN {SPECTRUM_REVIEWS} v ON v.moca_specid=s.moca_specid AND v.review_kind='quality'
                 WHERE s.moca_specid IN ({','.join(['%s']*len(ids))})""", tuple(ids))
             by_id = {row['moca_specid']:row for row in details}
             for row in records:row.update(by_id[row['moca_specid']])
@@ -920,9 +938,9 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         if count_only:
             return rows(cur, f"SELECT COUNT(*) AS total {selection}", tuple(params))[0]
 
-        records = rows(cur, f"SELECT {projection} {selection} ORDER BY {order_oid} LIMIT %s",
+        records = rows(cur, f"SELECT {projection} {selection} ORDER BY {order_oid},s.moca_specid LIMIT %s",
                        (*params, limit + 1))
-    return queue_result(records, order, limit)
+    return queue_result(records, order, limit, mixed=True)
 
 
 def set_combined_priority(candidates, order, cnn_source):
@@ -1031,8 +1049,8 @@ def prepare(cur, body, auth):
         sources = str(body.get("sources") or "mocaviz").strip()
         if len(sources) > 255:
             raise ReviewError("Sources must be at most 255 characters.")
-        operations.append({"table": lane["table"], "operation": "upsert", "rows": [
-            {"moca_oid": item["object"]["moca_oid"], "classification": classification, "sources": sources},
+        operations.append({"table": SPECTRUM_REVIEWS, "operation": "upsert", "rows": [
+            {"moca_specid": item["object"]["moca_specid"], "classification": classification, "sources": sources},
         ]})
         flags = classification_flags(classification)
         ignored = flags["ignored"]
@@ -1120,7 +1138,7 @@ def submit(conn, cur, auth, body):
     _, lane = lane_for(plan)
     oid, specid = plan["moca_oid"], plan["moca_specid"]
     lock_object(cur, oid)
-    before = snapshot(cur, lane, oid, lock=True)
+    before = snapshot(cur, lane, oid, lock=True, specid=specid)
     lock_source_pixels(cur, specid)
     meta, spectrum, templates = dataset(cur, lane, oid, specid)
     if fingerprint(before) != plan["revision"] or data_fingerprint(meta, spectrum, templates) != plan["data_revision"]:
@@ -1129,7 +1147,7 @@ def submit(conn, cur, auth, body):
     for op in plan["operations"]:
         table = op["table"]
         for row in op["rows"]:
-            if table == lane["table"]:
+            if table == SPECTRUM_REVIEWS:
                 upsert(cur, table, row, ("classification", "sources"))
             elif table == "data_spectral_types":
                 if op["operation"] == "update":
@@ -1154,9 +1172,10 @@ def submit(conn, cur, auth, body):
             else:
                 raise ReviewError("Invalid write plan.")
     changelog(cur, auth, oid, plan["operations"], plan["is_public"], plan["rls"])
-    after = snapshot(cur, lane, oid)
+    after = snapshot(cur, lane, oid, specid=specid)
     _, after_spectrum, _ = dataset(cur, lane, oid, specid)
     undo = {
+        "write_policy_version": WRITE_POLICY_VERSION,
         "lane": plan["lane"], "moca_oid": oid, "moca_specid": specid,
         "before": before, "after": after, "pixels": pixel_before,
         "after_data": fingerprint(after_spectrum),
@@ -1172,23 +1191,25 @@ def undo(conn, cur, auth, body):
     if saved.get("lane") == "moshpit":
         from .spherex_moshpit import apply_review
         return apply_review(conn, cur, auth, saved, undo=True)
+    if saved.get("write_policy_version") != WRITE_POLICY_VERSION:
+        raise ReviewError("This Undo predates spectrum-specific reviews.", 409)
     _, lane = lane_for(saved)
     oid, specid = saved["moca_oid"], saved["moca_specid"]
     lock_object(cur, oid)
-    current = snapshot(cur, lane, oid, lock=True)
+    current = snapshot(cur, lane, oid, lock=True, specid=specid)
     lock_source_pixels(cur, specid)
     _, spectrum, _ = dataset(cur, lane, oid, specid)
     if fingerprint(current) != fingerprint(saved["after"]) or fingerprint(spectrum) != saved["after_data"]:
         raise ReviewError("The database changed after this review. Undo would overwrite newer work.", 409)
     before = saved["before"]
     changed_tables = {op["table"] for op in saved["operations"]}
-    if lane["table"] in changed_tables:
+    if SPECTRUM_REVIEWS in changed_tables:
         if before["vet"]:
             row = before["vet"][0]
-            cur.execute(f"UPDATE {lane['table']} SET classification=%s, sources=%s WHERE moca_oid=%s",
-                        (row["classification"], row["sources"], oid))
+            cur.execute(f"UPDATE {SPECTRUM_REVIEWS} SET classification=%s, sources=%s WHERE moca_specid=%s AND review_kind='quality'",
+                        (row["classification"], row["sources"], specid))
         else:
-            cur.execute(f"DELETE FROM {lane['table']} WHERE moca_oid=%s", (oid,))
+            cur.execute(f"DELETE FROM {SPECTRUM_REVIEWS} WHERE moca_specid=%s AND review_kind='quality'", (specid,))
     if "data_spectral_types" in changed_tables:
         previous = {r["id"]: r for r in before["spt"]}
         for row in current["spt"]:

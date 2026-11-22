@@ -44,7 +44,7 @@ class TestCutoutVetting(unittest.TestCase):
         self.assertEqual([values[8] for values in inserts],PATHS)
         self.assertTrue(all(values[2]==4 and values[4]=='Gagne' for values in inserts))
         self.assertTrue(any('INSERT INTO pcat_wiseview_visual_vetting' in sql for sql,_ in save.cur.ops))
-        self.assertTrue(any('INSERT INTO `pcat_spherex_spiffstacker_visual_vetting`' in sql for sql,_ in save.cur.ops))
+        self.assertTrue(any('INSERT INTO pcat_spherex_spectrum_reviews' in sql for sql,_ in save.cur.ops))
         self.assertTrue(any('UPDATE `pcat_spherex_cutout_visual_vetting`' in sql and values[-2:]==(11,4) for sql,values in undo.cur.ops))
         deletes=[values for sql,values in undo.cur.ops if 'DELETE FROM `pcat_spherex_cutout_visual_vetting`' in sql]
         self.assertEqual(deletes,[(22,4)])
@@ -66,7 +66,7 @@ class TestCutoutVetting(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'second cutout failed'):
                 server.save_decision(value,0,'6','','bad','spiffstacker',100,'4',PATHS)
         self.assertEqual((conn.commits,conn.rollbacks),(0,1));self.assertEqual(value['undo'],[])
-        self.assertTrue(any('INSERT INTO `pcat_spherex_spiffstacker_visual_vetting`' in sql for sql,_ in conn.cur.ops))
+        self.assertTrue(any('INSERT INTO pcat_spherex_spectrum_reviews' in sql for sql,_ in conn.cur.ops))
         self.assertFalse(any('INSERT INTO pcat_wiseview_visual_vetting' in sql for sql,_ in conn.cur.ops))
 
     def test_stale_cutout_review_refuses_motion_save(self):

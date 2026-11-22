@@ -1124,7 +1124,7 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
                 raise ValueError('Object was already classified; reload or enable reclassification')
             for choice in spectral_reviews:
                 lane=choice['lane']
-                spectral_before=clean(spectral_vetting.snapshot(cur,oid,lane))
+                spectral_before=clean(spectral_vetting.snapshot(cur,oid,lane,choice['specid'],require_displayed=True))
                 with session['lock']:
                     expected_spectral=session.get('spectral_snapshots',{}).get(oid,{}).get(lane,'__missing__')
                 if expected_spectral=='__missing__' or spectral_before['vetting']!=expected_spectral:
@@ -1133,7 +1133,7 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
             for change in spectral_changes:
                 choice=change['choice'];lane=change['lane']
                 change['nrows']=spectral_vetting.apply(cur,oid,lane,choice['classification'],choice['specid'],args.reviewer,change['before'])
-                change['after']=clean(spectral_vetting.snapshot(cur,oid,lane))
+                change['after']=clean(spectral_vetting.snapshot(cur,oid,lane,choice['specid']))
             if cutout_context:
                 cutout_before=clean(cutout_vetting.selected_rows(cutout_vetting.rows_for_object(cur,oid,lock=True),cutout_paths))
                 expected_cutouts=cutout_vetting.selected_rows(cutout_context['rows'],cutout_paths)
@@ -1155,7 +1155,7 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
             for change in spectral_changes:
                 cur.execute('''INSERT INTO moca_changelog (`user`,modified_tables,nrows_modified,user_description,is_public,rls)
                     VALUES (%s,%s,%s,%s,0,'gagne')''',(current_auth()['user'],
-                    spectral_vetting.LANES[change['lane']][0]+',data_spectral_types,moca_spectra',change['nrows'],
+                    spectral_vetting.TABLE+',data_spectral_types,moca_spectra',change['nrows'],
                     f"wiseview_web/server.py: paired spectral review moca_oid={oid}; lane={change['lane']}; classification={change['choice']['classification']}"))
             if cutout_change:
                 cur.execute('''INSERT INTO moca_changelog (`user`,modified_tables,nrows_modified,user_description,is_public,rls)
@@ -1288,7 +1288,7 @@ def undo_decision(session):
                 current_cutouts=clean(cutout_vetting.selected_rows(cutout_vetting.rows_for_object(cur,oid,lock=True),cutout_change['paths']))
                 if current_cutouts!=cutout_change['after']:raise ValueError('Cutout review changed; undo refused')
             for change in spectral_changes:
-                if clean(spectral_vetting.snapshot(cur,oid,change['lane']))!=change['after']:
+                if clean(spectral_vetting.snapshot(cur,oid,change['lane'],change['after']['spectra'][0]['moca_specid']))!=change['after']:
                     raise ValueError('Spectral review or spectrum state changed; undo refused')
             for change in spectral_changes:
                 spectral_vetting.restore(cur,oid,change['lane'],change['before'],change['after'])
@@ -1305,7 +1305,7 @@ def undo_decision(session):
                 lane=change['lane']
                 cur.execute('''INSERT INTO moca_changelog (`user`,modified_tables,nrows_modified,user_description,is_public,rls)
                     VALUES (%s,%s,%s,%s,0,'gagne')''',(current_auth()['user'],
-                    spectral_vetting.LANES[lane][0]+',data_spectral_types,moca_spectra',change['nrows'],
+                    spectral_vetting.TABLE+',data_spectral_types,moca_spectra',change['nrows'],
                     f'wiseview_web/server.py: undo paired spectral review moca_oid={oid}; lane={lane}'))
             if cutout_change:
                 cur.execute('''INSERT INTO moca_changelog (`user`,modified_tables,nrows_modified,user_description,is_public,rls)

@@ -74,10 +74,11 @@ class TestSpectralVetting(unittest.TestCase):
             self.assertEqual(result['spectral_saved_reviews'],choices)
             self.assertEqual(len(state['undo'][0]['spectral_reviews']),3)
             server.undo_decision(state)
-        for lane in server.spectral_vetting.LANES:
-            table=server.spectral_vetting.LANES[lane][0]
-            self.assertTrue(any('INSERT INTO `'+table+'`' in sql for sql,_ in save.cur.ops))
-            self.assertTrue(any('DELETE FROM `'+table+'`' in sql for sql,_ in undo.cur.ops))
+        for choice in choices:
+            self.assertTrue(any(sql.startswith('INSERT INTO pcat_spherex_spectrum_reviews')
+                                and params[0] == choice['specid'] for sql,params in save.cur.ops))
+            self.assertTrue(any(sql.startswith('DELETE FROM pcat_spherex_spectrum_reviews')
+                                and params == (choice['specid'],) for sql,params in undo.cur.ops))
         self.assertEqual((save.commits,undo.commits,save.rollbacks,undo.rollbacks),(1,1,0,0))
         self.assertEqual(state['undo'],[])
 
@@ -140,11 +141,11 @@ class TestSpectralVetting(unittest.TestCase):
             self.assertEqual(len(state['undo']),1)
             server.undo_decision(state)
         sql=[text for text,_ in save.cur.ops]
-        self.assertTrue(any('INSERT INTO `pcat_spherex_spiffstacker_visual_vetting`' in text for text in sql))
+        self.assertTrue(any('INSERT INTO pcat_spherex_spectrum_reviews' in text for text in sql))
         self.assertTrue(any('INSERT INTO pcat_wiseview_visual_vetting' in text for text in sql))
         self.assertTrue(any('UPDATE moca_spectra SET ignored=1' in text for text in sql))
         self.assertTrue(any('UPDATE data_spectral_types SET ignored=%s' in text and values[0]==1 for text,values in save.cur.ops))
-        self.assertTrue(any('DELETE FROM `pcat_spherex_spiffstacker_visual_vetting`' in text for text,_ in undo.cur.ops))
+        self.assertTrue(any('DELETE FROM pcat_spherex_spectrum_reviews' in text for text,_ in undo.cur.ops))
         self.assertTrue(any('UPDATE moca_spectra SET ignored=%s' in text and values==(0,100,4) for text,values in undo.cur.ops))
         self.assertEqual((undo.commits,undo.rollbacks),(1,0));self.assertEqual(state['undo'],[])
 

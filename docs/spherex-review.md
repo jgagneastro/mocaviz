@@ -95,15 +95,9 @@ SPIFF, SPIFFStacker, **either missing** (OR), **all three lanes missing** (AND),
 **All three lanes missing** checks SPIFF, SPIFFStacker and the SUBLIME aperture family.
 The aperture family covers every SUBLIME version (including SUBLIME3C and SUBLIME4) and MOSHPIT.
 The reviewer looks for a saved spectral decision in the shared aperture table and in the SUBLIME4 and MOSHPIT candidate tables.
-Detections with the same MOCAdb OID share their aperture review status. A MOSHPIT candidate awaiting an OID uses its own review.
-The selected-lane and viable-elsewhere filters use this same definition. A classification filter matches any saved family label for that OID.
-Each spectral decision is saved on the record being reviewed.
-The OR option checks the explicitly named SPIFF/SPIFFStacker pair.
-A dedicated visual-vetting row counts regardless of its label. A native candidate row counts once its spectral-review field has a value. A missing-vetting filter selects
-non-ignored spectra, taking the latest active spectrum in the chosen reduction
-lane. **No restriction** retains the previous include-reviewed behavior,
-including ignored spectra. The API's existing `pending_only` option remains
-supported when `missing_vetting` is omitted.
+For a stored extraction, the classification and selected-lane missing filter use its exact spectrum ID. A second tile extraction from the same object can therefore remain pending. Cross-lane filters test companion reductions at the object level. Native MOSHPIT and SUBLIME4 candidate records retain their own review histories.
+
+Choose **Unresolved historical reviews (lane only)** to revisit candidate extractions whose old OID review could not be linked to a spectrum. This queue includes ignored spectra and uses stable spectrum IDs. A quality review removes that spectrum from the queue. Original reviews, including historical rows with no surviving extraction, remain in the migration archives.
 
 The viable option requires no review in the selected lane and at least one
 review of **good**, **good candidate**, **peculiar UCD**, **contaminated UCD**,
@@ -177,7 +171,7 @@ measurements have an explicit visibility selector and private RLS input
 or explicitly replacing an autotype fit requires the replacement checkbox.
 
 - Quality classification upserts the lane's vetting table and updates only
-  differing photometric/ignored flags on its existing autotypes, preserving fit
+  differing photometric/ignored flags on the selected spectrum’s existing autotypes, preserving fit
   values and visibility. If there is no autotype and fitting succeeds, it inserts
   the fitted type with the same classification flags.
 - `good`, `peculiar_ucd`, `contaminated_ucd`, `good_reddened` and `good_plus_star`
@@ -186,11 +180,10 @@ or explicitly replacing an autotype fit requires the replacement checkbox.
   Other classes are rejected and set `ignored=1`, including `giant` and legacy
   `risky_andromeda`; their photometric flag is preserved. The existing `late_M`
   category remains usable and retains its photometric flag.
-- Good and candidate decisions explicitly reactivate ignored spectra in the
-  selected lane; rejected decisions ignore that lane's spectra. Other lanes,
+- Good and candidate decisions reactivate the selected spectrum. Rejected decisions ignore that extraction. Other lanes,
   literature spectral types and ignored spectral pixels are unaffected.
 - Save type explicitly upserts the current best-fit autotype and applies the
-  stored classification's photometric/ignored policy to it and the lane's spectra.
+  stored classification's photometric/ignored policy to it and its exact spectrum.
   An unvetted/non-usable spectrum's new type remains ignored.
 - Flag bad pixels updates only the newly flagged points in the selected spectrum.
 - Every successful action and undo adds a moca_changelog entry in the same

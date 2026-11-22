@@ -133,10 +133,9 @@ class ReviewTests(unittest.TestCase):
         body = {"lane": "sublimeaperture", "moca_oids": [100], "min_snr": 5, "min_sptn": 10, "no_known": True}
         review.queue(cursor, body)
         sql, params = cursor.execute.call_args.args
-        self.assertIn("pcat_spherex_sublimeaperture_visual_vetting", sql)
+        self.assertIn("pcat_spherex_spectrum_reviews", sql)
         self.assertIn("mo.ignored=0", sql)
-        self.assertIn("pcat_moshpit_candidates", sql)
-        self.assertIn("pcat_sublime_candidates_v4", sql)
+        self.assertIn("v.moca_specid=s.moca_specid", sql)
         self.assertIn(100, params)
         with self.assertRaises(review.ReviewError):
             review.queue(cursor, {"lane": "x; DROP TABLE moca_spectra"})
@@ -198,8 +197,13 @@ class QueueSelectionTests(unittest.TestCase):
         self.db.execute("CREATE TABLE pcat_sublime_candidates_v4(moca_oid INTEGER,spectral_review TEXT)")
         self.db.execute("CREATE TABLE pcat_moshpit_candidates(moca_oid INTEGER,spectral_review TEXT,origin TEXT)")
         self.db.execute("CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INTEGER PRIMARY KEY,classification_integer REAL)")
+        self.db.execute("CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,review_kind TEXT DEFAULT 'quality')")
         for lane in review.LANES.values():
             self.db.execute("CREATE TABLE " + lane["table"] + "(moca_oid INTEGER PRIMARY KEY,classification TEXT)")
+            self.db.execute(f"""CREATE TRIGGER exact_{lane['pack']} AFTER INSERT ON {lane['table']}
+                BEGIN INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification)
+                SELECT MAX(moca_specid),NEW.classification FROM moca_spectra
+                WHERE moca_oid=NEW.moca_oid AND moca_specpackid={lane['pack']} HAVING COUNT(*)>0; END""")
         scores = {1:6,2:6,3:5,4:6,5:3,6:4,8:6,9:6,10:1.5,11:6,12:0,13:6}
         for oid in range(1,14):
             self.db.execute("INSERT INTO moca_objects VALUES(?,?,?)",(oid,int(oid==9),"Object " + str(oid)))
@@ -224,7 +228,7 @@ class QueueSelectionTests(unittest.TestCase):
         return review.queue(self.cur,{"lane":"spiffstacker","missing_vetting":mode,"min_wiseview_score":score,**other})
 
     def oids(self,mode="lane",score=4,**other):
-        return [row["moca_oid"] for row in self.selection(mode,score,**other)["items"]]
+        return list(dict.fromkeys(row["moca_oid"] for row in self.selection(mode,score,**other)["items"]))
 
     def test_sublime3c_saved_selection_filters_rows_count_and_pagination(self):
         self.db.execute("CREATE TABLE pcat_sublime_candidates_v3c(moca_oid INTEGER,status TEXT)")
@@ -272,9 +276,10 @@ class QueueSelectionTests(unittest.TestCase):
             with self.subTest(lane=lane):
                 self.assertEqual(self.oids("both", lane=lane), [13])
                 body = {"lane": lane, "missing_vetting": "both", "min_wiseview_score": 4, "limit": 1}
-                self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 1})
-                self.assertFalse(review.queue(self.cur, body)["has_more"])
-                self.assertEqual(review.queue(self.cur, {**body, "after": 13})["items"], [])
+                expected = 2 if lane == "spiffstacker" else 1
+                self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": expected})
+                self.assertEqual(review.queue(self.cur, body)["has_more"], expected > 1)
+                self.assertEqual(review.queue(self.cur, {**body, "after": {"moca_oid":13,"moca_specid":9999}})["items"], [])
         # Explicit pair-OR and selected-lane scopes retain their documented meanings.
         self.assertEqual(self.oids("either"), [1, 2, 3, 6, 11, 13])
         self.assertEqual(self.oids("lane"), [1, 2, 6, 11, 13])
@@ -292,14 +297,23 @@ class QueueSelectionTests(unittest.TestCase):
         self.db.execute("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES(11,'bad')")
         for lane in ("spiff", "spiffstacker", "sublimeaperture"):
             filters = {"lane": lane, "moca_oids": oids, "missing_vetting": "both"}
-            self.assertEqual([v["moca_oid"] for v in review.queue(self.cur, filters)["items"]], [13])
-            self.assertEqual(review.queue(self.cur, filters, count_only=True), {"total": 1})
-        self.assertEqual(self.oids("lane", lane="sublimeaperture", moca_oids=oids), [13])
+            expected = {"spiff":[13], "spiffstacker":[13,13], "sublimeaperture":[1,6,13]}[lane]
+            self.assertEqual([v["moca_oid"] for v in review.queue(self.cur, filters)["items"]], expected)
+            self.assertEqual(review.queue(self.cur, filters, count_only=True), {"total": len(expected)})
+        self.assertEqual(self.oids("lane", lane="sublimeaperture", moca_oids=oids), [1,6,13])
         self.assertEqual(self.oids("all", lane="sublimeaperture", moca_oids=oids,
-                                   vetting_classification="good_candidate"), [1, 6])
+                                   vetting_classification="good_candidate"), [])
         self.assertEqual(self.oids("viable_elsewhere", lane="spiff", moca_oids=oids), [1, 6])
         self.assertEqual(self.oids("viable_elsewhere", lane="sublimeaperture", moca_oids=oids), [])
         self.assertEqual(self.oids("either", lane="spiffstacker", moca_oids=oids), oids)
+
+    def test_sibling_spectra_page_and_review_independently(self):
+        body = {"lane":"spiffstacker", "moca_oids":[13], "missing_vetting":"lane", "limit":1}
+        first = review.queue(self.cur,body)
+        second = review.queue(self.cur,{**body,"after":first["next_after"]})
+        self.assertEqual([page["items"][0]["moca_specid"] for page in (first,second)],[1013,2998])
+        self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews VALUES(1013,'good','quality')")
+        self.assertEqual([r["moca_specid"] for r in review.queue(self.cur,body)["items"]],[2998])
 
     def test_inclusive_motion_score_and_missing_motion_rows(self):
         self.assertEqual(self.oids("either",6),[1,2,11,13])
@@ -308,21 +322,32 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids("both",0),[1,5,6,10,11,12,13])
         self.assertEqual(self.oids("both",1.5),[1,5,6,10,11,13])
 
+    def test_unresolved_queue_pages_ignored_sibling_extractions_by_spectrum_id(self):
+        self.db.execute("CREATE TABLE spherex_review_revet_queue(moca_specid INTEGER,moca_oid INTEGER,moca_specpackid INTEGER)")
+        self.db.executemany("INSERT INTO spherex_review_revet_queue VALUES(?,?,?)", [(1011,11,62),(2999,11,62),(2011,11,55)])
+        request = {"lane":"spiffstacker","review_sample":"unresolved","limit":1,"min_wiseview_score":99}
+        self.assertEqual(review.queue(self.cur, request, count_only=True)["total"], 2)
+        first = review.queue(self.cur, request)
+        self.assertEqual(first["items"][0]["moca_specid"], 1011)
+        second = review.queue(self.cur, {**request,"after":first["next_after"]})
+        self.assertEqual(second["items"][0]["moca_specid"], 2999)
+        self.assertFalse(second["has_more"])
+
     def test_latest_active_spectrum_and_legacy_include_reviewed_behavior(self):
         active={row["moca_oid"]:row["moca_specid"] for row in self.selection("either")["items"]}
         self.assertEqual(active[11],1011)
         self.assertEqual(active[13],2998)
         all_rows=self.selection("all",None)["items"]
         self.assertIn(8,[row["moca_oid"] for row in all_rows])
-        self.assertEqual(next(row["moca_specid"] for row in all_rows if row["moca_oid"]==11),2999)
+        self.assertEqual([row["moca_specid"] for row in all_rows if row["moca_oid"]==11],[1011,2999])
         legacy=review.queue(self.cur,{"lane":"spiffstacker","pending_only":False})
         self.assertEqual(legacy["items"],all_rows)
         self.assertEqual(review.queue(self.cur,{"lane":"spiffstacker"})["items"],self.selection("lane",None)["items"])
 
     def test_new_filters_combine_with_ids_cursor_limit_and_signal_to_noise(self):
-        first=self.selection("either",4,after=1,limit=2,moca_oids=[2,3,6,11,13],min_snr=9)
+        first=self.selection("either",4,after={"moca_oid":1,"moca_specid":1001},limit=2,moca_oids=[2,3,6,11,13],min_snr=9)
         self.assertEqual([row["moca_oid"] for row in first["items"]],[2,3])
-        self.assertTrue(first["has_more"]);self.assertEqual(first["next_after"],3)
+        self.assertTrue(first["has_more"]);self.assertEqual(first["next_after"],{"moca_oid":3,"moca_specid":1003})
         second=self.selection("either",4,after=first["next_after"],limit=2,moca_oids=[2,3,6,11,13])
         self.assertEqual([row["moca_oid"] for row in second["items"]],[6,11])
         self.assertEqual(self.oids("either",4,min_snr=15),[13])
@@ -355,8 +380,8 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids("viable_elsewhere", None, lane="sublimeaperture"), [4])
         first = self.selection("viable_elsewhere", 6, limit=1)
         self.assertTrue(first["has_more"])
-        self.assertEqual(first["next_after"], 1)
-        self.assertEqual(self.oids("viable_elsewhere", 6, after=1, limit=1), [2])
+        self.assertEqual(first["next_after"], {"moca_oid":1,"moca_specid":1001})
+        self.assertEqual(self.oids("viable_elsewhere", 6, after=first["next_after"], limit=1), [2])
         body = {"lane": "spiffstacker", "missing_vetting": "viable_elsewhere",
                 "min_wiseview_score": 6, "after": 1, "limit": 1}
         self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 2})
@@ -365,6 +390,7 @@ class QueueSelectionTests(unittest.TestCase):
     def test_viable_elsewhere_accepts_the_requested_labels(self):
         labels = ["good", "good_candidate", "peculiar_ucd", "contaminated_ucd",
                   "incomplete_but_promising", "good_plus_star", "good_reddened", "weird", "late_M"]
+        self.db.execute("DELETE FROM pcat_spherex_spectrum_reviews")
         self.db.execute("DELETE FROM pcat_spherex_visual_vetting")
         self.db.execute("DELETE FROM pcat_spherex_spiffstacker_visual_vetting")
         oids = [1, 2, 3, 4, 5, 6, 7, 10, 11]
@@ -520,7 +546,7 @@ class TransactionTests(unittest.TestCase):
             with patch.object(review, "analyze", return_value=item):
                 prepared = review.prepare(cursor, self.body(item), AUTH)
             cursor.execute.assert_not_called()
-            self.assertEqual(prepared["row_counts"], {lane["table"]: 1, "data_spectral_types": 1})
+            self.assertEqual(prepared["row_counts"], {review.SPECTRUM_REVIEWS: 1, "data_spectral_types": 1})
             spt = prepared["plan"]["operations"][1]["rows"][0]
             self.assertEqual(spt["calculation_method"], lane["method"])
             self.assertEqual(spt["spectral_type"], "L3")
@@ -605,7 +631,7 @@ class TransactionTests(unittest.TestCase):
             result = review.submit(conn, cur, AUTH, {"receipt": prepared["receipt"]})
         conn.commit.assert_called_once()
         sql = [c.args[0] for c in cur.execute.call_args_list]
-        self.assertIn("pcat_spherex_spiffstacker_visual_vetting", sql[0])
+        self.assertIn(review.SPECTRUM_REVIEWS, sql[0])
         self.assertIn("data_spectral_types", sql[1])
         self.assertIn("moca_changelog", sql[2])
         self.assertTrue(result["submitted"])
@@ -646,9 +672,9 @@ class TransactionTests(unittest.TestCase):
         before = item["state"]
         after = copy.deepcopy(before)
         after["vet"] = [{"id": 4, "classification": "bad", "sources": "mocaviz"}]
-        saved = {"lane": item["lane"], "moca_oid": 1001, "moca_specid": 11001,
+        saved = {"write_policy_version": review.WRITE_POLICY_VERSION, "lane": item["lane"], "moca_oid": 1001, "moca_specid": 11001,
             "before": before, "after": after, "pixels": [], "after_data": review.fingerprint(item["raw_spectrum"]),
-            "operations": [{"table": review.LANES[item["lane"]]["table"], "rows": [after["vet"][0]]}],
+            "operations": [{"table": review.SPECTRUM_REVIEWS, "rows": [after["vet"][0]]}],
             "is_public": 0, "rls": "gagne"}
         token = review.seal(AUTH, "undo", saved)
         conn, cur = MagicMock(), MagicMock()
@@ -661,7 +687,7 @@ class TransactionTests(unittest.TestCase):
              patch.object(review, "dataset", return_value=(item["object"], item["raw_spectrum"], [])):
             result = review.undo(conn, cur, AUTH, {"receipt": token})
         self.assertTrue(result["undone"])
-        self.assertIn("DELETE FROM pcat_spherex_spiffstacker_visual_vetting", cur.execute.call_args_list[0].args[0])
+        self.assertIn("DELETE FROM pcat_spherex_spectrum_reviews", cur.execute.call_args_list[0].args[0])
         conn.commit.assert_called_once()
 
 

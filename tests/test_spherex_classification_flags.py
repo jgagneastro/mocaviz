@@ -57,7 +57,7 @@ class ClassificationPolicyTests(unittest.TestCase):
         item['state']['spt']=[dict(id=42,ignored=0,photometric_estimate=0)]
         item['state']['spectra'][0]['ignored']=0
         result=prepare(item,'good')
-        self.assertEqual(result['row_counts'],{'pcat_spherex_spiffstacker_visual_vetting':1})
+        self.assertEqual(result['row_counts'],{sr.SPECTRUM_REVIEWS:1})
         item['state']['spt'][0]['photometric_estimate']=1
         row=prepare(item,'good')['plan']['operations'][1]['rows'][0]
         self.assertEqual(row,{'id':42,'photometric_estimate':0})
@@ -104,27 +104,29 @@ class SQLiteFlagTransactionTests(unittest.TestCase):
                     columns.append(f'`{field}` {kind}')
                 db.execute('CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,'+','.join(columns)+',modified_timestamp TEXT)')
                 db.execute('CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER,modified_timestamp TEXT)')
+                db.execute("CREATE TABLE pcat_spherex_spectrum_reviews(id INTEGER PRIMARY KEY, moca_specid INTEGER UNIQUE,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality',modified_timestamp TEXT)")
                 for other in sr.LANES.values():db.execute(f"CREATE TABLE {other['table']}(id INTEGER PRIMARY KEY,moca_oid INTEGER UNIQUE,classification TEXT,sources TEXT,modified_timestamp TEXT)")
                 other=next(value for key,value in sr.LANES.items() if key!=lane)
                 for row_id,oid,method in [(42,1001,config['method']),(43,1001,other['method']),(44,1002,config['method'])]:
                     db.execute('INSERT INTO data_spectral_types(id,moca_oid,calculation_method,spectral_type,photometric_estimate,ignored,is_public,rls) VALUES(?,?,?,\'T8\',0,1,0,\'gagne\')',(row_id,oid,method))
+                db.execute("UPDATE data_spectral_types SET moca_specid=11001 WHERE id=42")
                 db.executemany('INSERT INTO moca_spectra VALUES(?,?,?,?,NULL)',[(11001,1001,config['pack'],1),(11002,1001,other['pack'],1),(11003,1002,config['pack'],1),(11004,1001,config['pack'],1)])
                 class Cursor:
                     def execute(self,sql,params=()):self.result=db.execute(sql.replace('%s','?').replace(' FOR UPDATE',''),params)
                     def fetchall(self):return [dict(row) for row in self.result.fetchall()]
                 cur=Cursor();item=item_for(lane)
-                item['state']=sr.snapshot(cur,config,1001)
+                item['state']=sr.snapshot(cur,config,1001,specid=11001)
                 before=copy.deepcopy(item['state'])
                 result=prepare(item,'good_candidate')
                 def upsert(cursor,table,row,fields):
-                    self.assertEqual(table,config['table'])
-                    cursor.execute(f'INSERT INTO {table}(moca_oid,classification,sources) VALUES (%s,%s,%s) ON CONFLICT(moca_oid) DO UPDATE SET classification=excluded.classification,sources=excluded.sources',(row['moca_oid'],row['classification'],row['sources']))
+                    self.assertEqual(table,sr.SPECTRUM_REVIEWS)
+                    cursor.execute(f'INSERT INTO {table}(moca_specid,classification,sources) VALUES (%s,%s,%s) ON CONFLICT(moca_specid) DO UPDATE SET classification=excluded.classification,sources=excluded.sources',(row['moca_specid'],row['classification'],row['sources']))
                 conn=MagicMock();conn.commit.side_effect=db.commit
                 with patch.object(sr,'lock_object'),patch.object(sr,'lock_source_pixels'),patch.object(sr,'upsert',side_effect=upsert),patch.object(sr,'changelog') as changelog,patch.object(sr,'dataset',return_value=(item['object'],item['raw_spectrum'],[])):
                     saved=sr.submit(conn,cur,AUTH,{'receipt':result['receipt']})
                     self.assertEqual(tuple(db.execute('SELECT photometric_estimate,ignored FROM data_spectral_types WHERE id=42').fetchone()),(1,0))
                     self.assertEqual([tuple(row) for row in db.execute('SELECT photometric_estimate,ignored FROM data_spectral_types WHERE id IN (43,44) ORDER BY id')],[(0,1),(0,1)])
-                    self.assertEqual([tuple(row) for row in db.execute('SELECT moca_specid,ignored FROM moca_spectra ORDER BY moca_specid')],[(11001,0),(11002,1),(11003,1),(11004,0)])
+                    self.assertEqual([tuple(row) for row in db.execute('SELECT moca_specid,ignored FROM moca_spectra ORDER BY moca_specid')],[(11001,0),(11002,1),(11003,1),(11004,1)])
                     sr.undo(conn,cur,AUTH,{'receipt':saved['undo_receipt']})
-                    self.assertEqual(sr.snapshot(cur,config,1001),before)
+                    self.assertEqual(sr.snapshot(cur,config,1001,specid=11001),before)
                     self.assertEqual(conn.commit.call_count,2);self.assertEqual(changelog.call_count,2)
