@@ -1,7 +1,7 @@
 """Distinct-object discovery counts, requiring saved spectral vetting."""
 from decimal import Decimal
 
-CONFIRMED_SPECTRAL_CLASSES = frozenset(('good','peculiar_ucd','contaminated_ucd','good_reddened'))
+CONFIRMED_SPECTRAL_CLASSES = frozenset(('good','peculiar_ucd','contaminated_ucd','good_reddened','good_plus_star'))
 
 
 def summarize_discoveries(rows, known, claimed, *, spectral_only_confirmed=False, **_legacy):
@@ -23,8 +23,11 @@ def summarize_discoveries(rows, known, claimed, *, spectral_only_confirmed=False
         if not (confirmed or candidate):
             continue
         previous=objects.get(oid)
-        kind='confirmed' if confirmed or previous and previous[0]=='confirmed' else 'candidate'
-        objects[oid]=(kind,max(float(spt),previous[1] if previous else float(spt)))
+        kind='confirmed' if confirmed else 'candidate'
+        if previous and previous[0]=='confirmed' and not confirmed:
+            continue
+        number=float(spt)
+        objects[oid]=(kind,max(number,previous[1]) if previous and previous[0]==kind else number)
     for kind,spt in objects.values():
         counts[kind+'_l0']+=1
         if spt>=20:counts[kind+'_t0']+=1

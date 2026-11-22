@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import chi2
 
-VERSION = 1
+VERSION = 2
 CACHE = Path(os.environ.get('MOCAVIZ_COMPLETENESS_CACHE',
-    str(Path.home()/'Library/Caches/MOCAviz/sublime-completeness-v1.json')))
+    str(Path.home()/'Library/Caches/MOCAviz/sublime-completeness-v2.json')))
 TTL = 7*86400
 LOCK = threading.Lock()
 MEMORY_REFERENCE = None
@@ -56,7 +56,7 @@ def fetch(cur, sql, params=()):
 
 
 def depth_summary(rows):
-    """Newest measurement per object/band; no detection S/N or visual cut.
+    """Newest valid measurement per reviewed extraction and band.
 
     Magnitude errors are converted using their differential flux-error relation.
     This is a sample-conditioned empirical noise-depth estimate, not a sky map.
@@ -66,7 +66,7 @@ def depth_summary(rows):
     for row in rows:
         band=str(row['system_band_simple']).lower()
         if band not in values:continue
-        key=(row['moca_oid'],band)
+        key=(row['moca_specid'],band)
         if key in seen:continue
         mag,unc=row['magnitude'],row['magnitude_unc']
         if mag is None or unc is None:continue
@@ -98,17 +98,20 @@ def reference_data(cur, refresh=False, *, persist=True):
                          ' AND ignored=0 AND xdata IS NOT NULL AND ydata IS NOT NULL ORDER BY xdata',(seqid,))
             if not meta or not points:raise ValueError('The required MOCAdb magnitude sequence is unavailable.')
             sequences[band]={**meta[0],'points':[[float(p['xdata']),float(p['ydata']),float(p['yerror']) if p['yerror'] is not None else None] for p in points]}
-        # Seed from the small SPHEREx spectrum set; STRAIGHT_JOIN avoids scanning all photometry.
-        measurements=fetch(cur,"""SELECT STRAIGHT_JOIN p.id,p.moca_oid,p.system_band_simple,p.magnitude,p.magnitude_unc
-            FROM moca_spectra s JOIN data_photometry p ON p.moca_specid=s.moca_specid
+        from .sublime_findings import LANE_CONFIG, lane_reviews, sq
+        canonical=sq.has_spectrum_reviews(cur)
+        spectra=' UNION ALL '.join(f"SELECT q.moca_specid,q.moca_oid FROM {lane_reviews(cfg,canonical)} q "
+                    f"WHERE LOWER(q.classification) IN ({sq.labels_sql(sq.GOOD)})" for cfg in LANE_CONFIG.values())
+        measurements=fetch(cur,f"""SELECT STRAIGHT_JOIN p.id,p.moca_specid,p.moca_oid,p.system_band_simple,p.magnitude,p.magnitude_unc
+            FROM ({spectra}) s JOIN data_photometry p ON p.moca_specid=s.moca_specid
             JOIN moca_objects mo ON mo.moca_oid=p.moca_oid
-            WHERE s.moca_specpackid IN (55,62,76) AND s.ignored=0 AND mo.ignored=0
+            WHERE s.moca_oid=p.moca_oid AND mo.ignored=0
               AND p.ignored=0 AND p.is_synthetic=1 AND p.system_band_simple IN ('J','W2')
               AND p.magnitude IS NOT NULL AND p.magnitude_unc>0
             ORDER BY p.moca_oid,p.system_band_simple,p.id DESC""")
         data=dict(version=VERSION,cached_at=time.time(),literature_checked='2026-11-06',
                   bins=bins(),references=REFERENCES,sequences=sequences,depths=depth_summary(measurements),
-                  depth_method='m_3σ = m − 2.5 log10(3 σ_m ln(10)/2.5); newest valid measurement per object and band; no quality or S/N cuts.',
+                  depth_method='m_3σ = m − 2.5 log10(3 σ_m ln(10)/2.5); newest valid measurement per good spectrum and band.',
                   density_population='Unresolved sources/systems, not individually resolved close binary components.')
         # Cache only references and aggregate depths, never credentials or object records.
         from .spherex_review import clean

@@ -288,7 +288,8 @@ class FilterSelectionTests(unittest.TestCase):
         self.assertEqual(self.oids(**{**cuts,'no_wiseview_score':True}),[])
 
     def test_catalog_cuts_combine_with_viable_elsewhere_and_total(self):
-        self.db.execute("INSERT INTO pcat_spherex_visual_vetting VALUES(1,'good')")
+        self.db.execute("INSERT INTO moca_spectra VALUES(201,1,55,0,9)")
+        self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews VALUES(201,'good','quality')")
         cuts=dict(missing_vetting='viable_elsewhere',review_sample='sublime2',min_sublime2_snr=7,
                   min_cnn_probability=.8,min_abs_galactic_latitude=15,min_snr=2,
                   max_reduced_chi2=1.5,exclude_duplicates=True,queue_order='spt_desc')

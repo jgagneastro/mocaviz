@@ -252,8 +252,8 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertFalse(second["has_more"])
         self.assertEqual(review.queue(self.cur, body, count_only=True), {"total": 2})
         unfiltered = {**body, "sublime3c_selection_pass_only": False, "limit": 20}
-        self.assertEqual([x["moca_oid"] for x in review.queue(self.cur, unfiltered)["items"]], list(range(1, 8)))
-        self.assertEqual(review.queue(self.cur, unfiltered, count_only=True), {"total": 7})
+        self.assertEqual([x["moca_oid"] for x in review.queue(self.cur, unfiltered)["items"]], [1,2,4,5,6,7])
+        self.assertEqual(review.queue(self.cur, unfiltered, count_only=True), {"total": 6})
         all_sample = {**body, "review_sample": "all", "limit": 20}
         self.assertEqual(review.queue(self.cur, all_sample), review.queue(self.cur, {**all_sample, "sublime3c_selection_pass_only": False}))
         self.assertEqual(self.db.total_changes, changes, "Filtering never writes human vetting or candidate rows")
@@ -261,8 +261,8 @@ class QueueSelectionTests(unittest.TestCase):
     def test_missing_vetting_and_or_scopes_use_objects_not_only_selected_lane(self):
         self.assertEqual(self.oids("lane"),[1,2,6,11,13])
         self.assertEqual(self.oids("spiffstacker"),[1,2,6,11,13])
-        self.assertEqual(self.oids("spiff"),[1,3,6,11,13])
-        self.assertEqual(self.oids("either"),[1,2,3,6,11,13])
+        self.assertEqual(self.oids("spiff"),[1,6,11,13])
+        self.assertEqual(self.oids("either"),[1,2,6,11,13])
         self.assertEqual(self.oids("both"),[1,6,11,13])
         self.assertEqual(self.oids("lane",lane="spiff"),[1,3,6,8,11,13])
 
@@ -281,7 +281,7 @@ class QueueSelectionTests(unittest.TestCase):
                 self.assertEqual(review.queue(self.cur, body)["has_more"], expected > 1)
                 self.assertEqual(review.queue(self.cur, {**body, "after": {"moca_oid":13,"moca_specid":9999}})["items"], [])
         # Explicit pair-OR and selected-lane scopes retain their documented meanings.
-        self.assertEqual(self.oids("either"), [1, 2, 3, 6, 11, 13])
+        self.assertEqual(self.oids("either"), [1, 2, 6, 11, 13])
         self.assertEqual(self.oids("lane"), [1, 2, 6, 11, 13])
         self.assertEqual(self.db.total_changes, before)
 
@@ -315,9 +315,18 @@ class QueueSelectionTests(unittest.TestCase):
         self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews VALUES(1013,'good','quality')")
         self.assertEqual([r["moca_specid"] for r in review.queue(self.cur,body)["items"]],[2998])
 
+    def test_all_siblings_with_positive_reviews_survive_newer_rejection(self):
+        self.db.execute("INSERT INTO moca_spectra VALUES(4000,13,62,0,30)")
+        self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews VALUES(?,?,'quality')",
+                            [(1013,'good'),(2998,'good_reddened'),(4000,'bad')])
+        request={"lane":"spiffstacker","moca_oids":[13],"missing_vetting":"all"}
+        self.assertEqual([r['moca_specid'] for r in review.queue(self.cur,request)['items']],[1013,2998])
+        self.assertEqual(review.queue(self.cur,request,count_only=True),{'total':2})
+        self.assertEqual([r['moca_specid'] for r in review.queue(self.cur,dict(request,vetting_classification='bad'))['items']],[4000])
+
     def test_inclusive_motion_score_and_missing_motion_rows(self):
         self.assertEqual(self.oids("either",6),[1,2,11,13])
-        self.assertEqual(self.oids("either",5),[1,2,3,11,13])
+        self.assertEqual(self.oids("either",5),[1,2,11,13])
         self.assertEqual(self.oids("both",None),[1,5,6,7,10,11,12,13])
         self.assertEqual(self.oids("both",0),[1,5,6,10,11,12,13])
         self.assertEqual(self.oids("both",1.5),[1,5,6,10,11,13])
@@ -338,18 +347,18 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertEqual(active[11],1011)
         self.assertEqual(active[13],2998)
         all_rows=self.selection("all",None)["items"]
-        self.assertIn(8,[row["moca_oid"] for row in all_rows])
-        self.assertEqual([row["moca_specid"] for row in all_rows if row["moca_oid"]==11],[1011,2999])
+        self.assertNotIn(8,[row["moca_oid"] for row in all_rows])
+        self.assertEqual([row["moca_specid"] for row in all_rows if row["moca_oid"]==11],[1011])
         legacy=review.queue(self.cur,{"lane":"spiffstacker","pending_only":False})
         self.assertEqual(legacy["items"],all_rows)
         self.assertEqual(review.queue(self.cur,{"lane":"spiffstacker"})["items"],self.selection("lane",None)["items"])
 
     def test_new_filters_combine_with_ids_cursor_limit_and_signal_to_noise(self):
         first=self.selection("either",4,after={"moca_oid":1,"moca_specid":1001},limit=2,moca_oids=[2,3,6,11,13],min_snr=9)
-        self.assertEqual([row["moca_oid"] for row in first["items"]],[2,3])
-        self.assertTrue(first["has_more"]);self.assertEqual(first["next_after"],{"moca_oid":3,"moca_specid":1003})
+        self.assertEqual([row["moca_oid"] for row in first["items"]],[2,6])
+        self.assertTrue(first["has_more"]);self.assertEqual(first["next_after"],{"moca_oid":6,"moca_specid":1006})
         second=self.selection("either",4,after=first["next_after"],limit=2,moca_oids=[2,3,6,11,13])
-        self.assertEqual([row["moca_oid"] for row in second["items"]],[6,11])
+        self.assertEqual([row["moca_oid"] for row in second["items"]],[11,13])
         self.assertEqual(self.oids("either",4,min_snr=15),[13])
 
     def test_maximum_snr_uses_selected_pixels_and_the_same_queue_and_count_filters(self):

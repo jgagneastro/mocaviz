@@ -64,10 +64,12 @@ def pending_spectral_rows(cur, source_table):
     if source_table not in ('pcat_sublime_candidates_v2', REDMOVER_SOURCE):
         raise ValueError('Invalid pending-spectrum sample')
     ph=','.join(['%s']*len(PENDING_CANDIDATE_CLASSES))
+    quality = spectral_vetting.quality
+    canonical = quality.has_spectrum_reviews(cur)
     reviews=' UNION ALL '.join(
-        f"SELECT moca_oid,LOWER(TRIM(classification)) AS spectral_class FROM `{table}` "
+        f"SELECT moca_oid,LOWER(TRIM(classification)) AS spectral_class FROM {quality.reviews_sql(table,pack,canonical)} q "
         f"WHERE LOWER(TRIM(classification)) IN ({ph})"
-        for table,_,_ in spectral_vetting.LANES.values())
+        for table,pack,_ in spectral_vetting.LANES.values())
     cur.execute('WITH pending_reviews AS ('+reviews+""")
         SELECT v.moca_oid,v.spectral_class FROM pending_reviews v
         JOIN moca_objects mo ON mo.moca_oid=v.moca_oid AND mo.ignored=0
@@ -110,25 +112,21 @@ def sublime_stats():
                     WHERE NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup
                                       WHERE dup.potential_duplicated_moca_oid=p.moca_oid AND dup.classification='y')''')
                 progress=cur.fetchone()
-                cur.execute('''SELECT p.moca_oid,p.autotype_spectral_type_number,
-                    v.classification AS sublimeaperture_class,
-                    vs.classification AS spiff_class,vk.classification AS spiffstacker_class,
-                    w.classification_integer AS motion
-                    FROM (SELECT moca_oid,MAX(id) AS id FROM pcat_sublime_candidates_v2
-                          WHERE moca_oid IS NOT NULL GROUP BY moca_oid) latest
-                    JOIN pcat_sublime_candidates_v2 p ON p.id=latest.id
-                    JOIN moca_objects mo ON mo.moca_oid=p.moca_oid AND mo.ignored=0
-                    LEFT JOIN pcat_spherex_sublimeaperture_visual_vetting v ON v.moca_oid=p.moca_oid
-                    LEFT JOIN pcat_spherex_visual_vetting vs ON vs.moca_oid=p.moca_oid
-                    LEFT JOIN pcat_spherex_spiffstacker_visual_vetting vk ON vk.moca_oid=p.moca_oid
-                    LEFT JOIN pcat_wiseview_visual_vetting w ON w.moca_oid=p.moca_oid
-                    WHERE NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup
-                                      WHERE dup.potential_duplicated_moca_oid=p.moca_oid AND dup.classification='y')
-                      AND p.autotype_spectral_type_number >= 10
-                      AND (w.classification_integer >= 0 OR w.classification_integer IS NULL)
-                      AND (v.classification IN ('good','good_candidate','peculiar_ucd','contaminated_ucd','good_reddened')
-                           OR vs.classification IN ('good','good_candidate','peculiar_ucd','contaminated_ucd','good_reddened')
-                           OR vk.classification IN ('good','good_candidate','peculiar_ucd','contaminated_ucd','good_reddened'))''')
+                quality = spectral_vetting.quality
+                canonical = quality.has_spectrum_reviews(cur)
+                reviewed = ' UNION ALL '.join(
+                    f"SELECT r.moca_oid,r.moca_specid,r.classification FROM {quality.reviews_sql(table,pack,canonical)} r "
+                    f"WHERE r.classification IN ({quality.labels_sql(PENDING_CANDIDATE_CLASSES)})"
+                    for table,pack,_ in spectral_vetting.LANES.values())
+                cur.execute(f"""SELECT v.moca_oid,v.classification AS spectral_class,w.classification_integer AS motion,
+                    COALESCE((SELECT t.spectral_type_number FROM data_spectral_types t WHERE t.moca_specid=v.moca_specid
+                        AND t.calculation_method IN ('spherex_autotype','spiff_stacker_autotype','sublimeaperture_autotype','spherex_sublimeap_autotype')
+                        AND t.ignored=0 ORDER BY t.id DESC LIMIT 1),p.autotype_spectral_type_number) AS autotype_spectral_type_number
+                    FROM ({reviewed}) v JOIN moca_objects mo ON mo.moca_oid=v.moca_oid AND mo.ignored=0
+                    JOIN pcat_sublime_candidates_v2 p ON p.id=(SELECT MAX(candidate.id) FROM pcat_sublime_candidates_v2 candidate WHERE candidate.moca_oid=v.moca_oid)
+                    LEFT JOIN pcat_wiseview_visual_vetting w ON w.moca_oid=v.moca_oid
+                    WHERE NOT EXISTS (SELECT 1 FROM pcat_duplicated_vetting dup WHERE dup.potential_duplicated_moca_oid=v.moca_oid
+                                      AND dup.classification='y')""")
                 rows=list(cur.fetchall())
                 pending=pending_spectral_rows(cur,'pcat_sublime_candidates_v2')
         finally: conn.close()
@@ -147,7 +145,6 @@ def sublime_stats():
 
 def redmover_stats(lane):
     if lane not in ('spiff','spiffstacker'): raise ValueError('Invalid CatWISE spectrum lane')
-    methods = {'spiff':'spherex_autotype','spiffstacker':'spiff_stacker_autotype'}
     pack = SPECPACKS[lane]
     with STATS_FETCH_LOCK:
         with STATS_LOCK:
@@ -164,32 +161,30 @@ def redmover_stats(lane):
             with conn.cursor() as cur:
                 cur.execute('SELECT moca_oid,classification_integer FROM pcat_wiseview_visual_vetting')
                 motion_rows=list(cur.fetchall())
-                by_oid={}
-                # The selected lane supplies the type; qualifying reviews are combined.
-                for spectral_lane in (lane, 'spiff' if lane=='spiffstacker' else 'spiffstacker'):
-                    table=SPECTRAL_VETTING[spectral_lane]
+                spectral_rows=[]
+                quality = spectral_vetting.quality
+                canonical = quality.has_spectrum_reviews(cur)
+                for spectral_lane in dict.fromkeys((lane,*spectral_vetting.LANES)):
+                    table,pack,methods=spectral_vetting.LANES[spectral_lane]
+                    slots=','.join(['%s']*len(methods))
                     cur.execute(f'''SELECT v.moca_oid,v.classification AS spectral_class,
                         d.spectral_type_number AS autotype_spectral_type_number,
                         w.classification_integer AS motion
-                        FROM `{table}` v
+                        FROM {quality.reviews_sql(table,pack,canonical)} v
                         JOIN moca_objects mo ON mo.moca_oid=v.moca_oid AND mo.ignored=0
                         LEFT JOIN pcat_wiseview_visual_vetting w ON w.moca_oid=v.moca_oid
                         LEFT JOIN data_spectral_types d ON d.id=(
                             SELECT MAX(d2.id) FROM data_spectral_types d2
-                            WHERE d2.moca_oid=v.moca_oid AND d2.calculation_method=%s AND d2.ignored=0)
+                            WHERE d2.moca_specid=v.moca_specid AND d2.calculation_method IN ({slots}) AND d2.ignored=0)
                         WHERE EXISTS (SELECT 1 FROM pcat_catwise2020_red_movers c WHERE c.moca_oid=v.moca_oid)
-                          ''', (methods[spectral_lane],))
-                    for row in cur.fetchall():
-                        if row['moca_oid'] is not None:
-                            target=by_oid.setdefault(int(row['moca_oid']),row)
-                            target[spectral_lane+'_class']=row.get('spectral_class')
-                spectral_rows=list(by_oid.values())
+                          ''', methods)
+                    spectral_rows.extend(cur.fetchall())
                 pending=[row for row in pending_spectral_rows(cur,REDMOVER_SOURCE) if int(row['moca_oid']) in oids]
         finally: conn.close()
         spectral_rows=[row for row in spectral_rows if row['moca_oid'] is not None and int(row['moca_oid']) in oids]
         aut=review._autotype_review()
         discovery_oids={int(row['moca_oid']) for row in spectral_rows
-                        if any(row.get(key) in ('good','good_candidate','peculiar_ucd','contaminated_ucd','good_reddened')
+                        if any(row.get(key) in PENDING_CANDIDATE_CLASSES
                                for key in ('spectral_class','spiff_class','spiffstacker_class'))
                         and row.get('autotype_spectral_type_number') is not None
                         and float(row['autotype_spectral_type_number']) >= 10}
@@ -200,8 +195,10 @@ def redmover_stats(lane):
         classified={int(row['moca_oid']) for row in matches} | {int(row['moca_oid']) for row in spectral_rows}
         rejected={int(row['moca_oid']) for row in matches
                   if row['classification_integer'] is not None and row['classification_integer'] <= 0}
+        positive = {int(row['moca_oid']) for row in spectral_rows
+                    if str(row.get('spectral_class') or '').lower() in PENDING_CANDIDATE_CLASSES}
         rejected.update(int(row['moca_oid']) for row in spectral_rows
-                        if str(row.get('spectral_class') or '').lower().split('/')[0] in
+                        if int(row['moca_oid']) not in positive and str(row.get('spectral_class') or '').lower().split('/')[0] in
                         {'bad','galaxy','halo','reddened','snr','scatter','star','giant','early'})
         result={**summarize_discoveries(spectral_rows,known,claimed,spectral_only_confirmed=True),
                 **summarize_pending_spectra(pending,known,claimed),
@@ -444,19 +441,24 @@ def redmover_oids(pack, requested=None, *, include_reviewed_ignored=False):
     try:
         with conn.cursor() as cur:
             found=set()
+            quality=spectral_vetting.quality
+            canonical=quality.has_spectrum_reviews(cur)
+            table=next(table for table,package,_ in spectral_vetting.LANES.values() if package==pack)
+            source=quality.reviews_sql(table,pack,canonical)
             chunks = review._chunked(sorted(requested), 1000) if requested is not None else [None]
             for chunk in chunks:
                 restriction = ' AND sample.moca_oid IN (' + ','.join(['%s']*len(chunk)) + ')' if chunk is not None else ''
-                cur.execute('''SELECT DISTINCT sample.moca_oid
+                cur.execute(f'''SELECT DISTINCT sample.moca_oid
                     FROM pcat_catwise2020_red_movers sample
                     JOIN moca_objects mo ON mo.moca_oid=sample.moca_oid AND mo.ignored=0
                     JOIN moca_spectra sp ON sp.moca_oid=sample.moca_oid
-                    WHERE sp.moca_specpackid=%s AND sp.ignored=0''' + restriction, (pack, *(chunk or ())))
+                    LEFT JOIN {source} v ON v.moca_specid=sp.moca_specid
+                    WHERE sp.moca_specpackid=%s AND {quality.displayable_sql("sp","v")}''' + restriction, (pack, *(chunk or ())))
                 found.update(int(row['moca_oid']) for row in cur.fetchall())
                 if include_reviewed_ignored:
-                    for spectral_lane,table in SPECTRAL_VETTING.items():
+                    for table,pack_id,_ in spectral_vetting.LANES.values():
                         cur.execute(f'''SELECT DISTINCT sample.moca_oid
-                            FROM `{table}` v
+                            FROM {quality.reviews_sql(table,pack_id,canonical)} v
                             JOIN pcat_catwise2020_red_movers sample ON sample.moca_oid=v.moca_oid
                             JOIN moca_objects mo ON mo.moca_oid=sample.moca_oid AND mo.ignored=0
                             WHERE 1=1''' + restriction,tuple(chunk or ()))
@@ -466,20 +468,7 @@ def redmover_oids(pack, requested=None, *, include_reviewed_ignored=False):
 
 
 def exclude_spectral_reviews(oids):
-    """Exclude both historical lanes, using a catalog join for large queues."""
-    if not oids: return set()
-    if len(oids) <= 20000:
-        return review.fetch_missing_visual_vetting_oids(oids,visual_vetting_tables=tuple(SPECTRAL_VETTING.values()))
-    conn=review._connect_db()
-    try:
-        reviewed=set()
-        with conn.cursor() as cur:
-            for table in SPECTRAL_VETTING.values():
-                cur.execute(f'''SELECT DISTINCT v.moca_oid FROM `{table}` v
-                    WHERE EXISTS (SELECT 1 FROM pcat_catwise2020_red_movers c WHERE c.moca_oid=v.moca_oid)''')
-                reviewed.update(int(row['moca_oid']) for row in cur.fetchall() if row['moca_oid'] is not None)
-        return oids-reviewed
-    finally: conn.close()
+    return filter_spectral_reviews(oids, ('none',), exclude=False, visual_vetting_tables=tuple(SPECTRAL_VETTING.values())) if oids else set()
 
 
 def fetch_duplicate_oids():
@@ -507,19 +496,28 @@ def fetch_byw_oids():
 
 
 def filter_spiffstacker_type(oids, *, spt_min, spt_max):
-    """Apply inclusive numeric bounds to non-ignored SPIFFStacker autotypes."""
+    return filter_spectrum_measurement(oids,'spiffstacker','t.spectral_type_number',spt_min,spt_max)
+
+
+def filter_spectrum_measurement(oids,lane,expression,spt_min,spt_max):
+    """Apply bounds to an eligible extraction's own stored fit or type."""
     if not oids or (spt_min is None and spt_max is None): return set(oids)
     conn=review._connect_db()
     try:
         kept=set()
         with conn.cursor() as cur:
+            table,pack,methods=spectral_vetting.LANES[lane]
+            quality=spectral_vetting.quality
+            source=quality.reviews_sql(table,pack,quality.has_spectrum_reviews(cur))
             for chunk in review._chunked(sorted(oids),1000):
                 placeholders=','.join(['%s']*len(chunk))
-                clauses=[f'moca_oid IN ({placeholders})',"calculation_method='spiff_stacker_autotype'",'ignored=0','spectral_type_number IS NOT NULL']
+                clauses=[f't.moca_oid IN ({placeholders})',f't.calculation_method IN ({quality.labels_sql(methods)})',
+                         't.ignored=0',f's.moca_specpackid={pack}',quality.displayable_sql()]
                 values=list(chunk)
-                if spt_min is not None:clauses.append('spectral_type_number >= %s');values.append(float(spt_min))
-                if spt_max is not None:clauses.append('spectral_type_number <= %s');values.append(float(spt_max))
-                cur.execute('SELECT moca_oid FROM data_spectral_types WHERE '+' AND '.join(clauses),tuple(values))
+                if spt_min is not None:clauses.append(expression+' >= %s');values.append(float(spt_min))
+                if spt_max is not None:clauses.append(expression+' <= %s');values.append(float(spt_max))
+                cur.execute(f"SELECT DISTINCT t.moca_oid FROM data_spectral_types t JOIN moca_spectra s ON s.moca_specid=t.moca_specid "
+                            f"AND s.moca_oid=t.moca_oid LEFT JOIN {source} v ON v.moca_specid=s.moca_specid WHERE "+' AND '.join(clauses),tuple(values))
                 kept.update(int(row['moca_oid']) for row in cur.fetchall() if row['moca_oid'] is not None)
         return kept
     finally:conn.close()
@@ -624,7 +622,7 @@ def public_ucd_oids(requested, *, spt_min=None, spt_max=None):
 
 
 def filter_spectrum_snr(oids, *, snr_min, snr_max, moca_specpackid, wavelength_range):
-    """Median flux/uncertainty in the chosen band of each latest active spectrum."""
+    """Median flux/uncertainty in the chosen band of each eligible extraction."""
     if not oids or (snr_min is None and snr_max is None):
         return set(oids)
     low,high=SNR_WAVELENGTH_RANGES[wavelength_range]
@@ -639,27 +637,63 @@ def filter_spectrum_snr(oids, *, snr_min, snr_max, moca_specpackid, wavelength_r
         with conn.cursor() as cur:
             for chunk in review._chunked(sorted(oids),1000):
                 placeholders=','.join(['%s']*len(chunk))
-                cur.execute(f"""WITH latest AS (
-                    SELECT moca_oid,MAX(moca_specid) AS moca_specid FROM moca_spectra
-                    WHERE moca_oid IN ({placeholders}) AND moca_specpackid=%s AND ignored=0
-                    GROUP BY moca_oid
+                quality = spectral_vetting.quality
+                table = next(t for t,pack,_ in spectral_vetting.LANES.values() if pack==moca_specpackid)
+                source = quality.reviews_sql(table,moca_specpackid,quality.has_spectrum_reviews(cur))
+                cur.execute(f"""WITH eligible AS (
+                    SELECT s.moca_oid,s.moca_specid FROM moca_spectra s LEFT JOIN {source} v ON v.moca_specid=s.moca_specid
+                    WHERE s.moca_oid IN ({placeholders}) AND s.moca_specpackid=%s AND {quality.displayable_sql()}
                 ), samples AS (
-                    SELECT s.moca_oid,d.flux_flambda/d.flux_flambda_unc AS snr,
-                        ROW_NUMBER() OVER (PARTITION BY s.moca_oid ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
-                        COUNT(*) OVER (PARTITION BY s.moca_oid) AS sample_count
-                    FROM latest s JOIN data_spectra d ON d.moca_specid=s.moca_specid
+                    SELECT s.moca_oid,s.moca_specid,d.flux_flambda/d.flux_flambda_unc AS snr,
+                        ROW_NUMBER() OVER (PARTITION BY s.moca_specid ORDER BY d.flux_flambda/d.flux_flambda_unc) AS sample_rank,
+                        COUNT(*) OVER (PARTITION BY s.moca_specid) AS sample_count
+                    FROM eligible s JOIN data_spectra d ON d.moca_specid=s.moca_specid
                     WHERE d.ignored=0 AND d.wavelength_angstrom BETWEEN %s AND %s
                         AND d.flux_flambda IS NOT NULL AND d.flux_flambda_unc>0
                 ), medians AS (
                     SELECT moca_oid,AVG(snr) AS median_snr FROM samples
                     WHERE sample_rank IN (FLOOR((sample_count+1)/2),FLOOR((sample_count+2)/2))
-                    GROUP BY moca_oid
+                    GROUP BY moca_oid,moca_specid
                 ) SELECT moca_oid FROM medians WHERE """+' AND '.join(bounds),
                     (*chunk,moca_specpackid,low*10000,high*10000,*values))
                 kept.update(int(row['moca_oid']) for row in cur.fetchall())
         return kept
     finally:
         conn.close()
+
+
+def filter_spectral_reviews(oids, classes, *, exclude, visual_vetting_tables):
+    """Match exact reviews across the selected packages, letting viable siblings take precedence."""
+    labels = {}
+    conn = review._connect_db()
+    try:
+        with conn.cursor() as cur:
+            quality = spectral_vetting.quality
+            canonical = quality.has_spectrum_reviews(cur)
+            ordered = sorted(oids)
+            for table, pack, _ in spectral_vetting.LANES.values():
+                if table not in visual_vetting_tables:
+                    continue
+                source = quality.reviews_sql(table, pack, canonical)
+                for start in range(0, len(ordered), 4000):
+                    ids = ordered[start:start+4000]
+                    slots = ','.join(['%s'] * len(ids))
+                    cur.execute(f"SELECT DISTINCT q.moca_oid,q.classification FROM {source} q "
+                                f"WHERE q.moca_oid IN ({slots})", tuple(ids))
+                    for row in cur.fetchall():
+                        label = (row['classification'] or '').strip().lower()
+                        if label:
+                            labels.setdefault(row['moca_oid'], set()).add(label)
+    finally:
+        conn.close()
+    selected = set(str(value).lower() for value in classes)
+    result = set()
+    for oid in oids:
+        values = labels.get(oid, {'none'})
+        effective = values.intersection(quality.USABLE) or values
+        if (effective - selected if exclude else effective & selected):
+            result.add(oid)
+    return result
 
 
 def optimized_queue(args, mode='sublime'):
@@ -704,7 +738,7 @@ def optimized_queue(args, mode='sublime'):
         (args.sublimeapertureviz,'--sublimeapertureviz',(review.SUBLIMEAPERTURE_VISUAL_VETTING_TABLE,),False),
         (args.notsublimeapertureviz,'--notsublimeapertureviz',(review.SUBLIMEAPERTURE_VISUAL_VETTING_TABLE,),True)):
         classes=aut.parse_spiffviz_class_list(value,option_name=name)
-        if classes and oids: oids=review.apply_visual_vetting_filter(oids,classes,exclude=exclude,option_name=name,visual_vetting_tables=tables)
+        if classes and oids: oids=filter_spectral_reviews(oids,classes,exclude=exclude,visual_vetting_tables=tables)
     if not oids: return set()
     sublime_spt_min=args.sublime2sptn if mode == 'sublime' and not args.use_spiffstacker_types else None
     if mode == 'sublime' and (args.sublime2cnn or args.sublime2snr is not None or args.sublime2cnnprob is not None or sublime_spt_min is not None):
@@ -741,7 +775,9 @@ def optimized_queue(args, mode='sublime'):
             moca_specpackid=aut._review_reduced_specpackid(stacker=bool(args.stacker),sublimeaperture=bool(args.sublimeaperture)),
             wavelength_range=args.snr_wavelength_range)
     if oids and (args.chi2_min is not None or args.chi2_max is not None):
-        oids &= aut.fetch_autotype_chi2_oids(chi2_max=float(args.chi2_max) if args.chi2_max is not None else None,chi2_min=float(args.chi2_min) if args.chi2_min is not None else None,stacker=bool(args.stacker),sublimeaperture=bool(args.sublimeaperture))
+        lane='sublimeaperture' if args.sublimeaperture else 'spiffstacker' if args.stacker else 'spiff'
+        chi2='COALESCE('+','.join(aut._comment_numeric_value_sql(k).replace('comments','t.comments') for k in aut.AUTOTYPE_CHI2_COMMENT_KEYS)+')'
+        oids=filter_spectrum_measurement(oids,lane,chi2,args.chi2_min,args.chi2_max)
     if oids and getattr(args,'max_gaia_neighbors_30',None) is not None:
         oids,args.gaia_cache_missing=filter_gaia_crowding(oids,args.max_gaia_neighbors_30)
     return oids
@@ -1002,21 +1038,29 @@ def spectrum_data(session, oid, lane):
     conn = review._connect_db()
     try:
         with conn.cursor() as cur:
-            cur.execute('''SELECT moca_specid,median_snr_per_pix FROM moca_spectra
-               WHERE moca_oid=%s AND moca_specpackid=%s AND ignored=0 ORDER BY moca_specid DESC LIMIT 1''', (oid,pack))
-            meta = cur.fetchone()
-            if not meta: return {'missing': True, 'lane': lane}
-            cur.execute('''SELECT id AS data_spectra_id,wavelength_angstrom,flux_flambda,flux_flambda_unc,ignored
-               FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom,id LIMIT 10001''', (meta['moca_specid'],))
-            rows = list(cur.fetchall())
-            if len(rows)>10000: raise ValueError('Spectrum exceeds interactive limit')
+            quality = spectral_vetting.quality
+            source = quality.reviews_sql(spectral_vetting.LANES[lane][0], pack, quality.has_spectrum_reviews(cur))
+            cur.execute(f"""SELECT s.moca_specid,s.moca_specpackid,s.data_reduction_pipeline,v.classification
+                FROM moca_spectra s LEFT JOIN {source} v ON v.moca_specid=s.moca_specid
+                WHERE s.moca_oid=%s AND s.moca_specpackid=%s AND {quality.displayable_sql()}
+                ORDER BY (v.classification IS NULL),s.moca_specid DESC""",(oid,pack))
+            spectra = list(cur.fetchall())
+            if not spectra:
+                return {'missing': True, 'lane': lane}
             templates = fetch_templates(cur)
-            try: fit, warning = core.fit_spectrum(rows, templates), None
-            except ValueError as exc: fit, warning = None, str(exc)
-            if fit:
-                fit['overlays'] = fit['overlays'][:1]
-                fit['matches'] = fit['matches'][:1]
-            result = clean({'lane':lane,'specid':meta['moca_specid'],'fit':fit,'raw_spectrum':rows,'warning':warning})
+            items = []
+            for meta in spectra:
+                cur.execute('''SELECT id AS data_spectra_id,wavelength_angstrom,flux_flambda,flux_flambda_unc,ignored
+                   FROM data_spectra WHERE moca_specid=%s ORDER BY wavelength_angstrom,id LIMIT 10001''', (meta['moca_specid'],))
+                rows = list(cur.fetchall())
+                if len(rows)>10000: raise ValueError('Spectrum exceeds interactive limit')
+                try: fit, warning = core.fit_spectrum(rows, templates), None
+                except ValueError as exc: fit, warning = None, str(exc)
+                if fit:
+                    fit['overlays'] = fit['overlays'][:1]
+                    fit['matches'] = fit['matches'][:1]
+                items.append(clean({'lane':lane,'specid':meta['moca_specid'],'fit':fit,'raw_spectrum':rows,'warning':warning,'classification':meta.get('classification')}))
+            result = {**items[0], 'extractions': items}
     finally: conn.close()
     with session['lock']:
         session['fit_cache'][(oid,pack)] = result
@@ -1087,18 +1131,18 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
             'classification':spectral_classification,'lane':spectral_lane,'specid':spectral_specid}]
     elif spectral_classification is not None:
         raise ValueError('Use either legacy or multiple spectral choices')
-    if not isinstance(spectral_reviews,list) or len(spectral_reviews)>3:
-        raise ValueError('Provide at most three spectral choices')
+    if not isinstance(spectral_reviews,list) :
+        raise ValueError('Provide a list of spectral choices')
     allowed={item[0] for item in review._autotype_review().BUTTON_SPECS} if spectral_reviews else set()
     seen=set()
     for choice in spectral_reviews:
         if (not isinstance(choice,dict) or set(choice)!={'lane','classification','specid'} or
                 not isinstance(choice['lane'],str) or choice['lane'] not in spectral_vetting.LANES or
                 not isinstance(choice['classification'],str) or choice['classification'] not in allowed or
-                choice['lane'] in seen):raise ValueError('Invalid spectral classification or lane')
+                (choice['lane'], str(choice['specid'])) in seen):raise ValueError('Invalid spectral classification or lane')
         if isinstance(choice['specid'],bool) or not isinstance(choice['specid'],int) or choice['specid']<1:
             raise ValueError('A loaded spectrum is required for spectral classification')
-        seen.add(choice['lane'])
+        seen.add((choice['lane'], str(choice['specid'])))
     args = session['args']
     spectral_changes=[];cutout_change=None;cutout_context=None
     if cutout_key is not None:
@@ -1126,7 +1170,9 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
                 lane=choice['lane']
                 spectral_before=clean(spectral_vetting.snapshot(cur,oid,lane,choice['specid'],require_displayed=True))
                 with session['lock']:
-                    expected_spectral=session.get('spectral_snapshots',{}).get(oid,{}).get(lane,'__missing__')
+                    shown=session.get('spectral_snapshots',{}).get(oid,{})
+                    expected_spectral=(shown['by_specid'].get(str(choice['specid']),'__missing__')
+                                       if 'by_specid' in shown else shown.get(lane,'__missing__'))
                 if expected_spectral=='__missing__' or spectral_before['vetting']!=expected_spectral:
                     raise ValueError('Spectral review changed; reload the object before saving classifications')
                 spectral_changes.append({'lane':lane,'before':spectral_before,'choice':choice})
@@ -1174,7 +1220,10 @@ def save_decision(session, index, key, comments, spectral_classification=None, s
         session['undo'].append({'oid':oid,'before':before,'after':after,'index':index,
             'spectral_reviews':spectral_changes,'spectral':spectral_changes[0] if len(spectral_changes)==1 else None,'cutout':cutout_change})
         for change in spectral_changes:
-            session.setdefault('spectral_snapshots',{}).setdefault(oid,{})[change['lane']]=change['after']['vetting']
+            shown=session.setdefault('spectral_snapshots',{}).setdefault(oid,{})
+            shown[change['lane']]=change['after']['vetting']
+            if 'by_specid' in shown:
+                shown['by_specid'][str(change['after']['spectra'][0]['moca_specid'])]=change['after']['vetting']
             session['fit_cache'].pop((oid,SPECPACKS[change['lane']]),None)
         session['object_cache'].pop(oid,None)
         session.get('cutout_snapshots',{}).pop(oid,None)
@@ -1319,6 +1368,9 @@ def undo_decision(session):
         session['undo'].pop(); session.setdefault('snapshots',{})[oid]=restored; session['object_cache'].pop(oid,None)
         session.get('cutout_snapshots',{}).pop(oid,None)
         for change in spectral_changes:
-            session.setdefault('spectral_snapshots',{}).setdefault(oid,{})[change['lane']]=change['before']['vetting']
+            shown=session.setdefault('spectral_snapshots',{}).setdefault(oid,{})
+            shown[change['lane']]=change['before']['vetting']
+            if 'by_specid' in shown:
+                shown['by_specid'][str(change['before']['spectra'][0]['moca_specid'])]=change['before']['vetting']
             session['fit_cache'].pop((oid,SPECPACKS[change['lane']]),None)
     return {'index':item['index'],'oid':oid}

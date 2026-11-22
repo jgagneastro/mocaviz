@@ -135,12 +135,12 @@
     if(key!==statsKey){for(const el of document.querySelectorAll('.metric strong'))el.textContent='—';statsKey=key;}
     const sample=mode==='redmovers' ? `CatWISE red movers · ${lane==='spiff'?'SPIFF':'SPIFFStacker'}` : 'All active SUBLIME2 objects';
     $('summary-note').textContent=sample+' · loading counts…';
-    $('count-confirmed-l0').parentElement.title=mode==='redmovers'?'Good spectrum without a motion review, or moving [5–6], excluding known and claimed objects':'Moving [5–6], L0+ autotype and good, peculiar_ucd, contaminated_ucd or good_reddened in any spectral lane; excluding known and claimed objects';
+    $('count-confirmed-l0').parentElement.title=mode==='redmovers'?'Good spectrum without a motion review, or moving [5–6], excluding known and claimed objects':'Moving [5–6], L0+ autotype and good, peculiar_ucd, contaminated_ucd, good_plus_star or good_reddened in any spectral lane; excluding known and claimed objects';
     $('count-classified').parentElement.title=mode==='redmovers'?'Distinct objects with a motion or spectral review / total':'Distinct objects with a WiseView decision / total';
     $('count-rejected').parentElement.title=mode==='redmovers'?'Distinct objects with a non-positive motion decision or bad spectral review / total':'Distinct objects with a non-positive WiseView decision / total';
     $('summary-definitions').textContent=mode==='redmovers'
-      ? 'New excludes known spectroscopic M0+ objects and both claim lists. A good spectrum without a motion review, or with moving [5–6], is confirmed; a good spectrum with still or maybe moving [1–4], or good_candidate without a negative motion review, is a candidate. Negative motion reviews override positive spectrum classifications. M-type [e] is excluded from L0+/T0+ discoveries. T0+ is included in L0+. Classified counts any motion or spectral review; rejected counts non-positive motion decisions (including [0] cannot determine) or bad spectral classifications. Confirmed MOCAdb duplicates are excluded from every count. Counts are distinct objects, independent of queue filters. Both SPIFF and SPIFFStacker reviews are considered; if both exist, the selected lane takes precedence. Historical reviewed spectra marked ignored are included in totals.'
-      : 'New excludes public-adopted spectroscopic M0+ objects (including confirmed duplicates) and both claim lists. Confirmed: moving [5–6] and good, peculiar_ucd, contaminated_ucd or good_reddened in any spectral lane. Candidate: one of those four spectral classes with still or maybe moving [1–4], or good_candidate without a negative motion decision, including objects not yet motion-vetted. Unreviewed spectra do not count. A qualifying confirmed lane takes precedence over good_candidate in another lane. Types use the latest SUBLIME2 autotype. M-type [e] is excluded from L0+/T0+ discoveries. T0+ is included in L0+. Classified means any WiseView decision. Rejected means a non-positive WiseView value, including [0] cannot determine, source confusion and mis-centered SPHEREx. Confirmed MOCAdb duplicates are excluded from every count. Counts are distinct active objects, independent of queue filters.';
+      ? 'New excludes known spectroscopic M0+ objects and both claim lists. A good spectrum without a motion review, or with moving [5–6], is confirmed; a good spectrum with still or maybe moving [1–4], or good_candidate without a negative motion review, is a candidate. Negative motion reviews override positive spectrum classifications. M-type [e] is excluded from L0+/T0+ discoveries. T0+ is included in L0+. Classified counts any motion or spectral review; rejected counts non-positive motion decisions (including [0] cannot determine) or bad spectral classifications. Confirmed MOCAdb duplicates are excluded from every count. Counts are distinct objects, independent of queue filters. All reviewed extractions are considered. A positive spectrum takes precedence over a bad sibling. Historical reviewed spectra marked ignored are included in totals.'
+      : 'New excludes public-adopted spectroscopic M0+ objects (including confirmed duplicates) and both claim lists. Confirmed: moving [5–6] and good, peculiar_ucd, contaminated_ucd, good_plus_star or good_reddened in any spectral lane. Candidate: one of those good spectral classes with still or maybe moving [1–4], or good_candidate without a negative motion decision, including objects not yet motion-vetted. Unreviewed spectra do not count. A qualifying confirmed lane takes precedence over good_candidate in another lane. Each review uses its extraction’s type when available, with the SUBLIME catalog autotype as a fallback. M-type [e] is excluded from L0+/T0+ discoveries. T0+ is included in L0+. Classified means any WiseView decision. Rejected means a non-positive WiseView value, including [0] cannot determine, source confusion and mis-centered SPHEREx. Confirmed MOCAdb duplicates are excluded from every count. Counts are distinct active objects, independent of queue filters.';
     $('summary-definitions').textContent+=' Pending motion counters count each new object once across SPIFF, SPIFFStacker and SUBLIMEaperture, with no WiseView review and no spectral-type threshold. Good includes good, peculiar_ucd, contaminated_ucd, good_plus_star and good_reddened. Candidate includes all of those plus good_candidate.';
     try{
       const data=await api('stats',{mode,lane});if(request!==statsSerial)return;
@@ -248,11 +248,12 @@
   const laneColors={spiffstacker:'red',spiff:'#2563eb',sublimeaperture:'#d020ff'};
   function buildSpectralSections(){
     const container=$('spectral-sections');container.replaceChildren();
-    for(const [i,lane] of spectralLanes.entries()){
+    for(const lane of Object.keys(loadedSpectra)){
+      const family=loadedSpectra[lane].lane||lane,i=spectralLanes.indexOf(family);
       if(!loadedSpectra[lane])continue;
       const section=document.createElement('section');section.className='panel spectral-classify';section.dataset.lane=lane;
-      section.style.setProperty('--lane-color',laneColors[lane]);
-      section.innerHTML=`<div class="panel-head"><div><h3>${laneName(lane)} · Spectral classification · optional</h3><p id="spectral-label-${lane}"></p></div><div class="spectral-actions"><button type="button" class="spectral-focus">Use shortcuts [Ctrl+Shift+${i+1}]</button><button type="button" class="spectral-clear">Clear choice</button></div></div><p id="spectral-pending-${lane}" class="hint" role="status" aria-live="polite"></p><div id="spectral-classes-${lane}" class="class-grid spectral-choices"></div>`;
+      section.style.setProperty('--lane-color',laneColors[family]);
+      section.innerHTML=`<div class="panel-head"><div><h3>${laneName(family)} #${loadedSpectra[lane].specid} · Spectral classification · optional</h3><p id="spectral-label-${lane}"></p></div><div class="spectral-actions"><button type="button" class="spectral-focus">Use shortcuts [Ctrl+Shift+${i+1}]</button><button type="button" class="spectral-clear">Clear choice</button></div></div><p id="spectral-pending-${lane}" class="hint" role="status" aria-live="polite"></p><div id="spectral-classes-${lane}" class="class-grid spectral-choices"></div>`;
       section.querySelector('.spectral-focus').onclick=()=>focusSpectral(lane);
       section.querySelector('.spectral-clear').onclick=()=>clearSpectral(lane);
       const ordered=[...spectralOptions.filter(item=>item[0]!=='bad'),...spectralOptions.filter(item=>item[0]==='bad')];
@@ -270,9 +271,9 @@
   function focusSpectral(lane){if(!working&&loadedSpectra[lane]){activeSpectralLane=lane;renderSpectralSelection();}}
   function renderSpectralSelection(){
     for(const section of $('spectral-sections').querySelectorAll('.spectral-classify')){
-      const lane=section.dataset.lane,choice=pendingSpectral[lane],existing=current?.spectral_vetting?.[lane]?.classification;
+      const lane=section.dataset.lane,choice=pendingSpectral[lane],existing=loadedSpectra[lane]?.classification ?? current?.spectral_vetting?.by_specid?.[loadedSpectra[lane]?.specid]?.classification ?? (current?.spectral_vetting?.by_specid ? null : current?.spectral_vetting?.[lane]?.classification);
       section.classList.toggle('shortcut-active',activeSpectralLane===lane);
-      $('spectral-label-'+lane).textContent=`Current spectral label: ${existing||'unclassified'} · spectrum ${loadedSpectra[lane]?.specid}`;
+      $('spectral-label-'+lane).textContent=`Current spectral label: ${existing||'unclassified'} · spectrum ${loadedSpectra[lane]?.specid}${current?.spectral_vetting?.can_save===false?' · read-only until the spectrum-review migration is applied':''}`;
       $('spectral-pending-'+lane).textContent=choice?`${choice.classification.replaceAll('_',' ')} selected. Saves with your next motion decision.`:'No spectral change selected. Choose a label, then press a motion button to save.';
       for(const button of section.querySelectorAll('.spectral-choices button')){
         const selected=button.dataset.classification===choice?.classification;
@@ -280,7 +281,7 @@
         button.classList.toggle('saved',saved);
         button.querySelector('.spectral-saved-badge').hidden=!saved;
         button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));
-        button.disabled=!current||working||!loadedSpectra[lane];
+        button.disabled=!current||working||!loadedSpectra[lane]||current.spectral_vetting?.can_save===false;
       }
       const focus=section.querySelector('.spectral-focus');focus.disabled=working;
       focus.setAttribute('aria-pressed',String(activeSpectralLane===lane));
@@ -288,10 +289,10 @@
     }
   }
   function chooseSpectral(classification,lane=activeSpectralLane){
-    if(!current||working||!loadedSpectra[lane])return;
+    if(!current||working||!loadedSpectra[lane]||current.spectral_vetting?.can_save===false)return;
     activeSpectralLane=lane;
     if(pendingSpectral[lane]?.classification===classification)delete pendingSpectral[lane];
-    else pendingSpectral[lane]={classification,lane,specid:loadedSpectra[lane].specid};
+    else pendingSpectral[lane]={classification,lane:loadedSpectra[lane].lane||lane,specid:loadedSpectra[lane].specid};
     renderSpectralSelection();
   }
   function clearSpectral(lane=null){if(lane)delete pendingSpectral[lane];else pendingSpectral={};renderSpectralSelection();}
@@ -392,7 +393,13 @@
     try{const load=entry?entry.spectrum.catch(()=>api('spectra',{index:entry.index},entry.controller.signal)):api('spectra',{index},previewController.signal);
       const data=await load;if(outdated())return;
       if(data.version!==1)throw new Error('Restart the reviewer to activate the three-lane spectrum API');
-      const available=Object.fromEntries(spectralLanes.filter(lane=>data.spectra[lane]?.specid&&!data.spectra[lane].missing&&!data.spectra[lane].error).map(lane=>[lane,data.spectra[lane]]));
+      const available={};
+      for(const lane of spectralLanes){
+        const group=data.spectra[lane];
+        (group?.extractions||[group]).forEach((item,i)=>{
+          if(item?.specid&&!item.missing&&!item.error)available[i?lane+'-'+item.specid:lane]={...item,lane};
+        });
+      }
       const errors=spectralLanes.filter(lane=>data.spectra[lane]?.error).map(lane=>laneName(lane)+': '+data.spectra[lane].error);
       if(!Object.keys(available).length){$('spectrum-message').textContent=errors.join(' · ')||'No non-ignored spectra in any lane.';return;}
       if(!window.Plotly||!window.SpherexReviewPlot)throw new Error('Spectrum renderer unavailable');
@@ -584,7 +591,9 @@
       e.preventDefault();if(!e.repeat)appendCoordinateOffsetComment();return;
     }
     if(typing)return;
-    const key=e.key.toLowerCase();if(e.ctrlKey||e.metaKey){if(e.shiftKey&&/^Digit[123]$/.test(e.code)){e.preventDefault();focusSpectral(spectralLanes[Number(e.code.slice(-1))-1]);return;}if(key==='z'){e.preventDefault();undo();}return;}
+    const key=e.key.toLowerCase();if(e.ctrlKey||e.metaKey){if(e.shiftKey&&/^Digit[123]$/.test(e.code)){e.preventDefault();const lane=spectralLanes[Number(e.code.slice(-1))-1];
+      const matching=Object.keys(loadedSpectra).filter(key=>(loadedSpectra[key].lane||key)===lane);
+      if(matching.length)focusSpectral(matching[(matching.indexOf(activeSpectralLane)+1)%matching.length]);return;}if(key==='z'){e.preventDefault();undo();}return;}
     if(key==='escape'){e.preventDefault();if(!e.altKey)clearSpectral(e.shiftKey?activeSpectralLane:null);if(!e.shiftKey)clearCutout();return;}
     if(e.altKey&&!e.shiftKey){const cutoutKey=e.code.replace(/^(?:Digit|Numpad|Key)/,'').toLowerCase();
       if(cutoutOptions.some(item=>item[0]===cutoutKey)){e.preventDefault();chooseCutout(cutoutKey);return;}}

@@ -13,7 +13,11 @@ class TypePriorityTests(unittest.TestCase):
         self.db.executescript("""
             CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,designation TEXT,ra REAL,dec REAL,ignored INT,is_public INT);
             CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INT,spectral_type_number REAL,adopted INT,
-                public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT);
+                public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT,moca_specid INT);
+            CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INT,moca_specpackid INT);
+            CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INT,classification TEXT,review_kind TEXT);
+            CREATE INDEX reviews_by_id ON pcat_spherex_spectrum_reviews(moca_specid);
+            CREATE INDEX type_by_oid ON data_spectral_types(moca_oid);
             CREATE TABLE pcat_sublime_candidates(id INT,moca_oid INT,detection_snr REAL);
             CREATE TABLE pcat_sublime_candidates_v2(id INT,moca_oid INT,detection_snr REAL,autotype_spectral_type_number REAL,
                 visual_nn_good_probability REAL,visual_nn_classification TEXT,autotype_reduced_chi2 REAL);
@@ -22,8 +26,11 @@ class TypePriorityTests(unittest.TestCase):
             CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
             CREATE TABLE pcat_duplicated_vetting(moca_oid INT,potential_duplicated_moca_oid INT,classification TEXT);
         """)
-        for cfg in sf.sr.LANES.values():
+        for cfg in sf.LANE_CONFIG.values():
             self.db.execute("CREATE TABLE "+cfg["table"]+"(moca_oid INT PRIMARY KEY,classification TEXT)")
+
+            self.db.execute(f"""CREATE TRIGGER review_{cfg['pack']} AFTER INSERT ON {cfg['table']} BEGIN
+                INSERT INTO pcat_spherex_spectrum_reviews VALUES(NEW.moca_oid*1000+{cfg['pack']},NEW.classification,'quality'); END""")
 
     def add_object(self,oid):
         self.db.execute("INSERT INTO moca_objects VALUES (?,'Fixture',0,0,0,0)",(oid,))
@@ -31,8 +38,12 @@ class TypePriorityTests(unittest.TestCase):
 
     def add_type(self,oid,spt,*,lane=None,adopted=0,public=0,photo=0,ignored=0):
         method=sf.sr.LANES[lane]["methods"][0] if lane else None
-        self.db.execute("INSERT INTO data_spectral_types VALUES (NULL,?,?,?,?,?,?,?)",
-                        (oid,spt,adopted,public,ignored,photo,method))
+        specid=None
+        if lane:
+            pack=sf.LANE_CONFIG[lane]['pack'];specid=oid*1000+pack
+            self.db.execute('INSERT OR IGNORE INTO moca_spectra VALUES(?,?,?)',(specid,oid,pack))
+        self.db.execute("INSERT INTO data_spectral_types VALUES (NULL,?,?,?,?,?,?,?,?)",
+                        (oid,spt,adopted,public,ignored,photo,method,specid))
 
     def select(self,**cuts):
         filters=sf.parse_filters({"sources":["sublime1"],"quality_any":"any",**cuts})
@@ -41,8 +52,8 @@ class TypePriorityTests(unittest.TestCase):
 
     def test_all_classification_pairs_and_three_way_ties(self):
         priority=("spiffstacker","spiff","sublimeaperture")
-        ranks={"good":0,"peculiar_ucd":0,"late_M":0,"contaminated_ucd":1,"good_plus_star":1,
-               "good_candidate":2,"incomplete_but_promising":3,"weird":4,"bad":4,None:4}
+        ranks={"good":0,"peculiar_ucd":0,"late_M":3,"contaminated_ucd":1,"good_plus_star":1,
+               "good_candidate":2,"incomplete_but_promising":3,"weird":3,"bad":4,None:4}
         expected={}
         oid=0
         for classes in itertools.product(ranks,repeat=3):
@@ -53,7 +64,7 @@ class TypePriorityTests(unittest.TestCase):
                 if classes[i] is not None:
                     self.db.execute("INSERT INTO "+sf.sr.LANES[lane]["table"]+" VALUES (?,?)",(oid,classes[i]))
             best=min(range(3),key=lambda i:(ranks[classes[i]],i))
-            expected[oid]=(10+best,priority[best])
+            expected[oid]=(10+best,priority[best]) if ranks[classes[best]]<4 else (None,None)
         rows=self.select()
         self.assertEqual({oid:(r["spt"],r["best_spt_source"]) for oid,r in rows.items()},expected)
 
@@ -88,8 +99,8 @@ class TypePriorityTests(unittest.TestCase):
         self.add_type(4,10,lane="sublimeaperture")
         self.db.execute("INSERT INTO pcat_spherex_sublimeaperture_visual_vetting VALUES (4,'good_candidate')")
         rows=self.select()
-        self.assertEqual((rows[1]["spt"],rows[1]["best_spt_source"]),(10,"sublimeaperture"))
-        self.assertEqual((rows[2]["spt"],rows[2]["best_spt_source"]),(15,"spiff"))
+        self.assertEqual((rows[1]["spt"],rows[1]["best_spt_source"]),(None,None))
+        self.assertEqual((rows[2]["spt"],rows[2]["best_spt_source"]),(None,None))
         self.assertEqual((rows[3]["spt"],rows[3]["best_spt_source"]),(None,None))
         self.assertEqual((rows[4]["spt"],rows[4]["best_spt_source"]),(10,"sublimeaperture"))
         self.assertNotIn(4,self.select(min_spt=15))

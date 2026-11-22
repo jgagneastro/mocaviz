@@ -192,18 +192,27 @@ def sidecar_metrics(item):
     return {'chi2': None, 'cnn': None, 'fit_source': None, 'cnn_source': None}
 
 
+def eligible_items(cur, items):
+    """Recheck exact quality and current ownership before using pixels or cached metrics."""
+    from . import spectrum_quality as quality
+    canonical = quality.has_spectrum_reviews(cur)
+    valid = set()
+    for lane in dict.fromkeys(item['lane'] for item in items):
+        config = sr.LANES[lane]
+        ids = sorted({item['moca_specid'] for item in items if item['lane'] == lane})
+        slots = ','.join(['%s']*len(ids))
+        source = quality.reviews_sql(config['table'],config['pack'],canonical)
+        cur.execute(f"SELECT q.moca_specid,q.moca_oid FROM {source} q "
+                    f"JOIN moca_objects mo ON mo.moca_oid=q.moca_oid AND mo.ignored=0 "
+                    f"WHERE q.moca_specid IN ({slots}) AND LOWER(q.classification) IN ({quality.labels_sql(quality.USABLE)})",tuple(ids))
+        valid.update((lane,row['moca_oid'],row['moca_specid']) for row in cur.fetchall())
+    return [item for item in items if (item['lane'],item['moca_oid'],item['moca_specid']) in valid]
+
+
 def load(cur, items, cache=None):
     if not items:
         return []
-    ids = sorted({item['moca_specid'] for item in items})
-    placeholders = ','.join(['%s'] * len(ids))
-    cur.execute('SELECT s.moca_specid,s.moca_oid,s.moca_specpackid FROM moca_spectra s '
-                'JOIN moca_objects mo ON mo.moca_oid=s.moca_oid AND mo.ignored=0 '
-                f'WHERE s.moca_specid IN ({placeholders}) AND s.ignored=0', tuple(ids))
-    meta = {row['moca_specid']: row for row in cur.fetchall()}
-    valid = [item for item in items if item['moca_specid'] in meta
-             and meta[item['moca_specid']]['moca_oid'] == item['moca_oid']
-             and meta[item['moca_specid']]['moca_specpackid'] == sr.LANES[item['lane']]['pack']]
+    valid = eligible_items(cur, items)
     cached = cache.get(valid) if cache else {}
     hits = {}
     for item in valid:

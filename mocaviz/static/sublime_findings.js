@@ -2,9 +2,9 @@
 const FindingClasses = (() => {
   'use strict';
   const spectralLanes = ['spiffstacker', 'spiff', 'sublimeaperture'];
-  const goodReviews = new Set(['good', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star']);
+  const goodReviews = new Set(['good', 'contaminated_ucd', 'peculiar_ucd', 'good_plus_star', 'good_reddened']);
   const accepted = new Set([...goodReviews, 'good_candidate']);
-  const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd or good_plus_star';
+  const qualityRule = 'At least one SPIFFStacker, SPIFF or SUBLIMEaperture review is good, good_candidate, contaminated_ucd, peculiar_ucd, good_reddened or good_plus_star';
   const definitions = [
     {key:'known', label:'Known UCDs', color:'#bc7a3d', detail:'Published spectroscopic status, including confirmed duplicate links, with a stored WiseView motion review.'},
     {key:'known_candidate', label:'Known UCD candidates', color:'#c5a142', detail:'Public-adopted photometric spectral type joined by MOCAdb object ID. Spectroscopic known sources take precedence.'},
@@ -12,7 +12,7 @@ const FindingClasses = (() => {
     {key:'confirmed', label:'New motion-confirmed', color:'#257d76', detail:qualityRule+'. WiseView score ≥ 5. Excludes known and claimed objects.'},
     {key:'candidate', label:'New candidate', color:'#397ac1', detail:qualityRule+'. WiseView score ≥ 3 and < 5. Excludes known and claimed objects.'},
     {key:'still', label:'Still candidates', color:'#9266b3', detail:qualityRule+'. WiseView score from 1 through 2 inclusive. Excludes known and claimed objects.'},
-    {key:'good_no_motion', label:'Good spectra, no motion vetting', color:'#416a91', noMotion:true, detail:'At least one good, contaminated_ucd, peculiar_ucd or good_plus_star spectral review. No stored WiseView motion score or review label.'},
+    {key:'good_no_motion', label:'Good spectra, no motion vetting', color:'#416a91', noMotion:true, detail:'At least one good, contaminated_ucd, peculiar_ucd, good_reddened or good_plus_star spectral review. No stored WiseView motion score or review label.'},
     {key:'good_candidate_no_motion', label:'Good candidate spectra, no motion vetting', color:'#886b4a', noMotion:true, detail:'At least one good_candidate spectral review. Good spectra take precedence. No stored WiseView motion score or review label.'},
     {key:'others', label:'Others', color:'#939f99', detail:'Every other object allowed by the current filters, including nonqualifying reviews.'},
   ];
@@ -21,7 +21,7 @@ const FindingClasses = (() => {
   }
   function classify(row) {
     const score=motionScore(row);
-    const qualities=spectralLanes.map(lane=>String(row[lane+'_quality']??'').trim().toLowerCase());
+    const qualities=row.spectra ? row.spectra.map(spec=>spec.quality) : spectralLanes.map(lane=>String(row[lane+'_quality']??'').trim().toLowerCase());
     if(!Number.isFinite(score) && !String(row.motion_class??'').trim()){
       if(qualities.some(quality=>goodReviews.has(quality))) return 'good_no_motion';
       if(qualities.includes('good_candidate')) return 'good_candidate_no_motion';
@@ -39,8 +39,8 @@ const FindingClasses = (() => {
   }
   function isConfirmed(row,standard='good') {
     const score=motionScore(row);
-    return Number.isFinite(score) && score>=5 && spectralLanes.some(lane=>{
-      const quality=String(row[lane+'_quality']??'').trim().toLowerCase();
+    const qualities=row.spectra ? row.spectra.map(spec=>spec.quality) : spectralLanes.map(lane=>String(row[lane+'_quality']??'').trim().toLowerCase());
+    return Number.isFinite(score) && score>=5 && qualities.some(quality=>{
       return accepted.has(quality) && (standard==='good_candidate' || quality!=='good_candidate');
     });
   }
@@ -147,7 +147,7 @@ $('filter-fields').innerHTML=
 fs('Publication & duplicates',select('known','Published spectroscopic M0+ type',[['no','Unpublished'],['yes','Known recovered'],['either','Both populations']])+select('known_candidate','Known photometric UCD candidates',triOptions)+select('duplicates','Confirmed duplicate entries',[['exclude','Exclude duplicates'],['either','Include all active entries'],['only','Duplicates only']]))+
 fs('Spectral types',select('spt_source','Type used in plots & sorting',[['best','Preferred type (ranked)'],...laneOptions,['sublime2','SUBLIME2 candidate autotype'],['sublime3c','SUBLIME3C candidate autotype'],['adopted','MOCAdb adopted type'],['published','Public spectroscopic type']])+range('spt','Selected spectral type number')+'<p class="hint">M0 = 0 · L0 = 10 · T0 = 20 · Y0 = 30</p>')+
 fs('Detection & CNN',range('detection_snr','SUBLIME detection S/N')+range('cnn','SUBLIME2 CNN good probability')+input('cnn_classes','CNN classes','good, none','text')+knownSwitch('detection'))+
-fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>'+knownSwitch('quality'))+
+fs('Spectral quality',select('quality_any','Across reductions',[['good','At least one good / good_candidate'],['one_good','At least one good'],['all_good','All available good'],['all_good_candidate','All available good/good candidate'],['any','No global spectral-quality cut'],['reviewed','At least one reviewed spectrum'],['unreviewed','Unreviewed in all three lanes']])+'<p class="hint">“Good” also includes contaminated_ucd, peculiar_ucd, good_reddened and good_plus_star, including per-lane include lists. Good/candidate also allows good_candidate. “All available” requires a passing review in every active reduction; missing reductions are skipped and unreviewed spectra fail.</p>'+knownSwitch('quality'))+
 fs('Spectrum S/N',select('snr_lane','Reduction lane',laneOptions)+range('snr','Median S/N per pixel')+knownSwitch('snr'))+
 fs('Motion quality',range('motion','WiseView motion score','None')+input('motion_classes','Include motion classes','none = no review','text')+'<p class="hint">5–6 clear motion · 3–4 potential · 1–2 still · 1.5 M-type · 0.5 undetected · 0 unclear · −1 bad</p>'+knownSwitch('motion'))+
 fs('SUBLIME cutout quality',input('min_cutout','Minimum cutout score','4 = centered & isolated')+select('cutout_policy','Combine reviewed cutouts',[['all','All reviewed cutouts must pass'],['any','At least one reviewed cutout passes']])+input('cutout_classes','Include cutout classes','none = no cutout review','text')+'<p class="hint">4 centered & isolated · 3 centered & crowded · 2 off-center & isolated · 1 off-center & crowded · −1 halo</p>'+knownSwitch('cutout'))+
@@ -234,7 +234,7 @@ async function load(){
  try{const result=await api('load',{filters:f},loadController.signal);if(seq!==dataGeneration)return;clearInterval(timer);
   if(f.sources.includes('sublime3c') && result.sublime3c_sample_version!==1)throw Error('Restart the Findings Dashboard service to load SUBLIME3C.');
   if(result.known_source_version!==1)throw Error('Restart the Findings Dashboard service to apply known-source joins and quality exemptions.');
-  if(result.quality_definition_version!==2)throw Error('Restart the Findings Dashboard service to apply the expanded good spectral-quality categories.');
+  if(result.quality_definition_version!==3)throw Error('Restart the Findings Dashboard service to apply the spectrum-specific quality selections.');
   if((f.spt_source||'best')==='best' && result.type_priority_version!==1)throw Error('Restart the Findings Dashboard service to apply the adopted and review-ranked type priority.');
   if(f.sources.includes('other') && result.other_sample_version!==1)throw Error('Restart the Findings Dashboard service to load the updated Other unpublished MOCAdb sample.');
   hasAstrometryPlots=result.astrometry_plot_version===1;
@@ -312,7 +312,7 @@ function renderCharts(){
  const binEdge=type=>Math.floor((type+0.5)/bin)*bin-0.5;
  const start=binEdge(Math.min(-5,lo)),last=binEdge(Math.max(35,hi)),centers=[];
  for(let edge=start;edge<=last;edge+=bin)centers.push(edge+bin/2);
- const hist=groups(typed,(data,name,color)=>{const count=centers.map(()=>0);for(const r of data){const i=Math.floor((r.spt-start)/bin);if(i>=0&&i<count.length)count[i]++;}return {type:'bar',x:centers,y:count,name,marker:{color},width:bin*.86,hovertemplate:'%{x}: %{y} objects<extra>'+name+'</extra>'};});
+ const hist=groups(typed,(data,name,color)=>{const count=centers.map(()=>0);for(const r of data){const i=Math.floor((r.spt-start)/bin);if(i>=0&&i<count.length)count[i]++;}return {type:'bar',x:centers,y:count,name,marker:{color},width:bin*.86,hovertemplate:'%{x}: %{y} spectra<extra>'+name+'</extra>'};});
  let l=spectralAxis(baseLayout('Spectral type','Unique objects'));l.xaxis.range=[binEdge(9),binEdge(32)+bin];l.xaxis.tickvals=[9,10,15,20,25,30,32];l.xaxis.ticktext=l.xaxis.tickvals.map(spt);
  l.yaxis.type=$('hist-ylog').checked?'log':'linear';
  l.yaxis.uirevision=l.uirevision+':'+l.yaxis.type;
@@ -328,7 +328,12 @@ function renderCharts(){
  }));
  $('sky-note').textContent=skyFrame.note+' · color shows object class';
  emptyNote(l,skyRows.length);plot('sky',skyTraces,l);
- const measured=rows.filter(r=>finite(r.spt)&&finite(r.M_w2)),synthetic=rows.filter(r=>finite(r.spt)&&finite(r.M_synthetic_w2));
+ const syntheticRows=spectrumRows(rows).filter(r=>finite(r.extraction.synthetic_w2)).map(r=>{
+  const w2=r.extraction.synthetic_w2;
+  return {...r,M_synthetic_w2:r.distance_pc>0?w2-5*Math.log10(r.distance_pc)+5:null,
+   M_synthetic_w2_unc:r.extraction.absolute_w2_unc,w2_difference:finite(r.w2)?w2-r.w2:null};
+ });
+ const measured=rows.filter(r=>finite(r.spt)&&finite(r.M_w2)),synthetic=syntheticRows.filter(r=>finite(r.spt)&&finite(r.M_synthetic_w2));
  const errors=(data,key)=>$('show-errors').checked?{type:'data',array:data.map(r=>r[key+'_unc']),visible:true,color:'#b5c4be',thickness:1,width:0}:{visible:false};
  const traces=groups(measured,(d,n,c)=>spectralScatterTrace(d,r=>r.M_w2,n,c,{marker:{size:d.map(r=>pointSize(r)),color:c,opacity:.8,symbol:d.map(r=>pointSymbol(r,r.distance_kind==='photometric'?'triangle-up':'circle'))},error_y:errors(d,'M_w2')}));
  if($('show-synth').checked)traces.push(...groups(synthetic,(d,n,c)=>spectralScatterTrace(d,r=>r.M_synthetic_w2,n,c,{showlegend:d.length>0&&!measured.some(r=>r.plot_class_label===n),marker:{size:d.map(r=>pointSize(r,8)),color:c,symbol:d.map(r=>pointSymbol(r,r.distance_kind==='photometric'?'triangle-up-open':'diamond-open')),opacity:.85,line:{width:1.5}},error_y:errors(d,'M_synthetic_w2'),hovertemplate:'%{text}<br>SPHEREx synthetic W2<br>Object %{customdata[0]} · %{customdata[2]}<br>y: %{y:.3f}<extra>'+n+'</extra>'})));
@@ -347,7 +352,7 @@ function renderCharts(){
   })),l);
   $(id+'-note').textContent=unavailable??`${num(data.length)} plotted · ${num(typed.length-trigRows.length)} typed objects without a trigonometric distance · ${num(trigRows.length-data.length)} without ${band==='gaia_g'?'Gaia G':'measured W2'} · adopted parallax-linked distance, otherwise inverse positive adopted parallax`;
  }
- const paired=rows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>spectralScatterTrace(d,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} objects have both W2 measurements. Useful for spotting calibration or contamination outliers.`;
+ const paired=syntheticRows.filter(r=>finite(r.spt)&&finite(r.w2_difference));l=spectralAxis(baseLayout('Spectral type','Synthetic − measured W2 (mag)'));l.shapes=[{type:'line',xref:'paper',x0:0,x1:1,y0:0,y1:0,line:{color:'#c0ccc5',dash:'dot'}}];emptyNote(l,paired.length);plot('w2-residual',groups(paired,(d,n,c)=>spectralScatterTrace(d,r=>r.w2_difference,n,c)),l);$('residual-note').textContent=`${num(paired.length)} spectra have matching W2 measurements. Useful for spotting calibration or contamination outliers.`;
  const detections=rows.filter(r=>r.sublime2&&finite(r.spt)&&finite(r.sublime2_detection_snr)),detected=detections.filter(r=>r.sublime2_detection_snr>0);
  l=spectralAxis(baseLayout('Spectral type','SUBLIME2 detection S/N'));l.yaxis.type='log';emptyNote(l,detected.length);
  plot('sublime2-detection-snr',groups(detected,(d,n,c)=>spectralScatterTrace(d,r=>r.sublime2_detection_snr,n,c,{
@@ -406,11 +411,11 @@ function renderCharts(){
 }
 function renderSNRHistogram(){
  const lane=filters.snr_lane||defaults.snr_lane,key=lane+'_snr';
- const measured=rows.filter(row=>finite(row[key])),positive=measured.filter(row=>row[key]>0);
- const layout=baseLayout('Median spectrum S/N per pixel','Unique objects');
+ const spectra=spectrumRows(rows,lane),measured=spectra.filter(row=>finite(row[key])),positive=measured.filter(row=>row[key]>0);
+ const layout=baseLayout('Median spectrum S/N per pixel','Spectra');
  layout.xaxis.type='log';layout.yaxis.type='log';layout.barmode='stack';
  layout.legend={...layout.legend,y:1.04,yanchor:'bottom'};layout.margin.t=90;
- $('snr-histogram-note').textContent=`${laneNames[lane]} · ${num(positive.length)} objects plotted · ${num(rows.length-measured.length)} without a measurement · ${num(measured.length-positive.length)} nonpositive values omitted`;
+ $('snr-histogram-note').textContent=`${laneNames[lane]} · ${num(positive.length)} spectra plotted · ${num(spectra.length-measured.length)} without a measurement · ${num(measured.length-positive.length)} nonpositive values omitted`;
  if(!positive.length){emptyNote(layout,0,'No positive median S/N values for this reduction');plot('snr-histogram',[],layout,false);return;}
  const binCount=24;
  let lo=Infinity,hi=-Infinity;
@@ -423,26 +428,28 @@ function renderSNRHistogram(){
   const bins=counts.flatMap((count,i)=>count?[{left:edges[i],right:edges[i+1],count}]:[]);
   return {type:'bar',name,marker:{color},x:bins.map(b=>(b.left+b.right)/2),y:bins.map(b=>b.count),
    width:bins.map(b=>b.right-b.left),customdata:bins.map(b=>[b.left,b.right]),
-   hovertemplate:'S/N %{customdata[0]:.3g}–%{customdata[1]:.3g}<br>%{y} objects<extra>'+name+'</extra>'};
+   hovertemplate:'S/N %{customdata[0]:.3g}–%{customdata[1]:.3g}<br>%{y} spectra<extra>'+name+'</extra>'};
  });
  plot('snr-histogram',traces,layout,false);
 }
 function renderDiagnostics(){
  if(!diagnosticGeneration||diagnosticGeneration!==catalogGeneration)return;
+ const spectra=spectrumRows(rows);
  const statistic=$('snr-statistic').value,band=$('snr-band').value;
  const names={all:'all wavelengths',nir:'1–2.5 µm',mid:'2.5–4 µm',red:'4–5 µm'};
  for(const lane of ['sublimeaperture','spiffstacker','spiff']){
-  const available=rows.filter(r=>finite(r.spt)&&finite(r.diagnostics?.[lane]?.snr?.[band]?.[statistic])),data=available.filter(r=>r.diagnostics[lane].snr[band][statistic]>0);
+  const available=spectra.filter(r=>finite(r.spt)&&finite(r.diagnostics?.[lane]?.snr?.[band]?.[statistic])),data=available.filter(r=>r.diagnostics[lane].snr[band][statistic]>0);
   const layout=spectralAxis(baseLayout('Spectral type',`${statistic==='mean'?'Mean':'Median'} S/N per pixel`));layout.yaxis.type='log';
   emptyNote(layout,data.length,diagnosticDone<diagnosticTotal?'Loading spectral diagnostics…':'No valid spectral S/N in this range');
   plot('snr-'+lane,groups(data,(d,n,c)=>spectralScatterTrace(d,r=>r.diagnostics[lane].snr[band][statistic],n,c,{
    type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[lane]+' #'+r.diagnostics[lane].moca_specid+' · '+r.diagnostics[lane].snr[band].count+' valid pixels · '+names[band])
   })),layout);
-  $('snr-'+lane+'-note').textContent=`${num(data.length)} objects · ${names[band]} · ${statistic==='mean'?'arithmetic mean':'median'} of valid Fλ / uncertainty values · log y-axis${available.length>data.length?' · '+num(available.length-data.length)+' nonpositive values omitted':''}`;
+  $('snr-'+lane+'-note').textContent=`${num(data.length)} spectra · ${names[band]} · ${statistic==='mean'?'arithmetic mean':'median'} of valid Fλ / uncertainty values · log y-axis${available.length>data.length?' · '+num(available.length-data.length)+' nonpositive values omitted':''}`;
  }
  for(const metric of ['chi2','cnn']){
   const choice=$(metric+'-lane').value;
-  const data=rows.map(r=>{const lane=FindingClasses.diagnosticLane(r,choice),value=r.diagnostics?.[lane]?.[metric];return {...r,diagnostic_lane:lane,diagnostic_value:value};})
+  const eligible=spectra.filter(r=>finite(r.spt)&&(choice==='auto'||r.extraction.lane===choice));
+  const data=eligible.map(r=>{const lane=r.extraction.lane,value=r.diagnostics?.[lane]?.[metric];return {...r,diagnostic_lane:lane,diagnostic_value:value};})
     .filter(r=>finite(r.spt)&&finite(r.diagnostic_value)&&(metric!=='cnn'||(r.diagnostic_value>=0&&r.diagnostic_value<=1)));
   const layout=spectralAxis(baseLayout('Spectral type',metric==='chi2'?'Stored reduced χ²':'CNN P(good)'));
   if(metric==='cnn'){
@@ -457,10 +464,10 @@ function renderDiagnostics(){
    ...(metric==='cnn'?{customdata:d.map(r=>[r.moca_oid,r.designation,spt(r.spt),r.diagnostic_value]),hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>CNN P(good): %{customdata[3]:.8g}<extra>'+n+'</extra>'}:{}),
    type:'scatter',text:d.map(r=>esc(r.designation)+'<br>'+laneNames[r.diagnostic_lane]+' #'+r.diagnostics[r.diagnostic_lane].moca_specid+'<br>'+esc(r.diagnostics[r.diagnostic_lane][metric==='chi2'?'fit_source':'cnn_source']||''))
   })),layout);
-  $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(rows.filter(r=>finite(r.spt)).length-data.length)} missing for the selected lane · `+(choice==='auto'?'automatic classification ranking; SPIFFStacker wins ties':laneNames[choice])+(metric==='cnn'?' · log-odds scale stretches both probability tails; values ≤0.000001 or ≥0.999999 share the edges (including exact 0 and 1). Hover shows the stored probability.':'');
+  $(metric+'-note').textContent=`${num(data.length)} plotted · ${num(eligible.length-data.length)} missing for the selected lane · `+(choice==='auto'?'all eligible extractions':laneNames[choice])+(metric==='cnn'?' · log-odds scale stretches both probability tails; values ≤0.000001 or ≥0.999999 share the edges (including exact 0 and 1). Hover shows the stored probability.':'');
  }
  const laneChoice=$('snr-chi2-lane').value,xlog=$('snr-chi2-xlog').checked,ylog=$('snr-chi2-ylog').checked;
- const snrChi2=rows.map(r=>FindingClasses.snrChi2Point(r,laneChoice)).filter(Boolean);
+ const snrChi2=spectra.map(r=>FindingClasses.snrChi2Point(r,laneChoice)).filter(Boolean);
  const snrChi2Visible=snrChi2.filter(r=>(!xlog||r.median_snr_1_5>0)&&(!ylog||r.fit_chi2>0));
  const snrChi2Layout=baseLayout('Median S/N per pixel (1–5 µm)','Stored reduced χ²');
  snrChi2Layout.xaxis.type=xlog?'log':'linear';snrChi2Layout.yaxis.type=ylog?'log':'linear';
@@ -477,7 +484,7 @@ function renderDiagnostics(){
   hovertemplate:'%{text}<br>Object %{customdata[0]} · %{customdata[2]}<br>Median S/N (1–5 µm): %{x:.3f}<br>Stored reduced χ²: %{y:.4g}<extra>'+n+'</extra>'
  })),snrChi2Layout);
  const nonpositive=snrChi2.length-snrChi2Visible.length,peculiarCount=snrChi2Visible.filter(r=>r.peculiar_lanes.length).length;
- $('snr-chi2-note').textContent=`${num(snrChi2Visible.length)} plotted · ${num(rows.length-snrChi2.length)} missing paired diagnostics${nonpositive?' · '+num(nonpositive)+' nonpositive values omitted on log axes':''} · ${num(peculiarCount)} open diamonds mark peculiar_ucd in any reduction. S/N and χ² come from the same active spectrum; 1–5 µm median is fixed independently of the S/N panel controls. `+(laneChoice==='auto'?'Automatic review ranking across all three reductions; SPIFFStacker wins ties.':laneNames[laneChoice]+'.');
+ $('snr-chi2-note').textContent=`${num(snrChi2Visible.length)} plotted · ${num(spectra.length-snrChi2.length)} missing paired diagnostics${nonpositive?' · '+num(nonpositive)+' nonpositive values omitted on log axes':''} · ${num(peculiarCount)} open diamonds mark peculiar_ucd in any reduction. S/N and χ² come from the same active spectrum; 1–5 µm median is fixed independently of the S/N panel controls. `+(laneChoice==='auto'?'All eligible spectra in the three reductions.':laneNames[laneChoice]+'.');
  $('diagnostics-status').textContent=`Spectral diagnostics: ${num(diagnosticDone)} / ${num(diagnosticTotal)} active spectra checked${diagnosticFailed?' · '+num(diagnosticFailed)+' requests failed':''}. Values update progressively. Missing measurements are omitted.`;
 }
 function queueDiagnosticRender(){if(diagnosticRenderTimer)return;diagnosticRenderTimer=setTimeout(()=>{diagnosticRenderTimer=null;if(tab==='overview')renderDiagnostics();},900);}
@@ -491,9 +498,9 @@ async function loadDiagnostics(seq){
  diagnosticController?.abort();diagnosticController=new AbortController();
  const signal=diagnosticController.signal,items=[];
  for(const r of rows){
-  r.diagnostics??={};
-  for(const lane of Object.keys(laneNames))if(r[lane+'_specid']&&!r[lane+'_ignored']&&!(lane in r.diagnostics)){
-   items.push({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid'],lane});
+  r.diagnosticsById??={};
+  for(const spec of extractions(r)){
+   if(!(spec.specid in r.diagnosticsById))items.push({moca_oid:r.moca_oid,moca_specid:spec.specid,lane:spec.lane});
   }
  }
  diagnosticDone=0;diagnosticFailed=0;diagnosticTotal=items.length;
@@ -503,8 +510,8 @@ async function loadDiagnostics(seq){
   const batch=items.slice(cursor,cursor+96);cursor+=batch.length;
   try{
    const result=await api('diagnostics',{items:batch},signal);if(seq!==dataGeneration||signal.aborted)return;
-   for(const item of batch)byId.get(item.moca_oid).diagnostics[item.lane]=null;
-   for(const item of result.items){const r=byId.get(item.moca_oid);if(r&&r[item.lane+'_specid']===item.moca_specid)r.diagnostics[item.lane]=item;}
+   for(const item of batch)byId.get(item.moca_oid).diagnosticsById[item.moca_specid]=null;
+   for(const item of result.items){const r=byId.get(item.moca_oid);if(r)r.diagnosticsById[item.moca_specid]=item;}
   }catch(error){if(error.name==='AbortError'||seq!==dataGeneration||signal.aborted)return;diagnosticFailed++;}
   if(seq!==dataGeneration||signal.aborted)return;
   diagnosticDone+=batch.length;queueDiagnosticRender();
@@ -524,8 +531,39 @@ if(typeof IntersectionObserver==='function'){
  observer.observe($('diagnostics-status').closest('article'));
 }
 function setTab(value){tab=value;document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===value));for(const name of ['overview','spectra','objects','duplicates','completeness'])$('view-'+name).hidden=name!==value;if(value==='completeness')loadCompleteness();if(value==='overview')renderCharts();if(value==='spectra')renderFlipbook();if(value==='objects')renderObjects();if(value==='duplicates'){if(duplicateRows===null)scanDuplicates();else renderDuplicates();}}
+function extractions(row){
+ if(Array.isArray(row.spectra))return row.spectra;
+ return Object.keys(laneNames).filter(lane=>row[lane+'_specid']&&!row[lane+'_ignored']).map(lane=>({
+  lane,specid:row[lane+'_specid'],quality:row[lane+'_quality'],snr:row[lane+'_snr'],spt:row[lane+'_spt']
+ }));
+}
+function spectrumRow(row,spec){
+ const lane=spec.lane, result={...row,extraction:spec,diagnostics:{[lane]:row.diagnosticsById?.[spec.specid]}};
+ for(const other of Object.keys(laneNames))result[other+'_specid']=null;
+ return Object.assign(result,{[lane+'_specid']:spec.specid,[lane+'_quality']:spec.quality,
+  [lane+'_snr']:spec.snr,[lane+'_spt']:spec.spt,[lane+'_ignored']:false});
+}
+function spectrumRows(objects,lane){
+ return objects.flatMap(row=>extractions(row).filter(spec=>!lane||spec.lane===lane).map(spec=>spectrumRow(row,spec)));
+}
 function fitKey(r,lane){return lane+':'+r.moca_oid+':'+r[lane+'_specid'];}
-async function getFits(data,lane,signal){const missing=data.filter(r=>r[lane+'_specid']&&!fitCache.has(fitKey(r,lane)));if(missing.length){const result=await api('spectra',{lane,items:missing.map(r=>({moca_oid:r.moca_oid,moca_specid:r[lane+'_specid']}))},signal);for(const item of result.items){const r=byId.get(item.object.moca_oid)||data.find(r=>r.moca_oid===item.object.moca_oid);if(r){fitCache.set(fitKey(r,lane),item);while(fitCache.size>180)fitCache.delete(fitCache.keys().next().value);}}}return data.map(r=>fitCache.get(fitKey(r,lane)));}
+async function getFits(data,lane,signal){
+ const results=new Map(), missing=[];
+ for(const row of data){
+  const key=fitKey(row,lane);
+  if(fitCache.has(key))results.set(key,fitCache.get(key));
+  else if(row[lane+'_specid'])missing.push({moca_oid:row.moca_oid,moca_specid:row[lane+'_specid']});
+ }
+ for(let start=0;start<missing.length;start+=10){
+  const response=await api('spectra',{lane,items:missing.slice(start,start+10)},signal);
+  for(const item of response.items){
+   const key=lane+':'+item.object.moca_oid+':'+item.object.moca_specid;
+   results.set(key,item);fitCache.set(key,item);
+   if(fitCache.size>180)fitCache.delete(fitCache.keys().next().value);
+  }
+ }
+ return data.map(row=>results.get(fitKey(row,lane)));
+}
 function spectrumLabel(r,lane){
  const id=r[lane+'_specid'];
  return id?'#'+id+(r[lane+'_ignored']?' · Ignored':''):'unavailable';
@@ -547,7 +585,8 @@ function spectrumCard(r,lane,plotId,inspect=false){return `<article class="card 
 function renderFit(el,item,lane){if(!item){el.innerHTML='<div class="spec-empty">No stored spectrum in this reduction.</div>';return;}if(item.error){el.innerHTML='<div class="spec-empty">'+esc(item.error)+'</div>';return;}const best=item.fit?.overlays?.[0];const meta=el.previousElementSibling;let label=meta?.querySelector('.fit-label');if(meta&&!label){label=document.createElement('div');label.className='fit-label';meta.append(label);}if(label)label.textContent=best?'Best template: '+best.label+' · χ²r = '+fmt(best.display_reduced_chi2,2):'No valid template fit'+(item.warning?' · '+item.warning:'');const figure=SpherexReviewPlot.figure(item,String(item.object.moca_specid),el.clientWidth,1,SpherexReviewPlot.lanes.find(v=>v.key===lane)?.color);figure.layout.height=Math.round(Math.min(510,Math.max(290,el.clientWidth))*(el.closest('#flipbook')?0.75:1));el.replaceChildren();Plotly.newPlot(el,figure.traces,figure.layout,plotConfig);}
 function comparisonCard(r,plotId,preferredOnly=false){
  const chosen=preferredOnly?r.preferred_spectrum_lane:null;
- const meta=SpherexReviewPlot.lanes.filter(lane=>!preferredOnly||lane.key===chosen).map(lane=>`<span style="color:${lane.color}">${esc(lane.label)}</span>: ${spectrumLabel(r,lane.key)} · ${esc(spt(r[lane.key+'_spt']))} · ${esc(r[lane.key+'_quality']||'unreviewed')}`).join('<br>');
+ const meta=extractions(r).filter(s=>!preferredOnly||s.lane===chosen).map(s=>
+  esc(laneNames[s.lane])+' #'+s.specid+' · '+esc(spt(s.spt))+' · '+esc(s.quality)).join('<br>');
  return `<article class="card spectrum-card ${preferredOnly?'':'comparison-card'}" data-oid="${r.moca_oid}" data-confirmed="${isConfirmed(r)}"><div class="card-head"><div><h3>${esc(r.designation)}</h3><span class="badge">${esc(spt(r.spt))}</span></div><div class="spectrum-card-actions"><button data-inspect="${r.moca_oid}">Inspect ↗</button><button type="button" data-open-mocadb="${r.moca_oid}">Open MOCAdb ↗</button></div></div><div class="spec-meta">OID ${r.moca_oid}<br>${meta}${reviewContext(r)}</div><div id="${plotId}" class="spec-plot"><div class="spec-empty">Loading available spectra & their best templates…</div></div></article>`;
 }
 function renderComparison(el,r,items,errors){
@@ -563,7 +602,7 @@ async function renderFlipbook(){
  const lanes=SpherexReviewPlot.lanes.map(lane=>lane.key),preferredOnly=$('preferred-lane-only').checked;
  const data=rows.filter(r=>(!$('available-only').checked||lanes.some(lane=>r[lane+'_specid']))&&(!$('confirmed-only').checked||isConfirmed(r)));
  const pages=Math.ceil(data.length/pageSize);flipPage=Math.max(0,Math.min(flipPage,Math.max(0,pages-1)));
- const selected=data.slice(flipPage*pageSize,(flipPage+1)*pageSize);$('spectra-count').textContent=num(data.length);
+ const selected=data.slice(flipPage*pageSize,(flipPage+1)*pageSize);$('spectra-count').textContent=num(data.reduce((n,r)=>n+extractions(r).filter(s=>!preferredOnly||s.lane===r.preferred_spectrum_lane).length,0));
  for(const suffix of ['','-bottom']){
   $('flip-position'+suffix).textContent=data.length?`${flipPage*pageSize+1}–${Math.min(data.length,(flipPage+1)*pageSize)} / ${num(data.length)} · page ${flipPage+1} of ${pages}`:'No spectra under these cuts';
   $('flip-prev'+suffix).textContent=`← Previous ${pageSize}`;$('flip-next'+suffix).textContent=`Next ${pageSize} →`;
@@ -575,19 +614,28 @@ async function renderFlipbook(){
  for(let offset=0;offset<selected.length;offset+=10){
   const batch=selected.slice(offset,offset+10);
   const results=await Promise.allSettled(lanes.map(async lane=>{
-   const selected=preferredOnly?batch.filter(r=>r.preferred_spectrum_lane===lane):batch;
-   const fits=await getFits(selected,lane,signal);
-   return new Map(selected.map((r,i)=>[r.moca_oid,fits[i]]));
+   const candidates=spectrumRows(preferredOnly?batch.filter(r=>r.preferred_spectrum_lane===lane):batch,lane);
+   const fits=await getFits(candidates,lane,signal);
+   return new Map(candidates.map((row,i)=>[row.extraction.specid,fits[i]]));
   }));
   if(generation!==flipGeneration)return;
   batch.forEach((r,i)=>{
-   const items={},errors={};results.forEach((result,j)=>{
-    const lane=lanes[j];
-    if(result.status==='fulfilled'){items[lane]=result.value.get(r.moca_oid);if(items[lane]?.error)errors[lane]=items[lane].error;}
-    else if(result.reason.name!=='AbortError')errors[lane]=result.reason.message;
-   });
+   const items={},errors={},all=[];
+   for(const spec of extractions(r)){
+    if(preferredOnly && spec.lane!==r.preferred_spectrum_lane)continue;
+    const response=results[lanes.indexOf(spec.lane)];
+    if(response.status==='fulfilled'){
+     const fit=response.value.get(spec.specid);
+     if(fit&&!fit.error){items[spec.lane]=fit;all.push({...fit,lane:spec.lane,specid:spec.specid});}
+     else if(fit?.error)errors[spec.lane]=fit.error;
+    }else if(response.reason.name!=='AbortError')errors[spec.lane]=response.reason.message;
+   }
    const plot=$('flip-plot-'+(offset+i));
-   if(preferredOnly){
+   if(all.length>Object.keys(items).length){
+    const spectra=Object.fromEntries(all.map(item=>[item.lane+'-'+item.specid,item]));
+    const fig=SpherexReviewPlot.laneStackFigure(spectra,String(r.moca_oid),plot.clientWidth);
+    plot.replaceChildren();Plotly.newPlot(plot,fig.traces,fig.layout,plotConfig);
+   }else if(preferredOnly){
     const lane=r.preferred_spectrum_lane;
     renderFit(plot,items[lane]||(errors[lane]?{error:errors[lane]}:null),lane);
    }else renderComparison(plot,r,items,errors);
@@ -790,7 +838,7 @@ function skyCrosshairs(container, markers) {
  if(!overlay){overlay=document.createElement('div');overlay.className='spectrum-crosshairs';overlay.setAttribute('aria-hidden','true');container.append(overlay);}
  overlay.replaceChildren();
  for(const {lane,x,y} of markers){
-  const i=SpherexReviewPlot.lanes.findIndex(entry=>entry.key===lane);
+  const i=SpherexReviewPlot.lanes.findIndex(entry=>entry.key===lane.split(':')[0]);
   if(i<0||![x,y].every(v=>finite(v)&&v>=0&&v<=1))continue;
   const crosshair=document.createElement('span');
   crosshair.className='spectrum-crosshair';crosshair.dataset.lane=lane;
@@ -813,10 +861,11 @@ function imageEpochNote(image) {
  return ` · ${epoch}${image.markers.length?'':' · no spectrum position inside this field'}`;
 }
 function renderAstrometryLegend() {
- $('inspect-astrometry').innerHTML=SpherexReviewPlot.lanes.map(lane=>{
-  const point=inspectorPositions?.[lane.key];
+ $('inspect-astrometry').innerHTML=extractions(current).map(spec=>{
+  const lane=SpherexReviewPlot.lanes.find(entry=>entry.key===spec.lane);
+  const point=inspectorPositions?.[spec.lane+':'+spec.specid];
   const detail=point?`${fmt(point.ra,6)}°, ${fmt(point.dec,6)}° · ${point.epoch==null?'reference epoch unavailable':`epoch ${fmt(point.epoch,3)}`} · ${point.source}`:'reference position unavailable';
-  return `<span><b style="color:${lane.color}">${esc(lane.label)}</b> <small>${esc(detail)}</small></span>`;
+  return `<span><b style="color:${lane.color}">${esc(lane.label)} #${spec.specid}</b> <small>${esc(detail)}</small></span>`;
  }).join('');
 }
 function atEpoch(point, epoch) {
@@ -866,16 +915,20 @@ async function openInspector(r){
  $('inspect-title').textContent=r.designation+' · '+spt(r.spt);$('inspect-meta').textContent=`OID ${r.moca_oid} · RA ${fmt(r.ra,6)}° · Dec ${fmt(r.dec,6)}° · ${r.plot_class_label} · ${r.samples.map(s=>sourceNames[s]).join(', ')}`;
  $('inspect-report').href='https://mocadb.ca/search/results?search-query=oid%28'+r.moca_oid+'%29&search-type=star';
  $('inspect-wise-link').href='http://byw.tools/wiseview-v2#'+wiseHash(r);
- $('inspect-spectra').innerHTML=['spiffstacker','spiff','sublimeaperture'].map(lane=>spectrumCard(r,lane,'inspect-'+lane,true)).join('');
+ const display=spectrumRows([r]);
+ $('inspect-spectra').innerHTML=display.map(row=>spectrumCard(row,row.extraction.lane,'inspect-'+row.extraction.specid,true)).join('')||'<p>No vetted spectra available.</p>';
  $('cutout-content').innerHTML='<div class="spec-empty">Loading locally available SUBLIME cutouts…</div>';$('cut-label').textContent='';$('cut-prev').disabled=true;$('cut-next').disabled=true;
  $('inspector').showModal();$('inspector').scrollTop=0;
  if(!mock&&finite(r.ra)&&finite(r.dec)){$('wise-frame').removeAttribute('srcdoc');$('wise-frame').src='wiseview-frame?frame='+generation+'#'+wiseHash(r);}else $('wise-frame').srcdoc='<p style="font:14px system-ui;padding:20px">WiseView is unavailable in the synthetic demo.</p>';
- for(const lane of ['spiffstacker','spiff','sublimeaperture']){
-  if(!r[lane+'_specid'])continue;
-  getFits([r],lane,signal).then(items=>{if(generation===inspectorGeneration)renderFit($('inspect-'+lane),items[0],lane);}).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration)$('inspect-'+lane).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
+ for(const lane of Object.keys(laneNames)){
+  const subset=display.filter(row=>row.extraction.lane===lane);
+  getFits(subset,lane,signal).then(items=>{
+   if(generation===inspectorGeneration)subset.forEach((row,i)=>renderFit($('inspect-'+row.extraction.specid),items[i],lane));
+  }).catch(error=>{if(error.name!=='AbortError'&&generation===inspectorGeneration)
+   for(const row of subset)$('inspect-'+row.extraction.specid).textContent=error.message;});
  }
  renderFinders(generation,signal);
- const specids=Object.fromEntries(SpherexReviewPlot.lanes.filter(lane=>r[lane.key+'_specid']).map(lane=>[lane.key,r[lane.key+'_specid']]));
+ const specids=Object.fromEntries(extractions(r).map(spec=>[spec.lane+':'+spec.specid,spec.specid]));
  try{
   const result=await api('spectrum-positions',{moca_oid:r.moca_oid,specids},signal);
   if(generation!==inspectorGeneration)return;
@@ -918,7 +971,7 @@ function renderFinders(generation=inspectorGeneration,signal=inspectController?.
   $('finder-note-'+survey).textContent=result.label+' · '+result.orientation+(result.note?' · '+result.note:'');
  }).catch(e=>{if(e.name!=='AbortError'&&generation===inspectorGeneration&&fgen===finderGeneration)$('finder-'+survey).innerHTML='<div class="spec-empty">'+esc(e.message)+'</div>';});
 }
-function csvCell(v){let s=Array.isArray(v)?v.join('; '):v==null?'':String(v);if(typeof v==='string'&&/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}
+function csvCell(v){let s=v!==null&&typeof v==='object'?JSON.stringify(v):v==null?'':String(v);if(typeof v==='string'&&/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}
 function exportCSV(){const keys=[...new Set(rows.flatMap(Object.keys))];const content='\ufeff'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(r[k])).join(','))].join('\r\n');const blob=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=blob;a.download='sublime-findings-'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(blob),1000);}
 $('filters').onsubmit=e=>{e.preventDefault();load();};$('filters').oninput=()=>{$('dirty').textContent='Filters changed — apply to update the sample.';};$('reset').onclick=()=>{setFilters(defaults);load();};
 for(const [id,confirmations] of [['preset-sublime2',false],['preset-sublime2-confirmations',true]])$(id).onclick=()=>{

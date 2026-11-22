@@ -55,6 +55,11 @@ class DiagnosticsTests(unittest.TestCase):
         db.executemany('INSERT INTO moca_spectra VALUES (?,?,?,?)',[(10,1,62,0),(11,1,55,1),(12,2,55,0)])
         db.executemany('INSERT INTO data_spectra VALUES (?,?,?,?,?)',[(10,15000,8,2,0),(10,15000,1000,1,1)])
         db.executemany('INSERT INTO data_spectral_types VALUES (?,?,?,?,?)',[(1,10,'spherex_autotype','reduced_chi2=100',0),(2,10,'spiff_stacker_autotype','reduced_chi2=2',0)])
+        db.execute("CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality');")
+        db.executemany("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,?)",[(10,'good'),(11,'bad'),(12,'good')])
+        from mocaviz import spectrum_quality
+        check=patch.object(spectrum_quality,'has_spectrum_reviews',return_value=True)
+        check.start();self.addCleanup(check.stop)
         queries=[]
         class Cursor:
             def execute(self,sql,params):
@@ -81,6 +86,8 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(sidecar.call_count,1)
             self.assertEqual(diag.DiagnosticCache('collaborators',path).get([item]),{})
             db.execute('UPDATE moca_spectra SET ignored=1 WHERE moca_specid=10')
+            self.assertEqual(diag.load(Cursor(),[item],cache),result)
+            db.execute("UPDATE pcat_spherex_spectrum_reviews SET classification='bad' WHERE moca_specid=10")
             self.assertEqual(diag.load(Cursor(),[item],cache),[])
             db.execute('UPDATE moca_spectra SET ignored=0 WHERE moca_specid=10')
             with patch.object(diag.time,'time',return_value=diag.time.time()+diag.CACHE_TTL+1):

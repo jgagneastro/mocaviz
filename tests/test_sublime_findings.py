@@ -24,7 +24,7 @@ class FindingsTests(unittest.TestCase):
             response=self.client.post('/api/findings/load',json={'mock':True,'filters':{'min_spt':10}})
             self.assertEqual(response.status_code,200)
             data=response.get_json();self.assertTrue(data['complete'])
-            self.assertEqual(data['quality_definition_version'],2)
+            self.assertEqual(data['quality_definition_version'],3)
             self.assertGreater(len(data['rows']),10)
             self.assertEqual(len(data['rows']),len({r['moca_oid'] for r in data['rows']}))
             self.assertEqual([r['spt'] for r in data['rows']],sorted([r['spt'] for r in data['rows']],reverse=True))
@@ -85,49 +85,35 @@ class FindingsTests(unittest.TestCase):
                 self.assertGreater(len(response.get_json()['rows']),0)
 
     def test_quality_modes_sql_and_rows_agree_on_available_reductions(self):
-        # Quality order is SPIFF, SPIFFStacker, SUBLIME aperture. The expected
-        # columns are any good/candidate, any good family, all good family,
-        # and all good/candidate. Available unreviewed lanes must fail both all cuts.
+        # Each tuple describes one extraction, including siblings from the same package.
         cases=[
-            ((None,None,None),(),(),(False,False,False,False)),
-            (('good',None,None),(0,),(),(True,True,True,True)),
-            (('good','good_candidate',None),(0,1),(),(True,True,False,True)),
-            (('good',None,None),(0,1),(),(True,True,False,False)),
-            (('good_candidate',None,None),(0,),(),(True,False,False,True)),
-            (('good','bad',None),(0,1),(),(True,True,False,False)),
-            (('bad',None,None),(0,),(),(False,False,False,False)),
-            (('good','bad',None),(0,),(1,),(True,True,True,True)),
-            (('good','bad',None),(1,),(0,),(True,True,False,False)),
-            (('good',None,None),(),(0,),(True,True,False,False)),
-            (('good','good','good'),(0,1,2),(),(True,True,True,True)),
-            (('good','peculiar_ucd',None),(0,1),(),(True,True,True,True)),
-            (('contaminated_ucd',None,None),(0,),(),(True,True,True,True)),
-            ((None,'peculiar_ucd',None),(1,),(),(True,True,True,True)),
-            ((None,None,'good_plus_star'),(2,),(),(True,True,True,True)),
-            (('good_candidate','contaminated_ucd',None),(0,1),(),(True,True,False,True)),
-            (('contaminated_ucd',None,None),(0,1),(),(True,True,False,False)),
-            (('good_reddened','weird','incomplete_but_promising'),(0,1,2),(),(False,False,False,False)),
+            ([],(0,0,0,0)),
+            ([('good',0),('good_reddened',0),('bad',0)],(1,1,1,1)),
+            ([('good',0),('good_candidate',0)],(1,1,0,1)),
+            ([('good',0),(None,0)],(1,1,0,0)),
+            ([('good_candidate',0)],(1,0,0,1)),
+            ([('bad',0)],(0,0,0,0)),
+            ([('good',1),('bad',0)],(1,1,1,1)),
+            ([('good',0),(None,1)],(1,1,1,1)),
+            ([('good_plus_star',0),('contaminated_ucd',0),('peculiar_ucd',0)],(1,1,1,1)),
+            ([('good_reddened',0),('weird',0)],(1,1,0,0)),
         ]
         modes=('good','one_good','all_good','all_good_candidate')
-        db=sqlite3.connect(':memory:')
-        self.addCleanup(db.close)
-        db.execute('CREATE TABLE moca_objects (moca_oid INTEGER)')
-        db.execute('CREATE TABLE moca_spectra (moca_oid INTEGER,moca_specpackid INTEGER,ignored INTEGER)')
-        for cfg in sf.LANE_CONFIG.values():db.execute('CREATE TABLE '+cfg['table']+' (moca_oid INTEGER,classification TEXT)')
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close)
+        db.executescript("""CREATE TABLE moca_objects(moca_oid INT);
+            CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INT,moca_specpackid INT,ignored INT);
+            CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INT,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality');""")
         records=[]
-        for oid,(quality,active,ignored,expected) in enumerate(cases,1):
+        for oid,(specs,expected) in enumerate(cases,1):
             db.execute('INSERT INTO moca_objects VALUES (?)',(oid,))
-            r={key:False for key in sf.TRI}
-            r.update(moca_oid=oid,duplicate=False,cutout_scores=[],cutout_classes=[])
-            for i,(lane,cfg) in enumerate(sf.LANE_CONFIG.items()):
-                if quality[i] is not None:
-                    r[lane+'_quality']=quality[i]
-                    db.execute('INSERT INTO '+cfg['table']+' VALUES (?,?)',(oid,quality[i]))
-                if i in active or i in ignored:
-                    db.execute('INSERT INTO moca_spectra VALUES (?,?,?)',(oid,cfg['pack'],int(i in ignored)))
-                if i in active or i in ignored:
-                    r[lane+'_specid']=oid*10+i
-                    r[lane+'_ignored']=i in ignored
+            r=dict(moca_oid=oid,duplicate=False,cutout_classes=[],cutout_scores=[],spectra=[],review_labels={},unreviewed_active=False)
+            for label,ignored in specs:
+                sid=db.execute('INSERT INTO moca_spectra(moca_oid,moca_specpackid,ignored) VALUES (?,55,?)',(oid,ignored)).lastrowid
+                if label:
+                    db.execute('INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,?)',(sid,label))
+                    r['review_labels'].setdefault('spiff',[]).append(label)
+                    if label in sf.sq.USABLE:r['spectra'].append(dict(specid=sid,lane='spiff',quality=label))
+                elif not ignored:r['unreviewed_active']=True
             records.append((r,expected))
         for index,mode in enumerate(modes):
             with self.subTest(mode=mode):
@@ -306,6 +292,14 @@ class FindingsTests(unittest.TestCase):
             db.execute("INSERT INTO data_spectral_types VALUES (NULL, 6, NULL, 0, 0, 0, 0, 'spherex_autotype')")
             db.execute("INSERT INTO data_spectral_types VALUES (NULL, 9, 19, 0, 0, 0, 0, 'spherex_sublimeap_autotype')")
 
+            db.execute('ALTER TABLE data_spectral_types ADD COLUMN moca_specid INT')
+            db.execute('CREATE TABLE moca_spectra(moca_specid INT,moca_oid INT,moca_specpackid INT,ignored INT)')
+            db.execute("CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INT,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality')")
+            for oid in range(1,10):
+                db.execute('INSERT INTO moca_spectra VALUES (?,?,?,0)',(oid,oid,55 if oid<9 else 76))
+                db.execute("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,'good')",(oid,))
+            db.execute('UPDATE data_spectral_types SET moca_specid=moca_oid WHERE calculation_method IS NOT NULL')
+
             def oids(**filters):
                 cuts=sf.parse_filters({'sources':['other'], **filters})
                 sql,params=sf.selected_sql(cuts)
@@ -316,7 +310,8 @@ class FindingsTests(unittest.TestCase):
                     def fetchall(self):
                         return [dict(zip([col[0] for col in self.result.description],row))
                                 for row in self.result.fetchall()]
-                self.assertEqual(sorted(r['moca_oid'] for r in sf.selected_rows(Cursor(),cuts)),expected)
+                with patch.object(sf.sq,'has_spectrum_reviews',return_value=True):
+                    self.assertEqual(sorted(r['moca_oid'] for r in sf.selected_rows(Cursor(),cuts)),expected)
                 return expected
 
             self.assertEqual(oids(), [1, 9])
@@ -340,6 +335,7 @@ class FindingsTests(unittest.TestCase):
         conn,cur=MagicMock(),MagicMock()
         with patch.object(sf.sr,'credentials',return_value={}),patch.object(sf.sr,'connection') as context, \
              patch.object(sf.sr,'spectrum_metadata',return_value={'moca_oid':1,'moca_specid':2,'ignored':1}), \
+             patch.object(sf.diagnostics,'eligible_items',side_effect=lambda cur,items:items), \
              patch.object(sf,'fetch',side_effect=[spectrum,[]]),patch.object(sf.sr,'fit_spectrum',side_effect=ValueError('Too few usable pixels')):
             context.return_value.__enter__.return_value=(conn,cur)
             response=self.client.post('/api/findings/spectra',json={'items':[{'moca_oid':1,'moca_specid':2}],'lane':'spiff'})

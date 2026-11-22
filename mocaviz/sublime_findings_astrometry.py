@@ -69,6 +69,11 @@ def stacker_manifest(meta):
         return None
 
 
+def position_lane(key):
+    lane,sep,suffix=key.partition(':')
+    return lane if lane in LANES and (not sep or suffix.isascii() and suffix.isdigit()) else None
+
+
 def spectrum_positions(cur, oid, ids):
     if not ids:
         return {}
@@ -82,7 +87,8 @@ def spectrum_positions(cur, oid, ids):
         + ','.join(['%s']*len(ids)) + ')', (oid,*ids.values()))
     by_id = {row['moca_specid']:row for row in rows}
     result = {}
-    for lane, specid in ids.items():
+    for key, specid in ids.items():
+        lane=position_lane(key)
         meta = by_id.get(specid)
         if not meta or meta['moca_specpackid'] != sr.LANES[lane]['pack']:
             continue
@@ -118,7 +124,7 @@ def spectrum_positions(cur, oid, ids):
         if astrometry:
             if astrometry['pmra'] is None or astrometry['pmdec'] is None:
                 astrometry.update(pmra=number(meta['pmra_masyr']), pmdec=number(meta['pmdec_masyr']))
-            result[lane] = {**astrometry, 'specid':specid, 'source':source}
+            result[key] = {**astrometry, 'specid':specid, 'source':source}
     return result
 
 

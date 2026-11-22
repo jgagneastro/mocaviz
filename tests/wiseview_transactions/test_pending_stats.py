@@ -8,17 +8,19 @@ from mocaviz.wiseview_review import runtime as server
 
 class PendingSpectrumCounts(unittest.TestCase):
     def setUp(self):
+        patcher=mock.patch.object(server.spectral_vetting.quality,'has_spectrum_reviews',return_value=True)
+        patcher.start();self.addCleanup(patcher.stop)
         self.db=sqlite3.connect(':memory:')
         self.db.row_factory=sqlite3.Row
         self.db.executescript('''
+          CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality');
+          CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INT,moca_specpackid INT);
           CREATE TABLE moca_objects(moca_oid INT,ignored INT);
           CREATE TABLE pcat_sublime_candidates_v2(moca_oid INT);
           CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
           CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INT,classification_integer REAL);
           CREATE TABLE pcat_duplicated_vetting(potential_duplicated_moca_oid INT,classification TEXT);
         ''')
-        for table,_,_ in server.spectral_vetting.LANES.values():
-            self.db.execute('CREATE TABLE '+table+'(moca_oid INT,classification TEXT)')
         class Cursor:
             def execute(inner,sql,params=()):inner.result=self.db.execute(sql.replace('%s','?'),params)
             def fetchall(inner):return [dict(row) for row in inner.result]
@@ -31,8 +33,9 @@ class PendingSpectrumCounts(unittest.TestCase):
         self.db.execute('INSERT INTO '+sample+' VALUES (?)',(oid,))
 
     def review(self,oid,quality,lane='spiff'):
-        table=server.spectral_vetting.LANES[lane][0]
-        self.db.execute('INSERT INTO '+table+' VALUES (?,?)',(oid,quality))
+        pack=server.spectral_vetting.LANES[lane][1]
+        specid=self.db.execute('INSERT INTO moca_spectra(moca_oid,moca_specpackid) VALUES (?,?)',(oid,pack)).lastrowid
+        self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,?)",(specid,quality))
 
     def counts(self,sample='pcat_sublime_candidates_v2',known=(),claimed=()):
         return server.summarize_pending_spectra(server.pending_spectral_rows(self.cur,sample),set(known),set(claimed))
@@ -51,7 +54,7 @@ class PendingSpectrumCounts(unittest.TestCase):
                             (5,'contaminated_ucd'),(6,'good_plus_star'),(7,'good'),(8,'good'),
                             (9,'good'),(10,'good'),(11,'good'),(12,'good'),(13,'good'),
                             (14,'good'),(15,'bad'),(17,None),(18,' GOOD_CANDIDATE ')]:self.review(oid,quality)
-        self.review(1,'bad','spiffstacker');self.review(1,'good_candidate','sublimeaperture')
+        self.review(1,'good');self.review(1,'bad');self.review(1,'bad','spiffstacker');self.review(1,'good_candidate','sublimeaperture')
         self.db.execute('INSERT INTO pcat_duplicated_vetting VALUES (10,\'y\')')
         self.db.executemany('INSERT INTO pcat_wiseview_visual_vetting VALUES (?,?)',[(11,0),(12,-1),(13,None)])
         self.db.execute('DELETE FROM pcat_sublime_candidates_v2 WHERE moca_oid IN (14,16)')

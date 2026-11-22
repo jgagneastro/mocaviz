@@ -10,7 +10,7 @@ class KnownSourceTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.executescript('''
         CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,designation TEXT,ra REAL,dec REAL,ignored INT,is_public INT);
-        CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INT,spectral_type_number REAL,adopted INT,public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT);
+        CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INT,spectral_type_number REAL,adopted INT,public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT,moca_specid INTEGER GENERATED ALWAYS AS (id) VIRTUAL);
         CREATE TABLE pcat_sublime_candidates(id INT,moca_oid INT,detection_snr REAL);
         CREATE TABLE pcat_sublime_candidates_v2(id INT,moca_oid INT,detection_snr REAL,autotype_spectral_type_number REAL,visual_nn_good_probability REAL,visual_nn_classification TEXT,autotype_reduced_chi2 REAL);
         CREATE TABLE pcat_sublime_candidates_v3c(id INT,moca_oid INT,ra_deg REAL,dec_deg REAL,autotype_spectral_type_number REAL,status TEXT,cnn_acceptance_probability REAL,median_raw_snr REAL);
@@ -18,7 +18,8 @@ class KnownSourceTests(unittest.TestCase):
         CREATE TABLE pcat_duplicated_vetting(moca_oid INT,potential_duplicated_moca_oid INT,classification TEXT);
         CREATE TABLE pcat_wiseview_visual_vetting(moca_oid INT,classification_integer REAL);
         CREATE TABLE mechanics_all_designations(moca_oid INT,designation TEXT);
-        CREATE TABLE moca_spectra(moca_oid INT,moca_specpackid INT,ignored INT);
+        CREATE TABLE moca_spectra(moca_specid INT,moca_oid INT,moca_specpackid INT,ignored INT);
+        CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality');
         ''')
         for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw','pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
             self.db.execute('CREATE TABLE '+table+'(moca_oid INT)')
@@ -65,6 +66,31 @@ class KnownSourceTests(unittest.TestCase):
         rows=self.select();self.assertEqual([r['moca_oid'] for r in rows],[1,2,3])
         self.assertEqual(rows[0]['published_spt'],26)
 
+    def test_enrichment_counts_one_object_and_keeps_both_good_siblings(self):
+        from unittest.mock import patch
+        self.db.execute('ALTER TABLE pcat_byw_mar9_2026 ADD COLUMN disc TEXT')
+        self.db.execute('ALTER TABLE pcat_wiseview_visual_vetting ADD COLUMN classification TEXT')
+        self.db.execute('ALTER TABLE moca_spectra ADD COLUMN median_snr_per_pix REAL')
+        self.db.executemany('INSERT INTO moca_spectra VALUES (?,4,55,0,?)',[(101,7),(102,11),(103,55)])
+        self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,?)",
+                            [(101,'good'),(102,'good_reddened'),(103,'bad')])
+        self.db.executemany("INSERT INTO data_spectral_types VALUES (?,4,?,0,0,0,0,'spherex_autotype')",
+                            [(101,13),(102,19),(103,30)])
+        filters=sf.parse_filters(dict(sources=['sublime2'],quality_any='one_good',snr_lane='spiff',min_snr=6,max_snr=8,
+                                      spt_source='spiff',min_spiff_spt=12,max_spiff_spt=14))
+        sql,params=sf.selected_sql(filters)
+        rows=[dict(r) for r in self.db.execute(sql.replace('%s','?'),params)]
+        self.assertEqual([(r['moca_oid'],r['spt']) for r in rows],[(4,13)])
+        class Cursor:
+            def execute(inner,sql,params):inner.result=self.db.execute(sql.replace('%s','?'),params)
+            def fetchall(inner):return [dict(r) for r in inner.result]
+        with patch.object(sf.sq,'has_spectrum_reviews',return_value=True):
+            row,=sf.enrich(Cursor(),rows,count_filters=filters)
+        self.assertEqual(row['good_spectrum_count'],2)
+        self.assertEqual({r['specid'] for r in row['spectra']},{101,102})
+        self.assertTrue(sf.passes(row,filters))
+        self.assertFalse(sf.passes(row,dict(filters,min_snr=50,max_snr=60)))
+
     def test_runtime_exemptions_and_population_filters(self):
         for membership in ['known','known_candidate','byw','byw_claim','yadu','azul','smdet']:
             row=dict(moca_oid=1,duplicate=False,cutout_scores=[],cutout_classes=[],**{membership:True})
@@ -90,8 +116,8 @@ class KnownSourceTests(unittest.TestCase):
 
     def test_cache_depth_conversion_and_newest_measurement(self):
         # m=15 and sigma_m=(2.5/ln10)/10 implies S/N=10, hence depth=16.3072.
-        data=[dict(moca_oid=1,system_band_simple='J',magnitude=15,magnitude_unc=(2.5/__import__('math').log(10))/10),
-              dict(moca_oid=1,system_band_simple='j',magnitude=99,magnitude_unc=1)]
+        data=[dict(moca_oid=1,moca_specid=10,system_band_simple='J',magnitude=15,magnitude_unc=(2.5/__import__('math').log(10))/10),
+              dict(moca_oid=1,moca_specid=10,system_band_simple='j',magnitude=99,magnitude_unc=1)]
         result=c.depth_summary(data)
         self.assertEqual(result['j']['n'],1);self.assertAlmostEqual(result['j']['median'],16.30719686)
         self.assertEqual(result['w2']['n'],0)

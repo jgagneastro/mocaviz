@@ -1,6 +1,8 @@
 """Spectral-review changes inside the caller's motion-review transaction."""
 from .lane_utils import AUTOTYPE_USABLE_VETTING_CLASSIFICATIONS
 
+from .. import spectrum_quality as quality
+
 LANES = {
     'spiff': ('pcat_spherex_visual_vetting',55,('spherex_autotype',)),
     'spiffstacker': ('pcat_spherex_spiffstacker_visual_vetting',62,('spiff_stacker_autotype',)),
@@ -13,35 +15,24 @@ TABLE = 'pcat_spherex_spectrum_reviews'
 
 
 def rows_for_object(cur, oid):
-    """Match the exact active spectrum selected by spectrum_data for each panel."""
-    result = {lane: None for lane in LANES}
-    packs = {pack: lane for lane, (_, pack, _) in LANES.items()}
-    import pymysql
-    try:
-        cur.execute(f"""SELECT shown.pack, v.classification, v.sources
-            FROM (SELECT moca_specpackid AS pack, MAX(moca_specid) AS specid
-                  FROM moca_spectra WHERE moca_oid=%s AND ignored=0
-                  AND moca_specpackid IN (55,62,76) GROUP BY moca_specpackid) shown
-            JOIN {TABLE} v ON v.moca_specid=shown.specid AND v.review_kind='quality'""", (oid,))
-    except pymysql.err.ProgrammingError as exc:
-        # Motion review remains available during the spectrum-schema rollout.
-        if exc.args[0] == 1146 and TABLE in str(exc):
-            return result
-        raise
-    for row in cur.fetchall():
-        result[packs[row['pack']]] = {key: row[key] for key in ('classification', 'sources')}
+    """Remember the review seen for each available spectrum, including unreviewed targets."""
+    canonical = quality.has_spectrum_reviews(cur)
+    result = {'by_specid': {}, 'can_save': canonical}
+    for lane, (table, pack, _) in LANES.items():
+        source = quality.reviews_sql(table, pack, canonical, with_sources=True)
+        cur.execute(f"""SELECT s.moca_specid,v.classification,v.sources FROM moca_spectra s
+                    LEFT JOIN {source} v ON v.moca_specid=s.moca_specid
+                    WHERE s.moca_oid=%s AND s.moca_specpackid=%s AND {quality.displayable_sql()}
+                    ORDER BY s.moca_specid DESC""", (oid, pack))
+        for row in cur.fetchall():
+            label = {k:row[k] for k in ('classification','sources')} if row['classification'] else None
+            result['by_specid'][str(row['moca_specid'])] = label
+            result.setdefault(lane, label)
     return result
 
 
 def snapshot(cur, oid, lane, specid, *, require_displayed=False):
     _, pack, methods = LANES[lane]
-    if require_displayed:
-        cur.execute("""SELECT moca_specid FROM moca_spectra WHERE moca_oid=%s
-            AND moca_specpackid=%s AND ignored=0 ORDER BY moca_specid DESC LIMIT 1 FOR UPDATE""",
-            (oid, pack))
-        current = cur.fetchone()
-        if not current or current['moca_specid'] != specid:
-            raise ValueError('Displayed spectrum changed; reload it before saving')
     cur.execute("""SELECT moca_specid,ignored FROM moca_spectra WHERE moca_oid=%s
         AND moca_specpackid=%s AND moca_specid=%s FOR UPDATE""", (oid, pack, specid))
     spectra = list(cur.fetchall())
@@ -50,6 +41,8 @@ def snapshot(cur, oid, lane, specid, *, require_displayed=False):
     cur.execute(f"SELECT classification,sources FROM {TABLE} WHERE moca_specid=%s AND review_kind='quality' FOR UPDATE",
                 (specid,))
     vetting = cur.fetchone()
+    if require_displayed and vetting and vetting['classification'].lower() not in quality.USABLE:
+        raise ValueError('Displayed spectrum changed; reload it before saving')
     slots = ','.join(['%s'] * len(methods))
     cur.execute(f"""SELECT id,ignored FROM data_spectral_types WHERE moca_oid=%s
         AND moca_specid=%s AND calculation_method IN ({slots}) ORDER BY id FOR UPDATE""",
@@ -58,7 +51,7 @@ def snapshot(cur, oid, lane, specid, *, require_displayed=False):
 
 
 def apply(cur, oid, lane, classification, specid, reviewer, before):
-    if not any(r['moca_specid'] == specid and r['ignored'] == 0 for r in before['spectra']):
+    if not any(r['moca_specid'] == specid and (r['ignored'] == 0 or (before['vetting'] or {}).get('classification','').lower() in quality.USABLE) for r in before['spectra']):
         raise ValueError('Displayed spectrum changed; reload it before saving both classifications')
     sources=f'wiseview_web/server.py; specid={specid}; reviewer={str(reviewer or "")[:32]}'
     cur.execute(f"""INSERT INTO {TABLE} (moca_specid,classification,sources) VALUES (%s,%s,%s)

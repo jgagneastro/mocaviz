@@ -47,7 +47,7 @@ def image_bytes(path):
 
 
 def chart_positions(raw):
-    if not isinstance(raw, dict) or set(raw) - set(astrometry.LANES):
+    if not isinstance(raw, dict) or any(not astrometry.position_lane(key) for key in raw):
         raise ValueError('Invalid spectrum positions.')
     result = {}
     for lane, item in raw.items():

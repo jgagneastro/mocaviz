@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const {classify,annotate,groups,definitions,isConfirmed,markerSymbol,diagnosticLane,snrChi2Point}=require('../mocaviz/static/sublime_findings.js');
-const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star'];
+const accepted=['good','good_candidate','contaminated_ucd','peculiar_ucd','good_plus_star','good_reddened'];
 test('every accepted review in any reduction qualifies at the requested motion boundaries',()=>{
   const boundaries=[[-1,'others'],[0,'others'],[0.5,'others'],[1,'still'],[1.5,'still'],[2,'still'],[2.5,'others'],[3,'candidate'],[4,'candidate'],[4.99,'candidate'],[5,'confirmed'],[6,'confirmed']];
   for(const lane of ['spiff','spiffstacker','sublimeaperture'])
@@ -20,7 +20,7 @@ test('any claim indicator takes precedence over the motion classes',()=>{
   }
 });
 test('unreviewed and other spectral labels remain Others, even with clear motion',()=>{
-  for(const quality of [null,undefined,'','bad','good_reddened','weird','late_M','incomplete_but_promising'])
+  for(const quality of [null,undefined,'','bad','weird','late_M','incomplete_but_promising'])
     assert.equal(classify({spiff_quality:quality,motion:6}),'others');
   assert.equal(classify({spiff_quality:'bad',spiffstacker_quality:' CONTAMINATED_UCD ',sublimeaperture_quality:'bad',motion:5}),'confirmed');
   assert.equal(classify({spiff_quality:'good',motion_class:'clear motion'}),'others');

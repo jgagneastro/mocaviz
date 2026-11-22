@@ -25,7 +25,7 @@
       flux: raw.map((r) => r.flux_flambda), error: raw.map((r) => r.flux_flambda_unc),
       flagged: raw.map((r) => Boolean(r.ignored)),
     };
-    const overlays = (fit?.overlays || []).slice(0, Math.max(1, Math.min(10, count)));
+    const overlays = (fit?.overlays || []).slice(0, Math.max(1, (data.stackLanes ? count : Math.min(10, count))));
     const spectra = overlays.length ? overlays.map(o => o.spectrum || spectrum) : [spectrum];
     const goodFlux = spectra.flatMap(v => v.flux.filter((f, i) => finite(f) && !v.flagged[i]));
     const dataBounds = extent(goodFlux.length ? goodFlux : spectrum.flux);
@@ -225,7 +225,10 @@
     return {traces, layout};
   }
   function laneStackFigure(available, revision, width = 800) {
-    const rows = lanes.filter(lane => available[lane.key] && !available[lane.key].missing && !available[lane.key].error);
+    const rows = Object.entries(available).flatMap(([key, item]) => {
+      const lane = lanes.find(l => l.key === key) || lanes.find(l => l.key === item?.lane);
+      return lane && item && !item.missing && !item.error ? [{...lane, key, lane: lane.key, specid: item.specid || item.object?.moca_specid}] : [];
+    });
     const values = item => item.fit?.spectrum || {
       wavelength_um: (item.raw_spectrum || []).map(r => r.wavelength_angstrom / 1e4),
       flux: (item.raw_spectrum || []).map(r => r.flux_flambda),
@@ -235,7 +238,7 @@
     const overlays = rows.map(lane => {
       const item = available[lane.key], spectrum = values(item), best = item.fit?.overlays?.[0];
       return {...best, color: lane.color, spectrum,
-        label: lane.label + " · " + (best?.label || "no valid fit"),
+        label: lane.label + (lane.specid ? " #" + lane.specid : "") + " · " + (best?.label || "no valid fit"),
         grid: best?.grid || "", no_template: !best,
         wavelength_um: best?.wavelength_um || spectrum.wavelength_um,
         flux: best?.flux || spectrum.flux};
@@ -243,8 +246,11 @@
     const data = {stackLanes: true, fit: {overlays, spectrum: rows.length ? values(available[rows[0].key]) :
       {wavelength_um: [], flux: [], error: [], flagged: []},
       matches: rows.map(lane => available[lane.key].fit?.matches?.[0] || {})}};
-    const result = figure(data, revision, width, 3);
-    for (const trace of result.traces) trace.meta.lane = rows[trace.meta.rank]?.key;
+    const result = figure(data, revision, width, rows.length);
+    for (const trace of result.traces) {
+      trace.meta.lane = rows[trace.meta.rank]?.lane;
+      trace.meta.specid = rows[trace.meta.rank]?.specid;
+    }
     result.layout.height = Math.max(400, Math.min(700, width));
     return result;
   }

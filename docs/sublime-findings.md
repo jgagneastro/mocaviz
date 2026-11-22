@@ -39,14 +39,15 @@ This separate Flask entry point shares MOCAviz's SPHEREx fitter and browser rend
   This last cut is visible and can be disabled. It keeps the initial catalog
   load focused on visually vetted findings.
 - In quality requirements, **good** includes `good`, `contaminated_ucd`,
-  `peculiar_ucd`, and `good_plus_star`. **Good/candidate** also includes
+  `peculiar_ucd`, `good_reddened`, and `good_plus_star`. **Good/candidate** also includes
   `good_candidate`. This applies to the global modes and per-lane `good`
   include lists; explicit exclusion lists retain their literal classes.
 - Global spectral-quality modes include **At least one good** and **All available good**
   / **All available good/good candidate**. The all-available modes require at
-  least one active spectrum and an accepted review in every reduction that has
-  an active spectrum. Missing reductions are skipped; available but unreviewed
-  spectra fail. Existing any-good/candidate and reviewed/unreviewed modes remain.
+  least one qualifying spectrum. Rejected extractions are skipped. An active
+  extraction awaiting review fails the all-available modes. Each accepted specID
+  contributes its own spectrum to diagnostics and the flipbook, including siblings
+  in the same reduction. The object census counts each OID once. Existing any-good/candidate and reviewed/unreviewed modes remain.
 - **Recovered known** uses public nonphotometric spectral types, L0+, and
   selects the public-spectroscopic subset. Known-source quality opt-ins remain available. Publication status includes
   public-adopted M0+ types across confirmed duplicate links, as in the reviewer.
@@ -96,16 +97,10 @@ CSV includes measurement IDs, spectrum IDs, distance provenance and all flags.
 
 The flipbook offers 10, 20, 30, 40 or 50 objects per page (default 50),
 decreasing stored selected SPT, with optional omission of objects without
-stored spectra in any lane. The flipbook and inspector show the newest active
-spectrum in each reduction, falling back to the newest ignored spectrum
-when needed and labeling it as ignored. Larger pages render progressively in batches
-of ten, retaining the bounded API requests and cancellation on page changes.
-Its taller cards contain three vertically stacked panels; inspector plots retain their size.
-Inspector: **three plots**, SPIFFStacker / SPIFF / SUBLIME aperture, with
-one best-fit template each. Fits are recomputed with the existing autotype
-options and can differ from stored types used for filtering and ordering.
-Fits use only non-ignored pixels and the shared MOCAdb template grid. A missing
-reduction keeps its own explicit empty panel.
+stored spectra in any lane. The flipbook and inspector show each eligible extraction and its spectrum ID, including multiple spectra from the same reduction.
+Each fit uses non-ignored pixels and the shared MOCAdb template grid. Its best
+template can differ from the stored type used for ordering. Larger pages load
+progressively in batches of ten spectra and cancel pending loads on page changes.
 
 The inspector uses each spectrum’s stored reference coordinates, or the exact
 SPIFF reduction record or local SPIFFStacker manifest when needed. The legend
@@ -181,7 +176,7 @@ Objects with a motion review use these classes in order:
 7. **Others** (gray): every other object admitted by the current filters.
 
 Accepted reviews are exactly `good`, `good_candidate`, `contaminated_ucd`,
-`peculiar_ucd`, and `good_plus_star`. Objects with a motion review but no numeric score fall into Others unless a
+`peculiar_ucd`, `good_reddened`, and `good_plus_star`. Objects with a motion review but no numeric score fall into Others unless a
 publication or claim category applies. Scores between 2 and 3 and missing or
 nonqualifying spectral reviews also fall into Others when no earlier class applies.
 The motion categories use the stored visual-vetting labels. Existing sample filters remain independent of the
@@ -260,11 +255,11 @@ Missing W2 scatter is not fabricated. Expected-count envelopes include density
 errors and available relation scatter, not uncertainty in the sky footprint.
 
 Current synthetic SPHEREx J/W2 errors supply an empirical default depth:
-`m_3sigma = m - 2.5 log10(3 sigma_m ln(10)/2.5)`. Only active objects/spectra,
+`m_3sigma = m - 2.5 log10(3 sigma_m ln(10)/2.5)`. Only active objects,
 nonignored synthetic photometry linked to packs 55/62/76, and finite magnitude
-errors >0 are used. The newest valid measurement per object/band is selected;
-no quality or detection S/N cut is imposed. The cache reports median and
-16th/84th percentiles. On 2026-11-06 these medians were J=18.633 and W2=15.745
+errors >0 are used. The newest valid measurement per good specID and band is selected;
+each accepted spectrum contributes separately. The cache reports median and
+16th/84th percentiles. The earlier object-based calculation on 2026-11-06 gave J=18.633 and W2=15.745
 Vega mag, based on 9271/9270 unique objects. Positive-flux selection, source
 noise and spatially varying coverage can bias these sample-conditioned depths.
 They are not a measured sky selection function. Limits and sky fraction are

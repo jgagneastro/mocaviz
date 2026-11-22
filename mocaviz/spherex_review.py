@@ -26,6 +26,7 @@ import pymysql
 from flask import Blueprint, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+from . import spectrum_quality as quality
 from . import spherex_queue_metrics as metrics
 from . import spherex_morphology as morphology
 from .spherex_cnn_metadata import parse_comments, probability
@@ -274,12 +275,17 @@ def rows(cur, sql, params=()):
     return list(cur.fetchall())
 
 
-def snapshot(cur, lane, oid, *, lock=False, specid=None):
+def snapshot(cur, lane, oid, *, lock=False, specid=None, canonical=True):
     suffix = " FOR UPDATE" if lock else ""
     if specid is None:
         raise ReviewError("A spectrum ID is required for a review.")
-    vet = rows(cur, f"SELECT id, classification, sources, modified_timestamp FROM {SPECTRUM_REVIEWS} "
-               "WHERE moca_specid=%s AND review_kind='quality'" + suffix, (specid,))
+    if canonical or lock:
+        vet = rows(cur, f"SELECT id, classification, sources, modified_timestamp FROM {SPECTRUM_REVIEWS} "
+                   "WHERE moca_specid=%s AND review_kind='quality'" + suffix, (specid,))
+    else:
+        source = quality.reviews_sql(lane['table'], lane['pack'], False)
+        vet = rows(cur, f"SELECT v.id,v.classification,v.sources,v.modified_timestamp FROM {source} q "
+                        f"JOIN {lane['table']} v ON v.moca_oid=q.moca_oid WHERE q.moca_specid=%s", (specid,))
     fields = ", ".join(f"`{key}`" for key in SPT_FIELDS)
     placeholders = ",".join(["%s"] * len(lane["methods"]))
     spt = rows(cur, f"SELECT id, {fields}, modified_timestamp FROM data_spectral_types "
@@ -393,7 +399,7 @@ def analyze(cur, body):
     adopted_spt_column(source)
     meta, spectrum, templates = dataset(cur, lane, oid, specid, adopted_spt_source=source)
     key = spectrum_lane(meta)
-    state = snapshot(cur, LANES[key], meta["moca_oid"], specid=specid) if key else {"vet": [], "spt": [], "spectra": [meta]}
+    state = snapshot(cur, LANES[key], meta["moca_oid"], specid=specid, canonical=body.get("_canonical",True)) if key else {"vet": [], "spt": [], "spectra": [meta]}
     meta.update(stored_spectral_cnn(state, specid))
     meta["sublime3c_morphology"] = morphology.metadata(cur, specid, rows)
     options = fit_options(body)
@@ -403,7 +409,7 @@ def analyze(cur, body):
     except ValueError as exc:
         warning = str(exc)
     return clean({
-        "lane": key, "read_only": key is None, "object": meta, "state": state, "revision": fingerprint(state),
+        "lane": key, "read_only": key is None or not body.get("_canonical",True), "object": meta, "state": state, "revision": fingerprint(state),
         "data_revision": data_fingerprint(meta, spectrum, templates), "fit": fit,
         "raw_spectrum": spectrum, "warning": warning,
     })
@@ -488,6 +494,8 @@ def queue(cur, body, *, count_only=False, management=False):
         return {"items": [meta], "lane": key, "read_only": key is None,
                 "has_more": False, "next_after": None}
     if body.get("review_sample") == "unresolved":
+        if not body.get("_canonical",True):
+            raise ReviewError("The re-vetting queue opens after the spectrum-review migration.",409)
         selected = body.get("lane", "all")
         allowed = {key: lane["pack"] for key, lane in LANES.items() if management or not lane.get("private_rls")}
         if selected != "all" and selected not in allowed:
@@ -606,10 +614,10 @@ def exclude_known_sql(oid):
         )"""
 
 
-def aperture_review_queries(oid=None, labels=()):
+def aperture_review_queries(oid=None, labels=(), *, source=None):
     """Select reviewed OIDs from each table in the SUBLIME aperture lane."""
     sources = (
-        (LANES["sublimeaperture"]["table"], "classification", ""),
+        (source or LANES["sublimeaperture"]["table"], "classification", ""),
         (REVIEW_SAMPLES["sublime4"], "spectral_review", ""),
         ("pcat_moshpit_candidates", "spectral_review", "origin='moshpit/native_dr1'"),
     )
@@ -628,10 +636,10 @@ def aperture_review_queries(oid=None, labels=()):
     return result
 
 
-def aperture_review_clause(oid, classification=None, *, candidate_column=None):
+def aperture_review_clause(oid, classification=None, *, candidate_column=None, source=None):
     """SQL and parameters for a missing review or a matching label in the aperture family."""
     labels = (classification,) if classification else ()
-    queries = aperture_review_queries(oid, labels)
+    queries = aperture_review_queries(oid, labels, source=source)
     operator, joiner = ("EXISTS", " OR ") if labels else ("NOT EXISTS", " AND ")
     checks = [f"{operator} ({query})" for query in queries]
     params = list(labels) * len(queries)
@@ -694,6 +702,11 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
     missing = body.get("missing_vetting", "lane" if pending else "all")
     if not isinstance(missing, str) or missing not in MISSING_VETTING_MODES:
         raise ReviewError("Choose a valid missing spectral-vetting scope.")
+    canonical = body.get("_canonical", True)
+    def review_source(config):
+        return quality.reviews_sql(config['table'], config['pack'], canonical)
+    review_join = (f"LEFT JOIN {SPECTRUM_REVIEWS} v ON v.moca_specid=s.moca_specid AND v.review_kind='quality'"
+                   if canonical else f"LEFT JOIN {review_source(lane)} v ON v.moca_specid=s.moca_specid")
     active_only = missing != "all"
     conditions = ["mo.ignored=0"]
     params = [lane["pack"]]
@@ -748,12 +761,14 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
               AND candidate.photometric_estimate=1 AND candidate.ignored=0
               AND candidate.spectral_type_number>=7
         )""")
-    if active_only:
-        conditions.append("s.ignored=0")
+    if not classification:
+        conditions.append(quality.displayable_sql())
+    elif active_only:
+        conditions.append("(s.ignored=0 OR LOWER(v.classification) IN ("+quality.labels_sql(quality.USABLE)+"))")
     if missing in {"lane", "viable_elsewhere"}:
         conditions.append("v.moca_specid IS NULL")
     elif missing != "all":
-        absent = {key: f"NOT EXISTS (SELECT 1 FROM {LANES[key]['table']} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
+        absent = {key: f"NOT EXISTS (SELECT 1 FROM {review_source(LANES[key])} missing_{key} WHERE missing_{key}.moca_oid=s.moca_oid)"
                   for key in ("spiff", "spiffstacker")}
         if key in absent:
             absent[key] = "v.moca_specid IS NULL"
@@ -763,18 +778,18 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
             operator = "OR" if missing == "either" else "AND"
             clauses = [absent['spiff'], absent['spiffstacker']]
             if missing == "both":
-                clauses.append("v.moca_specid IS NULL" if key == "sublimeaperture" else aperture_review_clause("s.moca_oid")[0])
+                clauses.append("v.moca_specid IS NULL" if key == "sublimeaperture" else aperture_review_clause("s.moca_oid",source=review_source(LANES["sublimeaperture"])+" aperture")[0])
             conditions.append("(" + (" " + operator + " ").join(clauses) + ")")
     spectrum_source, order_oid = "moca_spectra s", "s.moca_oid"
     source_params = []
     if missing == "viable_elsewhere":
         placeholders = ",".join(["%s"] * len(VIABLE_OTHER_LANE))
         matches = [
-            f"SELECT moca_oid FROM {other['table']} WHERE classification IN ({placeholders})"
+            f"SELECT q.moca_oid FROM {review_source(other)} q WHERE q.classification IN ({placeholders})"
             for other_key, other in LANES.items() if other_key not in (key, "sublimeaperture")
         ]
         if key != "sublimeaperture":
-            matches.extend(aperture_review_queries(labels=VIABLE_OTHER_LANE))
+            matches.extend(aperture_review_queries(labels=VIABLE_OTHER_LANE,source=review_source(LANES["sublimeaperture"])+" aperture"))
         # Start with viable reviews to avoid scanning spectra for unrelated objects.
         candidates = " UNION ".join(matches)
         spectrum_source = f"({candidates}) viable JOIN moca_spectra s ON s.moca_oid=viable.moca_oid"
@@ -895,7 +910,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
         conditions.append(exclude_known_sql("s.moca_oid"))
     selection = f"""
         FROM {spectrum_source} JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-        LEFT JOIN {SPECTRUM_REVIEWS} v ON v.moca_specid=s.moca_specid AND v.review_kind='quality'
+        {review_join}
         {adopted_join}
         WHERE s.moca_specpackid=%s AND {' AND '.join(conditions)}
     """
@@ -926,7 +941,7 @@ def queue_in_lane(cur, body, key, lane, *, count_only=False, mixed=False):
             ids = [row['moca_specid'] for row in records]
             details = rows(cur, f"""SELECT s.moca_oid,s.moca_specid,mo.designation,s.median_snr_per_pix,v.classification
                 FROM moca_spectra s JOIN moca_objects mo ON mo.moca_oid=s.moca_oid
-                LEFT JOIN {SPECTRUM_REVIEWS} v ON v.moca_specid=s.moca_specid AND v.review_kind='quality'
+                {review_join}
                 WHERE s.moca_specid IN ({','.join(['%s']*len(ids))})""", tuple(ids))
             by_id = {row['moca_specid']:row for row in details}
             for row in records:row.update(by_id[row['moca_specid']])
@@ -1353,8 +1368,10 @@ def api(operation):
                 elif native_input and operation == "preview":
                     result = moshpit.prepare(cur, auth, body)
                 elif operation in {"queue", "queue-count"}:
+                    body["_canonical"] = quality.has_spectrum_reviews(cur)
                     result = queue(cur, body, count_only=operation == "queue-count", management=auth["user"] == "management")
                 elif operation == "analyze":
+                    body["_canonical"] = quality.has_spectrum_reviews(cur)
                     result = analyze(cur, body)
                 elif operation == "motion-context":
                     result = motion.context(cur, body)

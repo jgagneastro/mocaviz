@@ -182,6 +182,14 @@ test("WiseView stacks each lane's own data and single best template in fixed col
   assert.deepEqual(available,before);
 });
 
+test("Reviewed siblings each retain their spectrum ID and reduction color", () => {
+  const {laneStackFigure}=require('../mocaviz/static/spherex_review_plot.js');
+  const spectra=Object.fromEntries(Array.from({length:12},(_,i)=>['spiff-'+i,{...fixture(),lane:'spiff',specid:100+i}]));
+  const plot=laneStackFigure(spectra,'siblings');
+  assert.deepEqual(byRole(plot,'data').map(t=>t.meta.specid),Array.from({length:12},(_,i)=>100+i));
+  assert(byRole(plot,'template-curve').every(t=>t.meta.lane==='spiff'));
+});
+
 test("unfitted lanes retain their own raw data and missing lanes add no fake rows", () => {
   const {laneStackFigure,comparisonFigure}=require('../mocaviz/static/spherex_review_plot.js');
   const raw={raw_spectrum:[{wavelength_angstrom:15000,flux_flambda:2,flux_flambda_unc:.1,ignored:0}]};

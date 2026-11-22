@@ -18,6 +18,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 import pymysql
 from pymysql.cursors import DictCursor
 
+from . import spectrum_quality as quality
 from .mosaic_review_fit import (
     FIT_VERSION, band_key, calibration_key, calibration_metadata, canonical_mission, fit_target, input_choices,
     parallax_motion,
@@ -130,15 +131,15 @@ def review_table_ready(cursor):
         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s""", (TABLE,)))
 
 
-def sample_sql(sample):
+def sample_sql(sample, *, canonical=True):
     if sample not in SAMPLES:
         raise ReviewError("Choose a listed review sample.")
     if sample == "public_l0":
         vetted_lanes = " OR ".join(
-            f"(spectrum.moca_specpackid={pack} AND EXISTS (SELECT 1 FROM {table} v"
-            " WHERE v.moca_oid=s.moca_oid AND v.classification='good'))"
+            f"EXISTS (SELECT 1 FROM {quality.reviews_sql(table,pack,canonical)} v "
+            f"WHERE v.moca_specid=spectrum.moca_specid AND LOWER(v.classification) IN ({quality.labels_sql(quality.GOOD)}))"
             for pack, table in LANES.items())
-        source = f"""SELECT s.moca_oid FROM data_spectral_types s
+        source = f"""SELECT DISTINCT s.moca_oid FROM data_spectral_types s
             JOIN moca_objects o ON o.moca_oid=s.moca_oid AND o.ignored=0
             LEFT JOIN moca_spectra spectrum ON spectrum.moca_specid=s.moca_specid AND spectrum.moca_oid=s.moca_oid
             WHERE s.public_adopted=1 AND s.is_public=1 AND s.ignored=0 AND s.spectral_type_number>=10
@@ -148,10 +149,7 @@ def sample_sql(sample):
                  AND COALESCE(spectrum.moca_specpackid,0) NOT IN (55,62,76)
                  AND LOWER(COALESCE(s.origin,'')) NOT REGEXP 'spherex|spiff|sublimeaperture'
                  AND LOWER(COALESCE(s.calculation_method,'')) NOT REGEXP 'spherex|spiff|sublimeaperture')
-                OR (spectrum.ignored=0 AND ({vetted_lanes})
-                    AND NOT EXISTS (SELECT 1 FROM moca_spectra newer WHERE newer.moca_oid=s.moca_oid
-                     AND newer.moca_specpackid=spectrum.moca_specpackid AND newer.ignored=0
-                     AND newer.moca_specid>spectrum.moca_specid))
+                OR ({vetted_lanes})
               )"""
     else:
         source = f"""SELECT DISTINCT p.moca_oid FROM {SAMPLES[sample]} p
@@ -167,7 +165,7 @@ def sample_oids(cursor, sample):
         cached = _SAMPLE_CACHE.get(sample)
     if cached and now - cached[0] < SAMPLE_TTL:
         return cached[1]
-    oids = [row["moca_oid"] for row in query(cursor, sample_sql(sample))]
+    oids = [row["moca_oid"] for row in query(cursor, sample_sql(sample,canonical=sample!="public_l0" or quality.has_spectrum_reviews(cursor)))]
     with _CACHE_LOCK:
         _SAMPLE_CACHE[sample] = now, oids
     return oids
