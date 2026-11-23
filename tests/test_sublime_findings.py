@@ -74,7 +74,7 @@ class FindingsTests(unittest.TestCase):
 
     def test_default_sample_and_catalog_memberships(self):
         f=sf.parse_filters({})
-        self.assertEqual(f['sources'],['other','redmovers','sublime1','sublime2','sublime3c'])
+        self.assertEqual(f['sources'],['moshpit','other','redmovers','sublime1','sublime2','sublime3c','sublime4'])
         self.assertEqual({key:f[key] for key in sf.TRI},{key:'either' for key in sf.TRI})
 
     def test_new_quality_modes_accept_mock_requests(self):
@@ -284,6 +284,8 @@ class FindingsTests(unittest.TestCase):
                 CREATE TABLE pcat_sublime_candidates_v2(id INT, moca_oid INT, detection_snr REAL, autotype_spectral_type_number REAL,
                     visual_nn_good_probability REAL, visual_nn_classification TEXT, autotype_reduced_chi2 REAL);
                 CREATE TABLE pcat_sublime_candidates_v3c(id INT,moca_oid INT,ra_deg REAL,dec_deg REAL,autotype_spectral_type_number REAL,status TEXT,cnn_acceptance_probability REAL,median_raw_snr REAL);
+                CREATE TABLE pcat_sublime_candidates_v4(moca_oid INT);
+                CREATE TABLE pcat_moshpit_candidates(moca_oid INT);
                 CREATE TABLE pcat_catwise2020_red_movers(moca_oid INT);
                 CREATE TABLE pcat_duplicated_vetting(moca_oid INT, potential_duplicated_moca_oid INT, classification TEXT);
             ''')
@@ -324,6 +326,12 @@ class FindingsTests(unittest.TestCase):
             self.assertEqual(oids(quality_any='any', spt_source='adopted', min_spt=10), [9])
             self.assertEqual(oids(min_spt=10, max_spt=16), [9])
             self.assertEqual(oids(sources=['other', 'sublime1']), [1, 8, 9])
+            db.executemany('INSERT INTO pcat_sublime_candidates_v4 VALUES (?)', [(1,), (1,), (8,), (None,)])
+            db.executemany('INSERT INTO pcat_moshpit_candidates VALUES (?)', [(8,), (9,), (None,)])
+            self.assertEqual(oids(sources=['sublime4']), [1, 8])
+            self.assertEqual(oids(sources=['moshpit']), [8, 9])
+            self.assertEqual(oids(sources=['sublime4','moshpit']), [1, 8, 9])
+            self.assertEqual(oids(sources=['other']), [])
             # A missing SUBLIME2 detection must not be replaced by SUBLIME1 S/N.
             db.execute('INSERT INTO pcat_sublime_candidates VALUES (100,1,88)')
             db.execute("INSERT INTO pcat_sublime_candidates_v2 VALUES (100,1,NULL,14,.9,'good',1)")

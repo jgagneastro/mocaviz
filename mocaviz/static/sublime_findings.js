@@ -117,7 +117,7 @@ if(typeof document!=='undefined') (() => {
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const finite=Number.isFinite, fmt=(v,n=2)=>v==null||!finite(Number(v))?'—':Number(v).toFixed(n), num=v=>Number(v).toLocaleString();
 const laneNames={spiffstacker:'SPIFFStacker',spiff:'SPIFF',sublimeaperture:'SUBLIME aperture'};
-const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',sublime3c:'SUBLIME3C',redmovers:'CatWISE red movers',other:'Other unpublished'};
+const sourceNames={sublime1:'SUBLIME1',sublime2:'SUBLIME2',sublime3c:'SUBLIME3C',sublime4:'SUBLIME4',moshpit:'MOSHPIT',redmovers:'CatWISE red movers',other:'Other unpublished'};
 const spt=v=>!finite(Number(v))||v==null?'—':(v<0?'K'+fmt(10+Number(v),1):v<10?'M'+fmt(v,1):v<20?'L'+fmt(v-10,1):v<30?'T'+fmt(v-20,1):'Y'+fmt(v-30,1)).replace('.0','');
 const ticks=Array.from({length:9},(_,i)=>i*5-5),ticktext=ticks.map(spt);
 const classDefinitions=FindingClasses.definitions;
