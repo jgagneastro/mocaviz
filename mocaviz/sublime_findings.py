@@ -29,7 +29,8 @@ from . import sublime_findings_completeness as completeness
 STATIC = Path(__file__).resolve().parent / 'static'
 findings = Blueprint('sublime_findings', __name__)
 SOURCES = {'sublime1': 'pcat_sublime_candidates', 'sublime2': 'pcat_sublime_candidates_v2',
-           'sublime3c': 'pcat_sublime_candidates_v3c', 'redmovers': 'pcat_catwise2020_red_movers'}
+           'sublime3c': 'pcat_sublime_candidates_v3c', 'sublime4': 'pcat_sublime_candidates_v4',
+           'moshpit': 'pcat_moshpit_candidates', 'redmovers': 'pcat_catwise2020_red_movers'}
 CLAIM_TABLES = ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw',
                 'pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026')
 CLAIM_TOKENS = ('yadu', 'tom', 'bickle', 'sarah', 'azul', 'eastonh')
@@ -268,7 +269,7 @@ def selected_sql(f, candidate_ids=None, *, counts_only=False):
         origin, sample_join = 'moca_objects mo', ''
     else:
         unions = [
-            'SELECT moca_oid, 0 AS is_other FROM `'+table+'` WHERE moca_oid IS NOT NULL'
+            'SELECT DISTINCT moca_oid, 0 AS is_other FROM `'+table+'` WHERE moca_oid IS NOT NULL'
             + (' AND '+pass_prefix if source=='sublime3c' and pass_only else '')
             for source, table in SOURCES.items() if source in f['sources']
         ]
@@ -435,13 +436,14 @@ def enrich(cur, rows, *, count_filters=None):
         ids = tuple(r['moca_oid'] for r in chunk)
         ph = ','.join(['%s']*len(ids))
         for r in chunk:
-            r.update(redmovers=False, byw=False, byw_claim=False, yadu=False, azul=False,
+            r.update(sublime4=False, moshpit=False, redmovers=False, byw=False, byw_claim=False, yadu=False, azul=False,
                      smdet=False, duplicate=False, known=False, known_candidate=False, cutout_scores=[], cutout_classes=[],
                      cutout_count=0, motion=None, motion_class=None, pmtot_masyr=None)
-        tables = {'redmovers':'pcat_catwise2020_red_movers','byw':'pcat_byw_mar9_2026',
+        tables = {'byw':'pcat_byw_mar9_2026',
                   'yadu':'pcat_kirkpatrick_yadu_2026_claim','azul':'pcat_azul_byw_sample_jul16_2026'}
-        if not full:
-            del tables['redmovers']
+        if full:
+            for source in ('sublime4', 'moshpit', 'redmovers'):
+                tables[source] = SOURCES[source]
         for field, table in tables.items():
             for r in fetch(cur, 'SELECT DISTINCT moca_oid FROM `' + table + '` WHERE moca_oid IN (' + ph + ')', ids):
                 by_oid[r['moca_oid']][field] = True
@@ -770,7 +772,8 @@ def demo_rows(f):
     rows=[]
     for i in range(180):
         r={'moca_oid':1001+i,'designation':'Demo J%04d'%i,'ra':(i*137.508)%360,'dec':-78+(i*19)%156,
-           'spt':10+(i%24)*.9,'sublime1':i%3==0,'sublime2':i%3==1,'sublime3c':i%4==0,'redmovers':i%3==2,'other':False,
+           'spt':10+(i%24)*.9,'sublime1':i%5==0,'sublime2':i%5==1,'sublime3c':i%4==0,
+           'redmovers':i%5==2,'sublime4':i%5==3,'moshpit':i%5==4 or i%23==0,'other':False,
            'detection_snr':7+i%30,'cnn':.7+(i%29)/100,'cnn_class':'good',
            'best_spt_source':'spiffstacker','motion':3+i%4,'motion_class':'clear motion, red detection',
            'cutout_scores':[3,4],'cutout_classes':['Good centered on PSF but crowded','Good centered on PSF and isolated'],
