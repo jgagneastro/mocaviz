@@ -2437,8 +2437,12 @@ def fetch_mocadb_nearby_100arcsec_diagnostics(
     return counts
 
 
-def fetch_review_objects(oids: Iterable[int], *, table: str) -> list[ReviewObject]:
+def fetch_review_objects(
+    oids: Iterable[int], *, table: str, allow_object_coordinates: bool = False
+) -> list[ReviewObject]:
     table_name = _validate_table_name(table)
+    ra = "COALESCE(de.ra, mo.ra)" if allow_object_coordinates else "de.ra"
+    dec = "COALESCE(de.`dec`, mo.`dec`)" if allow_object_coordinates else "de.`dec`"
     ordered_oids = [int(oid) for oid in oids]
     if not ordered_oids:
         return []
@@ -2508,8 +2512,8 @@ def fetch_review_objects(oids: Iterable[int], *, table: str) -> list[ReviewObjec
                             THEN w1.magnitude - w2.magnitude
                             ELSE NULL
                         END AS wise_w1_w2,
-                        de.ra,
-                        de.`dec`,
+                        {ra} AS ra,
+                        {dec} AS `dec`,
                         vet.moca_oid AS vetting_moca_oid,
                         vet.classification,
                         vet.classification_integer,

@@ -223,7 +223,8 @@ def survey_preview(survey,ra,dec,fov):
 @lru_cache(maxsize=1)
 def wiseview_html():
     html = remote_text('http://byw.tools/wiseview-v2', limit=1_000_000)
-    script = remote_text('http://byw.tools/static/flash3.js', limit=3_000_000)
+    from .local_unwise import fix_online_cutout_script
+    script = fix_online_cutout_script(remote_text('http://byw.tools/static/flash3.js', limit=3_000_000))
     bridge = (Path(__file__).parent/'static'/'sublime_wiseview_wcs.js').read_text()
     # The frame retains its opaque origin. Inline the fixed scripts so browsers
     # that block loopback subresources in opaque frames can initialize WiseView.

@@ -4,6 +4,7 @@
   const MAX_TARGETS = 50, MAX_BYTES = 1_000_000_000, FRAME_OVERHEAD = 16 * 1024 ** 2;
   const LOAD_TIMEOUT = 30000;
   const key = object => object.candidate_id != null ? 'moshpit:' + object.candidate_id : object.moca_oid + ':' + object.moca_specid;
+  const previewKey = object => object?.moca_oid ?? (object?.candidate_id ? 'moshpit-' + object.candidate_id : null);
   const hasCoordinates = object => Number.isFinite(object?.ra) && Number.isFinite(object?.dec);
   window.SpherexMotionReview = {create({api, writable, base, demo, preload = false}) {
     const $ = id => document.getElementById(id);
@@ -11,6 +12,8 @@
     let undoState = null, loadTimer = null, frameSerial = 0, active = null;
     let upcoming = [], resolveObject, resolving = null, preloading = null, budgetReached = false;
     const cache = new Map(), skipped = new Set();
+    const local = ['localhost', '127.0.0.1'].includes(new URL(base).hostname) ? window.LocalUnwisePreview?.create(base) : null;
+    let useLocal = false, forceOnline = false, localImage = null, imageRequest = 0;
     const panel = $('motion-panel'), template = $('motion-frame');
     const epochs = window.MoshpitEpochCharts?.create();
     const classification = $('motion-classification'), scoreSix = $('motion-score-six');
@@ -42,6 +45,12 @@
       ++generation;
       epochs?.clear();
       clearTimeout(loadTimer);
+      ++imageRequest;
+      localImage?.remove();
+      localImage = null; useLocal = false; forceOnline = false;
+      if (!keep.length) local?.setUpcoming(null, []);
+      const button = $('motion-use-wiseview');
+      if (button) button.hidden = true;
       discard(active);
       const keys = new Set(keep.map(key));
       // An uncached jump owns the next request. A cached jump can keep its
@@ -80,7 +89,31 @@
     function resume(entry) {
       entry.node.contentWindow?.postMessage({kind:'spherex-motion-activate', frame:entry.token}, '*');
     }
-    function loadFrame(attempt = 0, refresh = false) {
+    async function loadFrame(attempt = 0, refresh = false) {
+      const request = ++imageRequest;
+      clearTimeout(loadTimer);
+      localImage?.remove();
+      localImage = null;
+      if (useLocal && !forceOnline && current && $('motion-autoload').checked) {
+        discard(active);
+        $('motion-status').textContent = 'Loading local unWISE animation…';
+        const object = current.object;
+        let image = await local.forDisplay(previewKey(object), refresh);
+        if (!image && object.moca_oid && object.candidate_id && request === imageRequest)
+          image = await local.forDisplay('moshpit-' + object.candidate_id, refresh);
+        if (request !== imageRequest || closed) return;
+        if (image) {
+          localImage = image;
+          $('wiseview-cutout').append(image);
+          $('motion-use-wiseview').hidden = false;
+          $('motion-use-wiseview').textContent = 'Use WiseView [Alt+V]';
+          $('motion-status').textContent = 'Local unWISE animation · 50″ field · archive coadds';
+          return;
+        }
+      }
+      loadOnlineFrame(attempt, refresh);
+    }
+    function loadOnlineFrame(attempt, refresh) {
       clearTimeout(loadTimer);
       discard(active);
       if (!current || closed || !$('motion-autoload').checked) {
@@ -127,7 +160,7 @@
       return [...cache.values()].reduce((bytes, entry) => bytes + entry.bytes, 0);
     }
     async function preloadNext() {
-      if (!preload || closed || !active?.ready || preloading || resolving || budgetReached ||
+      if (!preload || useLocal || closed || !active?.ready || preloading || resolving || budgetReached ||
           cache.size >= MAX_TARGETS || cachedBytes() + FRAME_OVERHEAD > MAX_BYTES) return;
       const candidate = upcoming.find(item => {
         const id = key(item);
@@ -165,6 +198,16 @@
       if (closed || !entry || event.origin !== 'null') return;
       if (message.kind === 'spherex-motion-score-six') {
         if (entry === active) scoreSix.click();
+        return;
+      }
+      if (message.kind === 'wiseview-cutout-failed') {
+        clearTimeout(entry.watchdog);
+        if (entry === active) $('motion-status').textContent = 'WiseView could not load this animation. Use Reload motion & cutout [Alt+W] to retry.';
+        else {
+          discard(entry);
+          skipped.add(entry.key);
+          void preloadNext();
+        }
         return;
       }
       if (message.kind !== 'spherex-motion-cutout' || message.state !== 'ready' || entry.ready) return;
@@ -215,6 +258,21 @@
       }
       update();
     }
+    async function preloadLocal() {
+      if (!useLocal || !$('motion-autoload').checked) return;
+      const gen = generation, id = previewKey(current.object);
+      const ids = upcoming.map(previewKey).filter(Boolean).slice(0, 50);
+      try {
+        const response = await fetch(new URL('local-unwise/available', base), {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (gen === generation && $('motion-autoload').checked) local.setUpcoming(id, data.ids);
+      } catch {
+        // The current target still uses the normal online fallback.
+      }
+    }
     function show(data, next = [], lookup) {
       if (closed || same(data.object)) return;
       if (current) clear([data.object, ...next]);
@@ -223,7 +281,11 @@
       $('motion-target').textContent = (data.object.designation || 'Object') + (data.object.moca_oid == null ? ' · awaiting OID' : ' · OID ' + data.object.moca_oid);
       if (data.object.moca_oid == null) $('motion-stored').textContent = 'An OID is required to save an object-level motion score.';
       else if (data.read_only) $('motion-stored').textContent = 'Read-only spectrum; motion submissions are disabled.';
-      if (cache.has(key(data.object))) loadFrame();
+      useLocal = !!local && !demo && previewKey(data.object) != null;
+      if (useLocal && $('motion-autoload').checked) {
+        void loadFrame();
+        void preloadLocal();
+      } else if (cache.has(key(data.object))) loadFrame();
       else scheduleFrame();
       void refreshContext(); update();
     }
@@ -265,12 +327,22 @@
     };
     $('motion-save').onclick = save; $('motion-undo').onclick = undo;
     $('motion-reload').onclick = () => { if (current) epochs?.show(current); loadFrame(0, true); void refreshContext(); };
+    const wiseviewButton = $('motion-use-wiseview');
+    if (wiseviewButton) wiseviewButton.onclick = () => {
+      if (!current || !useLocal || !$('motion-autoload').checked) return;
+      forceOnline = !forceOnline;
+      wiseviewButton.textContent = forceOnline ? 'Use local animation [Alt+V]' : 'Use WiseView [Alt+V]';
+      void loadFrame();
+    };
     $('motion-classification').onchange = $('motion-replace').onchange = update;
     $('motion-autoload').onchange = () => {
       if (!$('motion-autoload').checked) {
         for (const entry of cache.values()) discard(entry);
         resolving = null; skipped.clear(); budgetReached = false;
       }
+      if (useLocal && $('motion-autoload').checked) void preloadLocal();
+      else if (useLocal) local.setUpcoming(null, []);
+      if (wiseviewButton && !$('motion-autoload').checked) wiseviewButton.hidden = true;
       loadFrame();
     };
     document.addEventListener('keydown', event => {
@@ -283,8 +355,9 @@
         }
         return;
       }
-      const id = {KeyM:'motion-save', KeyU:'motion-undo', KeyW:'motion-reload'}[event.code];
-      if (id) {event.preventDefault(); $(id).click();}
+      const id = {KeyM:'motion-save', KeyU:'motion-undo', KeyW:'motion-reload', KeyV:'motion-use-wiseview'}[event.code];
+      const button = id && $(id);
+      if (button && !button.hidden) {event.preventDefault(); button.click();}
     });
     return {show, clear, update, pending:() => busy, close() {closed = true; undoState = null; clear();}};
   }};

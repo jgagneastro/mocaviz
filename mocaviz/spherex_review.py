@@ -1294,6 +1294,41 @@ def page():
     return send_from_directory(STATIC, "spherex_review.html")
 
 
+def local_unwise_request():
+    if request.remote_addr not in {"127.0.0.1", "::1"} or request.host.split(":")[0] not in {"127.0.0.1", "localhost"}:
+        return False
+    return not any(name.lower() == "forwarded" or name.lower().startswith(("x-forwarded-", "tailscale-"))
+                   for name in request.headers.keys())
+
+
+@review.post("/local-unwise/available")
+def available_unwise_gifs():
+    from .local_unwise import cached_preview
+
+    if not local_unwise_request():
+        return Response(status=404)
+    if request.content_length is None or request.content_length > 4096:
+        return Response(status=400)
+    body = request.get_json(silent=True)
+    ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or len(ids) > 50:
+        return Response(status=400)
+    return jsonify(ids=[key for key in ids if isinstance(key, (int, str)) and cached_preview(key)])
+
+
+@review.get("/local-unwise/<preview_id>.gif")
+def local_unwise_gif(preview_id):
+    from .local_unwise import cached_preview
+
+    if not local_unwise_request():
+        return Response(status=404)
+    preview = cached_preview(preview_id)
+    if preview is None:
+        return Response(status=404, headers={"Cache-Control": "no-store"})
+    path, _ = preview
+    return send_from_directory(path.parent, path.name, mimetype="image/gif", max_age=300)
+
+
 @review.get("/spherex-review-wiseview")
 def motion_frame():
     from . import spherex_motion as motion

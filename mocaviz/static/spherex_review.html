@@ -26,10 +26,11 @@
   <script defer src="plotly.min.js"></script>
   <script defer src="static/spherex_review_plot.js?v=20261120-moshpit-channels"></script>
   <script defer src="static/review_presets.js?v=4"></script>
-  <link rel="stylesheet" href="static/spherex_motion.css?v=20261121-epoch-charts">
+  <link rel="stylesheet" href="static/spherex_motion.css?v=20261124-local-unwise">
   <script defer src="static/spherex_moshpit_epochs.js?v=2"></script>
-  <script defer src="static/spherex_motion.js?v=20261121-epoch-charts"></script>
-  <script defer src="static/spherex_review.js?v=20261120-point-coverage"></script>
+  <script defer src="static/local_unwise_preview.js?v=20261124-archive"></script>
+  <script defer src="static/spherex_motion.js?v=20261124-archive-unwise"></script>
+  <script defer src="static/spherex_review.js?v=20261124-archive-unwise"></script>
 </head>
 <body>
   <header>
@@ -195,10 +196,11 @@
             <button id="motion-score-six" disabled>Select motion score 6 [*]</button>
             <button id="motion-save" disabled>Save motion [Alt+M]</button>
             <button id="motion-undo" disabled>Undo motion [Alt+U]</button>
+            <button id="motion-use-wiseview" type="button" hidden>Use WiseView [Alt+V]</button>
             <button id="motion-reload">Reload motion &amp; cutout [Alt+W]</button>
           </div>
           <p id="motion-last-action" role="status" aria-live="polite"></p>
-          <label class="motion-check"><input id="motion-autoload" type="checkbox" checked>Automatically load WiseView for the displayed spectrum</label>
+          <label class="motion-check"><input id="motion-autoload" type="checkbox" checked>Automatically load the motion animation for the displayed spectrum</label>
           <p id="motion-status" role="status"></p>
           <div id="motion-images" class="motion-images">
             <div id="wiseview-cutout" class="wiseview-cutout">
