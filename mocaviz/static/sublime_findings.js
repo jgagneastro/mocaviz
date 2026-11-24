@@ -181,8 +181,18 @@ function startRefresh(){
 }
 function purgePlots(root){for(const el of root.querySelectorAll('.js-plotly-plot'))Plotly.purge(el);}
 function setCountsButton(){
- $('refresh-counts').disabled=!countsAvailable||$('refresh').disabled||Boolean(countsController);
- $('refresh-counts').setAttribute('aria-busy',String(Boolean(countsController)));
+ const busy=Boolean(countsController);
+ $('refresh-counts').disabled=!countsAvailable||$('refresh').disabled||busy;
+ $('refresh-counts').setAttribute('aria-busy',String(busy));
+ $('refresh-counts-label').textContent=busy?'Refreshing counts…':'Refresh counts';
+}
+function showCountsState(state,title,detail){
+ const panel=$('counts-status');
+ panel.hidden=false;
+ panel.dataset.state=state;
+ $('counts-status-icon').textContent=state==='loading'?'':state==='done'?'✓':'!';
+ $('counts-status-title').textContent=title;
+ $('counts-status-detail').textContent=detail;
 }
 function renderCounts(classes,known){
  const totals=new Map();
@@ -194,9 +204,10 @@ function renderCounts(classes,known){
 }
 async function refreshCounts(){
  if($('refresh-counts').disabled)return;
- const controller=new AbortController(),generation=catalogGeneration,status=$('counts-status');
+ const controller=new AbortController(),generation=catalogGeneration;
  countsController=controller;setCountsButton();
- status.hidden=false;status.textContent='Refreshing counts…';
+ $('refresh-state').hidden=true;
+ showCountsState('loading','Refreshing counts…','Recounting objects and plot legends using the last applied filters.');
  try{
   const result=await api('counts',{filters},controller.signal);
   if(countsController!==controller||catalogGeneration!==generation)return;
@@ -218,9 +229,9 @@ async function refreshCounts(){
    }
    if(indices.length)void Plotly.restyle(chart,{name:names},indices);
   }
-  status.textContent=`Counts updated in ${fmt(result.elapsed,1)} s. Plot legends count targets from the loaded charts using current classifications.`;
+  showCountsState('done','Counts updated',`Finished in ${fmt(result.elapsed,1)} s. Plot legends use the loaded chart targets and their current classifications.`);
  }catch(e){
-  if(e.name!=='AbortError'&&countsController===controller)status.textContent='Could not refresh counts. '+e.message;
+  if(e.name!=='AbortError'&&countsController===controller)showCountsState('error','Could not refresh counts',e.message);
  }finally{
   if(countsController===controller){countsController=null;setCountsButton();}
  }

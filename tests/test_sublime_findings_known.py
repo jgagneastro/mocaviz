@@ -21,6 +21,9 @@ class KnownSourceTests(unittest.TestCase):
         CREATE TABLE moca_spectra(moca_specid INT,moca_oid INT,moca_specpackid INT,ignored INT);
         CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INTEGER PRIMARY KEY,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality');
         ''')
+        self.db.execute('ALTER TABLE data_spectral_types ADD COLUMN origin TEXT')
+        self.db.execute('ALTER TABLE data_spectral_types ADD COLUMN created_timestamp TEXT')
+        self.db.execute('ALTER TABLE moca_spectra ADD COLUMN created_timestamp TEXT')
         for table in ('pcat_byw_mar9_2026','pcat_schneider_claim_list_byw','pcat_kirkpatrick_yadu_2026_claim','pcat_azul_byw_sample_jul16_2026'):
             self.db.execute('CREATE TABLE '+table+'(moca_oid INT)')
         for cfg in sf.LANE_CONFIG.values():self.db.execute('CREATE TABLE '+cfg['table']+'(moca_oid INT PRIMARY KEY,classification TEXT)')
@@ -30,7 +33,7 @@ class KnownSourceTests(unittest.TestCase):
             self.db.execute('INSERT INTO pcat_sublime_candidates_v2 VALUES (?,?,NULL,NULL,NULL,NULL,NULL)',(oid,oid))
         # 1: published spectroscopy, 2: photometric known, 3: claimed, 4: new, 5: ignored published type.
         for oid,public,photo,ignored in [(1,1,0,0),(2,1,1,0),(3,0,0,0),(4,0,0,0),(5,1,0,1)]:
-            self.db.execute('INSERT INTO data_spectral_types VALUES (NULL,?,25,1,?,?,?,NULL)',(oid,public,ignored,photo))
+            self.db.execute('INSERT INTO data_spectral_types (id,moca_oid,spectral_type_number,adopted,public_adopted,ignored,photometric_estimate,calculation_method) VALUES (NULL,?,25,1,?,?,?,NULL)',(oid,public,ignored,photo))
         self.db.execute('INSERT INTO pcat_schneider_claim_list_byw VALUES (3)')
 
     def select(self,**kwargs):
@@ -61,7 +64,7 @@ class KnownSourceTests(unittest.TestCase):
             with self.subTest(cuts=cuts):self.assertEqual(self.select(**cuts),[])
 
     def test_multiple_published_rows_and_catalogs_do_not_multiply_objects(self):
-        self.db.execute('INSERT INTO data_spectral_types VALUES (NULL,1,26,0,1,0,0,NULL)')
+        self.db.execute('INSERT INTO data_spectral_types (id,moca_oid,spectral_type_number,adopted,public_adopted,ignored,photometric_estimate,calculation_method) VALUES (NULL,1,26,0,1,0,0,NULL)')
         self.db.execute('INSERT INTO pcat_sublime_candidates_v2 VALUES (99,1,NULL,NULL,NULL,NULL,NULL)')
         rows=self.select();self.assertEqual([r['moca_oid'] for r in rows],[1,2,3])
         self.assertEqual(rows[0]['published_spt'],26)
@@ -71,10 +74,10 @@ class KnownSourceTests(unittest.TestCase):
         self.db.execute('ALTER TABLE pcat_byw_mar9_2026 ADD COLUMN disc TEXT')
         self.db.execute('ALTER TABLE pcat_wiseview_visual_vetting ADD COLUMN classification TEXT')
         self.db.execute('ALTER TABLE moca_spectra ADD COLUMN median_snr_per_pix REAL')
-        self.db.executemany('INSERT INTO moca_spectra VALUES (?,4,55,0,?)',[(101,7),(102,11),(103,55)])
+        self.db.executemany('INSERT INTO moca_spectra (moca_specid,moca_oid,moca_specpackid,ignored,median_snr_per_pix) VALUES (?,4,55,0,?)',[(101,7),(102,11),(103,55)])
         self.db.executemany("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,?)",
                             [(101,'good'),(102,'good_reddened'),(103,'bad')])
-        self.db.executemany("INSERT INTO data_spectral_types VALUES (?,4,?,0,0,0,0,'spherex_autotype')",
+        self.db.executemany("INSERT INTO data_spectral_types (id,moca_oid,spectral_type_number,adopted,public_adopted,ignored,photometric_estimate,calculation_method) VALUES (?,4,?,0,0,0,0,'spherex_autotype')",
                             [(101,13),(102,19),(103,30)])
         filters=sf.parse_filters(dict(sources=['sublime2'],quality_any='one_good',snr_lane='spiff',min_snr=6,max_snr=8,
                                       spt_source='spiff',min_spiff_spt=12,max_spiff_spt=14))

@@ -295,10 +295,12 @@ class FindingsTests(unittest.TestCase):
             db.execute("INSERT INTO data_spectral_types VALUES (NULL, 9, 19, 0, 0, 0, 0, 'spherex_sublimeap_autotype')")
 
             db.execute('ALTER TABLE data_spectral_types ADD COLUMN moca_specid INT')
-            db.execute('CREATE TABLE moca_spectra(moca_specid INT,moca_oid INT,moca_specpackid INT,ignored INT)')
+            db.execute('ALTER TABLE data_spectral_types ADD COLUMN origin TEXT')
+            db.execute('ALTER TABLE data_spectral_types ADD COLUMN created_timestamp TEXT')
+            db.execute('CREATE TABLE moca_spectra(moca_specid INT,moca_oid INT,moca_specpackid INT,ignored INT,created_timestamp TEXT)')
             db.execute("CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INT,classification TEXT,sources TEXT,review_kind TEXT DEFAULT 'quality')")
             for oid in range(1,10):
-                db.execute('INSERT INTO moca_spectra VALUES (?,?,?,0)',(oid,oid,55 if oid<9 else 76))
+                db.execute('INSERT INTO moca_spectra (moca_specid,moca_oid,moca_specpackid,ignored) VALUES (?,?,?,0)',(oid,oid,55 if oid<9 else 76))
                 db.execute("INSERT INTO pcat_spherex_spectrum_reviews(moca_specid,classification) VALUES (?,'good')",(oid,))
             db.execute('UPDATE data_spectral_types SET moca_specid=moca_oid WHERE calculation_method IS NOT NULL')
 

@@ -172,6 +172,24 @@ def lane_reviews(cfg, canonical):
     return sq.reviews_sql(cfg['table'], cfg['pack'], canonical)
 
 
+def spectrum_id_for_type(alias, config):
+    """Resolve the old object-level autotype only for one contemporaneous extraction."""
+    methods = sq.labels_sql(config['methods'])
+    pack = int(config['pack'])
+    return f"""COALESCE({alias}.moca_specid, CASE WHEN {alias}.origin='spherex_autotype.py' THEN (
+        SELECT lone.moca_specid FROM moca_spectra lone
+        WHERE lone.moca_oid={alias}.moca_oid AND lone.moca_specpackid={pack}
+          AND lone.created_timestamp<={alias}.created_timestamp
+          AND NOT EXISTS (SELECT 1 FROM moca_spectra sibling
+              WHERE sibling.moca_oid=lone.moca_oid AND sibling.moca_specpackid=lone.moca_specpackid
+                AND sibling.moca_specid<>lone.moca_specid)
+          AND NOT EXISTS (SELECT 1 FROM data_spectral_types linked
+              WHERE linked.moca_oid=lone.moca_oid AND linked.moca_specid=lone.moca_specid
+                AND linked.ignored=0 AND linked.calculation_method IN ({methods}))
+        LIMIT 1
+    ) END)"""
+
+
 def quality_condition(mode, oid='mo.moca_oid', *, canonical=True):
     if mode == 'any':
         return '1=1'
@@ -295,7 +313,7 @@ def selected_sql(f, candidate_ids=None, *, counts_only=False):
                 if limit is not None:
                     bounds.append(' AND t.spectral_type_number'+op+str(float(limit)))
         type_joins.append(f"LEFT JOIN data_spectral_types t_{lane} ON t_{lane}.id=("
-                         f"SELECT t.id FROM data_spectral_types t JOIN {source} q ON q.moca_specid=t.moca_specid "
+                         f"SELECT t.id FROM data_spectral_types t JOIN {source} q ON q.moca_specid={spectrum_id_for_type('t',config)} "
                          f"WHERE t.moca_oid=mo.moca_oid AND t.ignored=0 AND t.calculation_method IN ({methods}) "
                          f"AND LOWER(q.classification) IN ({sq.labels_sql(sq.USABLE)}){''.join(bounds)} "
                          f"ORDER BY {rank_sql('q.classification')},t.id DESC LIMIT 1)")
@@ -310,8 +328,10 @@ def selected_sql(f, candidate_ids=None, *, counts_only=False):
         ('tp.spectral_type_number IS NOT NULL AND tp.calculation_method IS NULL', 'tp.spectral_type_number', 'published'),
     ]
     for lane in TYPE_LANE_ORDER:
-        source = lane_reviews(LANE_CONFIG[lane],f.get('_canonical',True))
-        type_joins.append(f"LEFT JOIN {source} quality_{lane} ON quality_{lane}.moca_specid=t_{lane}.moca_specid")
+        config = LANE_CONFIG[lane]
+        source = lane_reviews(config,f.get('_canonical',True))
+        specid = spectrum_id_for_type('t_'+lane,config)
+        type_joins.append(f"LEFT JOIN {source} quality_{lane} ON quality_{lane}.moca_specid={specid}")
     for classes in TYPE_QUALITY_ORDER:
         accepted = ','.join("'"+value+"'" for value in classes)
         for lane in TYPE_LANE_ORDER:
@@ -480,7 +500,8 @@ def enrich(cur, rows, *, count_filters=None):
             source = lane_reviews(cfg,canonical)
             methods = sq.labels_sql(cfg['methods'])
             query = f"""SELECT s.moca_oid,s.moca_specid,s.ignored,s.median_snr_per_pix,q.classification,
-                (SELECT t.spectral_type_number FROM data_spectral_types t WHERE t.moca_specid=s.moca_specid
+                (SELECT t.spectral_type_number FROM data_spectral_types t WHERE t.moca_oid=s.moca_oid
+                 AND {spectrum_id_for_type('t',cfg)}=s.moca_specid
                  AND t.ignored=0 AND t.calculation_method IN ({methods}) ORDER BY t.id DESC LIMIT 1) AS spt
                 FROM moca_spectra s LEFT JOIN {source} q ON q.moca_specid=s.moca_specid
                 WHERE s.moca_oid IN ({ph}) AND s.moca_specpackid=%s

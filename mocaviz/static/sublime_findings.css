@@ -70,11 +70,11 @@
 #refresh-state-elapsed{font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .refresh-state[data-state=error]{background:#fff0ed;border-color:#edb6a9;color:#9c3326}
 .refresh-state[data-state=partial]{background:#fff7e6;border-color:#e2c584;color:#80581a}
-#refresh[aria-busy=true]{opacity:1;background:#e1f2eb;border-color:#87bdae;color:#164f46;cursor:progress}
+:is(#refresh,#refresh-counts)[aria-busy=true]{opacity:1;background:#e1f2eb;border-color:#87bdae;color:#164f46;cursor:progress}
 .refresh-button-icon{display:inline-block}
-#refresh[aria-busy=true] .refresh-button-icon{animation:findings-refresh-spin 1s linear infinite}
+:is(#refresh,#refresh-counts)[aria-busy=true] .refresh-button-icon{animation:findings-refresh-spin 1s linear infinite}
 @keyframes findings-refresh-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.refresh-state[data-state=loading] .refresh-state-icon,#refresh[aria-busy=true] .refresh-button-icon{animation:none}}
+@media(prefers-reduced-motion:reduce){.refresh-state[data-state=loading] .refresh-state-icon,:is(#refresh,#refresh-counts)[aria-busy=true] .refresh-button-icon{animation:none}}
 @media(max-width:600px){.refresh-state{top:6px;gap:10px;padding:12px}.refresh-state-icon{flex-basis:28px;width:28px;height:28px;font-size:19px}.refresh-state-copy strong{font-size:14px}.refresh-state-copy>span{font-size:11px}#refresh-state-elapsed{font-size:10px}}
 
 /* Keep the wrapping spectral-census legend above the bars. */

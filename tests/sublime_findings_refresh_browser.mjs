@@ -9,12 +9,12 @@ const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 await page.emulateMedia({reducedMotion:'no-preference'});
 const errors=[],controls=new Set();
-let closing=false,loadControl=null,diagnosticControl=null,failLoad=false,failDiagnostic=false,diagnosticRequests=0,loadRequests=0,countsRequests=0;
+let closing=false,loadControl=null,diagnosticControl=null,countsControl=null,failLoad=false,failCounts=false,failDiagnostic=false,diagnosticRequests=0,loadRequests=0,countsRequests=0;
 function gate(){let release;const promise=new Promise(resolve=>{release=resolve;});const control={promise,release,retired:false};controls.add(control);return control;}
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/findings/*',async route=>{
  const op=new URL(route.request().url()).pathname.split('/').at(-1);
- const control=op==='load'?loadControl:op==='diagnostics'?diagnosticControl:null;
+ const control=op==='load'?loadControl:op==='diagnostics'?diagnosticControl:op==='counts'?countsControl:null;
  if(op==='diagnostics')diagnosticRequests++;
  if(op==='load')loadRequests++;
  try{
@@ -24,6 +24,12 @@ await page.route('**/api/findings/*',async route=>{
    countsRequests++;
    assert.deepEqual(body.filters.sources,['sublime2']);
    assert.equal(body.filters.min_spt,20,'Only applied filters are used for counting');
+   assert.equal(body.filters.duplicates,'exclude');
+   if(control)await control.promise;
+   if(failCounts){
+    failCounts=false;
+    return await route.fulfill({status:503,json:{ok:false,error:'Synthetic count failure'}});
+   }
    const [before,second]=await page.evaluate(()=>window.SublimeFindings.rows.slice(0,2).map(r=>r.moca_oid));
    return await route.fulfill({json:{ok:true,elapsed:.15,groups:[
     {oids:[before,second,999999],motion:null,spiff_quality:'good_candidate'},
@@ -40,8 +46,10 @@ await page.route('**/api/findings/*',async route=>{
    assert.equal(body.filters.min_motion,undefined,'Default minimum motion is disabled');
    const json=await response.json();
    for(const [index,quality] of ['good','good_candidate'].entries()){
-    Object.assign(json.rows[index],{motion:null,motion_class:null,
-     spiff_quality:quality,spiffstacker_quality:null,sublimeaperture_quality:null});
+    const row=json.rows[index];
+    Object.assign(row,{motion:null,motion_class:null,
+     spiff_quality:quality,spiffstacker_quality:null,sublimeaperture_quality:null,
+     spectra:row.spectra?.map(spec=>({...spec,quality}))});
    }
    return await route.fulfill({status:response.status(),json});
   }
@@ -85,8 +93,20 @@ try{
  const originalTraces=await getTraces();
  const beforeCount=loadRequests;
  await page.locator('input[name=min_spt]').fill('21');
+ await page.locator('select[name=duplicates]').selectOption('either');
+ countsControl=gate();
  await page.locator('#refresh-counts').click();
- await page.waitForFunction(()=>document.querySelector('#counts-status').textContent.includes('Counts updated'));
+ await page.locator('#counts-status[data-state=loading]').waitFor();
+ assert(await page.locator('#refresh-counts').isDisabled());
+ assert(await page.locator('#refresh').isEnabled());
+ assert.equal(await page.locator('#refresh-counts').getAttribute('aria-busy'),'true');
+ assert.equal(await page.locator('#refresh-counts-label').textContent(),'Refreshing counts…');
+ assert.equal(await page.locator('#counts-status-icon').evaluate(node=>getComputedStyle(node).animationName),'findings-refresh-spin');
+ countsControl.release();countsControl=null;
+ await page.locator('#counts-status[data-state=done]').waitFor();
+ assert.equal(await page.locator('#counts-status-title').textContent(),'Counts updated');
+ assert.equal(await page.locator('#counts-status-icon').textContent(),'✓');
+ assert.equal(await page.locator('#refresh-counts').getAttribute('aria-busy'),'false');
  assert.equal(countsRequests,1);
  assert.equal(loadRequests,beforeCount);
  assert.equal(await page.locator('#count-total').textContent(),'4');
@@ -98,6 +118,14 @@ try{
  assert.deepEqual(await sky.evaluate(el=>el.layout.xaxis.range),[280,230]);
  assert.equal(await page.evaluate(()=>window.SublimeFindings.rows.length),count);
  await page.locator('input[name=min_spt]').fill('20');
+ await page.locator('select[name=duplicates]').selectOption('exclude');
+ failCounts=true;
+ await page.locator('#refresh-counts').click();
+ await page.locator('#counts-status[data-state=error]').waitFor();
+ assert.equal(await page.locator('#counts-status-detail').textContent(),'Synthetic count failure');
+ assert.equal(await page.locator('#count-total').textContent(),'4');
+ await page.locator('#refresh-counts').click();
+ await page.locator('#counts-status[data-state=done]').waitFor();
 
  // The catalog and S/N histogram are available before diagnostics are requested.
  await page.waitForFunction(()=>document.getElementById('snr-histogram')?.layout?.yaxis.type==='log');

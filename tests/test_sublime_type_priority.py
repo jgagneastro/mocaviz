@@ -13,8 +13,8 @@ class TypePriorityTests(unittest.TestCase):
         self.db.executescript("""
             CREATE TABLE moca_objects(moca_oid INTEGER PRIMARY KEY,designation TEXT,ra REAL,dec REAL,ignored INT,is_public INT);
             CREATE TABLE data_spectral_types(id INTEGER PRIMARY KEY,moca_oid INT,spectral_type_number REAL,adopted INT,
-                public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT,moca_specid INT);
-            CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INT,moca_specpackid INT);
+                public_adopted INT,ignored INT,photometric_estimate INT,calculation_method TEXT,moca_specid INT,origin TEXT,created_timestamp TEXT);
+            CREATE TABLE moca_spectra(moca_specid INTEGER PRIMARY KEY,moca_oid INT,moca_specpackid INT,created_timestamp TEXT);
             CREATE TABLE pcat_spherex_spectrum_reviews(moca_specid INT,classification TEXT,review_kind TEXT);
             CREATE INDEX reviews_by_id ON pcat_spherex_spectrum_reviews(moca_specid);
             CREATE INDEX type_by_oid ON data_spectral_types(moca_oid);
@@ -41,8 +41,8 @@ class TypePriorityTests(unittest.TestCase):
         specid=None
         if lane:
             pack=sf.LANE_CONFIG[lane]['pack'];specid=oid*1000+pack
-            self.db.execute('INSERT OR IGNORE INTO moca_spectra VALUES(?,?,?)',(specid,oid,pack))
-        self.db.execute("INSERT INTO data_spectral_types VALUES (NULL,?,?,?,?,?,?,?,?)",
+            self.db.execute('INSERT OR IGNORE INTO moca_spectra (moca_specid,moca_oid,moca_specpackid) VALUES(?,?,?)',(specid,oid,pack))
+        self.db.execute("INSERT INTO data_spectral_types (id,moca_oid,spectral_type_number,adopted,public_adopted,ignored,photometric_estimate,calculation_method,moca_specid) VALUES (NULL,?,?,?,?,?,?,?,?)",
                         (oid,spt,adopted,public,ignored,photo,method,specid))
 
     def select(self,**cuts):
@@ -67,6 +67,29 @@ class TypePriorityTests(unittest.TestCase):
             expected[oid]=(10+best,priority[best]) if ranks[classes[best]]<4 else (None,None)
         rows=self.select()
         self.assertEqual({oid:(r["spt"],r["best_spt_source"]) for oid,r in rows.items()},expected)
+
+    def test_legacy_autotype_requires_one_contemporaneous_reviewed_spectrum(self):
+        for oid in range(1,7):
+            self.add_object(oid)
+            self.db.execute("INSERT INTO moca_spectra VALUES (?,?,62,'2026-10-01')",(oid*1000+62,oid))
+            self.db.execute("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES (?,?)",
+                            (oid,'bad' if oid==6 else 'good'))
+            self.db.execute("""INSERT INTO data_spectral_types
+                (moca_oid,spectral_type_number,adopted,public_adopted,ignored,photometric_estimate,
+                 calculation_method,origin,created_timestamp)
+                VALUES (?,17,0,0,0,0,'spiff_stacker_autotype',?,?)""",
+                (oid,'another_tool.py' if oid==5 else 'spherex_autotype.py',
+                 '2026-09-01' if oid==3 else '2026-10-02'))
+        # Two same-lane spectra make the legacy type ambiguous even if one was rejected.
+        self.db.execute("INSERT INTO moca_spectra VALUES (9999,2,62,'2026-09-01')")
+        self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews VALUES (9999,'bad','quality')")
+        self.add_type(4,8,lane='spiffstacker')
+        rows=self.select()
+        self.assertEqual((rows[1]['spt'],rows[1]['best_spt_source']),(17,'spiffstacker'))
+        self.assertEqual({oid:rows[oid]['spt'] for oid in (2,3,4,5,6)},
+                         {2:None,3:None,4:8,5:None,6:None})
+        self.assertEqual(set(self.select(min_spt=10)),{1})
+        self.assertEqual(set(self.select(min_spt=10,spt_source='spiffstacker')),{1})
 
     def test_preferred_spectrum_uses_ranked_type_and_available_literature_fallback(self):
         spectra = {lane+'_specid':i+1 for i,lane in enumerate(sf.TYPE_LANE_ORDER)}
