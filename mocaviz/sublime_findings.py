@@ -332,16 +332,20 @@ def selected_sql(f, candidate_ids=None, *, counts_only=False):
         source = lane_reviews(config,f.get('_canonical',True))
         specid = spectrum_id_for_type('t_'+lane,config)
         type_joins.append(f"LEFT JOIN {source} quality_{lane} ON quality_{lane}.moca_specid={specid}")
+    legacy_choices = []
     for classes in TYPE_QUALITY_ORDER:
         accepted = ','.join("'"+value+"'" for value in classes)
         for lane in TYPE_LANE_ORDER:
             value = expressions[lane]
             condition = value+' IS NOT NULL AND LOWER(TRIM(quality_'+lane+'.classification)) IN ('+accepted+')'
-            type_choices.append((condition, value, lane))
+            type_choices.append((condition+f' AND t_{lane}.moca_specid IS NOT NULL', value, lane))
+            legacy_choices.append((condition, value, lane))
     for lane in TYPE_LANE_ORDER:
-        type_choices.append((expressions[lane]+' IS NOT NULL', expressions[lane], lane))
+        value = expressions[lane]
+        type_choices.append((value+f' IS NOT NULL AND t_{lane}.moca_specid IS NOT NULL', value, lane))
     type_choices.append(('tp.spectral_type_number IS NOT NULL', 'tp.spectral_type_number', 'published'))
     type_choices.append(('tc.spectral_type_number IS NOT NULL', 'tc.spectral_type_number', 'published_candidate'))
+    type_choices.extend(legacy_choices)
     expressions['best'] = 'CASE '+' '.join('WHEN '+condition+' THEN '+value for condition,value,_ in type_choices)+' ELSE NULL END'
     best_source = 'CASE '+' '.join("WHEN "+condition+" THEN '"+lane+"'" for condition,_,lane in type_choices)+' ELSE NULL END'
     spt = expressions[f['spt_source']]

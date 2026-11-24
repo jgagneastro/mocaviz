@@ -69,7 +69,7 @@ class TypePriorityTests(unittest.TestCase):
         self.assertEqual({oid:(r["spt"],r["best_spt_source"]) for oid,r in rows.items()},expected)
 
     def test_legacy_autotype_requires_one_contemporaneous_reviewed_spectrum(self):
-        for oid in range(1,7):
+        for oid in range(1,8):
             self.add_object(oid)
             self.db.execute("INSERT INTO moca_spectra VALUES (?,?,62,'2026-10-01')",(oid*1000+62,oid))
             self.db.execute("INSERT INTO pcat_spherex_spiffstacker_visual_vetting VALUES (?,?)",
@@ -84,12 +84,15 @@ class TypePriorityTests(unittest.TestCase):
         self.db.execute("INSERT INTO moca_spectra VALUES (9999,2,62,'2026-09-01')")
         self.db.execute("INSERT INTO pcat_spherex_spectrum_reviews VALUES (9999,'bad','quality')")
         self.add_type(4,8,lane='spiffstacker')
+        self.add_type(7,14,lane='spiff')
+        self.db.execute("INSERT INTO pcat_spherex_visual_vetting VALUES (7,'good_candidate')")
         rows=self.select()
         self.assertEqual((rows[1]['spt'],rows[1]['best_spt_source']),(17,'spiffstacker'))
         self.assertEqual({oid:rows[oid]['spt'] for oid in (2,3,4,5,6)},
                          {2:None,3:None,4:8,5:None,6:None})
-        self.assertEqual(set(self.select(min_spt=10)),{1})
-        self.assertEqual(set(self.select(min_spt=10,spt_source='spiffstacker')),{1})
+        self.assertEqual((rows[7]['spt'],rows[7]['best_spt_source']),(14,'spiff'))
+        self.assertEqual(set(self.select(min_spt=10)),{1,7})
+        self.assertEqual(set(self.select(min_spt=10,spt_source='spiffstacker')),{1,7})
 
     def test_preferred_spectrum_uses_ranked_type_and_available_literature_fallback(self):
         spectra = {lane+'_specid':i+1 for i,lane in enumerate(sf.TYPE_LANE_ORDER)}
