@@ -3,6 +3,7 @@
 
 The two-frame reconstruction uses NEO1 and the weighted NEO11–NEO5
 increment. These release windows approximate WiseView's outer epochs.
+The manifest can specify spectral priority before survey priority.
 Usage: python scripts/cache_unwise_blinks.py ~/Documents/Vetting/unWISE/Build/targets.csv
 """
 
@@ -43,6 +44,7 @@ SIZE = 19
 MAX_BYTES = 256 * 1024
 GEOMETRY = ("CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2", "NAXIS1", "NAXIS2")
 CUTOUT_NAME = re.compile(r"unwise-(\d{4}[pm]\d{3})-w([12])-(img|invvar)-m\.fits(?:\.gz)?")
+SPECTRAL_PRIORITIES = {0: "good", 1: "good_candidate", 2: "other"}
 PRIORITIES = {1: "SUBLIME4", 2: "SUBLIME3C", 3: "MOSHPIT", 4: "SUBLIME2", 5: "CatWISE red movers"}
 
 
@@ -52,6 +54,7 @@ class Target:
     priority: int
     ra: float
     dec: float
+    spectral_priority: int = 2
 
 
 @dataclass
@@ -247,26 +250,31 @@ def read_targets(path):
     with path.open(newline="") as stream:
         for item in csv.DictReader(stream):
             key = item["target_id"]
-            target = Target(key, int(item["priority"]), float(item["ra"]), float(item["dec"]))
+            target = Target(key, int(item["priority"]), float(item["ra"]), float(item["dec"]),
+                            int(item.get("spectral_priority") or 2))
             if (not PREVIEW_ID.fullmatch(key) or target.priority not in PRIORITIES or
+                    target.spectral_priority not in SPECTRAL_PRIORITIES or
                     not 0 <= target.ra < 360 or not -90 <= target.dec <= 90 or
                     not math.isfinite(target.ra) or not math.isfinite(target.dec)):
                 raise ValueError(f"Invalid target: {key}")
             if key in targets and targets[key] != target:
                 raise ValueError(f"Conflicting catalog rows for {key}")
             targets[key] = target
-    return sorted(targets.values(), key=lambda item: (item.priority, len(item.key), item.key))
+    return sorted(targets.values(), key=lambda item: (
+        item.spectral_priority, item.priority, len(item.key), item.key
+    ))
 
 
 def build(targets, workers, interval):
     progress = Counter()
     archive = Archive(interval)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for priority, rows in groupby(targets, key=lambda item: item.priority):
+        for (tier, priority), rows in groupby(targets, key=lambda item: (item.spectral_priority, item.priority)):
             cohort = list(rows)
             todo = [row for row in cohort if not cached_preview(row.key, row.ra, row.dec)]
             progress["cached"] += len(cohort) - len(todo)
-            print(f"{stamp()} {PRIORITIES[priority]}: {len(todo):,} pending of {len(cohort):,}", flush=True)
+            print(f"{stamp()} {SPECTRAL_PRIORITIES[tier]} · {PRIORITIES[priority]}: "
+                  f"{len(todo):,} pending of {len(cohort):,}", flush=True)
             pending = iter(todo)
             active = {pool.submit(generate, row, archive) for row in islice(pending, workers)}
             while active:
